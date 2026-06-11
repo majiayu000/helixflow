@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ComfyUI Agent · 架构 Spec</title>
+<link rel="stylesheet" href="ds.css" />
+<link rel="stylesheet" href="spec.css" />
+</head>
+<body>
+<div class="doc">
+
+<!-- ================= PAGE 1 · 封面 ================= -->
+<section class="page" data-screen-label="封面与目录">
+  <div class="cover-kicker">SPEC · v0.2 DRAFT</div>
+  <h1>ComfyUI Agent Workbench<br />系统架构规格说明</h1>
+  <p class="cover-sub">对话驱动的 ComfyUI 工作流构建与运行工具 —— 前端、后端、Agent 编排与 ComfyUI 对接的完整技术方案。</p>
+
+  <div class="meta-grid">
+    <div><div class="k">产品形态</div><div class="v">独立本地 Web 应用（浏览器 + 本地后端服务）</div></div>
+    <div><div class="k">目标读者</div><div class="v">工程团队 / AI 编码工具（可直接照此实现）</div></div>
+    <div><div class="k">前端</div><div class="v">React 19 + TypeScript + Vite · Zustand</div></div>
+    <div><div class="k">后端</div><div class="v">Rust（axum + tokio）· SQLite</div></div>
+    <div><div class="k">Agent 引擎</div><div class="v">Codex CLI / Claude Code（后端 Runtime 层直连，无 MCP）</div></div>
+    <div><div class="k">对接目标</div><div class="v">标准 ComfyUI 服务（127.0.0.1:8188 HTTP/WS）</div></div>
+    <div><div class="k">依据</div><div class="v">交互原型《ComfyUI Agent · 交互原型.html》</div></div>
+    <div><div class="k">日期 / 状态</div><div class="v">2026-06-11 · v0.2（Rust / React 19 / CLI Runtime）</div></div>
+  </div>
+
+  <h3>目录</h3>
+  <div class="toc">
+    <div class="toc-item"><span class="no">01</span><span>概述与设计原则</span><span class="dots"></span></div>
+    <div class="toc-item"><span class="no">02</span><span>系统架构总览</span><span class="dots"></span></div>
+    <div class="toc-item"><span class="no">03</span><span>前端架构</span><span class="dots"></span></div>
+    <div class="toc-item"><span class="no">04</span><span>后端架构</span><span class="dots"></span></div>
+    <div class="toc-item"><span class="no">05</span><span>Agent 编排与 Runtime 协议</span><span class="dots"></span></div>
+    <div class="toc-item"><span class="no">06</span><span>数据模型</span><span class="dots"></span></div>
+    <div class="toc-item"><span class="no">07</span><span>API 契约（REST / WebSocket）</span><span class="dots"></span></div>
+    <div class="toc-item"><span class="no">08</span><span>关键状态机与时序</span><span class="dots"></span></div>
+    <div class="toc-item"><span class="no">09</span><span>安全与确认机制</span><span class="dots"></span></div>
+    <div class="toc-item"><span class="no">10</span><span>部署与目录结构</span><span class="dots"></span></div>
+    <div class="toc-item"><span class="no">11</span><span>里程碑</span><span class="dots"></span></div>
+    <div class="toc-item"><span class="no">12</span><span>风险与开放问题</span><span class="dots"></span></div>
+  </div>
+
+  <h3>范围与非目标</h3>
+  <ul>
+    <li><strong>范围内：</strong>对话式工作流生成与增量修改、提议（Proposal）审核流、版本栈与恢复、运行编排与逐节点监控、失败诊断与最小修复、Seed 批量试验、输出管理、API workflow JSON 导出。</li>
+    <li><strong>非目标（v1）：</strong>多用户与账号体系、云端托管 ComfyUI、模型训练、手动拖线编辑节点图（画布只读 + Agent 写入，手动编辑留待后续）。</li>
+  </ul>
+
+  <div class="pg-foot"><span>ComfyUI Agent Workbench · 架构 Spec v0.2</span><span>1 / 9</span></div>
+</section>
+
+<!-- ================= PAGE 2 · 概述 + 总览 ================= -->
+<section class="page" data-screen-label="概述与系统总览">
+  <h2><span class="no">01</span>概述与设计原则</h2>
+  <p>ComfyUI Agent Workbench 让用户用自然语言构建、修改、运行 ComfyUI 节点工作流。Agent 不直接改图——它产出<strong>图变更提议（Proposal）</strong>，在画布上以高亮 diff 预览，用户一键应用或忽略；每次应用形成不可变的<strong>版本快照</strong>，可撤销、可恢复。运行消耗本地算力，凡由 Agent 发起的运行必须经过<strong>确认弹窗</strong>。</p>
+  <h3>四条设计原则（全系统遵守）</h3>
+  <ol>
+    <li><strong>先审后行（Propose-then-Apply）</strong> — Agent 对图的任何写操作都以 Proposal 形式呈现，画布预览 + 变更清单 + 可展开 diff，绝不静默落盘。</li>
+    <li><strong>最小变更（Minimal Diff）</strong> — 修改与修复只触碰必要的节点/边/参数。如原型中的修复案例：仅替换 <code>Load ControlNet</code> 的一个 model 参数。</li>
+    <li><strong>算力守门（Compute Gate）</strong> — Agent 发起的运行需用户确认（版本、次数、上传文件、可中断性）；用户手动点「运行 Queue」不需要。</li>
+    <li><strong>全程可追溯（Traceable）</strong> — 版本栈记录每次变更的来源（agent / 手动 / 修复 / 恢复），运行记录关联版本，随时回滚。</li>
+  </ol>
+
+  <h2 style="margin-top: 28px;"><span class="no">02</span>系统架构总览</h2>
+  <p>三个进程协作：浏览器前端、本地后端服务（唯一有状态的协调者）、Agent CLI（Codex CLI / Claude Code，由后端 Runtime 层拉起并驱动）；ComfyUI 是外部依赖。前端<strong>从不直接连接</strong> ComfyUI 或 Agent——一切经后端中转，确认与守门逻辑只在后端实现一份。</p>
+
+  <div class="arch">
+    <div class="arch-tier">
+      <div class="tier-label">BROWSER · 前端（React SPA）</div>
+      <div class="arch-row">
+        <div class="arch-box"><div class="bt">ChatPane</div><div class="bd">消息流 · Proposal 卡片 · 错误卡片 · 快捷指令</div></div>
+        <div class="arch-box"><div class="bt">CanvasPane</div><div class="bd">节点图渲染 · 提议预览 · 运行高亮 · 错误标记</div></div>
+        <div class="arch-box"><div class="bt">RunDock / Outputs</div><div class="bd">进度 · 逐节点步骤条 · 输出缩略图</div></div>
+        <div class="arch-box"><div class="bt">History / Confirm</div><div class="bd">版本栈 · 运行记录 · 算力确认弹窗</div></div>
+      </div>
+    </div>
+    <div class="arch-link"><span class="lk">REST /api/*</span><span class="ar">⇅</span><span class="lk">WS /ws（事件流）</span></div>
+    <div class="arch-tier">
+      <div class="tier-label">LOCAL SERVICE · 后端（Rust · axum · 127.0.0.1:8787）</div>
+      <div class="arch-row">
+        <div class="arch-box hl"><div class="bt">Agent Orchestrator</div><div class="bd">Runtime 层：CLI 会话生命周期 · 上下文/产出契约 · 守门</div></div>
+        <div class="arch-box hl"><div class="bt">Graph Service</div><div class="bd">图模型 · diff 计算/应用 · 版本栈 · 校验</div></div>
+        <div class="arch-box hl"><div class="bt">Run Service</div><div class="bd">运行编排 · 进度聚合 · 中断 · Sweep 计划</div></div>
+        <div class="arch-box hl"><div class="bt">Comfy Adapter</div><div class="bd">/prompt /interrupt /object_info · WS 监听 · 模型扫描</div></div>
+      </div>
+      <div class="arch-row" style="margin-top: 10px;">
+        <div class="arch-box"><div class="bt">Storage</div><div class="bd">SQLite（元数据）+ 文件区（图快照 / 输出 / 上传）</div></div>
+        <div class="arch-box"><div class="bt">Static Server</div><div class="bd">托管前端构建产物，单端口交付</div></div>
+      </div>
+    </div>
+    <div class="arch-link">
+      <span class="lk">Runtime 层 ⇆ CLI 原生 headless 协议（JSON 事件流 · §05）</span><span class="ar">⇅</span>
+      <span class="lk">HTTP + WS → 127.0.0.1:8188</span>
+    </div>
+    <div class="arch-row" style="gap: 10px;">
+      <div class="arch-tier" style="flex: 1;">
+        <div class="tier-label">SUBPROCESS · AGENT CLI</div>
+        <div class="arch-row"><div class="arch-box ext"><div class="bt">Codex CLI / Claude Code</div><div class="bd">规划 · 诊断 · 产出 Proposal / 运行请求。沙箱限定会话目录，产出经后端校验后才生效</div></div></div>
+      </div>
+      <div class="arch-tier" style="flex: 1;">
+        <div class="tier-label">EXTERNAL · ComfyUI</div>
+        <div class="arch-row"><div class="arch-box ext"><div class="bt">ComfyUI Server :8188</div><div class="bd">真实执行引擎 · 节点定义（object_info）· models 目录</div></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout"><span class="ci">INV</span><span><strong>核心不变量：</strong>① 画布展示的图永远等于版本栈当前快照 + 可选的 pending Proposal 叠加层；② Proposal 应用是产生新版本的唯一写路径；③ Agent 发起的运行未经确认不会触达 ComfyUI <code>/prompt</code>。</span></div>
+
+  <div class="pg-foot"><span>ComfyUI Agent Workbench · 架构 Spec v0.2</span><span>2 / 9</span></div>
+</section>
+
+<!-- ================= PAGE 3 · 前端 ================= -->
+<section class="page" data-screen-label="前端架构">
+  <h2><span class="no">03</span>前端架构</h2>
+  <p>React 19 + TypeScript + Vite 构建的 SPA。布局与交互直接继承交互原型：顶栏 + 左侧对话（37%，min 360px）+ 右侧画布，画布底部叠运行 Dock 与输出条，历史面板与确认弹窗浮于画布之上。</p>
+
+  <h3>模块划分（与原型组件一一对应）</h3>
+  <table>
+    <thead><tr><th style="width:26%">模块</th><th style="width:22%">原型对应</th><th>职责与关键行为</th></tr></thead>
+    <tbody>
+      <tr><td><code>app/AppShell</code></td><td><code>ProtoApp</code></td><td>布局骨架与路由；不再承载业务逻辑（原型中的状态机迁入 stores 与后端）。</td></tr>
+      <tr><td><code>chat/ChatPane</code></td><td><code>ChatPane</code></td><td>消息流（user / agent / sys 分隔线三类）、Agent 状态行（单条原地刷新文案）、快捷指令 chips、composer；busy 时禁发。</td></tr>
+      <tr><td><code>chat/ProposalCard</code></td><td><code>PropCard</code></td><td>变更清单（add/upd/del 行）+ 可展开操作级 diff；「应用到画布 / 查看 Diff / 忽略」；applied / dismissed 终态展示。</td></tr>
+      <tr><td><code>chat/ErrorCard</code></td><td><code>ErrorCard</code></td><td>人话解释 + 可折叠原始错误（traceback）。</td></tr>
+      <tr><td><code>canvas/CanvasPane</code></td><td><code>ProtoCanvas</code></td><td>节点图渲染（SVG 边 + DOM 节点卡）；四种叠加态：pending 提议高亮、运行中节点脉冲、完成勾、失败红标；节点可选中。</td></tr>
+      <tr><td><code>run/RunDock</code></td><td><code>PRunDock</code></td><td>状态 pill（运行中/完成/失败/中断）、进度条、逐节点步骤条。</td></tr>
+      <tr><td><code>run/OutputsStrip</code></td><td><code>POutputs</code></td><td>输出缩略图 + seed 标注，点击选中。</td></tr>
+      <tr><td><code>history/HistoryPanel</code></td><td><code>PHistory</code></td><td>版本列表（来源徽标：Agent/手动/修复/恢复）+ 运行记录；非当前版本可「恢复」。</td></tr>
+      <tr><td><code>run/ConfirmModal</code></td><td><code>PConfirm</code></td><td>算力确认：版本、次数、待确认变更、上传、可中断性；确认/取消。</td></tr>
+      <tr><td><code>app/TopBar</code></td><td><code>PTopBar</code></td><td>工作区切换、连接状态（端点 / 节点数 / Agent 在线）、撤销、历史、导出、「Agent 运行」与「运行 Queue / 中断」。</td></tr>
+    </tbody>
+  </table>
+
+  <h3>状态管理（Zustand，按域分 store）</h3>
+  <table>
+    <thead><tr><th style="width:22%">Store</th><th style="width:40%">状态</th><th>更新来源</th></tr></thead>
+    <tbody>
+      <tr><td><code>useGraphStore</code></td><td><code>versions[]</code>、<code>curIdx</code>、当前图（派生）、<code>selectedNode</code></td><td>REST 拉取 + WS <code>version.committed</code></td></tr>
+      <tr><td><code>useChatStore</code></td><td><code>messages[]</code>、<code>busy</code>、pending proposal 引用</td><td>WS <code>agent.*</code>、<code>proposal.*</code></td></tr>
+      <tr><td><code>useRunStore</code></td><td>当前 run（状态/进度/步骤/activeKey）、<code>runs[]</code> 历史、<code>outputs[]</code></td><td>WS <code>run.*</code>、<code>node.*</code></td></tr>
+      <tr><td><code>useConnStore</code></td><td>ComfyUI 连接状态、节点定义数、Agent 在线状态</td><td>WS <code>conn.status</code>（后端心跳探测）</td></tr>
+    </tbody>
+  </table>
+
+  <h3>关键前端决策</h3>
+  <ul>
+    <li><strong>后端是唯一事实源。</strong>前端不本地计算版本/diff；所有状态变更由 WS 事件驱动，REST 仅用于初始加载与显式动作。断线重连后以 <code>GET /api/workspaces/{id}/state</code> 全量对账。</li>
+    <li><strong>画布渲染自研（不用 LiteGraph）。</strong>v1 画布只读，仅需渲染 + 叠加态，自研 SVG/DOM 方案（原型已验证）远轻于引入 LiteGraph；布局坐标由后端 Graph Service 自动排版给出。</li>
+    <li><strong>提议预览是叠加层。</strong>pending Proposal 渲染为当前图之上的虚影/高亮层，不修改 store 中的图数据——「忽略」即移除叠加层，零回滚成本。</li>
+    <li><strong>乐观 UI 仅限纯本地交互</strong>（输出选中、面板开合）；一切涉及图与运行的动作等待后端事件确认。</li>
+  </ul>
+
+  <div class="pg-foot"><span>ComfyUI Agent Workbench · 架构 Spec v0.2</span><span>3 / 9</span></div>
+</section>
+
+<!-- ================= PAGE 4 · 后端 + Agent ================= -->
+<section class="page" data-screen-label="后端架构与Agent编排">
+  <h2><span class="no">04</span>后端架构</h2>
+  <p>Rust 单二进制异步服务，绑定 <code>127.0.0.1:8787</code>（不监听外网）。选型：<strong>axum + tokio</strong>（HTTP/WS）、<strong>sqlx + SQLite</strong>（WAL）、reqwest / tokio-tungstenite 对接 ComfyUI、serde + jsonschema 校验 Agent 输出。四个核心服务 + 存储层（各为独立 crate）：</p>
+  <table>
+    <thead><tr><th style="width:24%">服务</th><th>职责</th></tr></thead>
+    <tbody>
+      <tr><td><code>AgentOrchestrator</code></td><td>每工作区一个 Agent 会话；经 Runtime 层管理 CLI 进程生命周期（懒启动、空闲回收、崩溃重启）；每轮组装会话上下文、解析 CLI 事件流、接收并校验产出；执行守门策略（§09）；把 CLI 过程状态转为 <code>agent.status</code> 事件。</td></tr>
+      <tr><td><code>GraphService</code></td><td>图的规范模型（§06）；diff 校验与应用（原子）；版本栈（提交/撤销/恢复）；图→ComfyUI API prompt JSON 编译；自动布局（分层 DAG 排布，给前端坐标）。</td></tr>
+      <tr><td><code>RunService</code></td><td>运行编排：单次 Queue、Sweep 多次序列；向 Comfy Adapter 提交并聚合进度为统一 <code>run.*</code> / <code>node.*</code> 事件；中断；失败时捕获错误上下文交给 Orchestrator 触发诊断。</td></tr>
+      <tr><td><code>ComfyAdapter</code></td><td>ComfyUI 客户端：<code>POST /prompt</code>、<code>POST /interrupt</code>、<code>GET /object_info</code>（启动时拉取并缓存节点定义，TopBar 的「312 节点」即来源于此）、<code>/upload/image</code>；维持到 ComfyUI 的 WS 监听 <code>executing / progress / executed / execution_error</code>；扫描 models 子目录供诊断用。</td></tr>
+      <tr><td><code>Storage</code></td><td>SQLite（WAL）存元数据；图快照与 proposal 以 JSON 文件存于工作区目录；输出图片由 ComfyUI 写盘，本服务记录引用路径。</td></tr>
+    </tbody>
+  </table>
+
+  <h2 style="margin-top: 26px;"><span class="no">05</span>Agent 编排与 Runtime 协议</h2>
+  <p>不引入 MCP。后端内置 <strong>Runtime 层</strong>（统一 trait：<code>start(session) / send(turn) / events() / cancel()</code>），以各 CLI 的<strong>原生 headless 协议</strong>直连：<code>CodexRuntime</code> 拉起 <code>codex exec --json</code>、<code>ClaudeCodeRuntime</code> 拉起 <code>claude -p --output-format stream-json</code>，解析 stdout JSON 事件流（思考/工具步骤摘要 → <code>agent.status</code>，原型中「正在规划图变更…」即来源于此）。CLI 与后端的数据交换靠<strong>会话工作目录的文件契约</strong>：后端每轮把上下文物化进 <code>ctx/</code>，CLI 用自带文件工具阅读检索，并把结构化产出写进 <code>out/</code>。职责边界：CLI 只规划与推理，真实的图、数据库与 ComfyUI 它碰不到——会话目录是其唯一可写区域。</p>
+
+  <h3>会话文件契约（每轮由后端组装）</h3>
+  <table>
+    <thead><tr><th style="width:30%">路径</th><th style="width:8%">方向</th><th>内容</th></tr></thead>
+    <tbody>
+      <tr><td><code>ctx/graph.json</code></td><td>注入</td><td>当前版本图（节点、参数、边）+ 版本标签。</td></tr>
+      <tr><td><code>ctx/node_defs/</code></td><td>注入</td><td>ComfyUI 节点定义：常用 50 节点速查表 + 按类别分文件的全量索引，CLI 按需检索——312 个定义不全量进上下文。</td></tr>
+      <tr><td><code>ctx/models.json</code></td><td>注入</td><td><code>checkpoints / controlnet / loras …</code> 目录的可用模型清单（仅文件名）。修复流程的关键依据。</td></tr>
+      <tr><td><code>ctx/run_error.json</code></td><td>注入</td><td>失败运行的上下文：节点、参数、原始 traceback、各节点耗时。</td></tr>
+      <tr><td><code>ctx/instructions.md</code></td><td>注入</td><td>系统约定：产出格式 schema、最小变更原则、禁止事项。</td></tr>
+      <tr><td><code>out/proposal.json</code></td><td>产出*</td><td>图变更提议（格式见下）。后端解析校验后入库并推给前端，<strong>不直接改图</strong>。</td></tr>
+      <tr><td><code>out/run_plan.json</code></td><td>产出*</td><td>运行请求（次数、seed 列表等参数覆盖）。触发前端确认弹窗，用户确认前不执行。</td></tr>
+    </tbody>
+  </table>
+  <p class="small">* 产出均为间接生效：落到用户审核流，后端是唯一真实写方。校验失败时后端把错误写回会话再 <code>send</code> 一轮，让 CLI 自行修正，不打扰用户。</p>
+
+  <h3>Proposal 格式（out/proposal.json，Runtime 契约核心对象）</h3>
+  <pre><code>{
+  "kind": "create | modify | fix",
+  "title": "追加 ControlNet Depth 分支",
+  "summary": "基于参考图增加深度控制…原节点全部保留。",
+  "ops": [                                       // 原子操作序列，按序应用
+    { "op": "add_node",    "id": "n8",  "type": "LoadImage",
+      "params": { "image": "ref_depth.png" } },
+    { "op": "add_node",    "id": "n11", "type": "ControlNetApply",
+      "params": { "strength": 0.85 } },
+    { "op": "remove_edge", "from": ["n2","COND"], "to": ["n5","positive"] },
+    { "op": "add_edge",    "from": ["n11","COND"], "to": ["n5","positive"] },
+    { "op": "set_param",   "id": "n10", "key": "control_net_name",
+      "prev": "control-lora-depth.sft",          // 旧值由后端校验补全
+      "value": "cn-depth-sdxl-1.0.sft" },
+    { "op": "set_param",   "id": "n2",  "key": "text",   // 编辑 prompt
+      "prev": "产品摄影棚拍…",
+      "value": "产品摄影棚拍，柔光，45° 俯拍，深色背景…" }
+  ],
+  "version_label": "+ ControlNet Depth"          // 应用后的版本名
+}</code></pre>
+  <p>操作类型共六种：<code>add_node</code> / <code>remove_node</code> / <code>set_param</code> / <code>add_edge</code> / <code>remove_edge</code> / <code>move_node</code>。前端的变更清单与 diff 视图由 ops 直接推导（add→<span class="tag tag--add">+</span>，set_param→<span class="tag tag--upd">~</span>，remove→<span class="tag tag--del">−</span>）。</p>
+  <p><strong>编辑即 <code>set_param</code></strong>：节点的任何参数修改都是它——<strong>prompt（CLIP Text Encode 的 <code>text</code>）</strong>、seed / steps / cfg、模型选择、分辨率等，不另设独立 op。「给节点加 prompt」就是对 <code>text</code> 参数的 <code>set_param</code>；新增带 prompt 的节点则直接在 <code>add_node.params</code> 里给出。两条配套规则：① 后端应用前自动校验并补全 <code>prev</code> 旧值，既驱动 diff 展示也做冲突检测（旧值对不上即基底已变，Proposal 转 <code>superseded</code>）；② 长文本参数（prompt）在 ProposalCard 的 diff 视图中渲染为前后对照（旧值划线、新值高亮），而非只显示参数名。</p>
+
+  <h3>Proposal 校验（后端强制，不信任 Agent 输出）</h3>
+  <ul>
+    <li>节点类型必须存在于 object_info 缓存；参数名与值类型合法。</li>
+    <li>边的端口类型必须匹配（MODEL→MODEL 等）；应用后图必须是无环 DAG 且无悬空必填输入。</li>
+    <li>ops 在当前版本上可完整应用（基于版本号乐观锁——若用户已撤销/恢复导致基底变化，Proposal 标记 <code>superseded</code> 退回 Agent）。</li>
+    <li>校验失败的 Proposal 以错误返回给 Agent 自行修正，不打扰用户。</li>
+  </ul>
+
+  <div class="pg-foot"><span>ComfyUI Agent Workbench · 架构 Spec v0.2</span><span>4 / 9</span></div>
+</section>
+
+<!-- ================= PAGE 5 · 数据模型 ================= -->
+<section class="page" data-screen-label="数据模型">
+  <h2><span class="no">06</span>数据模型</h2>
+  <p>SQLite 持久化（单文件 <code>workbench.db</code>，WAL 模式）。图快照与 Proposal 的 ops 体量大且不可变，存为工作区目录下的 JSON 文件，表中存路径 + 哈希。</p>
+
+  <table>
+    <thead><tr><th style="width:20%">表</th><th style="width:48%">关键字段</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><code>workspaces</code></td><td><code>id, name, created_at, cur_version_id, comfy_endpoint</code></td><td>顶栏的「产品图工作流」即一个工作区。</td></tr>
+      <tr><td><code>versions</code></td><td><code>id, workspace_id, idx, label, source(user|agent|fix|restore), graph_path, graph_hash, parent_id, created_at</code></td><td>不可变快照。<code>idx</code> 即历史面板的 v0/v1/v2；undo 只移动 <code>cur_version_id</code> 指针，restore 追加新版本（source=restore）。</td></tr>
+      <tr><td><code>proposals</code></td><td><code>id, workspace_id, base_version_id, kind(create|modify|fix), title, summary, ops_path, state(pending|applied|dismissed|superseded|invalid), result_version_id?, message_id</code></td><td>与触发它的聊天消息互链；applied 后记录产生的版本。</td></tr>
+      <tr><td><code>messages</code></td><td><code>id, workspace_id, role(user|agent|sys), text, kind(plain|status|proposal|error|runplan|sweep), ref_id?, attachment?, created_at</code></td><td>聊天流。卡片类消息经 <code>ref_id</code> 指向 proposal / run。</td></tr>
+      <tr><td><code>runs</code></td><td><code>id, workspace_id, version_id, label, trigger(user|agent), plan(json: runs, seed_list, overrides), status(queued|running|succeeded|failed|interrupted), error(json?), started_at, ended_at</code></td><td>一次 Queue 或一次 Sweep 中的一跑；Sweep 用 <code>group_id</code> 关联。</td></tr>
+      <tr><td><code>run_steps</code></td><td><code>run_id, node_id, state(pending|active|done|failed), dur_ms</code></td><td>逐节点执行明细，驱动 RunDock 步骤条与画布高亮回放。</td></tr>
+      <tr><td><code>outputs</code></td><td><code>id, run_id, node_id, file_path, seed, selected, meta(json)</code></td><td>输出条数据；<code>selected</code> 支持 sweep 选优。</td></tr>
+      <tr><td><code>uploads</code></td><td><code>id, workspace_id, filename, file_path, sha256</code></td><td>用户上传的参考图等，转发至 ComfyUI <code>/upload/image</code>。</td></tr>
+    </tbody>
+  </table>
+
+  <h3>图的规范模型（graph JSON）</h3>
+  <pre><code>{
+  "nodes": {
+    "n5": {
+      "type": "KSampler",                  // object_info 中的类名
+      "title": "KSampler",                 // 显示名（可被用户改）
+      "params": { "seed": 843629104821, "steps": 28, "cfg": 6.5 },
+      "pos": [520, 86]                     // GraphService 自动布局产出
+    }, …
+  },
+  "edges": [
+    { "from": ["n1","MODEL"], "to": ["n5","model"], "type": "MODEL" }, …
+  ]
+}</code></pre>
+  <ul>
+    <li><strong>与 ComfyUI API 格式的关系：</strong>规范模型是超集（多了 title/pos/类型标注）。<code>GraphService.compile()</code> 把它降级为 <code>/prompt</code> 所需的 API prompt JSON；「导出 API workflow JSON」按钮导出的就是编译产物。</li>
+    <li><strong>端口类型着色：</strong>边的 <code>type</code>（MODEL/CLIP/VAE/LATENT/CONDITIONING/IMAGE/MASK）直接映射前端 <code>--t-*</code> 色 token，与 ComfyUI 习惯一致。</li>
+    <li><strong>布局：</strong>采用分层（longest-path layering）+ 简单重心排序；Proposal 预览时新节点布在受影响区域附近，避免全图重排跳动。</li>
+  </ul>
+
+  <h3>文件区布局</h3>
+  <div class="tree">~/.comfyui-agent/<br />
+├── workbench.db <span class="c"># SQLite 元数据</span><br />
+├── config.toml <span class="c"># 端点、Agent runtime、密钥引用</span><br />
+└── workspaces/&lt;id&gt;/<br />
+&nbsp;&nbsp;&nbsp;&nbsp;├── graphs/v3.json <span class="c"># 版本快照（不可变）</span><br />
+&nbsp;&nbsp;&nbsp;&nbsp;├── proposals/p12.json <span class="c"># ops 全文</span><br />
+&nbsp;&nbsp;&nbsp;&nbsp;└── uploads/ref_depth.png</div>
+
+  <div class="pg-foot"><span>ComfyUI Agent Workbench · 架构 Spec v0.2</span><span>5 / 9</span></div>
+</section>
+
+<!-- ================= PAGE 6 · API ================= -->
+<section class="page" data-screen-label="API契约">
+  <h2><span class="no">07</span>API 契约（REST / WebSocket）</h2>
+  <p>REST 承载「显式动作 + 初始加载」，WS 承载「一切异步事件」。所有路径前缀 <code>/api</code>；WS 单连接 <code>/ws?workspace=&lt;id&gt;</code>，事件为 <code>{ "ev": "...", "data": {…} }</code>。</p>
+
+  <h3>REST</h3>
+  <table>
+    <thead><tr><th style="width:8%"></th><th style="width:43%">路径</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><span class="tag tag--get">GET</span></td><td><code>/api/workspaces/{id}/state</code></td><td>全量状态对账：当前版本图、版本列表、消息流、pending proposal、运行历史、输出。前端启动与重连唯一入口。</td></tr>
+      <tr><td><span class="tag tag--post">POST</span></td><td><code>/api/workspaces/{id}/messages</code></td><td>发送用户消息 <code>{text, attachments?}</code>；立即返回 message id，Agent 响应走 WS。</td></tr>
+      <tr><td><span class="tag tag--post">POST</span></td><td><code>/api/proposals/{id}/apply</code></td><td>应用提议 → 校验、生成新版本、广播 <code>version.committed</code>。基底版本不符返回 409。</td></tr>
+      <tr><td><span class="tag tag--post">POST</span></td><td><code>/api/proposals/{id}/dismiss</code></td><td>忽略提议（同时通知 Agent 会话该提议被拒）。</td></tr>
+      <tr><td><span class="tag tag--post">POST</span></td><td><code>/api/workspaces/{id}/undo</code></td><td>版本指针后退一步。</td></tr>
+      <tr><td><span class="tag tag--post">POST</span></td><td><code>/api/versions/{id}/restore</code></td><td>以历史版本为内容追加新版本（source=restore）。</td></tr>
+      <tr><td><span class="tag tag--post">POST</span></td><td><code>/api/workspaces/{id}/runs</code></td><td>手动「运行 Queue」：编译当前版本并提交。画布为空或有 pending proposal 时 409（与原型禁用逻辑一致）。</td></tr>
+      <tr><td><span class="tag tag--post">POST</span></td><td><code>/api/runs/confirm</code></td><td>对 Agent 的运行请求（<code>out/run_plan.json</code>）作确认 <code>{plan_id, approve: bool}</code>。approve 后 RunService 开始执行。</td></tr>
+      <tr><td><span class="tag tag--post">POST</span></td><td><code>/api/runs/{id}/interrupt</code></td><td>中断：转发 ComfyUI <code>/interrupt</code> 并终止后续序列（sweep 剩余轮次取消）。</td></tr>
+      <tr><td><span class="tag tag--post">POST</span></td><td><code>/api/workspaces/{id}/uploads</code></td><td>multipart 上传参考图；落盘 + 转发 ComfyUI。</td></tr>
+      <tr><td><span class="tag tag--get">GET</span></td><td><code>/api/versions/{id}/export</code></td><td>下载该版本编译后的 API workflow JSON。</td></tr>
+      <tr><td><span class="tag tag--get">GET</span></td><td><code>/api/conn</code></td><td>ComfyUI 连接状态、object_info 节点数、Agent runtime 状态（顶栏指示器）。</td></tr>
+      <tr><td><span class="tag tag--post">POST</span></td><td><code>/api/outputs/{id}/select</code></td><td>标记选中输出。</td></tr>
+    </tbody>
+  </table>
+
+  <h3>WebSocket 事件（服务端 → 前端）</h3>
+  <table>
+    <thead><tr><th style="width:30%">事件</th><th>载荷与触发时机</th></tr></thead>
+    <tbody>
+      <tr><td><code>agent.status</code></td><td><code>{message_id, text}</code> — Agent 过程状态（"正在规划图变更…"），同一 message_id 原地更新；结束时 <code>agent.status.end</code> 移除。</td></tr>
+      <tr><td><code>agent.message</code></td><td><code>{message}</code> — Agent 正式回复（含 kind 与 ref_id，前端据此渲染 Proposal/错误/运行计划卡片）。</td></tr>
+      <tr><td><code>proposal.created</code> / <code>proposal.resolved</code></td><td>提议入栈（画布开始预览）/ 终态（applied | dismissed | superseded）。</td></tr>
+      <tr><td><code>version.committed</code></td><td><code>{version, cur_idx}</code> — 任何新版本（应用/撤销/恢复）；前端刷新画布与历史面板。</td></tr>
+      <tr><td><code>run.requested</code></td><td><code>{plan}</code> — Agent 请求运行，前端弹确认框（版本/次数/待确认变更/上传/可中断）。</td></tr>
+      <tr><td><code>run.started / run.progress / run.done</code></td><td>运行生命周期；<code>progress ∈ [0,1]</code> 按节点预估时长加权；done 含 <code>status</code> 与输出列表。</td></tr>
+      <tr><td><code>node.state</code></td><td><code>{run_id, node_id, state, dur_ms?}</code> — 驱动步骤条与画布节点高亮（active 脉冲 / done 勾 / failed 红标）。</td></tr>
+      <tr><td><code>run.failed</code></td><td><code>{node_id, error:{raw, human}}</code> — 失败即刻推送；随后 Agent 诊断消息经 <code>agent.*</code> 到达。</td></tr>
+      <tr><td><code>outputs.updated</code></td><td><code>{outputs[]}</code> — 输出条增量（sweep 每轮追加一张）。</td></tr>
+      <tr><td><code>conn.status</code></td><td><code>{comfy: ok|down, node_defs: 312, agent: ok|down}</code> — 后端 10s 心跳探测。</td></tr>
+    </tbody>
+  </table>
+  <p class="small">客户端 → 服务端方向不经 WS（统一走 REST），避免双通道写入的竞态与重试歧义。</p>
+
+  <div class="pg-foot"><span>ComfyUI Agent Workbench · 架构 Spec v0.2</span><span>6 / 9</span></div>
+</section>
+
+<!-- ================= PAGE 7 · 状态机与时序 ================= -->
+<section class="page" data-screen-label="状态机与时序">
+  <h2><span class="no">08</span>关键状态机与时序</h2>
+
+  <h3>Proposal 生命周期</h3>
+  <div class="sm">
+    <span class="st">drafting</span><span class="arr">→</span>
+    <span class="st hl">pending</span><span class="arr">→</span>
+    <span class="st ok">applied</span>
+  </div>
+  <div class="sm" style="margin-top:-6px;">
+    <span class="lbl">pending 还可 →</span>
+    <span class="st">dismissed（用户忽略）</span>
+    <span class="st warn">superseded（基底版本变化）</span>
+    <span class="st bad">invalid（校验失败，退回 Agent）</span>
+  </div>
+  <p>同一工作区同时至多一个 pending Proposal；存在 pending 时「运行 Queue」禁用（提示「请先处理待确认的图变更」），Agent 确认弹窗会标注「待确认变更：有 — 将先被忽略」。</p>
+
+  <h3>Run 生命周期</h3>
+  <div class="sm">
+    <span class="st">queued</span><span class="arr">→</span>
+    <span class="st hl">running</span><span class="arr">→</span>
+    <span class="st ok">succeeded</span>
+  </div>
+  <div class="sm" style="margin-top:-6px;">
+    <span class="lbl">running 还可 →</span>
+    <span class="st bad">failed（节点报错）</span>
+    <span class="st warn">interrupted（用户中断）</span>
+  </div>
+
+  <h3>时序 A · 失败 → 诊断 → 最小修复闭环（原型「修复报错」流）</h3>
+  <table>
+    <thead><tr><th style="width:6%">#</th><th style="width:24%">参与方</th><th>动作</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>RunService → ComfyUI</td><td>提交 <code>/prompt</code>，WS 监听执行至 <code>Load ControlNet</code> 收到 <code>execution_error</code>（model not found）。</td></tr>
+      <tr><td>2</td><td>RunService → 前端</td><td><code>node.state(failed)</code> + <code>run.failed{raw, human}</code>：画布红标失败节点并自动选中，RunDock 转失败态，聊天插入错误卡片。</td></tr>
+      <tr><td>3</td><td>RunService → Orchestrator</td><td>把错误上下文（节点、参数、traceback）写入 <code>ctx/run_error.json</code>，经 Runtime 层 send 诊断请求。</td></tr>
+      <tr><td>4</td><td>Agent CLI</td><td>读 <code>ctx/models.json</code> 发现 <code>cn-depth-sdxl-1.0.sft</code> 可用 → 写出 <code>out/proposal.json</code>（kind=fix，仅 1 个 <code>set_param</code> op）。</td></tr>
+      <tr><td>5</td><td>用户</td><td>查看修复提议（"只改一个参数，不动其它节点"）→ 应用 → 新版本（source=fix）→ 重新运行成功。</td></tr>
+    </tbody>
+  </table>
+
+  <h3>时序 B · Agent 发起 Seed Sweep（算力守门）</h3>
+  <table>
+    <thead><tr><th style="width:6%">#</th><th style="width:24%">参与方</th><th>动作</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>Agent CLI</td><td>写出 <code>out/run_plan.json</code>（runs: 4，seed_list: […]）— 仅生成计划，不执行。</td></tr>
+      <tr><td>2</td><td>后端 → 前端</td><td><code>run.requested</code>，弹确认框：版本、4 次（消耗本地算力）、待确认变更、上传文件、可中断（/interrupt）。</td></tr>
+      <tr><td>3</td><td>用户确认</td><td><code>POST /api/runs/confirm{approve:true}</code>；若取消，计划作废并告知 Agent。</td></tr>
+      <tr><td>4</td><td>RunService</td><td>串行 4 轮（每轮覆盖 seed 重编译提交），<code>outputs.updated</code> 每轮追加；任一时刻可中断，剩余轮次取消。</td></tr>
+      <tr><td>5</td><td>Agent</td><td>读取 4 轮结果 → 回复选优建议（sweep 卡片），后端把推荐输出置为 selected。</td></tr>
+    </tbody>
+  </table>
+
+  <h3>版本栈语义</h3>
+  <ul>
+    <li><strong>提交：</strong>应用 Proposal 时在 <code>cur_idx</code> 之后截断并追加（同原型 <code>commitVersion</code>），保证线性历史。</li>
+    <li><strong>撤销：</strong>仅指针后移，不删数据；前进留待 redo（v1.1）。</li>
+    <li><strong>恢复：</strong>复制历史快照追加为新版本，绝不改写历史——历史面板中任何 v 永远可信。</li>
+  </ul>
+
+  <div class="pg-foot"><span>ComfyUI Agent Workbench · 架构 Spec v0.2</span><span>7 / 9</span></div>
+</section>
+
+<!-- ================= PAGE 8 · 安全 + 部署 ================= -->
+<section class="page" data-screen-label="安全与部署">
+  <h2><span class="no">09</span>安全与确认机制</h2>
+  <h3>双层守门</h3>
+  <table>
+    <thead><tr><th style="width:24%">层</th><th style="width:38%">守什么</th><th>机制</th></tr></thead>
+    <tbody>
+      <tr><td><strong>图守门</strong></td><td>工作流被错误/意外修改</td><td>Propose-then-Apply：画布预览 + 变更清单 + diff；应用前图纹丝不动；应用后可一键撤销。</td></tr>
+      <tr><td><strong>算力守门</strong></td><td>本地 GPU 被未经同意占用</td><td>Agent 触发的一切 <code>/prompt</code> 必须经确认弹窗；确认内容含次数与上传清单；运行全程可中断。用户手动 Queue 视为已同意。</td></tr>
+    </tbody>
+  </table>
+  <h3>进程与边界控制</h3>
+  <ul>
+    <li><strong>网络面：</strong>后端与 ComfyUI 均只绑定 loopback；不引入任何远程访问面。Agent CLI 的出网（Codex / Anthropic API 调用）由 CLI 自身完成，密钥存 <code>config.toml</code> 引用的环境变量，绝不入库、不进日志。</li>
+    <li><strong>Agent 沙箱：</strong>CLI 以各自原生沙箱模式启动（codex：workspace-write；Claude Code：目录白名单），可读写区域仅限会话工作目录，shell 执行禁用；<code>ctx/</code> 中只注入图、节点定义与错误信息，不注入用户文件系统内容。</li>
+    <li><strong>路径安全：</strong>uploads 与 graphs 的读写严格限制在工作区目录内（路径规范化 + 前缀校验）；<code>ctx/models.json</code> 仅含 ComfyUI models 目录的文件名清单，不含内容。</li>
+    <li><strong>输入校验：</strong>所有 Agent 产出（proposal ops、run plan）经 JSON Schema 校验 + 语义校验（§05），等同对待不可信输入。</li>
+  </ul>
+
+  <h2 style="margin-top: 26px;"><span class="no">10</span>部署与目录结构</h2>
+  <p>交付为<strong>单一静态二进制</strong>：cargo 构建，前端产物经 rust-embed 嵌入，下载即用（或 <code>brew install comfyui-agent</code>）。运行 <code>comfyui-agent</code> 启动服务并自动打开浏览器——单进程、单端口、零运行时依赖（Codex CLI / Claude Code 需单独安装，启动时探测可用 runtime）。ComfyUI 端点与 runtime 路径在 <code>config.toml</code> 配置，首次启动有引导页探测 8188。</p>
+  <div class="cols2">
+    <div>
+      <h4>代码仓库结构</h4>
+      <div class="tree">comfyui-agent/<br />
+├── crates/ <span class="c"># Cargo workspace</span><br />
+│&nbsp;&nbsp; ├── server/ <span class="c"># axum 入口：REST + WS + 静态托管</span><br />
+│&nbsp;&nbsp; ├── agent/ <span class="c"># Orchestrator + runtime/{codex,claude_code}</span><br />
+│&nbsp;&nbsp; ├── graph/ <span class="c"># 模型/diff/编译/布局</span><br />
+│&nbsp;&nbsp; ├── run/ <span class="c"># RunService</span><br />
+│&nbsp;&nbsp; ├── comfy/ <span class="c"># ComfyAdapter（reqwest + tungstenite）</span><br />
+│&nbsp;&nbsp; └── store/ <span class="c"># sqlx（SQLite）+ 文件区</span><br />
+├── web/ <span class="c"># React 19 前端（rust-embed 嵌入二进制）</span><br />
+│&nbsp;&nbsp; └── src/{app,chat,canvas,run,history,stores}/<br />
+└── e2e/ <span class="c"># 联调用例（mock ComfyUI / mock runtime）</span></div>
+    </div>
+    <div>
+      <h4>运行时拓扑</h4>
+      <ul style="font-size:12.5px;">
+        <li><code>127.0.0.1:8787</code> — 本服务（API + WS + 静态前端）</li>
+        <li><code>127.0.0.1:8188</code> — ComfyUI（用户自行运行）</li>
+        <li>Agent CLI（Codex / Claude Code）— 按需子进程，空闲 10min 回收</li>
+      </ul>
+      <h4>可观测性</h4>
+      <ul style="font-size:12.5px;">
+        <li>结构化日志（每 run / proposal 一条 trace id 贯穿）</li>
+        <li>Agent 会话转写落盘（可在 UI 查看「Agent 做了什么」，v1.1）</li>
+        <li>异常上报默认关闭，纯本地</li>
+      </ul>
+    </div>
+  </div>
+  <div class="callout warn"><span class="ci">DEP</span><span><strong>ComfyUI 兼容性策略：</strong>仅依赖其稳定 HTTP/WS API（/prompt、/interrupt、/object_info、/upload、WS 执行事件），不依赖其 Python 内部实现（Rust 后端天然隔离）；object_info 启动时全量拉取作为节点真理来源，应对自定义节点差异。Desktop 版同端口同 API，天然兼容。</span></div>
+
+  <div class="pg-foot"><span>ComfyUI Agent Workbench · 架构 Spec v0.2</span><span>8 / 9</span></div>
+</section>
+
+<!-- ================= PAGE 9 · 里程碑 + 风险 ================= -->
+<section class="page" data-screen-label="里程碑与风险">
+  <h2><span class="no">11</span>里程碑</h2>
+  <div class="ms">
+    <div class="ms-badge">M0</div>
+    <div class="ms-body"><div class="mt">骨架贯通（2–3 周）</div>后端 + ComfyAdapter + 画布渲染：加载 object_info、手动导入 workflow JSON 渲染、手动 Queue + 逐节点进度 + 中断 + 输出条。<strong>验收：</strong>不开 Agent 也是一个可用的精简运行器。</div>
+  </div>
+  <div class="ms">
+    <div class="ms-badge">M1</div>
+    <div class="ms-body"><div class="mt">Agent 提议流（3–4 周）</div>Orchestrator + Runtime 层（Codex CLI 对接）+ 会话文件契约；create/modify Proposal 全流程（预览/应用/忽略/diff）；版本栈 + 撤销/恢复 + 历史面板。<strong>验收：</strong>原型中「建文生图」「ControlNet」两条流真实可跑。</div>
+  </div>
+  <div class="ms">
+    <div class="ms-badge">M2</div>
+    <div class="ms-body"><div class="mt">闭环与守门（2–3 周）</div>失败诊断 → 最小修复闭环；run_plan 确认弹窗 + Seed Sweep + 选优；导出 API JSON。<strong>验收：</strong>原型四条预设流全部真实复现。</div>
+  </div>
+  <div class="ms">
+    <div class="ms-badge">M3</div>
+    <div class="ms-body"><div class="mt">打磨与扩展（持续）</div>Claude Code runtime 接入、redo、Agent 会话转写视图、多工作区管理、打包发布（brew / 预编译二进制 / Desktop 安装器）。</div>
+  </div>
+
+  <h2 style="margin-top: 26px;"><span class="no">12</span>风险与开放问题</h2>
+  <table>
+    <thead><tr><th style="width:34%">风险 / 问题</th><th>应对</th></tr></thead>
+    <tbody>
+      <tr><td>自定义节点生态参数 schema 不规范，校验误杀合法 Proposal</td><td>校验分级：类型/端口错误硬拒；未知参数降级为警告标注在卡片上，由用户裁决。</td></tr>
+      <tr><td>node_defs 体量大（312+），Agent 上下文成本高</td><td><code>ctx/node_defs/</code> 检索式注入：常用 50 节点速查表 + 分类索引文件，CLI 按需读取，绝不全量进上下文。</td></tr>
+      <tr><td>ComfyUI 执行进度无统一百分比</td><td>用历史 run_steps 的节点耗时做加权预估（冷启动用类型默认值），KSampler 内部用其 progress 事件细化。</td></tr>
+      <tr><td>CLI（Codex / Claude Code）headless 协议与版本漂移</td><td>Runtime trait 隔离差异 + 启动时探测版本；e2e 用 mock runtime 保证主流程不依赖真实 CLI。</td></tr>
+      <tr><td class="muted">开放：v1 画布是否允许手动改参数（不拖线，仅参数编辑）？</td><td class="muted">倾向 M2 后支持——改参走与 Agent 相同的 ops 通道（source=user），复用全部版本机制。</td></tr>
+      <tr><td class="muted">开放：sweep 并行度（ComfyUI 队列本身串行）</td><td class="muted">v1 串行；多实例并行属 M3+。</td></tr>
+    </tbody>
+  </table>
+
+  <div class="pg-foot"><span>ComfyUI Agent Workbench · 架构 Spec v0.2</span><span>9 / 9</span></div>
+</section>
+
+</div>
+</body>
+</html>

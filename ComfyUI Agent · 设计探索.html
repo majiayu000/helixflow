@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ComfyUI Agent · 设计探索</title>
+<link rel="stylesheet" href="ds.css" />
+<link rel="stylesheet" href="mock.css" />
+<style>
+  html, body { margin: 0; height: 100%; font-family: var(--font-sans); }
+  #root { height: 100vh; }
+  .note { font-family: var(--font-sans); color: var(--text); }
+  .note h2 { font-size: 15px; margin: 0 0 8px; letter-spacing: -.01em; }
+  .note p { font-size: 13px; line-height: 1.6; color: var(--text-2); margin: 0 0 8px; }
+  .note .k { color: var(--text); font-weight: 600; }
+  .note ul { margin: 6px 0 0; padding-left: 16px; color: var(--text-2); font-size: 12.5px; line-height: 1.7; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="design-canvas.jsx"></script>
+<script type="text/babel" src="bits.jsx"></script>
+<script type="text/babel" src="graph.jsx"></script>
+<script type="text/babel" src="proposals.jsx"></script>
+<script type="text/babel" src="layouts.jsx"></script>
+<script type="text/babel" src="nodestyles.jsx"></script>
+
+<script type="text/babel">
+const { DesignCanvas, DCSection, DCArtboard } = window;
+
+function Note() {
+  return (
+    <div className="note" style={{ padding: 22, width: 360 }}>
+      <h2>设计方向 · 阅读我</h2>
+      <p>风格定调：<span className="k">亮色 · 克制（Linear 风）</span>，全中文，拟真 ComfyUI 节点。这一页是<span className="k">视觉方向探索</span>，定下方向后我再做可点击的深度原型。</p>
+      <p>三组变体，可横向对比、拖动排序、双击放大任意一张：</p>
+      <ul>
+        <li><span className="k">整体布局</span> — 双栏比例与顶栏组织方式</li>
+        <li><span className="k">Proposal 呈现</span> — Agent「先审核后执行」的轻重</li>
+        <li><span className="k">节点画布风格</span> — 三种视觉语言</li>
+      </ul>
+      <p style={{ marginTop: 12, color: 'var(--text-3)', fontSize: 12 }}>关于审核流：我刻意避开了笨重的审批弹窗 —— 变更直接在画布上预览，Apply 一键即用，但仍可追溯/撤销。</p>
+    </div>
+  );
+}
+
+function App() {
+  return (
+    <DesignCanvas>
+      <DCSection id="intro" title="ComfyUI Agent Workbench" subtitle="视觉方向探索 · v0.1">
+        <DCArtboard id="note" label="说明" width={404} height={420}><Note /></DCArtboard>
+      </DCSection>
+
+      <DCSection id="layouts" title="① 整体布局方向" subtitle="双栏比例 / 顶栏组织 — 三选一或混搭">
+        <DCArtboard id="l-classic" label="A · 经典双栏（聊天 40%）" width={1180} height={720}><LayoutClassic /></DCArtboard>
+        <DCArtboard id="l-canvas" label="B · 画布优先 + 浮动检视（聊天 33%）" width={1180} height={720}><LayoutCanvasFwd /></DCArtboard>
+        <DCArtboard id="l-command" label="C · 指挥中心 + 底部运行坞" width={1180} height={720}><LayoutCommand /></DCArtboard>
+      </DCSection>
+
+      <DCSection id="proposals" title="② Proposal 呈现方式" subtitle="Agent 图变更如何审核与应用">
+        <DCArtboard id="p-card" label="A · 聊天内联结构化卡片" width={460} height={560}>
+          <div style={{ background: 'var(--surface)', height: '100%', padding: 20, display: 'flex', alignItems: 'center' }}>
+            <div style={{ width: '100%' }}><PropChatCard /></div>
+          </div>
+        </DCArtboard>
+        <DCArtboard id="p-canvas" label="B · 画布优先 · 轻量条（推荐）" width={620} height={560}><PropCanvasBar /></DCArtboard>
+        <DCArtboard id="p-diff" label="C · Inspect 分组 Diff（高阶）" width={440} height={560}><PropDiffPanel /></DCArtboard>
+      </DCSection>
+
+      <DCSection id="nodes" title="③ 节点画布视觉风格" subtitle="同一套 SDXL 文生图图，三种视觉语言">
+        <DCArtboard id="n-refined" label="A · 精炼默认 · 端口类型着色" width={600} height={440}><CanvasRefined /></DCArtboard>
+        <DCArtboard id="n-bold" label="B · 强对比 · 彩色头 + 分组" width={600} height={440}><CanvasBold /></DCArtboard>
+        <DCArtboard id="n-flat" label="C · 极简 · 线框图" width={600} height={440}><CanvasFlat /></DCArtboard>
+      </DCSection>
+    </DesignCanvas>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
