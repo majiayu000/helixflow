@@ -33,7 +33,21 @@ The active direction is the workflow orchestrator route:
 
 ## Development
 
-The implementation workspace has not been scaffolded yet. The intended structure is:
+Install frontend dependencies:
+
+```sh
+cd web
+npm install
+```
+
+Run checks:
+
+```sh
+cargo check --workspace
+cd web && npm run build
+```
+
+The implementation workspace is:
 
 ```text
 crates/
