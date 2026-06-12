@@ -16,6 +16,11 @@ pub type StoreResult<T> = Result<T, StoreError>;
 pub enum StoreError {
     Sqlx(sqlx::Error),
     Migration(sqlx::migrate::MigrateError),
+    VersionConflict {
+        workspace_id: String,
+        expected_version_id: String,
+        actual_version_id: Option<String>,
+    },
 }
 
 impl fmt::Display for StoreError {
@@ -23,6 +28,14 @@ impl fmt::Display for StoreError {
         match self {
             Self::Sqlx(err) => write!(f, "sqlite store error: {err}"),
             Self::Migration(err) => write!(f, "sqlite migration error: {err}"),
+            Self::VersionConflict {
+                workspace_id,
+                expected_version_id,
+                actual_version_id,
+            } => write!(
+                f,
+                "workspace `{workspace_id}` expected current version `{expected_version_id}` but found `{actual_version_id:?}`"
+            ),
         }
     }
 }
@@ -96,8 +109,46 @@ impl Store {
     }
 
     pub async fn create_version(&self, input: NewVersion<'_>) -> StoreResult<VersionRecord> {
+        self.insert_version(input, None).await
+    }
+
+    pub async fn create_version_after(
+        &self,
+        input: NewVersion<'_>,
+        expected_current_version_id: &str,
+    ) -> StoreResult<VersionRecord> {
+        self.insert_version(input, Some(expected_current_version_id))
+            .await
+    }
+
+    async fn insert_version(
+        &self,
+        input: NewVersion<'_>,
+        expected_current_version_id: Option<&str>,
+    ) -> StoreResult<VersionRecord> {
         let version_id = new_id("ver");
         let mut tx = self.pool.begin().await?;
+
+        if let Some(expected_version_id) = expected_current_version_id {
+            let actual_version_id: Option<String> = sqlx::query_scalar(
+                r#"
+                SELECT cur_version_id
+                FROM workspaces
+                WHERE id = ?
+                "#,
+            )
+            .bind(input.workspace_id)
+            .fetch_one(&mut *tx)
+            .await?;
+
+            if actual_version_id.as_deref() != Some(expected_version_id) {
+                return Err(StoreError::VersionConflict {
+                    workspace_id: input.workspace_id.to_owned(),
+                    expected_version_id: expected_version_id.to_owned(),
+                    actual_version_id,
+                });
+            }
+        }
 
         let idx: i64 = sqlx::query_scalar(
             r#"
@@ -367,6 +418,63 @@ mod tests {
             updated_workspace.cur_version_id.as_deref(),
             Some(version.id.as_str())
         );
+    }
+
+    #[tokio::test]
+    async fn conditional_version_creation_rejects_stale_parent() {
+        let (store, _dir) = open_temp_store().await;
+
+        let workspace = store
+            .create_workspace("First workflow")
+            .await
+            .expect("create workspace");
+        let first = store
+            .create_version(NewVersion {
+                workspace_id: &workspace.id,
+                label: "Initial graph",
+                source: VersionSource::Manual,
+                graph_path: "workspaces/ws_1/graphs/ver_1.json",
+                graph_hash: "sha256:graph-1",
+                parent_id: None,
+            })
+            .await
+            .expect("create first version");
+        let second = store
+            .create_version_after(
+                NewVersion {
+                    workspace_id: &workspace.id,
+                    label: "Second graph",
+                    source: VersionSource::Manual,
+                    graph_path: "workspaces/ws_1/graphs/ver_2.json",
+                    graph_hash: "sha256:graph-2",
+                    parent_id: Some(&first.id),
+                },
+                &first.id,
+            )
+            .await
+            .expect("create second version");
+        let err = store
+            .create_version_after(
+                NewVersion {
+                    workspace_id: &workspace.id,
+                    label: "Stale graph",
+                    source: VersionSource::Proposal,
+                    graph_path: "workspaces/ws_1/graphs/ver_stale.json",
+                    graph_hash: "sha256:stale",
+                    parent_id: Some(&first.id),
+                },
+                &first.id,
+            )
+            .await
+            .expect_err("stale current version should fail");
+
+        assert!(matches!(
+            err,
+            StoreError::VersionConflict {
+                actual_version_id: Some(actual),
+                ..
+            } if actual == second.id
+        ));
     }
 
     #[tokio::test]
