@@ -12,7 +12,7 @@ This repository currently contains:
 - Architecture spec drafts v0.1, v0.2, and v0.3.
 - A complete workflow-orchestrator spec in [SPEC_WORKFLOW_ORCHESTRATOR.md](SPEC_WORKFLOW_ORCHESTRATOR.md).
 
-There is no runnable app yet.
+The first scaffold now includes a minimal local server and React workbench shell.
 
 ## Chosen Direction
 
@@ -33,7 +33,21 @@ The active direction is the workflow orchestrator route:
 
 ## Development
 
-The implementation workspace has not been scaffolded yet. The intended structure is:
+Install frontend dependencies:
+
+```sh
+cd web
+npm install
+```
+
+Run checks:
+
+```sh
+cargo check --workspace
+cd web && npm run build
+```
+
+The implementation workspace is:
 
 ```text
 crates/
