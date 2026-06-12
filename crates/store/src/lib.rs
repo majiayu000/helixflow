@@ -6,6 +6,10 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Executor, Row, SqlitePool};
 use uuid::Uuid;
 
+mod run_records;
+
+pub use run_records::*;
+
 pub fn module_name() -> &'static str {
     "store"
 }
@@ -21,6 +25,11 @@ pub enum StoreError {
         expected_version_id: String,
         actual_version_id: Option<String>,
     },
+    RunVersionMismatch {
+        workspace_id: String,
+        version_id: String,
+        actual_workspace_id: Option<String>,
+    },
 }
 
 impl fmt::Display for StoreError {
@@ -35,6 +44,14 @@ impl fmt::Display for StoreError {
             } => write!(
                 f,
                 "workspace `{workspace_id}` expected current version `{expected_version_id}` but found `{actual_version_id:?}`"
+            ),
+            Self::RunVersionMismatch {
+                workspace_id,
+                version_id,
+                actual_workspace_id,
+            } => write!(
+                f,
+                "run workspace `{workspace_id}` cannot use version `{version_id}` from workspace `{actual_workspace_id:?}`"
             ),
         }
     }
@@ -474,6 +491,53 @@ mod tests {
                 actual_version_id: Some(actual),
                 ..
             } if actual == second.id
+        ));
+    }
+
+    #[tokio::test]
+    async fn run_creation_rejects_version_from_another_workspace() {
+        let (store, _dir) = open_temp_store().await;
+
+        let run_workspace = store
+            .create_workspace("Run workspace")
+            .await
+            .expect("create run workspace");
+        let version_workspace = store
+            .create_workspace("Version workspace")
+            .await
+            .expect("create version workspace");
+        let version = store
+            .create_version(NewVersion {
+                workspace_id: &version_workspace.id,
+                label: "Other graph",
+                source: VersionSource::Manual,
+                graph_path: "workspaces/ws_other/graphs/ver_1.json",
+                graph_hash: "sha256:other",
+                parent_id: None,
+            })
+            .await
+            .expect("create version");
+
+        let err = store
+            .create_run(NewRun {
+                workspace_id: &run_workspace.id,
+                version_id: &version.id,
+                group_id: None,
+                label: "Bad run",
+                trigger: "manual",
+                plan_json: None,
+                estimate_json: None,
+                status: "queued",
+            })
+            .await
+            .expect_err("workspace/version mismatch should fail");
+
+        assert!(matches!(
+            err,
+            StoreError::RunVersionMismatch {
+                actual_workspace_id: Some(actual),
+                ..
+            } if actual == version_workspace.id
         ));
     }
 

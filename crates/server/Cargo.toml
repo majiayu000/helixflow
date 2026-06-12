@@ -16,3 +16,7 @@ helixflow-graph = { path = "../graph" }
 helixflow-registry = { path = "../registry" }
 helixflow-run = { path = "../run" }
 helixflow-store = { path = "../store" }
+
+[dev-dependencies]
+futures-util.workspace = true
+tokio-tungstenite.workspace = true
