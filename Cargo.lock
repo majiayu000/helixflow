@@ -587,6 +587,7 @@ dependencies = [
  "helixflow-registry",
  "helixflow-run",
  "helixflow-store",
+ "serde",
  "serde_json",
  "tokio",
  "tokio-tungstenite",
