@@ -453,6 +453,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -461,6 +462,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -476,6 +478,7 @@ name = "helixflow-registry"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -483,6 +486,7 @@ name = "helixflow-run"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -505,6 +509,7 @@ name = "helixflow-store"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
  "sqlx",
 ]
 

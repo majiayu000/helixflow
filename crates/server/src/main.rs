@@ -28,3 +28,28 @@ async fn system() -> Json<Value> {
         "store": helixflow_store::module_name()
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn health_reports_service_status() {
+        let body = health().await.0;
+
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["service"], "helixflow");
+    }
+
+    #[tokio::test]
+    async fn system_reports_workspace_modules() {
+        let body = system().await.0;
+
+        assert_eq!(body["agent"], "agent");
+        assert_eq!(body["gateway"], "gateway");
+        assert_eq!(body["graph"], "graph");
+        assert_eq!(body["registry"], "registry");
+        assert_eq!(body["run"], "run");
+        assert_eq!(body["store"], "store");
+    }
+}
