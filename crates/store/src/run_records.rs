@@ -41,6 +41,17 @@ pub struct NewArtifact<'a> {
     pub meta_json: Option<&'a str>,
 }
 
+#[derive(Debug, Clone)]
+pub struct NewCostLedger<'a> {
+    pub workspace_id: &'a str,
+    pub run_id: Option<&'a str>,
+    pub run_step_id: Option<&'a str>,
+    pub provider: &'a str,
+    pub amount: f64,
+    pub currency: &'a str,
+    pub estimated: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, sqlx::FromRow)]
 pub struct RunRecord {
     pub id: String,
@@ -100,6 +111,19 @@ pub struct ArtifactRecord {
     pub duration_ms: Option<i64>,
     pub selected: bool,
     pub meta_json: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CostLedgerRecord {
+    pub id: String,
+    pub workspace_id: String,
+    pub run_id: Option<String>,
+    pub run_step_id: Option<String>,
+    pub provider: String,
+    pub amount: f64,
+    pub currency: String,
+    pub estimated: bool,
     pub created_at: String,
 }
 
@@ -181,6 +205,62 @@ impl Store {
         .bind(status)
         .bind(error_json)
         .bind(status)
+        .bind(status)
+        .bind(run_id)
+        .execute(self.pool())
+        .await?;
+
+        self.run(run_id).await
+    }
+
+    pub async fn update_run_status_if_current(
+        &self,
+        run_id: &str,
+        expected_status: &str,
+        next_status: &str,
+        error_json: Option<&str>,
+    ) -> StoreResult<Option<RunRecord>> {
+        let result = sqlx::query(
+            r#"
+            UPDATE runs
+            SET status = ?,
+                error_json = ?,
+                started_at = CASE WHEN ? = 'running' AND started_at IS NULL THEN current_timestamp ELSE started_at END,
+                ended_at = CASE WHEN ? IN ('succeeded', 'failed', 'interrupted') THEN current_timestamp ELSE ended_at END
+            WHERE id = ? AND status = ?
+            "#,
+        )
+        .bind(next_status)
+        .bind(error_json)
+        .bind(next_status)
+        .bind(next_status)
+        .bind(run_id)
+        .bind(expected_status)
+        .execute(self.pool())
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
+
+        self.run(run_id).await.map(Some)
+    }
+
+    pub async fn update_run_estimate_and_status(
+        &self,
+        run_id: &str,
+        estimate_json: Option<&str>,
+        status: &str,
+    ) -> StoreResult<RunRecord> {
+        sqlx::query(
+            r#"
+            UPDATE runs
+            SET estimate_json = ?,
+                status = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(estimate_json)
         .bind(status)
         .bind(run_id)
         .execute(self.pool())
@@ -273,6 +353,26 @@ impl Store {
         .await?;
 
         rows.into_iter().map(run_step_from_row).collect()
+    }
+
+    pub async fn update_run_step_cost_estimate(
+        &self,
+        step_id: &str,
+        cost_estimate_json: Option<&str>,
+    ) -> StoreResult<RunStepRecord> {
+        sqlx::query(
+            r#"
+            UPDATE run_steps
+            SET cost_estimate_json = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(cost_estimate_json)
+        .bind(step_id)
+        .execute(self.pool())
+        .await?;
+
+        self.run_step(step_id).await
     }
 
     pub async fn append_run_event(
@@ -370,6 +470,26 @@ impl Store {
         self.artifact(&id).await
     }
 
+    pub async fn update_artifact_selected(
+        &self,
+        artifact_id: &str,
+        selected: bool,
+    ) -> StoreResult<ArtifactRecord> {
+        sqlx::query(
+            r#"
+            UPDATE artifacts
+            SET selected = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(if selected { 1_i64 } else { 0_i64 })
+        .bind(artifact_id)
+        .execute(self.pool())
+        .await?;
+
+        self.artifact(artifact_id).await
+    }
+
     pub async fn artifact(&self, artifact_id: &str) -> StoreResult<ArtifactRecord> {
         let row = sqlx::query(
             r#"
@@ -401,6 +521,64 @@ impl Store {
         .await?;
 
         rows.into_iter().map(artifact_from_row).collect()
+    }
+
+    pub async fn create_cost_ledger(
+        &self,
+        input: NewCostLedger<'_>,
+    ) -> StoreResult<CostLedgerRecord> {
+        let id = new_id("cost");
+        sqlx::query(
+            r#"
+            INSERT INTO cost_ledger (
+                id, workspace_id, run_id, run_step_id, provider, amount, currency, estimated, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)
+            "#,
+        )
+        .bind(&id)
+        .bind(input.workspace_id)
+        .bind(input.run_id)
+        .bind(input.run_step_id)
+        .bind(input.provider)
+        .bind(input.amount)
+        .bind(input.currency)
+        .bind(if input.estimated { 1_i64 } else { 0_i64 })
+        .execute(self.pool())
+        .await?;
+
+        self.cost_ledger(&id).await
+    }
+
+    pub async fn cost_ledger(&self, cost_id: &str) -> StoreResult<CostLedgerRecord> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, workspace_id, run_id, run_step_id, provider, amount, currency, estimated, created_at
+            FROM cost_ledger
+            WHERE id = ?
+            "#,
+        )
+        .bind(cost_id)
+        .fetch_one(self.pool())
+        .await?;
+
+        cost_ledger_from_row(row)
+    }
+
+    pub async fn cost_ledger_for_run(&self, run_id: &str) -> StoreResult<Vec<CostLedgerRecord>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, workspace_id, run_id, run_step_id, provider, amount, currency, estimated, created_at
+            FROM cost_ledger
+            WHERE run_id = ?
+            ORDER BY created_at, id
+            "#,
+        )
+        .bind(run_id)
+        .fetch_all(self.pool())
+        .await?;
+
+        rows.into_iter().map(cost_ledger_from_row).collect()
     }
 }
 
@@ -438,6 +616,21 @@ fn artifact_from_row(row: sqlx::sqlite::SqliteRow) -> StoreResult<ArtifactRecord
         duration_ms: row.try_get("duration_ms")?,
         selected: selected != 0,
         meta_json: row.try_get("meta_json")?,
+        created_at: row.try_get("created_at")?,
+    })
+}
+
+fn cost_ledger_from_row(row: sqlx::sqlite::SqliteRow) -> StoreResult<CostLedgerRecord> {
+    let estimated: i64 = row.try_get("estimated")?;
+    Ok(CostLedgerRecord {
+        id: row.try_get("id")?,
+        workspace_id: row.try_get("workspace_id")?,
+        run_id: row.try_get("run_id")?,
+        run_step_id: row.try_get("run_step_id")?,
+        provider: row.try_get("provider")?,
+        amount: row.try_get("amount")?,
+        currency: row.try_get("currency")?,
+        estimated: estimated != 0,
         created_at: row.try_get("created_at")?,
     })
 }
