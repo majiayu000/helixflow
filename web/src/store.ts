@@ -41,11 +41,15 @@ export const useWorkbenchStore = create<WorkbenchStore>((set) => ({
 }));
 
 export function applyRunEvent(state: WorkbenchState, event: RunEventEnvelope): WorkbenchState {
-  if (
-    event.workspace_id !== state.workspace.id ||
-    event.run_id !== state.run.id ||
-    event.seq <= state.eventSeq
-  ) {
+  if (event.workspace_id !== state.workspace.id) {
+    return state;
+  }
+
+  if (isAgentStatusEvent(event.ev)) {
+    return applyAgentStatusEvent(state, event);
+  }
+
+  if (event.run_id !== state.run.id || event.seq <= state.eventSeq) {
     return state;
   }
 
@@ -87,6 +91,51 @@ export function applyRunEvent(state: WorkbenchState, event: RunEventEnvelope): W
   }
 
   return { ...state, eventSeq: event.seq };
+}
+
+function applyAgentStatusEvent(state: WorkbenchState, event: RunEventEnvelope): WorkbenchState {
+  const sessionId = stringData(event, 'session_id') ?? event.run_id;
+  const messageId = `agent-status-${sessionId}`;
+  const text = agentStatusText(event);
+  const message = {
+    id: messageId,
+    role: 'agent' as const,
+    text,
+    time: event.server_time,
+  };
+  const found = state.chat.messages.some((item) => item.id === messageId);
+
+  return {
+    ...state,
+    eventSeq: Math.max(state.eventSeq, event.seq),
+    chat: {
+      ...state.chat,
+      messages: found
+        ? state.chat.messages.map((item) => (item.id === messageId ? message : item))
+        : [...state.chat.messages, message],
+    },
+  };
+}
+
+function isAgentStatusEvent(eventName: string): boolean {
+  return eventName === 'agent.status' || eventName === 'agent.status.end';
+}
+
+function agentStatusText(event: RunEventEnvelope): string {
+  const status = stringData(event, 'status') ?? event.ev;
+  const detail = event.data.detail;
+  if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+    const record = detail as Record<string, unknown>;
+    const message = record.message;
+    if (typeof message === 'string' && message.length > 0) {
+      return message;
+    }
+    const proposalTitle = record.proposal_title;
+    if (typeof proposalTitle === 'string' && proposalTitle.length > 0) {
+      return `Proposal ready: ${proposalTitle}`;
+    }
+  }
+  return status;
 }
 
 function stringData(event: RunEventEnvelope, key: string): string | null {
