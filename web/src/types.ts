@@ -10,6 +10,8 @@ export const RunStepStateSchema = z.enum([
 
 export const RunStatusSchema = z.enum([
   'queued',
+  'estimating',
+  'waiting_confirmation',
   'running',
   'succeeded',
   'failed',

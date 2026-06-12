@@ -1,19 +1,24 @@
 use std::collections::BTreeMap;
-use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use helixflow_gateway::{
-    ArtifactKind, ArtifactRef, MockProvider, Provider, ProviderError, ProviderRequest,
-};
-use helixflow_graph::{ExecutionPlan, ExecutionStep, GraphError, GraphService, WorkflowGraph};
+use helixflow_gateway::{ArtifactKind, ArtifactRef, MockProvider, Provider, ProviderRequest};
+use helixflow_graph::{ExecutionPlan, ExecutionStep, GraphService, WorkflowGraph};
 use helixflow_registry::NodeRegistry;
 use helixflow_store::{
-    ArtifactRecord, NewArtifact, NewRun, NewRunStep, RunRecord, RunStepRecord, Store, StoreError,
+    ArtifactRecord, NewArtifact, NewRun, NewRunStep, RunRecord, RunStepRecord, Store,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, Notify, broadcast};
+
+mod cost_gate;
+mod error;
+
+pub use cost_gate::{
+    AgentRunRequest, CostSummary, PendingRun, PendingSweep, SweepOutcome, SweepPlan, SweepVariant,
+};
+pub use error::{RunError, RunResult};
 
 pub fn module_name() -> &'static str {
     "run"
@@ -23,6 +28,8 @@ pub fn module_name() -> &'static str {
 #[serde(rename_all = "snake_case")]
 pub enum RunStatus {
     Queued,
+    Estimating,
+    WaitingConfirmation,
     Running,
     Succeeded,
     Failed,
@@ -33,6 +40,8 @@ impl RunStatus {
     fn as_str(self) -> &'static str {
         match self {
             Self::Queued => "queued",
+            Self::Estimating => "estimating",
+            Self::WaitingConfirmation => "waiting_confirmation",
             Self::Running => "running",
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
@@ -227,27 +236,14 @@ where
         result
     }
 
-    async fn execute_created_run(
+    pub(crate) async fn execute_created_run(
         &self,
         run: &RunRecord,
         workspace_id: &str,
         plan: &ExecutionPlan,
         interrupt: RunInterrupt,
     ) -> RunResult<RunOutcome> {
-        let mut steps = Vec::new();
-        for step in &plan.steps {
-            steps.push(
-                self.store
-                    .create_run_step(NewRunStep {
-                        run_id: &run.id,
-                        node_id: &step.node_id,
-                        node_type: &step.node_type,
-                        provider: step.provider.as_deref(),
-                        state: RunStepState::Queued.as_str(),
-                    })
-                    .await?,
-            );
-        }
+        let steps = self.ensure_run_steps(&run.id, plan).await?;
 
         self.store
             .update_run_status(&run.id, RunStatus::Running.as_str(), None)
@@ -356,6 +352,33 @@ where
         self.emit(workspace_id, &run.id, "run.succeeded", json!({}))
             .await?;
         self.outcome(&run.id).await
+    }
+
+    pub(crate) async fn ensure_run_steps(
+        &self,
+        run_id: &str,
+        plan: &ExecutionPlan,
+    ) -> RunResult<Vec<RunStepRecord>> {
+        let existing = self.store.run_steps(run_id).await?;
+        if !existing.is_empty() {
+            return Ok(existing);
+        }
+
+        let mut steps = Vec::new();
+        for step in &plan.steps {
+            steps.push(
+                self.store
+                    .create_run_step(NewRunStep {
+                        run_id,
+                        node_id: &step.node_id,
+                        node_type: &step.node_type,
+                        provider: step.provider.as_deref(),
+                        state: RunStepState::Queued.as_str(),
+                    })
+                    .await?,
+            );
+        }
+        Ok(steps)
     }
 
     async fn execute_step(
@@ -621,7 +644,13 @@ where
         self.emit(workspace_id, run_id, "node.state", data).await
     }
 
-    async fn emit(&self, workspace_id: &str, run_id: &str, ev: &str, data: Value) -> RunResult<()> {
+    pub(crate) async fn emit(
+        &self,
+        workspace_id: &str,
+        run_id: &str,
+        ev: &str,
+        data: Value,
+    ) -> RunResult<()> {
         let data_json = serde_json::to_string(&data)?;
         let event = self.store.append_run_event(run_id, ev, &data_json).await?;
         let _ = self.events.publish(RunEventEnvelope {
@@ -635,7 +664,7 @@ where
         Ok(())
     }
 
-    async fn outcome(&self, run_id: &str) -> RunResult<RunOutcome> {
+    pub(crate) async fn outcome(&self, run_id: &str) -> RunResult<RunOutcome> {
         Ok(RunOutcome {
             run: self.store.run(run_id).await?,
             steps: self.store.run_steps(run_id).await?,
@@ -648,67 +677,6 @@ where
 enum StepExecution {
     Succeeded,
     Interrupted,
-}
-
-pub type RunResult<T> = Result<T, RunError>;
-
-#[derive(Debug)]
-pub enum RunError {
-    Graph(GraphError),
-    Provider(ProviderError),
-    Store(StoreError),
-    Json(serde_json::Error),
-    MissingInput { node_id: String, port: String },
-    MissingParam { node_id: String, param: String },
-    RunNotActive(String),
-    UnsupportedBuiltin(String),
-}
-
-impl fmt::Display for RunError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Graph(err) => write!(f, "{err}"),
-            Self::Provider(err) => write!(f, "{err}"),
-            Self::Store(err) => write!(f, "{err}"),
-            Self::Json(err) => write!(f, "{err}"),
-            Self::MissingInput { node_id, port } => {
-                write!(f, "missing resolved input `{port}` for node `{node_id}`")
-            }
-            Self::MissingParam { node_id, param } => {
-                write!(f, "missing builtin param `{param}` for node `{node_id}`")
-            }
-            Self::RunNotActive(run_id) => write!(f, "run is not active: {run_id}"),
-            Self::UnsupportedBuiltin(node_type) => {
-                write!(f, "unsupported builtin node type: {node_type}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for RunError {}
-
-impl From<GraphError> for RunError {
-    fn from(err: GraphError) -> Self {
-        Self::Graph(err)
-    }
-}
-
-impl From<ProviderError> for RunError {
-    fn from(err: ProviderError) -> Self {
-        Self::Provider(err)
-    }
-}
-
-impl From<StoreError> for RunError {
-    fn from(err: StoreError) -> Self {
-        Self::Store(err)
-    }
-}
-
-impl From<serde_json::Error> for RunError {
-    fn from(err: serde_json::Error) -> Self {
-        Self::Json(err)
-    }
 }
 
 fn resolve_inputs(
