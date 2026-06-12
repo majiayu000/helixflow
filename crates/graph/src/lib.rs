@@ -11,6 +11,7 @@ pub fn module_name() -> &'static str {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct WorkflowGraph {
     pub schema_version: u32,
     pub nodes: BTreeMap<String, GraphNode>,
@@ -18,6 +19,7 @@ pub struct WorkflowGraph {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct GraphNode {
     pub node_type: String,
     pub title: String,
@@ -26,6 +28,7 @@ pub struct GraphNode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct GraphEdge {
     pub from: [String; 2],
     pub to: [String; 2],
@@ -359,6 +362,7 @@ pub enum ProposalState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum ProposalOp {
     AddNode {

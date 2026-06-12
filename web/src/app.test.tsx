@@ -140,4 +140,26 @@ describe('App', () => {
 
     expect(updated).toBe(state);
   });
+
+  it('applies agent status events even when they use an agent session id', () => {
+    const updated = applyRunEvent(state, {
+      workspace_id: 'demo',
+      run_id: 'agent_session_1',
+      seq: 1,
+      server_time: '2026-06-12T00:00:01Z',
+      ev: 'agent.status',
+      data: {
+        session_id: 'agent_session_1',
+        status: 'runtime.status',
+        detail: { message: 'Drafting graph proposal' },
+      },
+    });
+
+    expect(updated.eventSeq).toBe(1);
+    expect(updated.chat.messages.at(-1)).toMatchObject({
+      id: 'agent-status-agent_session_1',
+      role: 'agent',
+      text: 'Drafting graph proposal',
+    });
+  });
 });
