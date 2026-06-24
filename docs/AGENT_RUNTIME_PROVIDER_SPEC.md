@@ -549,17 +549,21 @@ Proposal rules:
 
 ```json
 {
-  "type": "run_request",
   "base_version_id": "ver_...",
+  "kind": "run",
+  "label": "Generate image",
   "runtime_provider_id": "atlas",
-  "estimated_cost": {
-    "amount": 0.03,
-    "currency": "USD"
-  },
+  "connector_id": "atlas_image",
+  "capability_id": "image.generate",
+  "graph_scope": "current",
   "requires_confirmation": true,
-  "reason": "This run uses a hosted image generation API."
+  "summary": "Requests a backend-managed image generation run for the current graph."
 }
 ```
+
+The agent-written `out/run_request.json` is only a request. The backend validates
+the graph and catalog ids, estimates cost, creates the pending run, and owns
+execution or confirmation.
 
 ## 11. Data Model Additions
 
@@ -574,7 +578,9 @@ CREATE TABLE prompt_turns (
   output_contract TEXT NOT NULL,
   prompt_fingerprint TEXT NOT NULL,
   stack_fingerprint TEXT NOT NULL,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+  FOREIGN KEY(message_id) REFERENCES messages(id)
 );
 
 CREATE TABLE prompt_sections (
