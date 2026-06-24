@@ -193,7 +193,7 @@ Routing should be explicit and testable. The classifier can be simple at first, 
 | "帮我做一个工作流", "生成一个图生图 workflow" | empty or non-empty | `CreateWorkflow` | `out/proposal.json` |
 | "把分辨率改成 1024", "加一个 ControlNet" | non-empty | `ModifyWorkflow` | `out/proposal.json` |
 | "为什么失败了", "修复报错" | non-empty plus error/run context | `DebugWorkflow` | `out/proposal.json` or `out/reply.json` |
-| "运行", "提交到某个 API", "生成结果" | valid graph | `RunRequest` | runtime provider run request, not graph design |
+| "运行", "提交到某个 API", "生成结果" | valid graph | `RunRequest` | `out/run_request.json` |
 | "做一个网页/app/UI 原型" | explicit artifact request | `DesignArtifact` | `out/artifact.json` |
 
 Important defaults:
@@ -218,7 +218,7 @@ Examples:
 - `CreateWorkflow`: read graph/catalog/provider context, design from user intent, write `out/proposal.json`.
 - `ModifyWorkflow`: preserve current graph, make the smallest valid diff, write `out/proposal.json`.
 - `DebugWorkflow`: inspect graph plus run/error context, decide whether reply or proposal is needed.
-- `RunRequest`: validate and run through backend provider abstraction, do not redesign the graph.
+- `RunRequest`: validate and request a backend-managed run through the provider abstraction, do not redesign the graph.
 - `DesignArtifact`: only when explicitly requested, write artifact manifest and files.
 
 ### `daemonSystemPrompt`
@@ -482,6 +482,8 @@ Validate that the graph has the required runtime-backed executable nodes.
 
 Use only the registered provider API abstraction. Never call raw provider endpoints directly from the prompt. Never expose credentials.
 
+If the graph is runnable, write out/run_request.json. This file requests a backend-managed run and does not execute the provider directly.
+
 If the graph is not runnable, write out/reply.json explaining the blocking validation issue.
 ```
 
@@ -529,6 +531,32 @@ Rules:
 - `ops` must use only supported graph operations.
 - The proposal is a diff, not an entire replacement graph.
 - The backend validates the proposal before showing it as pending.
+
+Run request:
+
+```json
+{
+  "base_version_id": "ver_...",
+  "kind": "run",
+  "label": "Generate image",
+  "runtime_provider_id": "atlas",
+  "connector_id": "atlas_image",
+  "capability_id": "image.generate",
+  "graph_scope": "current",
+  "requires_confirmation": true,
+  "summary": "Requests a backend-managed image generation run for the current graph."
+}
+```
+
+Rules:
+
+- `base_version_id` must match the current graph version.
+- `kind` must be `run`.
+- `runtime_provider_id`, `connector_id`, and `capability_id` must come from backend-supplied catalogs.
+- `graph_scope` must be `current` unless the backend later supports named subgraph runs.
+- `requires_confirmation` must be `true` for paid, external, or side-effecting providers.
+- The agent must not include credentials, raw endpoints, signed URLs, or provider tokens.
+- The backend validates the request, estimates cost, creates the pending run, and owns execution.
 
 Design artifact:
 
