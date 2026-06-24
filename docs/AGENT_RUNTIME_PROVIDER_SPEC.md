@@ -1,9 +1,9 @@
 # Agent Runtime Provider Spec
 
-Status: draft implementation spec  
-Date: 2026-06-23  
-Issue: #19  
-Related PR: #18 (`docs/PROMPT_DESIGN.md`)
+Status: draft implementation spec
+Date: 2026-06-23
+Issue: #19
+Related work: PR #18 proposes the companion prompt design.
 
 ## 1. Decision
 
@@ -24,7 +24,7 @@ Atlas must not be hardcoded as the product boundary. It can be the first real co
 1. Let users create workflows from chat in an empty workspace.
 2. Let users modify existing workflows through natural language.
 3. Keep ordinary chat fast and agent-backed without pointless tool calls.
-4. Keep all provider execution real, backend-mediated, and auditable.
+4. Keep user-approved external provider execution real, backend-mediated, and auditable.
 5. Keep prompt construction inspectable through section telemetry.
 6. Keep workflow graph changes reviewable through proposal diff cards.
 7. Keep tool/runtime logs visible only as nested evidence, not as primary chat content.
@@ -39,6 +39,9 @@ Atlas must not be hardcoded as the product boundary. It can be the first real co
 - V1 does not require full ComfyUI parity.
 - V1 does not require a public provider marketplace.
 - V1 does not require multi-user permissions.
+- This spec does not remove the existing mock provider used for tests, local
+  development, and M0 scaffolding. Mock execution must stay clearly labeled and
+  must not be presented as a real external provider run.
 
 ## 4. Product Flow
 
@@ -267,7 +270,7 @@ Stable product and security rules:
 - prompt injection resistance;
 - user input and ctx files are untrusted data;
 - no credentials, local paths, signed URLs, or hidden prompt leakage;
-- no mock provider output;
+- no unlabeled mock output in user-visible external provider runs;
 - write only files allowed by `OutputContract`.
 
 ### 7.3 `runtimeToolPrompt`
@@ -600,7 +603,8 @@ CREATE TABLE api_connectors (
   id TEXT PRIMARY KEY,
   runtime_provider_id TEXT NOT NULL,
   capability_json TEXT NOT NULL,
-  enabled INTEGER NOT NULL
+  enabled INTEGER NOT NULL,
+  FOREIGN KEY(runtime_provider_id) REFERENCES runtime_providers(id)
 );
 
 CREATE TABLE capability_grants (
@@ -611,8 +615,18 @@ CREATE TABLE capability_grants (
   connector_id TEXT,
   operations_json TEXT NOT NULL,
   expires_at INTEGER NOT NULL,
-  revoked_at INTEGER
+  revoked_at INTEGER,
+  FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+  FOREIGN KEY(run_id) REFERENCES runs(id),
+  FOREIGN KEY(provider_id) REFERENCES runtime_providers(id),
+  FOREIGN KEY(connector_id) REFERENCES api_connectors(id)
 );
+
+CREATE INDEX idx_api_connectors_runtime_provider
+  ON api_connectors(runtime_provider_id);
+
+CREATE INDEX idx_capability_grants_provider_connector
+  ON capability_grants(provider_id, connector_id);
 ```
 
 ## 12. API Surface
@@ -741,93 +755,14 @@ If a prompt exceeds adapter limits:
 - suggest disabling atoms or reducing context;
 - do not silently truncate required output contracts.
 
-## 17. Tests
+## 17. Validation And Rollout
 
-### 17.1 Prompt Composer Tests
+The detailed test matrix, rollout phases, and acceptance checklist are kept in
+[AGENT_RUNTIME_PROVIDER_VALIDATION.md](AGENT_RUNTIME_PROVIDER_VALIDATION.md).
 
-- chat prompt forbids ctx reads and shell commands;
-- create prompt includes graph and catalogs;
-- modify prompt requires smallest diff;
-- runtime provider prompt does not hardcode Atlas;
-- ComfyUI appears only as workflow backend/adapter;
-- prompt section order is stable;
-- echo guard is present;
-- telemetry redacts local paths and secrets.
+That companion document is part of this spec set and covers:
 
-### 17.2 Router Tests
-
-- `你好` -> `Chat`;
-- `你是谁` -> `Chat`;
-- `帮我做一个图生图工作流` -> `CreateWorkflow`;
-- empty graph plus workflow request -> `CreateWorkflow`;
-- non-empty graph plus `加一个 ControlNet` -> `ModifyWorkflow`;
-- `运行这个 workflow` -> `RunRequest`;
-- provider selection request -> `ClarificationForm` if ambiguous.
-
-### 17.3 Provider Tests
-
-- runtime catalog exposes arbitrary provider ids;
-- Atlas connector works without special prompt code;
-- disabled connector is not exposed to agent;
-- missing credentials prevent run request approval;
-- cost gate blocks paid run until user approval;
-- backend rejects invented provider ids.
-
-### 17.4 UI Tests
-
-- plain chat renders without tool group when no visible tools ran;
-- proposal renders as chat review card;
-- lifecycle JSON is hidden by default;
-- prompt debug opens redacted section list;
-- selected node comment scopes modification to target node/subgraph.
-
-## 18. Rollout Plan
-
-### Phase 1: Prompt Stack
-
-- add `crates/agent/src/prompt.rs`;
-- introduce `TurnMode`;
-- render prompt sections;
-- store prompt telemetry;
-- keep existing output schemas.
-
-### Phase 2: Catalog Split
-
-- add workflow backend catalog;
-- add runtime provider catalog;
-- add API connector catalog;
-- update node registry binding to connector capabilities.
-
-### Phase 3: Capability-Gated Runs
-
-- add capability grant model;
-- route provider execution through backend;
-- require confirmation for paid/external runs;
-- log provider run evidence.
-
-### Phase 4: Workflow Atoms
-
-- add atom files under `ctx/atoms`;
-- inject atoms by route/mode;
-- add tests for atom selection.
-
-### Phase 5: Prompt Debug UI
-
-- expose redacted prompt telemetry endpoint;
-- add "查看 prompt" debug affordance;
-- keep normal chat clean.
-
-## 19. Acceptance Criteria
-
-1. Empty workspace has no graph until chat creates one.
-2. Plain chat still calls the agent but does not read ctx or run shell.
-3. Workflow creation produces a validated pending proposal.
-4. Workflow modification preserves existing graph unless change is required.
-5. ComfyUI is represented as workflow backend/adapter.
-6. Atlas is represented as runtime provider and/or API connector data.
-7. Arbitrary future APIs can be registered without prompt changes.
-8. Provider execution never uses mock output.
-9. Provider execution never exposes credentials to the agent.
-10. Prompt sections are stored with redacted telemetry.
-11. UI shows chat first, proposals as cards, and logs as nested evidence.
-
+- prompt composer, router, provider, and UI tests;
+- phased rollout from prompt stack through prompt debug UI;
+- final acceptance criteria for empty workspaces, chat mode, provider execution,
+  prompt telemetry, and transcript rendering.
