@@ -7,7 +7,7 @@ This document defines how Helixflow should prompt the agent when the product goa
 - the user chats with an agent at all times;
 - the agent can design and modify ComfyUI-style workflows from the user's intent;
 - an empty workspace starts with no graph, and the first workflow is created through chat;
-- workflow execution uses real provider APIs through an abstraction layer, never mock output;
+- user-approved external workflow execution uses real provider APIs through an abstraction layer, never unlabeled mock output;
 - the UI stays conversation-first, with the graph canvas used to observe workflow structure.
 
 ## Problem
@@ -229,7 +229,7 @@ Stable product and security rules:
 - instruction priority;
 - prompt injection resistance;
 - no credentials or local path leakage;
-- no mock provider output;
+- no unlabeled mock output in user-visible external provider runs;
 - output files must stay under `out/`.
 
 ### `runtimeToolPrompt`
@@ -416,7 +416,7 @@ Use ctx/graph.json as the current graph. If it is empty, create the workflow fro
 
 Use only node types, ports, params, runtime providers, and API connector capabilities from the catalogs.
 
-Do not use mock providers or placeholder output nodes. If a real provider capability is required but missing from the catalog, explain the missing capability in the proposal summary and create only the graph structure that can be validated.
+Do not present mock providers or placeholder output nodes as real provider capabilities. If a real provider capability is required but missing from the catalog, explain the missing capability in the proposal summary and create only the graph structure that can be validated.
 
 Prefer reasonable defaults when the user gives a clear creative goal but omits routine parameters. Put those defaults in the summary. Ask a question only when the workflow cannot be designed safely without the missing detail.
 
@@ -443,7 +443,7 @@ Use existing node ids when editing existing nodes. Add new ids only for new node
 
 Do not rebuild the whole graph for a local change.
 Do not run the workflow.
-Do not use mock providers.
+Do not present mock providers as real provider capabilities.
 
 Write exactly one file: out/proposal.json.
 ```
@@ -735,7 +735,7 @@ The UI can expose this as "查看 prompt" for debugging. It should not be part o
    - chat prompt writes only `out/reply.json`;
    - create workflow prompt reads graph and catalogs;
    - modify workflow prompt says smallest valid proposal;
-   - runtime provider and API connector prompts forbid mock output, raw endpoints, and vendor hardcoding;
+   - runtime provider and API connector prompts forbid unlabeled user-visible mock output, raw endpoints, and vendor hardcoding;
    - output schema remains compatible with existing proposal validation.
 
 5. Add routing tests.
@@ -760,6 +760,6 @@ The UI can expose this as "查看 prompt" for debugging. It should not be part o
 3. A new workspace opens with an empty graph.
 4. Asking for a workflow from an empty workspace creates a pending graph proposal.
 5. The proposal uses catalog-backed node types and validates before display.
-6. No mock provider output appears anywhere in the run/design path.
+6. User-visible external provider runs never present mock output as real output.
 7. Atlas integration is represented as a runtime provider or API connector entry, not a prompt-level product boundary.
 8. The chat UI remains readable, with tool logs collapsed under the relevant assistant turn.
