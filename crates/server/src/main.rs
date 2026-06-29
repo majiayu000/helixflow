@@ -10,6 +10,7 @@ mod app_state;
 mod graph_files;
 mod proposal_routes;
 mod run_routes;
+mod version_routes;
 mod workbench_message;
 mod workbench_payload;
 mod workspace_routes;
@@ -19,6 +20,7 @@ mod ws;
 use app_state::AppState;
 use proposal_routes::{apply_workspace_proposal, dismiss_workspace_proposal};
 use run_routes::{confirm_run, hold_run, interrupt_active_run, queue_workspace_run};
+use version_routes::export_workflow_version;
 use workbench_message::post_workspace_message;
 use workspace_routes::{create_workspace, list_workspaces};
 use workspace_state::workspace_state;
@@ -74,6 +76,10 @@ fn app(state: AppState) -> Router {
             post(queue_workspace_run),
         )
         .route("/api/runs/{run_id}/interrupt", post(interrupt_active_run))
+        .route(
+            "/api/versions/{version_id}/export",
+            get(export_workflow_version),
+        )
         .route("/ws", get(ws_handler))
         .with_state(state)
 }

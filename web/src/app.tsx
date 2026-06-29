@@ -41,6 +41,7 @@ export function App({ initialState, workspaceId }: AppProps) {
   const holdRun = useWorkbenchStore((store) => store.holdRun);
   const queueRun = useWorkbenchStore((store) => store.queueRun);
   const interruptRun = useWorkbenchStore((store) => store.interruptRun);
+  const exportWorkflow = useWorkbenchStore((store) => store.exportWorkflow);
   const activeState = initialState ?? state;
 
   const refreshWorkspaces = useCallback(async () => {
@@ -125,14 +126,31 @@ export function App({ initialState, workspaceId }: AppProps) {
     });
   };
 
+  const exportCurrentWorkflow = () => {
+    if (!activeState?.workspace.versionId) return;
+    setBusy(true);
+    void exportWorkflow()
+      .then((graph) => {
+        if (graph) {
+          downloadWorkflowJson(
+            graph,
+            `${activeState.workspace.name}-${activeState.workspace.versionId}.json`,
+          );
+        }
+      })
+      .finally(() => setBusy(false));
+  };
+
   return (
     <main className="wb">
       <TopBar
         agentRunDisabled={queueDisabled}
         busy={busy}
         connection={connection}
+        exportDisabled={busy || !activeState.workspace.versionId}
         historyOpen={historyOpen}
         onAgentRun={() => void runAction(() => sendMessage('运行当前 workflow'))}
+        onExport={exportCurrentWorkflow}
         onHistory={() => setHistoryOpen((open) => !open)}
         onNewWorkspace={createWorkspace}
         onQueue={() => void runAction(() => (activeRun ? interruptRun() : queueRun()))}
@@ -212,6 +230,29 @@ function emptyRunSnapshot(): RunSnapshot {
       currency: 'USD',
     },
   };
+}
+
+function downloadWorkflowJson(graph: WorkbenchState['workflowGraph'], filename: string) {
+  if (!graph || typeof document === 'undefined') return;
+  const blob = new Blob([`${JSON.stringify(graph, null, 2)}\n`], {
+    type: 'application/json',
+  });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = safeDownloadName(filename);
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(link.href);
+}
+
+function safeDownloadName(filename: string): string {
+  const sanitized = filename
+    .trim()
+    .replace(/\.json$/i, '')
+    .replace(/[^a-z0-9._-]+/gi, '-')
+    .replace(/^-+|-+$/g, '');
+  return `${sanitized || 'helixflow-workflow'}.json`;
 }
 
 function workspaceIdFromUrl(): string | null {

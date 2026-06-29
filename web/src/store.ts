@@ -4,6 +4,7 @@ import {
   confirmWorkspaceRun,
   createWorkspace,
   dismissWorkspaceProposal,
+  exportWorkflowVersion,
   fetchWorkspaceState,
   fetchWorkspaces,
   holdWorkspaceRun,
@@ -39,6 +40,7 @@ type WorkbenchStore = {
   sendMessage: (text: string) => Promise<void>;
   queueRun: () => Promise<void>;
   interruptRun: (runId?: string) => Promise<void>;
+  exportWorkflow: () => Promise<WorkflowGraph | null>;
   confirmRun: (runId: string) => Promise<void>;
   holdRun: (runId: string) => Promise<void>;
   applyProposal: (proposalId: string) => Promise<void>;
@@ -189,6 +191,23 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => ({
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
       }));
+    }
+  },
+  exportWorkflow: async () => {
+    const state = get().state;
+    const versionId = state?.workspace.versionId;
+    if (!state || !versionId) {
+      return null;
+    }
+
+    try {
+      return await exportWorkflowVersion(versionId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'workflow export request failed';
+      set((current) => ({
+        state: current.state ? appendSystemError(current.state, message) : current.state,
+      }));
+      return null;
     }
   },
   confirmRun: async (runId) => {

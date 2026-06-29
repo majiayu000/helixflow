@@ -7,12 +7,14 @@ type TopBarProps = {
   connection: ConnectionStatus;
   historyOpen: boolean;
   agentRunDisabled: boolean;
+  exportDisabled: boolean;
   runDisabled: boolean;
   running: boolean;
   busy: boolean;
   onHistory: () => void;
   onNewWorkspace: () => void;
   onAgentRun: () => void;
+  onExport: () => void;
   onQueue: () => void;
 };
 
@@ -21,12 +23,14 @@ export function TopBar({
   connection,
   historyOpen,
   agentRunDisabled,
+  exportDisabled,
   runDisabled,
   running,
   busy,
   onHistory,
   onNewWorkspace,
   onAgentRun,
+  onExport,
   onQueue,
 }: TopBarProps) {
   const nodeCount = state.graph.nodes.length;
@@ -78,7 +82,12 @@ export function TopBar({
         >
           <HistoryIcon />
         </button>
-        <button className="ibtn ibtn--icon" title="导出 API workflow JSON" disabled>
+        <button
+          className="ibtn ibtn--icon"
+          title="导出 API workflow JSON"
+          disabled={exportDisabled}
+          onClick={onExport}
+        >
           <Icon n="export" />
         </button>
         <span className="divider-v" />
