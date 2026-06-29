@@ -1,7 +1,8 @@
 use helixflow_graph::{PreparedProposal, ProposalKind, ProposalOp, ProposalState, WorkflowGraph};
 use helixflow_run::{PendingRun, RunOutcome};
 use helixflow_store::{ArtifactRecord, CostLedgerRecord, ProposalRecord, RunRecord, RunStepRecord};
-use serde::Serialize;
+use serde::{Serialize, Serializer};
+use serde_json::{Value, json};
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -38,6 +39,33 @@ pub(crate) struct OutputPayload {
     pub(crate) storage_uri: String,
     pub(crate) selected: bool,
     pub(crate) meta: String,
+    pub(crate) mime: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) preview: Option<OutputPreviewPayload>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub(crate) struct OutputPreviewPayload {
+    pub(crate) kind: OutputPreviewKind,
+    pub(crate) content: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum OutputPreviewKind {
+    Html,
+    Text,
+}
+
+impl Serialize for OutputPreviewKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(match self {
+            Self::Html => "html",
+            Self::Text => "text",
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -134,17 +162,130 @@ pub(crate) fn pending_confirmation_from_run(
 }
 
 pub(crate) fn output_payload_from_artifact(artifact: &ArtifactRecord) -> OutputPayload {
+    let title = artifact
+        .node_id
+        .clone()
+        .unwrap_or_else(|| artifact.kind.clone());
     OutputPayload {
         id: artifact.id.clone(),
         kind: artifact.kind.clone(),
-        title: artifact
-            .node_id
-            .clone()
-            .unwrap_or_else(|| artifact.kind.clone()),
-        storage_uri: artifact.storage_uri.clone(),
+        title: title.clone(),
+        storage_uri: safe_download_uri(&artifact.id),
         selected: artifact.selected,
-        meta: artifact.meta_json.clone().unwrap_or_default(),
+        meta: output_meta_summary(artifact),
+        mime: artifact.mime.clone(),
+        preview: output_preview_from_artifact(artifact, &title),
     }
+}
+
+pub(crate) fn safe_download_uri(artifact_id: &str) -> String {
+    format!("/api/outputs/{artifact_id}/download")
+}
+
+pub(crate) fn output_preview_from_artifact(
+    artifact: &ArtifactRecord,
+    title: &str,
+) -> Option<OutputPreviewPayload> {
+    let meta = artifact
+        .meta_json
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<Value>(value).ok())
+        .unwrap_or_else(|| json!({}));
+    let mut lines = vec![
+        format!("Artifact: {title}"),
+        format!("Kind: {}", artifact.kind),
+    ];
+    if let Some(mime) = &artifact.mime {
+        lines.push(format!("MIME: {mime}"));
+    }
+    if let (Some(width), Some(height)) = (artifact.width, artifact.height) {
+        lines.push(format!("Size: {width} x {height}"));
+    }
+    if let Some(duration_ms) = artifact.duration_ms {
+        lines.push(format!("Duration: {:.2}s", duration_ms as f64 / 1000.0));
+    }
+    if let Some(provider) = safe_meta_string(&meta, "provider") {
+        lines.push(format!("Provider: {provider}"));
+    }
+    if let Some(capability) = safe_meta_string(&meta, "capability") {
+        lines.push(format!("Capability: {capability}"));
+    }
+    lines.push(format!("Download: {}", safe_download_uri(&artifact.id)));
+
+    match artifact.kind.as_str() {
+        "html" => Some(OutputPreviewPayload {
+            kind: OutputPreviewKind::Html,
+            content: format!(
+                "<!doctype html><meta charset=\"utf-8\"><pre>{}</pre>",
+                html_escape(&lines.join("\n"))
+            ),
+        }),
+        "text" | "json" | "markdown" | "image" | "video" => Some(OutputPreviewPayload {
+            kind: OutputPreviewKind::Text,
+            content: lines.join("\n"),
+        }),
+        _ => None,
+    }
+}
+
+fn output_meta_summary(artifact: &ArtifactRecord) -> String {
+    let meta = artifact
+        .meta_json
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<Value>(value).ok())
+        .unwrap_or_else(|| json!({}));
+    let mut parts = Vec::new();
+    if let Some(mime) = &artifact.mime {
+        parts.push(mime.clone());
+    }
+    if let (Some(width), Some(height)) = (artifact.width, artifact.height) {
+        parts.push(format!("{width} x {height}"));
+    }
+    if let Some(duration_ms) = artifact.duration_ms {
+        parts.push(format!("{:.2}s", duration_ms as f64 / 1000.0));
+    }
+    if let Some(provider) = safe_meta_string(&meta, "provider") {
+        parts.push(format!("provider={provider}"));
+    }
+    if let Some(capability) = safe_meta_string(&meta, "capability") {
+        parts.push(format!("capability={capability}"));
+    }
+    parts.join(" · ")
+}
+
+fn safe_meta_string(meta: &Value, key: &str) -> Option<String> {
+    let value = meta.get(key).and_then(Value::as_str)?.trim();
+    if value.is_empty()
+        || value.len() > 80
+        || value.contains('\n')
+        || value.contains('\r')
+        || value.contains("://")
+        || value.contains("/Users/")
+        || value.contains("/tmp/")
+        || value.contains('\\')
+        || value.starts_with('/')
+        || looks_like_windows_absolute_path(value)
+    {
+        return None;
+    }
+    Some(value.to_owned())
+}
+
+fn looks_like_windows_absolute_path(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
+}
+
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 pub(crate) fn proposal_payload_from_prepared(

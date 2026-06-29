@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { connectWorkspaceEvents, fetchWorkspaces } from './api';
+import { ArtifactStage, hasPreviewArtifact } from './components/artifact-stage';
 import { ChatPane } from './components/chat-pane';
 import { GraphCanvas } from './components/graph-canvas';
 import { ConfirmModal, HistoryPanel, OutputsStrip, RunDock } from './components/run-panels';
@@ -44,6 +45,7 @@ export function App({ initialState, workspaceId }: AppProps) {
   const exportWorkflow = useWorkbenchStore((store) => store.exportWorkflow);
   const undoVersion = useWorkbenchStore((store) => store.undoVersion);
   const restoreVersion = useWorkbenchStore((store) => store.restoreVersion);
+  const selectOutput = useWorkbenchStore((store) => store.selectOutput);
   const activeState = initialState ?? state;
 
   const refreshWorkspaces = useCallback(async () => {
@@ -177,11 +179,15 @@ export function App({ initialState, workspaceId }: AppProps) {
           />
         </div>
         <section className="wb-canvas">
-          <GraphCanvas
-            graph={activeState.graph}
-            pendingProposal={activeState.pendingProposal}
-            run={uiState.run}
-          />
+          {hasPreviewArtifact(activeState.outputs) ? (
+            <ArtifactStage outputs={activeState.outputs} />
+          ) : (
+            <GraphCanvas
+              graph={activeState.graph}
+              pendingProposal={activeState.pendingProposal}
+              run={uiState.run}
+            />
+          )}
           <HistoryPanel
             busy={busy}
             history={activeState.history}
@@ -201,7 +207,11 @@ export function App({ initialState, workspaceId }: AppProps) {
             onHold={(id) => runAction(() => holdRun(id))}
           />
           <RunDock run={uiState.run} />
-          <OutputsStrip outputs={activeState.outputs} />
+          <OutputsStrip
+            busy={busy}
+            outputs={activeState.outputs}
+            onSelect={(id) => void runAction(() => selectOutput(id))}
+          />
         </section>
       </div>
     </main>

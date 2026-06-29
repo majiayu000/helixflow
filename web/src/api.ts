@@ -190,6 +190,22 @@ export async function restoreWorkspaceVersion(
   return WorkbenchStateSchema.parse(body);
 }
 
+export async function selectOutput(outputId: string): Promise<WorkbenchState> {
+  const response = await fetch(`/api/outputs/${encodeURIComponent(outputId)}/select`, {
+    method: 'POST',
+  });
+  const body = await response.json();
+  if (!response.ok) {
+    const message =
+      body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+        ? body.error
+        : `output select request failed: ${response.status}`;
+    throw new Error(message);
+  }
+
+  return WorkbenchStateSchema.parse(body);
+}
+
 export async function holdWorkspaceRun(
   workspaceId: string,
   runId: string,

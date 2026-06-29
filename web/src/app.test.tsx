@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './app';
+import { ArtifactStage } from './components/artifact-stage';
 import { shouldSubmitComposerKey } from './components/chat-pane';
 import { HistoryPanel } from './components/run-panels';
 import { applyRunEvent, useWorkbenchStore } from './store';
@@ -422,6 +423,131 @@ describe('App', () => {
     expect(updated?.run?.status).toBe('succeeded');
     expect(updated?.outputs).toHaveLength(1);
     expect(updated?.pendingConfirmation).toBeNull();
+  });
+
+  it('selects an output through the server-owned selection API', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        return jsonResponse({
+          ...state,
+          outputs: [
+            {
+              id: 'art_video_1',
+              kind: 'video',
+              title: 'Vertical teaser',
+              storageUri: '/api/outputs/art_video_1/download',
+              selected: false,
+              meta: '{}',
+              mime: 'video/mp4',
+              preview: { kind: 'text', content: 'Artifact: Vertical teaser' },
+            },
+            {
+              id: 'art_video_2',
+              kind: 'video',
+              title: 'Alternate teaser',
+              storageUri: '/api/outputs/art_video_2/download',
+              selected: true,
+              meta: '{}',
+              mime: 'video/mp4',
+              preview: { kind: 'text', content: 'Artifact: Alternate teaser' },
+            },
+          ],
+        });
+      }),
+    );
+    useWorkbenchStore.getState().setInitialState(state);
+
+    await useWorkbenchStore.getState().selectOutput('art_video_2');
+
+    const fetchMock = vi.mocked(fetch);
+    expect(fetchMock).toHaveBeenCalledWith('/api/outputs/art_video_2/select', {
+      method: 'POST',
+    });
+    const updated = useWorkbenchStore.getState().state;
+    expect(updated?.outputs.find((output) => output.selected)?.id).toBe('art_video_2');
+    expect(updated?.outputs[1]?.preview?.content).toContain('Alternate teaser');
+  });
+
+  it('renders the selected artifact preview instead of guessing from graph state', () => {
+    const markup = renderToStaticMarkup(
+      <App
+        initialState={{
+          ...state,
+          outputs: [
+            {
+              id: 'art_video_1',
+              kind: 'video',
+              title: 'Vertical teaser',
+              storageUri: '/api/outputs/art_video_1/download',
+              selected: true,
+              meta: '{}',
+              mime: 'video/mp4',
+              preview: { kind: 'text', content: 'Artifact: Vertical teaser' },
+            },
+          ],
+        }}
+      />,
+    );
+
+    expect(markup).toContain('artifact-stage');
+    expect(markup).toContain('Artifact: Vertical teaser');
+    expect(markup).not.toContain('canvas-grid');
+  });
+
+  it('keeps the graph canvas when the selected output has no preview', () => {
+    const markup = renderToStaticMarkup(
+      <App
+        initialState={{
+          ...state,
+          outputs: [
+            {
+              id: 'art_selected_raw',
+              kind: 'binary',
+              title: 'Selected raw output',
+              storageUri: '/api/outputs/art_selected_raw/download',
+              selected: true,
+              meta: '',
+            },
+            {
+              id: 'art_preview_other',
+              kind: 'video',
+              title: 'Other preview',
+              storageUri: '/api/outputs/art_preview_other/download',
+              selected: false,
+              meta: '{}',
+              preview: { kind: 'text', content: 'Artifact: Other preview' },
+            },
+          ],
+        }}
+      />,
+    );
+
+    expect(markup).not.toContain('artifact-stage');
+    expect(markup).not.toContain('Artifact: Other preview');
+    expect(markup).toContain('canvas-grid');
+  });
+
+  it('sandboxes HTML artifact previews without script permissions', () => {
+    const markup = renderToStaticMarkup(
+      <ArtifactStage
+        outputs={[
+          {
+            id: 'art_html_1',
+            kind: 'html',
+            title: 'HTML report',
+            storageUri: '/api/outputs/art_html_1/download',
+            selected: true,
+            meta: '{}',
+            mime: 'text/html',
+            preview: { kind: 'html', content: '<!doctype html><p>Report</p>' },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('sandbox=""');
+    expect(markup).not.toContain('allow-scripts');
   });
 
   it('interrupts an active run through the direct interrupt API', async () => {

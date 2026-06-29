@@ -15,7 +15,8 @@ use crate::api_error::ApiError;
 use crate::app_state::AppState;
 use crate::graph_files::{blank_graph, read_graph_file, read_json_file};
 use crate::workbench_payload::{
-    ProposalPayload, pending_confirmation_from_run, pending_proposal_payload_from_record,
+    ProposalPayload, output_payload_from_artifact, pending_confirmation_from_run,
+    pending_proposal_payload_from_record,
 };
 
 pub(crate) async fn workspace_state(
@@ -155,7 +156,7 @@ fn workspace_state_payload(
         },
         "graph": graph_payload(graph, &step_by_node),
         "run": latest_run.map(|run| run_payload(run, steps, &run_cost)),
-        "outputs": artifacts.iter().map(output_payload).collect::<Vec<_>>(),
+        "outputs": artifacts.iter().map(output_payload_from_artifact).collect::<Vec<_>>(),
         "history": history_payload(versions, latest_run, proposals),
         "pendingConfirmation": latest_run.and_then(|run| pending_confirmation_from_run(run, costs)),
         "pendingProposal": pending_proposal,
@@ -257,17 +258,6 @@ fn run_payload(run: &RunRecord, steps: &[RunStepRecord], cost: &CostSummary) -> 
             "actual": cost.actual,
             "currency": cost.currency,
         },
-    })
-}
-
-fn output_payload(artifact: &ArtifactRecord) -> Value {
-    json!({
-        "id": artifact.id,
-        "kind": artifact.kind,
-        "title": artifact.node_id.clone().unwrap_or_else(|| artifact.kind.clone()),
-        "storageUri": artifact.storage_uri,
-        "selected": artifact.selected,
-        "meta": artifact.meta_json.clone().unwrap_or_default(),
     })
 }
 

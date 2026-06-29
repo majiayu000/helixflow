@@ -60,17 +60,31 @@ export function RunDock({ run }: RunDockProps) {
   );
 }
 
-export function OutputsStrip({ outputs }: { outputs: WorkbenchState['outputs'] }) {
+export function OutputsStrip({
+  outputs,
+  busy,
+  onSelect,
+}: {
+  outputs: WorkbenchState['outputs'];
+  busy: boolean;
+  onSelect: (id: string) => void;
+}) {
   if (!outputs.length) return null;
   return (
     <div className="outputs">
       {outputs.map((output) => (
-        <div className="output-item" key={output.id}>
+        <button
+          className="output-item"
+          disabled={busy}
+          key={output.id}
+          onClick={() => onSelect(output.id)}
+          type="button"
+        >
           <div className={`output-thumb ${output.selected ? 'sel' : ''}`} data-kind={output.kind}>
             <Icon n={outputIcon(output.kind)} s={18} />
           </div>
           <div className="output-title">{output.title}</div>
-        </div>
+        </button>
       ))}
       <div className="outputs-note">{outputs.length} 个真实 artifact</div>
     </div>

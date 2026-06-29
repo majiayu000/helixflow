@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 
 mod api_error;
 mod app_state;
+mod artifact_routes;
 mod graph_files;
 mod proposal_routes;
 mod run_routes;
@@ -18,6 +19,7 @@ mod workspace_state;
 mod ws;
 
 use app_state::AppState;
+use artifact_routes::{download_output, preview_output, select_output};
 use proposal_routes::{apply_workspace_proposal, dismiss_workspace_proposal};
 use run_routes::{confirm_run, hold_run, interrupt_active_run, queue_workspace_run};
 use version_routes::{export_workflow_version, restore_workspace_version, undo_workspace_version};
@@ -76,6 +78,9 @@ fn app(state: AppState) -> Router {
             post(queue_workspace_run),
         )
         .route("/api/runs/{run_id}/interrupt", post(interrupt_active_run))
+        .route("/api/outputs/{output_id}/select", post(select_output))
+        .route("/api/outputs/{output_id}/preview", get(preview_output))
+        .route("/api/outputs/{output_id}/download", get(download_output))
         .route(
             "/api/versions/{version_id}/export",
             get(export_workflow_version),
