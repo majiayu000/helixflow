@@ -44,8 +44,7 @@ export function hasPreviewArtifact(outputs: WorkbenchState['outputs']): boolean 
 }
 
 function selectedPreviewArtifact(outputs: WorkbenchState['outputs']): ArtifactOutput | undefined {
-  return outputs.find((output) => output.selected && output.preview)
-    ?? outputs.find((output) => output.preview);
+  return outputs.find((output) => output.selected && output.preview);
 }
 
 function artifactIcon(kind: ArtifactOutput['kind']): 'export' | 'image' | 'layers' | 'play' {

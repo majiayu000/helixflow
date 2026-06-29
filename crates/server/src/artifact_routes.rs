@@ -164,6 +164,9 @@ mod tests {
                 .expect("preview")
                 .contains("Artifact")
         );
+        let state_json = serde_json::to_string(&body).expect("state json");
+        assert!(!state_json.contains("/Users/"));
+        assert!(!state_json.contains("raw provider text"));
     }
 
     #[tokio::test]
@@ -343,7 +346,9 @@ mod tests {
                 height: Some(1920),
                 duration_ms: Some(5000),
                 selected,
-                meta_json: Some(r#"{"provider":"mock","capability":"text_to_video"}"#),
+                meta_json: Some(
+                    r#"{"provider":"mock","capability":"text_to_video","raw_path":"/Users/alice/raw-provider-output.mp4","text":"raw provider text that must not enter workspace state"}"#,
+                ),
             })
             .await
             .expect("create artifact")

@@ -172,7 +172,7 @@ pub(crate) fn output_payload_from_artifact(artifact: &ArtifactRecord) -> OutputP
         title: title.clone(),
         storage_uri: safe_download_uri(&artifact.id),
         selected: artifact.selected,
-        meta: artifact.meta_json.clone().unwrap_or_default(),
+        meta: output_meta_summary(artifact),
         mime: artifact.mime.clone(),
         preview: output_preview_from_artifact(artifact, &title),
     }
@@ -204,10 +204,10 @@ pub(crate) fn output_preview_from_artifact(
     if let Some(duration_ms) = artifact.duration_ms {
         lines.push(format!("Duration: {:.2}s", duration_ms as f64 / 1000.0));
     }
-    if let Some(provider) = meta.get("provider").and_then(Value::as_str) {
+    if let Some(provider) = safe_meta_string(&meta, "provider") {
         lines.push(format!("Provider: {provider}"));
     }
-    if let Some(capability) = meta.get("capability").and_then(Value::as_str) {
+    if let Some(capability) = safe_meta_string(&meta, "capability") {
         lines.push(format!("Capability: {capability}"));
     }
     lines.push(format!("Download: {}", safe_download_uri(&artifact.id)));
@@ -226,6 +226,57 @@ pub(crate) fn output_preview_from_artifact(
         }),
         _ => None,
     }
+}
+
+fn output_meta_summary(artifact: &ArtifactRecord) -> String {
+    let meta = artifact
+        .meta_json
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<Value>(value).ok())
+        .unwrap_or_else(|| json!({}));
+    let mut parts = Vec::new();
+    if let Some(mime) = &artifact.mime {
+        parts.push(mime.clone());
+    }
+    if let (Some(width), Some(height)) = (artifact.width, artifact.height) {
+        parts.push(format!("{width} x {height}"));
+    }
+    if let Some(duration_ms) = artifact.duration_ms {
+        parts.push(format!("{:.2}s", duration_ms as f64 / 1000.0));
+    }
+    if let Some(provider) = safe_meta_string(&meta, "provider") {
+        parts.push(format!("provider={provider}"));
+    }
+    if let Some(capability) = safe_meta_string(&meta, "capability") {
+        parts.push(format!("capability={capability}"));
+    }
+    parts.join(" · ")
+}
+
+fn safe_meta_string(meta: &Value, key: &str) -> Option<String> {
+    let value = meta.get(key).and_then(Value::as_str)?.trim();
+    if value.is_empty()
+        || value.len() > 80
+        || value.contains('\n')
+        || value.contains('\r')
+        || value.contains("://")
+        || value.contains("/Users/")
+        || value.contains("/tmp/")
+        || value.contains('\\')
+        || value.starts_with('/')
+        || looks_like_windows_absolute_path(value)
+    {
+        return None;
+    }
+    Some(value.to_owned())
+}
+
+fn looks_like_windows_absolute_path(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
 }
 
 fn html_escape(value: &str) -> String {

@@ -495,6 +495,39 @@ describe('App', () => {
     expect(markup).not.toContain('canvas-grid');
   });
 
+  it('keeps the graph canvas when the selected output has no preview', () => {
+    const markup = renderToStaticMarkup(
+      <App
+        initialState={{
+          ...state,
+          outputs: [
+            {
+              id: 'art_selected_raw',
+              kind: 'binary',
+              title: 'Selected raw output',
+              storageUri: '/api/outputs/art_selected_raw/download',
+              selected: true,
+              meta: '',
+            },
+            {
+              id: 'art_preview_other',
+              kind: 'video',
+              title: 'Other preview',
+              storageUri: '/api/outputs/art_preview_other/download',
+              selected: false,
+              meta: '{}',
+              preview: { kind: 'text', content: 'Artifact: Other preview' },
+            },
+          ],
+        }}
+      />,
+    );
+
+    expect(markup).not.toContain('artifact-stage');
+    expect(markup).not.toContain('Artifact: Other preview');
+    expect(markup).toContain('canvas-grid');
+  });
+
   it('sandboxes HTML artifact previews without script permissions', () => {
     const markup = renderToStaticMarkup(
       <ArtifactStage
