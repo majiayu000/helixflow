@@ -18,7 +18,7 @@ mod ws;
 
 use app_state::AppState;
 use proposal_routes::{apply_workspace_proposal, dismiss_workspace_proposal};
-use run_routes::{confirm_run, hold_run};
+use run_routes::{confirm_run, hold_run, interrupt_active_run, queue_workspace_run};
 use workbench_message::post_workspace_message;
 use workspace_routes::{create_workspace, list_workspaces};
 use workspace_state::workspace_state;
@@ -69,6 +69,11 @@ fn app(state: AppState) -> Router {
             "/api/workspaces/{workspace_id}/runs/{run_id}/hold",
             post(hold_run),
         )
+        .route(
+            "/api/workspaces/{workspace_id}/runs",
+            post(queue_workspace_run),
+        )
+        .route("/api/runs/{run_id}/interrupt", post(interrupt_active_run))
         .route("/ws", get(ws_handler))
         .with_state(state)
 }

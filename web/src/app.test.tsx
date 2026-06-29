@@ -378,6 +378,84 @@ describe('App', () => {
     expect(updated?.chat.messages.at(-1)?.kind).toBe('run_requested');
   });
 
+  it('queues the current workflow through the direct workbench run API', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        return jsonResponse({
+          run: {
+            id: 'run_direct_1',
+            label: 'Manual workbench run',
+            status: 'succeeded',
+            steps: [
+              { nodeId: 'text', title: 'text', state: 'succeeded', provider: null },
+              { nodeId: 'video', title: 'video', state: 'succeeded', provider: 'mock' },
+            ],
+            cost: { estimate: 0, actual: 0, currency: 'USD' },
+          },
+          outputs: [
+            {
+              id: 'art_direct_1',
+              kind: 'video',
+              title: 'video',
+              storageUri: 'workspace://outputs/run_direct_1/video.mp4',
+              selected: true,
+              meta: '{}',
+            },
+          ],
+          pendingConfirmation: null,
+        });
+      }),
+    );
+    useWorkbenchStore.getState().setInitialState(state);
+
+    await useWorkbenchStore.getState().queueRun();
+
+    const fetchMock = vi.mocked(fetch);
+    expect(fetchMock).toHaveBeenCalledWith('/api/workspaces/ws_test/runs', {
+      method: 'POST',
+    });
+    expect(fetchMock.mock.calls[0][0]).not.toBe('/api/workspaces/ws_test/messages');
+    const updated = useWorkbenchStore.getState().state;
+    expect(updated?.run?.id).toBe('run_direct_1');
+    expect(updated?.run?.status).toBe('succeeded');
+    expect(updated?.outputs).toHaveLength(1);
+    expect(updated?.pendingConfirmation).toBeNull();
+  });
+
+  it('interrupts an active run through the direct interrupt API', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        return jsonResponse({
+          run: {
+            id: 'run_test_1',
+            label: 'Manual preview',
+            status: 'interrupted',
+            steps: [
+              { nodeId: 'text', title: 'text', state: 'succeeded', provider: null },
+              { nodeId: 'video', title: 'video', state: 'skipped', provider: 'mock' },
+            ],
+            cost: { estimate: 0, actual: 0, currency: 'USD' },
+          },
+          outputs: [],
+          pendingConfirmation: null,
+        });
+      }),
+    );
+    useWorkbenchStore.getState().setInitialState(state);
+
+    await useWorkbenchStore.getState().interruptRun();
+
+    const fetchMock = vi.mocked(fetch);
+    expect(fetchMock).toHaveBeenCalledWith('/api/runs/run_test_1/interrupt', {
+      method: 'POST',
+    });
+    const updated = useWorkbenchStore.getState().state;
+    expect(updated?.run?.status).toBe('interrupted');
+    expect(updated?.run?.steps.find((step) => step.nodeId === 'video')?.state).toBe('skipped');
+  });
+
   it('resets per-run event sequencing when a new run snapshot arrives', async () => {
     vi.stubGlobal(
       'fetch',
