@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './app';
+import { shouldSubmitComposerKey } from './components/chat-pane';
 import { applyRunEvent, useWorkbenchStore } from './store';
 import type { WorkbenchState } from './types';
 
@@ -538,6 +539,42 @@ describe('App', () => {
       '/api/workspaces/ws_test/proposals/proposal_1/dismiss',
       { method: 'POST' },
     ]);
+  });
+});
+
+describe('chat composer keyboard handling', () => {
+  it('does not submit Enter while IME composition is active', () => {
+    expect(shouldSubmitComposerKey({
+      key: 'Enter',
+      shiftKey: false,
+      nativeEvent: { isComposing: true },
+    })).toBe(false);
+
+    expect(shouldSubmitComposerKey({
+      key: 'Enter',
+      shiftKey: false,
+      nativeEvent: { keyCode: 229 },
+    })).toBe(false);
+
+    expect(shouldSubmitComposerKey({
+      key: 'Enter',
+      shiftKey: false,
+      nativeEvent: {},
+    }, true)).toBe(false);
+  });
+
+  it('submits regular Enter but keeps Shift+Enter for new lines', () => {
+    expect(shouldSubmitComposerKey({
+      key: 'Enter',
+      shiftKey: false,
+      nativeEvent: {},
+    })).toBe(true);
+
+    expect(shouldSubmitComposerKey({
+      key: 'Enter',
+      shiftKey: true,
+      nativeEvent: {},
+    })).toBe(false);
   });
 });
 
