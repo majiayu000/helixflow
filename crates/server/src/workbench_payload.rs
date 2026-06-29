@@ -1,5 +1,5 @@
 use helixflow_graph::{PreparedProposal, ProposalKind, ProposalOp, ProposalState, WorkflowGraph};
-use helixflow_run::{PendingRun, RunOutcome};
+use helixflow_run::{PendingRun, PendingSweep, RunOutcome};
 use helixflow_store::{ArtifactRecord, CostLedgerRecord, ProposalRecord, RunRecord, RunStepRecord};
 use serde::{Serialize, Serializer};
 use serde_json::{Value, json};
@@ -69,11 +69,18 @@ impl Serialize for OutputPreviewKind {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct PendingConfirmationPayload {
     pub(crate) id: String,
     pub(crate) title: String,
     pub(crate) summary: String,
     pub(crate) cost: ConfirmationCostPayload,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) run_count: Option<usize>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) pending_changes: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) interruptible: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -135,6 +142,31 @@ pub(crate) fn pending_confirmation_from_pending(
             amount: pending.estimate.amount,
             currency: pending.estimate.currency.clone(),
         },
+        run_count: None,
+        pending_changes: Vec::new(),
+        interruptible: None,
+    }
+}
+
+pub(crate) fn pending_confirmation_from_sweep(
+    pending: &PendingSweep,
+    recommended_run_id: &str,
+    pending_changes: Vec<String>,
+) -> PendingConfirmationPayload {
+    PendingConfirmationPayload {
+        id: recommended_run_id.to_owned(),
+        title: "Seed sweep run plan".to_owned(),
+        summary: format!(
+            "Seed sweep is waiting for confirmation ({} runs).",
+            pending.runs.len()
+        ),
+        cost: ConfirmationCostPayload {
+            amount: pending.estimate.amount,
+            currency: pending.estimate.currency.clone(),
+        },
+        run_count: Some(pending.runs.len()),
+        pending_changes,
+        interruptible: Some(true),
     }
 }
 
@@ -158,6 +190,9 @@ pub(crate) fn pending_confirmation_from_run(
             },
             currency: cost.currency,
         },
+        run_count: None,
+        pending_changes: Vec::new(),
+        interruptible: None,
     })
 }
 

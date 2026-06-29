@@ -61,7 +61,7 @@ pub struct SweepOutcome {
     pub group_id: String,
     pub runs: Vec<RunOutcome>,
     pub artifacts: Vec<ArtifactRecord>,
-    pub recommendation: ArtifactRecord,
+    pub recommendation: Option<ArtifactRecord>,
 }
 
 impl<P> RunService<P>
@@ -240,7 +240,14 @@ where
             })?;
             let plan = serde_json::from_str(plan_json)?;
             match self.execute_confirmed_run(run, plan).await {
-                Ok(outcome) => outcomes.push(outcome),
+                Ok(outcome) => {
+                    let interrupted = outcome.run.status == RunStatus::Interrupted.as_str();
+                    outcomes.push(outcome);
+                    if interrupted {
+                        self.interrupt_claimed_runs(&claimed[(index + 1)..]).await?;
+                        break;
+                    }
+                }
                 Err(err) => {
                     self.revert_claimed_runs(&claimed[(index + 1)..]).await?;
                     return Err(err);
@@ -252,27 +259,49 @@ where
         for outcome in &outcomes {
             artifacts.extend(outcome.artifacts.clone());
         }
+        let interrupted = outcomes
+            .iter()
+            .any(|outcome| outcome.run.status == RunStatus::Interrupted.as_str());
         let recommendation = artifacts
             .iter()
             .find(|artifact| {
                 artifact.run_id.as_deref() == Some(recommended_run_id) && artifact.selected
             })
             .cloned()
-            .ok_or_else(|| {
-                RunError::InvalidSweepPlan(
-                    "recommended run did not produce an output artifact".to_owned(),
-                )
-            })?;
+            .or_else(|| {
+                if interrupted {
+                    artifacts
+                        .iter()
+                        .rev()
+                        .find(|artifact| artifact.selected)
+                        .cloned()
+                } else {
+                    None
+                }
+            });
+        if recommendation.is_none() && !interrupted {
+            return Err(RunError::InvalidSweepPlan(
+                "recommended run did not produce an output artifact".to_owned(),
+            ));
+        }
 
         let mut refreshed_artifacts = Vec::new();
         for artifact in artifacts {
             refreshed_artifacts.push(
                 self.store
-                    .update_artifact_selected(&artifact.id, artifact.id == recommendation.id)
+                    .update_artifact_selected(
+                        &artifact.id,
+                        recommendation
+                            .as_ref()
+                            .is_some_and(|selected| artifact.id == selected.id),
+                    )
                     .await?,
             );
         }
-        let recommendation = self.store.artifact(&recommendation.id).await?;
+        let recommendation = match recommendation {
+            Some(artifact) => Some(self.store.artifact(&artifact.id).await?),
+            None => None,
+        };
 
         Ok(SweepOutcome {
             group_id,
@@ -509,6 +538,31 @@ where
                     actual: current.status,
                 });
             }
+        }
+        Ok(())
+    }
+
+    async fn interrupt_claimed_runs(&self, run_ids: &[String]) -> RunResult<()> {
+        for run_id in run_ids {
+            let Some(run) = self
+                .store
+                .update_run_status_if_current(
+                    run_id,
+                    RunStatus::Running.as_str(),
+                    RunStatus::Interrupted.as_str(),
+                    None,
+                )
+                .await?
+            else {
+                let current = self.store.run(run_id).await?;
+                return Err(RunError::InvalidRunStatus {
+                    run_id: current.id,
+                    expected: RunStatus::Running.as_str(),
+                    actual: current.status,
+                });
+            };
+            self.emit(&run.workspace_id, &run.id, "run.interrupted", json!({}))
+                .await?;
         }
         Ok(())
     }

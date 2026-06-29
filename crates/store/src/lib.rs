@@ -9,6 +9,7 @@ use uuid::Uuid;
 mod failed_run_records;
 mod proposal_records;
 mod run_records;
+mod sweep_records;
 mod workspace_records;
 
 pub use proposal_records::*;

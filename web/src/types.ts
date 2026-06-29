@@ -197,6 +197,9 @@ const PendingConfirmationSchema = z.object({
   title: z.string(),
   summary: z.string(),
   cost: CostSchema,
+  runCount: z.number().int().positive().optional(),
+  pendingChanges: z.array(z.string()).optional(),
+  interruptible: z.boolean().optional(),
 });
 
 const ProposalSchema = z.object({

@@ -159,7 +159,13 @@ export function App({ initialState, workspaceId }: AppProps) {
         onExport={exportCurrentWorkflow}
         onHistory={() => setHistoryOpen((open) => !open)}
         onNewWorkspace={createWorkspace}
-        onQueue={() => void runAction(() => (activeRun ? interruptRun() : queueRun()))}
+        onQueue={() => {
+          if (activeRun) {
+            void interruptRun();
+          } else {
+            void runAction(() => queueRun());
+          }
+        }}
         onUndo={() => void runAction(() => undoVersion())}
         runDisabled={activeRun ? false : queueDisabled}
         running={activeRun}

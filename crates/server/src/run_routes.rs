@@ -6,11 +6,13 @@ use axum::{
     http::StatusCode,
 };
 use helixflow_run::{ManualRunRequest, RunOutcome};
+use helixflow_store::RunRecord;
 use serde::Serialize;
 
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
 use crate::graph_files::read_graph_file;
+use crate::sweep_support::interrupt_target_run;
 use crate::workbench_payload::{
     OutputPayload, PendingConfirmationPayload, RunPayload, output_payload_from_artifact,
     run_payload_from_outcome,
@@ -71,6 +73,12 @@ pub(crate) async fn confirm_run(
         return Err(ApiError::not_found("run was not found in this workspace"));
     }
 
+    if is_sweep_run(&run) {
+        return confirm_sweep_group(&state, &workspace_id, &run)
+            .await
+            .map(Json);
+    }
+
     let outcome = state
         .runner
         .confirm_run(&run_id)
@@ -102,6 +110,12 @@ pub(crate) async fn hold_run(
         return Err(ApiError::not_found("run was not found in this workspace"));
     }
 
+    if is_sweep_run(&run) {
+        return hold_sweep_group(&state, &workspace_id, &run)
+            .await
+            .map(Json);
+    }
+
     let outcome = state
         .runner
         .hold_run(&run_id)
@@ -129,19 +143,20 @@ pub(crate) async fn interrupt_active_run(
     State(state): State<AppState>,
 ) -> Result<Json<RunConfirmationResponse>, ApiError> {
     let run = state.store.run(&run_id).await.map_err(ApiError::store)?;
-    if !is_interruptible_status(&run.status) {
+    let target_run = interrupt_target_run(&state, &run).await?;
+    if !is_interruptible_status(&target_run.status) {
         return Err(ApiError {
             status: StatusCode::CONFLICT,
-            message: format!("run `{run_id}` is not active"),
+            message: format!("run `{}` is not active", target_run.id),
         });
     }
 
     state
         .runner
-        .interrupt_run(&run_id)
+        .interrupt_run(&target_run.id)
         .await
         .map_err(ApiError::run)?;
-    response_from_run_id(&state, &run_id).await.map(Json)
+    response_from_run_id(&state, &target_run.id).await.map(Json)
 }
 
 async fn response_from_outcome(
@@ -185,6 +200,93 @@ async fn response_from_run_id(
     response_from_outcome(state, outcome).await
 }
 
+async fn confirm_sweep_group(
+    state: &AppState,
+    workspace_id: &str,
+    run: &RunRecord,
+) -> Result<RunConfirmationResponse, ApiError> {
+    let run_ids = sweep_group_run_ids(state, workspace_id, run).await?;
+    let outcome = state
+        .runner
+        .confirm_sweep_runs(&run_ids, &run.id)
+        .await
+        .map_err(ApiError::run)?;
+    let recommended = outcome
+        .runs
+        .iter()
+        .find(|candidate| candidate.run.id == run.id)
+        .or_else(|| outcome.runs.last())
+        .ok_or_else(|| {
+            ApiError::server_error(format!("sweep outcome omitted response run `{}`", run.id))
+        })?;
+    let costs = state
+        .store
+        .cost_ledger_for_run(&run.id)
+        .await
+        .map_err(ApiError::store)?;
+
+    Ok(RunConfirmationResponse {
+        run: run_payload_from_outcome(recommended, &costs),
+        outputs: outcome
+            .artifacts
+            .iter()
+            .map(output_payload_from_artifact)
+            .collect(),
+        pending_confirmation: None,
+    })
+}
+
+async fn hold_sweep_group(
+    state: &AppState,
+    workspace_id: &str,
+    run: &RunRecord,
+) -> Result<RunConfirmationResponse, ApiError> {
+    let run_ids = sweep_group_run_ids(state, workspace_id, run).await?;
+    let mut target_outcome = None;
+    for run_id in run_ids {
+        let outcome = state
+            .runner
+            .hold_run(&run_id)
+            .await
+            .map_err(ApiError::run)?;
+        if run_id == run.id {
+            target_outcome = Some(outcome);
+        }
+    }
+    let outcome = target_outcome.ok_or_else(|| {
+        ApiError::server_error(format!("sweep hold omitted target run `{}`", run.id))
+    })?;
+    response_from_outcome(state, outcome).await
+}
+
+async fn sweep_group_run_ids(
+    state: &AppState,
+    workspace_id: &str,
+    run: &RunRecord,
+) -> Result<Vec<String>, ApiError> {
+    let group_id = run
+        .group_id
+        .as_deref()
+        .ok_or_else(|| ApiError::server_error("sweep run has no group id"))?;
+    let runs = state
+        .store
+        .runs_for_group(group_id)
+        .await
+        .map_err(ApiError::store)?;
+    if runs.is_empty() {
+        return Err(ApiError::not_found("sweep group was not found"));
+    }
+    if runs
+        .iter()
+        .any(|candidate| candidate.workspace_id != workspace_id)
+    {
+        return Err(ApiError::not_found(
+            "sweep group was not found in this workspace",
+        ));
+    }
+    Ok(runs.into_iter().map(|candidate| candidate.id).collect())
+}
+
 async fn reject_active_workspace_run(state: &AppState, workspace_id: &str) -> Result<(), ApiError> {
     let latest = state
         .store
@@ -226,6 +328,10 @@ fn is_active_status(status: &str) -> bool {
     )
 }
 
+fn is_sweep_run(run: &RunRecord) -> bool {
+    run.trigger == "sweep" && run.group_id.is_some()
+}
+
 fn is_interruptible_status(status: &str) -> bool {
     matches!(status, "queued" | "estimating" | "running")
 }
@@ -240,8 +346,8 @@ mod tests {
     use helixflow_agent::{
         AgentError, AgentSessionRequest, ValidatedAgentProposal, ValidatedAgentReply,
     };
-    use helixflow_graph::{GraphNode, WorkflowGraph};
-    use helixflow_run::{AgentRunRequest, EventBus};
+    use helixflow_graph::{GraphEdge, GraphNode, WorkflowGraph};
+    use helixflow_run::{AgentRunRequest, EventBus, SweepPlan, SweepVariant};
     use helixflow_store::{NewVersion, Store, VersionSource};
     use serde_json::json;
 
@@ -331,6 +437,111 @@ mod tests {
         assert_eq!(response.pending_confirmation, None);
         let run = state.store.run(&pending.run.id).await.expect("run");
         assert_eq!(run.status, "interrupted");
+    }
+
+    #[tokio::test]
+    async fn confirm_route_executes_sweep_group_and_selects_recommendation() {
+        let (state, workspace_id, version_id, _dir) = state_with_workspace().await;
+        let pending = state
+            .runner
+            .request_sweep_plan(SweepPlan {
+                workspace_id: workspace_id.clone(),
+                version_id,
+                label: "Seed sweep".to_owned(),
+                variants: vec![
+                    SweepVariant {
+                        label: "seed 101".to_owned(),
+                        graph: executable_graph(),
+                    },
+                    SweepVariant {
+                        label: "seed 202".to_owned(),
+                        graph: executable_graph(),
+                    },
+                ],
+            })
+            .await
+            .expect("request sweep");
+        let recommended_run_id = pending.runs[1].run.id.clone();
+
+        let response = confirm_run(
+            Path((workspace_id.clone(), recommended_run_id.clone())),
+            State(state.clone()),
+        )
+        .await
+        .expect("confirm sweep response")
+        .0;
+
+        assert_eq!(response.run.id, recommended_run_id);
+        assert_eq!(response.run.status, "succeeded");
+        assert_eq!(response.outputs.len(), 4);
+        assert_eq!(
+            response
+                .outputs
+                .iter()
+                .filter(|output| output.selected)
+                .count(),
+            1
+        );
+        for pending_run in pending.runs {
+            let run = state
+                .store
+                .run(&pending_run.run.id)
+                .await
+                .expect("sweep run");
+            assert_eq!(run.status, "succeeded");
+            let ledger = state
+                .store
+                .cost_ledger_for_run(&run.id)
+                .await
+                .expect("cost ledger");
+            assert!(ledger.iter().any(|entry| entry.estimated));
+            assert!(ledger.iter().any(|entry| !entry.estimated));
+        }
+    }
+
+    #[tokio::test]
+    async fn hold_route_interrupts_all_waiting_sweep_runs() {
+        let (state, workspace_id, version_id, _dir) = state_with_workspace().await;
+        let pending = state
+            .runner
+            .request_sweep_plan(SweepPlan {
+                workspace_id: workspace_id.clone(),
+                version_id,
+                label: "Seed sweep".to_owned(),
+                variants: vec![
+                    SweepVariant {
+                        label: "seed 101".to_owned(),
+                        graph: executable_graph(),
+                    },
+                    SweepVariant {
+                        label: "seed 202".to_owned(),
+                        graph: executable_graph(),
+                    },
+                ],
+            })
+            .await
+            .expect("request sweep");
+        let target_run_id = pending.runs[1].run.id.clone();
+
+        let response = hold_run(
+            Path((workspace_id.clone(), target_run_id.clone())),
+            State(state.clone()),
+        )
+        .await
+        .expect("hold sweep response")
+        .0;
+
+        assert_eq!(response.run.id, target_run_id);
+        assert_eq!(response.run.status, "interrupted");
+        assert_eq!(response.pending_confirmation, None);
+        for pending_run in pending.runs {
+            let run = state
+                .store
+                .run(&pending_run.run.id)
+                .await
+                .expect("sweep run");
+            assert_eq!(run.status, "interrupted");
+        }
     }
 
     #[tokio::test]
@@ -482,6 +693,41 @@ mod tests {
             schema_version: 1,
             nodes: BTreeMap::new(),
             edges: Vec::new(),
+        }
+    }
+
+    fn executable_graph() -> WorkflowGraph {
+        WorkflowGraph {
+            schema_version: 1,
+            nodes: BTreeMap::from([
+                (
+                    "video".to_owned(),
+                    GraphNode {
+                        node_type: "video.mock.text_to_video".to_owned(),
+                        title: "Video render".to_owned(),
+                        params: json!({
+                            "prompt": "clean product shot",
+                            "duration_sec": 4,
+                            "aspect_ratio": "9:16"
+                        }),
+                        pos: [0.0, 0.0],
+                    },
+                ),
+                (
+                    "save".to_owned(),
+                    GraphNode {
+                        node_type: "output.save".to_owned(),
+                        title: "Save".to_owned(),
+                        params: json!({}),
+                        pos: [240.0, 0.0],
+                    },
+                ),
+            ]),
+            edges: vec![GraphEdge {
+                from: ["video".to_owned(), "video".to_owned()],
+                to: ["save".to_owned(), "artifact".to_owned()],
+                edge_type: "artifact".to_owned(),
+            }],
         }
     }
 

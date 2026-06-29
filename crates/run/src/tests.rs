@@ -515,11 +515,9 @@ async fn sweep_plan_produces_multiple_outputs_and_selected_recommendation() {
     assert_eq!(outcome.runs.len(), 2);
     assert_eq!(outcome.group_id, pending.group_id);
     assert!(outcome.artifacts.len() >= 2);
-    assert!(outcome.recommendation.selected);
-    assert_eq!(
-        outcome.recommendation.run_id.as_deref(),
-        Some(run_ids[1].as_str())
-    );
+    let recommendation = outcome.recommendation.as_ref().expect("recommendation");
+    assert!(recommendation.selected);
+    assert_eq!(recommendation.run_id.as_deref(), Some(run_ids[1].as_str()));
     assert_eq!(
         outcome
             .artifacts
@@ -528,6 +526,59 @@ async fn sweep_plan_produces_multiple_outputs_and_selected_recommendation() {
             .count(),
         1
     );
+}
+
+#[tokio::test]
+async fn interrupted_sweep_marks_remaining_runs_interrupted_without_recommendation() {
+    let (store, _dir) = open_temp_store().await;
+    let (workspace_id, version_id) = workspace_version(&store).await;
+    let provider = BlockingProvider::default();
+    let service = RunService::with_provider(store.clone(), provider.clone());
+    let pending = service
+        .request_sweep_plan(SweepPlan {
+            workspace_id,
+            version_id,
+            label: "Prompt sweep".to_owned(),
+            variants: vec![
+                SweepVariant {
+                    label: "one".to_owned(),
+                    graph: executable_graph(),
+                },
+                SweepVariant {
+                    label: "two".to_owned(),
+                    graph: executable_graph(),
+                },
+            ],
+        })
+        .await
+        .expect("request sweep");
+    let run_ids: Vec<String> = pending.runs.iter().map(|run| run.run.id.clone()).collect();
+    let runner = service.clone();
+    let confirm_ids = run_ids.clone();
+    let recommended_run_id = run_ids[1].clone();
+    let handle = tokio::spawn(async move {
+        runner
+            .confirm_sweep_runs(&confirm_ids, &recommended_run_id)
+            .await
+    });
+
+    provider.wait_until_blocked().await;
+    service
+        .interrupt_run(&run_ids[0])
+        .await
+        .expect("interrupt active sweep run");
+    let outcome = tokio::time::timeout(Duration::from_secs(2), handle)
+        .await
+        .expect("sweep confirmation should stop after interrupt")
+        .expect("join sweep")
+        .expect("sweep outcome");
+
+    assert_eq!(outcome.recommendation, None);
+    assert!(outcome.artifacts.iter().all(|artifact| !artifact.selected));
+    for run_id in run_ids {
+        let run = store.run(&run_id).await.expect("sweep run");
+        assert_eq!(run.status, "interrupted");
+    }
 }
 
 #[tokio::test]

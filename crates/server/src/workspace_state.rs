@@ -72,11 +72,7 @@ pub(crate) async fn workspace_state_value(
                 .run_steps(&run.id)
                 .await
                 .map_err(ApiError::store)?;
-            let artifacts = state
-                .store
-                .run_artifacts(&run.id)
-                .await
-                .map_err(ApiError::store)?;
+            let artifacts = workspace_artifacts_for_run(state, run).await?;
             let costs = state
                 .store
                 .cost_ledger_for_run(&run.id)
@@ -108,6 +104,27 @@ pub(crate) async fn workspace_state_value(
         &costs,
         event_seq,
     ))
+}
+
+async fn workspace_artifacts_for_run(
+    state: &AppState,
+    run: &RunRecord,
+) -> Result<Vec<ArtifactRecord>, ApiError> {
+    if run.trigger == "sweep"
+        && let Some(group_id) = run.group_id.as_deref()
+    {
+        return state
+            .store
+            .artifacts_for_group(group_id)
+            .await
+            .map_err(ApiError::store);
+    }
+
+    state
+        .store
+        .run_artifacts(&run.id)
+        .await
+        .map_err(ApiError::store)
 }
 
 async fn current_version(

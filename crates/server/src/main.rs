@@ -11,6 +11,7 @@ mod artifact_routes;
 mod graph_files;
 mod proposal_routes;
 mod run_routes;
+mod sweep_support;
 mod version_routes;
 mod workbench_message;
 mod workbench_payload;

@@ -269,7 +269,12 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => ({
     if (!state) {
       return;
     }
+    const previousRun = state.run;
+    const previousPendingConfirmation = state.pendingConfirmation;
 
+    set((current) => ({
+      state: current.state ? markRunConfirming(current.state, runId) : current.state,
+    }));
     try {
       const response = await confirmWorkspaceRun(state.workspace.id, runId);
       set((current) => ({
@@ -278,7 +283,17 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => ({
     } catch (error) {
       const message = error instanceof Error ? error.message : 'run confirmation request failed';
       set((current) => ({
-        state: current.state ? appendSystemError(current.state, message) : current.state,
+        state:
+          current.state && current.state.workspace.id === state.workspace.id
+            ? appendSystemError(
+                {
+                  ...current.state,
+                  run: previousRun,
+                  pendingConfirmation: previousPendingConfirmation,
+                },
+                message,
+              )
+            : current.state,
       }));
     }
   },
@@ -414,6 +429,20 @@ function applyRunConfirmation(
     },
     response.run,
   );
+}
+
+function markRunConfirming(state: WorkbenchState, runId: string): WorkbenchState {
+  return {
+    ...state,
+    pendingConfirmation: null,
+    run:
+      state.run?.id === runId
+        ? {
+            ...state.run,
+            status: 'running',
+          }
+        : state.run,
+  };
 }
 
 function applyRunSnapshot(

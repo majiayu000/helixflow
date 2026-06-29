@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './app';
 import { ArtifactStage } from './components/artifact-stage';
 import { shouldSubmitComposerKey } from './components/chat-pane';
-import { HistoryPanel } from './components/run-panels';
+import { ConfirmModal, HistoryPanel } from './components/run-panels';
+import { TopBar } from './components/top-bar';
 import { applyRunEvent, useWorkbenchStore } from './store';
 import type { WorkbenchState } from './types';
 
@@ -135,6 +136,56 @@ describe('App', () => {
     expect(markup).toContain('1 个真实 artifact');
     expect(markup).toContain('版本与运行历史');
     expect(markup).toContain('Agent requested run');
+  });
+
+  it('renders seed sweep confirmation metadata', () => {
+    const markup = renderToStaticMarkup(
+      <ConfirmModal
+        busy={false}
+        confirmation={{
+          id: 'run_seed_404',
+          title: 'Seed sweep run plan',
+          summary: 'Seed sweep is waiting for confirmation (4 runs).',
+          cost: { amount: 1.68, currency: 'USD' },
+          runCount: 4,
+          pendingChanges: ['video.seed = 101', 'video.seed = 202'],
+          interruptible: true,
+        }}
+        onApprove={async () => {}}
+        onHold={async () => {}}
+      />,
+    );
+
+    expect(markup).toContain('4 次运行');
+    expect(markup).toContain('video.seed = 101');
+    expect(markup).toContain('执行期间可中断');
+    expect(markup).toContain('1.68 USD');
+  });
+
+  it('keeps the interrupt button enabled while another run action is busy', () => {
+    const markup = renderToStaticMarkup(
+      <TopBar
+        agentRunDisabled={true}
+        busy={true}
+        connection="live"
+        exportDisabled={true}
+        historyOpen={false}
+        onAgentRun={() => {}}
+        onExport={() => {}}
+        onHistory={() => {}}
+        onNewWorkspace={() => {}}
+        onQueue={() => {}}
+        onUndo={() => {}}
+        runDisabled={false}
+        running={true}
+        state={state}
+        undoDisabled={true}
+      />,
+    );
+
+    expect(markup).toContain('中断');
+    expect(markup).toContain('title="中断当前运行"');
+    expect(markup).not.toContain('title="中断当前运行" disabled=""');
   });
 
   it('renders agent runtime logs in a collapsed log group', () => {
@@ -853,6 +904,97 @@ describe('App', () => {
     expect(updated?.graph.nodes.find((node) => node.id === 'video')?.status).toBe('succeeded');
   });
 
+  it('marks a confirming run as running before the confirmation response returns', async () => {
+    const fetchControl: { resolve?: (response: Response) => void } = {};
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            fetchControl.resolve = resolve;
+          }),
+      ),
+    );
+    useWorkbenchStore.getState().setInitialState({
+      ...state,
+      run: {
+        ...(state.run as NonNullable<WorkbenchState['run']>),
+        status: 'waiting_confirmation',
+      },
+      pendingConfirmation: {
+        id: 'run_test_1',
+        title: 'Manual preview',
+        summary: 'Run is waiting for confirmation',
+        cost: { amount: 0, currency: 'USD' },
+      },
+    });
+
+    const pending = useWorkbenchStore.getState().confirmRun('run_test_1');
+
+    expect(useWorkbenchStore.getState().state?.run?.status).toBe('running');
+    expect(useWorkbenchStore.getState().state?.pendingConfirmation).toBeNull();
+    if (!fetchControl.resolve) {
+      throw new Error('fetch resolver was not installed');
+    }
+    fetchControl.resolve(
+      jsonResponse({
+        run: {
+          id: 'run_test_1',
+          label: 'Manual preview',
+          status: 'interrupted',
+          steps: [
+            { nodeId: 'text', title: 'text', state: 'skipped', provider: null },
+            { nodeId: 'video', title: 'video', state: 'skipped', provider: 'mock' },
+          ],
+          cost: { estimate: 0, actual: 0, currency: 'USD' },
+        },
+        outputs: [],
+        pendingConfirmation: null,
+      }),
+    );
+    await pending;
+
+    expect(useWorkbenchStore.getState().state?.run?.status).toBe('interrupted');
+  });
+
+  it('restores pending confirmation when a confirm request fails', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse(
+          {
+            error: 'provider unavailable',
+          },
+          503,
+        ),
+      ),
+    );
+    useWorkbenchStore.getState().setInitialState({
+      ...state,
+      run: {
+        ...(state.run as NonNullable<WorkbenchState['run']>),
+        status: 'waiting_confirmation',
+      },
+      pendingConfirmation: {
+        id: 'run_test_1',
+        title: 'Manual preview',
+        summary: 'Run is waiting for confirmation',
+        cost: { amount: 0, currency: 'USD' },
+      },
+    });
+
+    await useWorkbenchStore.getState().confirmRun('run_test_1');
+
+    const updated = useWorkbenchStore.getState().state;
+    expect(updated?.run?.status).toBe('waiting_confirmation');
+    expect(updated?.pendingConfirmation?.id).toBe('run_test_1');
+    expect(updated?.chat.messages.at(-1)).toMatchObject({
+      role: 'system',
+      kind: 'run_failed',
+      text: 'provider unavailable',
+    });
+  });
+
   it('holds a pending run through the run hold API', async () => {
     vi.stubGlobal(
       'fetch',
@@ -977,9 +1119,9 @@ describe('chat composer keyboard handling', () => {
   });
 });
 
-function jsonResponse(value: unknown): Response {
+function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
-    status: 200,
+    status,
     headers: { 'content-type': 'application/json' },
   });
 }
