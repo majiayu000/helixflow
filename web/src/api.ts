@@ -1,6 +1,7 @@
 import {
   RunConfirmationResponseSchema,
   RunEventEnvelopeSchema,
+  WorkflowGraphSchema,
   WorkspaceSummarySchema,
   WorkspaceMessageResponseSchema,
   WorkbenchStateSchema,
@@ -132,6 +133,20 @@ export async function interruptRun(runId: string): Promise<RunConfirmationRespon
   }
 
   return RunConfirmationResponseSchema.parse(body);
+}
+
+export async function exportWorkflowVersion(versionId: string): Promise<WorkflowGraph> {
+  const response = await fetch(`/api/versions/${encodeURIComponent(versionId)}/export`);
+  const body = await response.json();
+  if (!response.ok) {
+    const message =
+      body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+        ? body.error
+        : `workflow export request failed: ${response.status}`;
+    throw new Error(message);
+  }
+
+  return WorkflowGraphSchema.parse(body);
 }
 
 export async function holdWorkspaceRun(

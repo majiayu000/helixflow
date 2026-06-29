@@ -456,6 +456,53 @@ describe('App', () => {
     expect(updated?.run?.steps.find((step) => step.nodeId === 'video')?.state).toBe('skipped');
   });
 
+  it('exports the server-owned current workflow version instead of pending proposal preview', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        return jsonResponse({
+          schema_version: 1,
+          nodes: {
+            text: {
+              node_type: 'input.text',
+              title: 'Launch note',
+              params: { text: 'Create a vertical product teaser.' },
+              pos: [48, 158],
+            },
+            video: {
+              node_type: 'video.mock.text_to_video',
+              title: 'Video render',
+              params: {
+                prompt: 'clean product shot',
+                duration_sec: 5,
+                aspect_ratio: '9:16',
+              },
+              pos: [486, 156],
+            },
+          },
+          edges: [
+            {
+              from: ['text', 'text'],
+              to: ['video', 'prompt'],
+              edge_type: 'text',
+            },
+          ],
+        });
+      }),
+    );
+    useWorkbenchStore.getState().setInitialState({
+      ...state,
+      pendingProposal: pendingProposal(),
+    });
+
+    const exported = await useWorkbenchStore.getState().exportWorkflow();
+
+    const fetchMock = vi.mocked(fetch);
+    expect(fetchMock).toHaveBeenCalledWith('/api/versions/ver_test_1/export');
+    expect(exported?.nodes.video.params).toMatchObject({ duration_sec: 5 });
+    expect(useWorkbenchStore.getState().state?.pendingProposal?.id).toBe('proposal_1');
+  });
+
   it('resets per-run event sequencing when a new run snapshot arrives', async () => {
     vi.stubGlobal(
       'fetch',
