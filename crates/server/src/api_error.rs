@@ -52,9 +52,26 @@ impl ApiError {
     }
 
     pub(crate) fn run(err: RunError) -> Self {
-        Self {
-            status: StatusCode::BAD_GATEWAY,
-            message: err.to_string(),
+        match err {
+            RunError::Graph(_)
+            | RunError::MissingInput { .. }
+            | RunError::MissingParam { .. }
+            | RunError::UnsupportedBuiltin(_) => Self {
+                status: StatusCode::UNPROCESSABLE_ENTITY,
+                message: err.to_string(),
+            },
+            RunError::InvalidRunStatus { .. } | RunError::RunNotActive(_) => Self {
+                status: StatusCode::CONFLICT,
+                message: err.to_string(),
+            },
+            RunError::Store(err) => Self::store(err),
+            RunError::Json(err) => Self::server_error(err.to_string()),
+            RunError::Provider(_)
+            | RunError::InvalidSweepPlan(_)
+            | RunError::MixedCostCurrency { .. } => Self {
+                status: StatusCode::BAD_GATEWAY,
+                message: err.to_string(),
+            },
         }
     }
 

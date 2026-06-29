@@ -6,6 +6,7 @@ type TopBarProps = {
   state: WorkbenchState;
   connection: ConnectionStatus;
   historyOpen: boolean;
+  agentRunDisabled: boolean;
   runDisabled: boolean;
   running: boolean;
   busy: boolean;
@@ -19,6 +20,7 @@ export function TopBar({
   state,
   connection,
   historyOpen,
+  agentRunDisabled,
   runDisabled,
   running,
   busy,
@@ -80,7 +82,7 @@ export function TopBar({
           <Icon n="export" />
         </button>
         <span className="divider-v" />
-        <button className="btn btn--soft btn--sm" disabled={runDisabled || busy} onClick={onAgentRun}>
+        <button className="btn btn--soft btn--sm" disabled={agentRunDisabled || busy} onClick={onAgentRun}>
           <Icon n="spark" s={13} fill />
           Agent 运行
         </button>
@@ -97,7 +99,7 @@ export function TopBar({
           onClick={onQueue}
         >
           <Icon n={running ? 'stop' : 'play'} s={13} fill />
-          {running ? '运行中' : '运行 Queue'}
+          {running ? '中断' : '运行 Queue'}
         </button>
       </div>
     </div>

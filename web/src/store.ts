@@ -7,6 +7,8 @@ import {
   fetchWorkspaceState,
   fetchWorkspaces,
   holdWorkspaceRun,
+  interruptRun as interruptRunRequest,
+  queueWorkspaceRun,
   sendWorkspaceMessage,
   type ConnectionStatus,
 } from './api';
@@ -35,6 +37,8 @@ type WorkbenchStore = {
   setConnection: (status: ConnectionStatus) => void;
   applyEvent: (event: RunEventEnvelope) => void;
   sendMessage: (text: string) => Promise<void>;
+  queueRun: () => Promise<void>;
+  interruptRun: (runId?: string) => Promise<void>;
   confirmRun: (runId: string) => Promise<void>;
   holdRun: (runId: string) => Promise<void>;
   applyProposal: (proposalId: string) => Promise<void>;
@@ -150,6 +154,43 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => ({
     set((current) => ({
       state: current.state ? applyRunEvent(current.state, event) : current.state,
     })),
+  queueRun: async () => {
+    const state = get().state;
+    if (!state) {
+      return;
+    }
+
+    try {
+      const response = await queueWorkspaceRun(state.workspace.id);
+      set((current) => ({
+        state: current.state ? applyRunConfirmation(current.state, response) : current.state,
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'run queue request failed';
+      set((current) => ({
+        state: current.state ? appendSystemError(current.state, message) : current.state,
+      }));
+    }
+  },
+  interruptRun: async (runId) => {
+    const state = get().state;
+    const targetRunId = runId ?? state?.run?.id;
+    if (!state || !targetRunId) {
+      return;
+    }
+
+    try {
+      const response = await interruptRunRequest(targetRunId);
+      set((current) => ({
+        state: current.state ? applyRunConfirmation(current.state, response) : current.state,
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'run interrupt request failed';
+      set((current) => ({
+        state: current.state ? appendSystemError(current.state, message) : current.state,
+      }));
+    }
+  },
   confirmRun: async (runId) => {
     const state = get().state;
     if (!state) {
@@ -164,17 +205,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => ({
     } catch (error) {
       const message = error instanceof Error ? error.message : 'run confirmation request failed';
       set((current) => ({
-        state: current.state
-          ? appendChatMessages(current.state, [
-              {
-                id: `msg_system_${Date.now()}`,
-                role: 'system',
-                kind: 'run_failed',
-                text: message,
-                time: messageTime(),
-              },
-            ])
-          : current.state,
+        state: current.state ? appendSystemError(current.state, message) : current.state,
       }));
     }
   },
@@ -192,17 +223,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => ({
     } catch (error) {
       const message = error instanceof Error ? error.message : 'run hold request failed';
       set((current) => ({
-        state: current.state
-          ? appendChatMessages(current.state, [
-              {
-                id: `msg_system_${Date.now()}`,
-                role: 'system',
-                kind: 'run_failed',
-                text: message,
-                time: messageTime(),
-              },
-            ])
-          : current.state,
+        state: current.state ? appendSystemError(current.state, message) : current.state,
       }));
     }
   },
@@ -271,6 +292,18 @@ function appendChatMessages(
       messages: [...state.chat.messages, ...messages],
     },
   };
+}
+
+function appendSystemError(state: WorkbenchState, message: string): WorkbenchState {
+  return appendChatMessages(state, [
+    {
+      id: `msg_system_${Date.now()}`,
+      role: 'system',
+      kind: 'run_failed',
+      text: message,
+      time: messageTime(),
+    },
+  ]);
 }
 
 function applyMessageResponse(

@@ -39,6 +39,8 @@ export function App({ initialState, workspaceId }: AppProps) {
   const dismissProposal = useWorkbenchStore((store) => store.dismissProposal);
   const confirmRun = useWorkbenchStore((store) => store.confirmRun);
   const holdRun = useWorkbenchStore((store) => store.holdRun);
+  const queueRun = useWorkbenchStore((store) => store.queueRun);
+  const interruptRun = useWorkbenchStore((store) => store.interruptRun);
   const activeState = initialState ?? state;
 
   const refreshWorkspaces = useCallback(async () => {
@@ -77,14 +79,19 @@ export function App({ initialState, workspaceId }: AppProps) {
   }
 
   const uiState = stateForUi(activeState);
-  const running = uiState.run.status === 'running' || uiState.run.status === 'estimating';
+  const activeRun = Boolean(
+    activeState.run &&
+      (activeState.run.status === 'queued' ||
+        activeState.run.status === 'running' ||
+        activeState.run.status === 'estimating'),
+  );
   const hasProviderNodes = activeState.graph.nodes.some((node) => Boolean(node.provider));
   const providerReady = activeState.providers.providers.some(
     (provider) => provider.id === activeState.providers.defaultProvider && provider.enabled,
   );
   const queueDisabled =
     busy ||
-    running ||
+    activeRun ||
     activeState.graph.nodes.length === 0 ||
     (hasProviderNodes && !providerReady) ||
     Boolean(activeState.pendingConfirmation) ||
@@ -121,15 +128,16 @@ export function App({ initialState, workspaceId }: AppProps) {
   return (
     <main className="wb">
       <TopBar
+        agentRunDisabled={queueDisabled}
         busy={busy}
         connection={connection}
         historyOpen={historyOpen}
         onAgentRun={() => void runAction(() => sendMessage('运行当前 workflow'))}
         onHistory={() => setHistoryOpen((open) => !open)}
         onNewWorkspace={createWorkspace}
-        onQueue={() => void runAction(() => sendMessage('运行当前 workflow'))}
-        runDisabled={queueDisabled}
-        running={running}
+        onQueue={() => void runAction(() => (activeRun ? interruptRun() : queueRun()))}
+        runDisabled={activeRun ? false : queueDisabled}
+        running={activeRun}
         state={uiState}
       />
       {error && <div className="error-banner">{error}</div>}

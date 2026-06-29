@@ -102,6 +102,38 @@ export async function confirmWorkspaceRun(
   return RunConfirmationResponseSchema.parse(body);
 }
 
+export async function queueWorkspaceRun(workspaceId: string): Promise<RunConfirmationResponse> {
+  const response = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/runs`, {
+    method: 'POST',
+  });
+  const body = await response.json();
+  if (!response.ok) {
+    const message =
+      body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+        ? body.error
+        : `run queue request failed: ${response.status}`;
+    throw new Error(message);
+  }
+
+  return RunConfirmationResponseSchema.parse(body);
+}
+
+export async function interruptRun(runId: string): Promise<RunConfirmationResponse> {
+  const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/interrupt`, {
+    method: 'POST',
+  });
+  const body = await response.json();
+  if (!response.ok) {
+    const message =
+      body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+        ? body.error
+        : `run interrupt request failed: ${response.status}`;
+    throw new Error(message);
+  }
+
+  return RunConfirmationResponseSchema.parse(body);
+}
+
 export async function holdWorkspaceRun(
   workspaceId: string,
   runId: string,
