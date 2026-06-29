@@ -54,6 +54,7 @@ impl ApiError {
     pub(crate) fn run(err: RunError) -> Self {
         match err {
             RunError::Graph(_)
+            | RunError::NoExecutableSteps
             | RunError::MissingInput { .. }
             | RunError::MissingParam { .. }
             | RunError::UnsupportedBuiltin(_) => Self {

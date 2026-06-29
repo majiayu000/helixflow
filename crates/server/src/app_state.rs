@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::{error::Error, fmt};
@@ -10,6 +11,7 @@ use helixflow_agent::{
 use helixflow_gateway::{Provider, RuntimeProvider};
 use helixflow_run::{EventBus, RunService};
 use helixflow_store::{Store, StoreError};
+use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub(crate) struct AppState {
@@ -19,6 +21,7 @@ pub(crate) struct AppState {
     pub(crate) store: Store,
     pub(crate) data_dir: PathBuf,
     pub(crate) runner: RunService<RuntimeProvider>,
+    pub(crate) run_queue_locks: Arc<Mutex<BTreeMap<String, Arc<Mutex<()>>>>>,
 }
 
 impl AppState {
@@ -44,6 +47,7 @@ impl AppState {
             events: events.clone(),
         });
         let runner = RunService::with_provider_and_events(store.clone(), provider, events.clone());
+        let run_queue_locks = Arc::new(Mutex::new(BTreeMap::new()));
         Self {
             events,
             agent,
@@ -51,6 +55,7 @@ impl AppState {
             store,
             data_dir,
             runner,
+            run_queue_locks,
         }
     }
 
@@ -67,6 +72,7 @@ impl AppState {
             RuntimeProvider::mock(),
             events.clone(),
         );
+        let run_queue_locks = Arc::new(Mutex::new(BTreeMap::new()));
         Self {
             events,
             agent,
@@ -74,6 +80,7 @@ impl AppState {
             runner,
             store,
             data_dir,
+            run_queue_locks,
         }
     }
 }

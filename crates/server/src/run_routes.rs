@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::{
     Json,
     extract::{Path, State},
@@ -13,6 +15,7 @@ use crate::workbench_payload::{
     OutputPayload, PendingConfirmationPayload, RunPayload, output_payload_from_artifact,
     run_payload_from_outcome,
 };
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +29,7 @@ pub(crate) async fn queue_workspace_run(
     Path(workspace_id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<RunConfirmationResponse>, ApiError> {
+    let _queue_claim = claim_workspace_run_queue(&state, &workspace_id).await?;
     reject_active_workspace_run(&state, &workspace_id).await?;
     let workspace = state
         .store
@@ -198,6 +202,23 @@ async fn reject_active_workspace_run(state: &AppState, workspace_id: &str) -> Re
     Ok(())
 }
 
+async fn claim_workspace_run_queue(
+    state: &AppState,
+    workspace_id: &str,
+) -> Result<OwnedMutexGuard<()>, ApiError> {
+    let lock: Arc<Mutex<()>> = {
+        let mut locks = state.run_queue_locks.lock().await;
+        locks
+            .entry(workspace_id.to_owned())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    };
+    lock.try_lock_owned().map_err(|_| ApiError {
+        status: StatusCode::CONFLICT,
+        message: format!("workspace already has a queue request in flight: {workspace_id}"),
+    })
+}
+
 fn is_active_status(status: &str) -> bool {
     matches!(
         status,
@@ -336,6 +357,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn queue_route_rejects_empty_current_graph() {
+        let (state, workspace_id, _version_id, _dir) = state_with_workspace().await;
+        write_graph(&state, &empty_graph()).await;
+
+        let err = queue_workspace_run(Path(workspace_id), State(state))
+            .await
+            .expect_err("empty graph should not be queued");
+
+        assert_eq!(err.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(err.message.contains("no executable steps"));
+    }
+
+    #[tokio::test]
+    async fn queue_route_rejects_concurrent_in_flight_queue_request() {
+        let (state, workspace_id, _version_id, _dir) = state_with_workspace().await;
+        write_current_graph(&state).await;
+        let _claim = claim_workspace_run_queue(&state, &workspace_id)
+            .await
+            .expect("claim queue");
+
+        let err = queue_workspace_run(Path(workspace_id), State(state))
+            .await
+            .expect_err("second queue should fail while first is in flight");
+
+        assert_eq!(err.status, StatusCode::CONFLICT);
+        assert!(err.message.contains("queue request in flight"));
+    }
+
+    #[tokio::test]
     async fn queue_route_rejects_waiting_confirmation_double_submit() {
         let (state, workspace_id, version_id, _dir) = state_with_workspace().await;
         write_current_graph(&state).await;
@@ -427,14 +477,26 @@ mod tests {
         }
     }
 
+    fn empty_graph() -> WorkflowGraph {
+        WorkflowGraph {
+            schema_version: 1,
+            nodes: BTreeMap::new(),
+            edges: Vec::new(),
+        }
+    }
+
     async fn write_current_graph(state: &AppState) {
+        write_graph(state, &sample_graph()).await;
+    }
+
+    async fn write_graph(state: &AppState, graph: &WorkflowGraph) {
         let graph_path = state.data_dir.join("graphs/run.json");
         tokio::fs::create_dir_all(graph_path.parent().expect("graph parent"))
             .await
             .expect("create graph dir");
         tokio::fs::write(
             graph_path,
-            serde_json::to_vec_pretty(&sample_graph()).expect("encode graph"),
+            serde_json::to_vec_pretty(graph).expect("encode graph"),
         )
         .await
         .expect("write graph");

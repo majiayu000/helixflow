@@ -22,6 +22,7 @@ pub enum RunError {
         expected: String,
         actual: String,
     },
+    NoExecutableSteps,
     MissingInput {
         node_id: String,
         port: String,
@@ -58,6 +59,7 @@ impl fmt::Display for RunError {
                     "mixed cost currencies are unsupported: `{expected}` and `{actual}`"
                 )
             }
+            Self::NoExecutableSteps => write!(f, "workflow has no executable steps"),
             Self::MissingInput { node_id, port } => {
                 write!(f, "missing resolved input `{port}` for node `{node_id}`")
             }

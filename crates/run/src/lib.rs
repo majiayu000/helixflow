@@ -209,6 +209,9 @@ where
         let plan = self
             .graph
             .compile_plan(&request.graph, &request.version_id)?;
+        if plan.steps.is_empty() {
+            return Err(RunError::NoExecutableSteps);
+        }
         let plan_json = serde_json::to_string(&plan)?;
         let run = self
             .store
