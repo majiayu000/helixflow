@@ -342,6 +342,19 @@ mod tests {
             body["workflowGraph"]["nodes"]["video"]["params"]["duration_sec"],
             5
         );
+
+        let reloaded = crate::workspace_state::workspace_state(
+            Path(workspace_id.clone()),
+            State(state.clone()),
+        )
+        .await
+        .expect("reload workspace state")
+        .0;
+        assert_eq!(reloaded["workspace"]["versionId"], restored_version_id);
+        assert_eq!(
+            reloaded["workflowGraph"]["nodes"]["video"]["params"]["duration_sec"],
+            5
+        );
     }
 
     #[tokio::test]
