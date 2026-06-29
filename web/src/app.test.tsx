@@ -378,6 +378,50 @@ describe('App', () => {
     expect(updated?.chat.messages.at(-1)?.kind).toBe('run_requested');
   });
 
+  it('resets per-run event sequencing when a new run snapshot arrives', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        return jsonResponse({
+          turnMode: 'run_request',
+          messages: [],
+          proposal: null,
+          run: {
+            id: 'run_new',
+            label: '运行当前 workflow',
+            status: 'running',
+            steps: [
+              { nodeId: 'text', title: 'text', state: 'queued', provider: null },
+              { nodeId: 'video', title: 'video', state: 'queued', provider: 'mock' },
+            ],
+            cost: { estimate: 0, actual: 0, currency: 'USD' },
+          },
+          pendingConfirmation: null,
+        });
+      }),
+    );
+    useWorkbenchStore.getState().setInitialState({ ...state, eventSeq: 8 });
+
+    await useWorkbenchStore.getState().sendMessage('运行当前 workflow');
+    const nextRun = useWorkbenchStore.getState().state;
+
+    expect(nextRun?.eventSeq).toBe(0);
+    expect(nextRun?.run?.id).toBe('run_new');
+
+    useWorkbenchStore.getState().applyEvent({
+      workspace_id: 'ws_test',
+      run_id: 'run_new',
+      seq: 1,
+      server_time: '2026-06-12T00:00:01Z',
+      ev: 'node.state',
+      data: { node_id: 'video', state: 'running' },
+    });
+
+    const updated = useWorkbenchStore.getState().state;
+    expect(updated?.eventSeq).toBe(1);
+    expect(updated?.run?.steps.find((step) => step.nodeId === 'video')?.state).toBe('running');
+  });
+
   it('applies proposal responses to pending proposal state', async () => {
     vi.stubGlobal(
       'fetch',

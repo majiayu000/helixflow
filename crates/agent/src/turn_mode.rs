@@ -143,11 +143,11 @@ pub fn classify_turn_mode(
     if contains_any(&normalized, CHAT_KEYWORDS) {
         return Ok(TurnMode::Chat);
     }
-    if contains_any(&normalized, CREATE_KEYWORDS) {
-        return Ok(TurnMode::CreateWorkflow);
-    }
     if contains_any(&normalized, MODIFY_KEYWORDS) {
         return Ok(TurnMode::ModifyWorkflow);
+    }
+    if contains_any(&normalized, CREATE_KEYWORDS) {
+        return Ok(TurnMode::CreateWorkflow);
     }
     if graph.nodes.is_empty() && contains_any(&normalized, WORKFLOW_NOUNS) {
         return Ok(TurnMode::CreateWorkflow);
@@ -184,8 +184,6 @@ const CREATE_KEYWORDS: &[&str] = &[
     "搭一个",
     "做一个",
     "生成一个工作流",
-    "workflow",
-    "工作流",
     "文生图",
     "图生图",
     "create",

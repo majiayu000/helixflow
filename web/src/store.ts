@@ -314,8 +314,11 @@ function applyRunSnapshot(
   state: WorkbenchState,
   run: NonNullable<WorkbenchState['run']>,
 ): WorkbenchState {
+  const eventSeq = state.run?.id === run.id ? state.eventSeq : 0;
+
   return {
     ...state,
+    eventSeq,
     run,
     graph: {
       ...state.graph,

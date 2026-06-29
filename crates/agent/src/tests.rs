@@ -137,6 +137,32 @@ fn classifies_run_requests_without_falling_back_to_workflow_change() {
 }
 
 #[test]
+fn classifies_modify_requests_before_broad_workflow_creation() {
+    assert_eq!(
+        classify_turn_mode("modify workflow duration", &sample_graph()).expect("mode"),
+        TurnMode::ModifyWorkflow
+    );
+    assert_eq!(
+        classify_turn_mode("把工作流时长改短", &sample_graph()).expect("mode"),
+        TurnMode::ModifyWorkflow
+    );
+    assert_eq!(
+        classify_turn_mode("创建一个 workflow", &sample_graph()).expect("mode"),
+        TurnMode::CreateWorkflow
+    );
+    assert!(classify_turn_mode("workflow", &sample_graph()).is_err());
+    let empty_graph = WorkflowGraph {
+        schema_version: 1,
+        nodes: BTreeMap::new(),
+        edges: Vec::new(),
+    };
+    assert_eq!(
+        classify_turn_mode("workflow", &empty_graph).expect("mode"),
+        TurnMode::CreateWorkflow
+    );
+}
+
+#[test]
 fn codex_runtime_uses_array_command_in_session_dir() {
     let dir = tempfile::tempdir().expect("temp dir");
     let session = create_session_contract(&request(&dir)).expect("session");
