@@ -177,6 +177,32 @@ describe('App', () => {
     expect(updated.run?.steps.find((step) => step.nodeId === 'video')?.state).toBe('running');
   });
 
+  it('applies websocket failure events to visible diagnosis state', () => {
+    const failedStep = applyRunEvent(state, {
+      workspace_id: 'ws_test',
+      run_id: 'run_test_1',
+      seq: 8,
+      server_time: '2026-06-12T00:00:01Z',
+      ev: 'node.state',
+      data: { node_id: 'video', state: 'failed', error: 'provider rejected duration\nstack line 1' },
+    });
+    const failedRun = applyRunEvent(failedStep, {
+      workspace_id: 'ws_test',
+      run_id: 'run_test_1',
+      seq: 9,
+      server_time: '2026-06-12T00:00:02Z',
+      ev: 'run.failed',
+      data: { error: 'provider rejected duration\nstack line 1' },
+    });
+
+    expect(failedRun.graph.nodes.find((node) => node.id === 'video')?.status).toBe('failed');
+    expect(failedRun.run?.status).toBe('failed');
+    expect(failedRun.run?.error?.summary).toBe('provider rejected duration');
+    expect(failedRun.run?.steps.find((step) => step.nodeId === 'video')?.error?.raw).toContain(
+      'stack line',
+    );
+  });
+
   it('ignores websocket events for another run in the same workspace', () => {
     const updated = applyRunEvent(state, {
       workspace_id: 'ws_test',
@@ -217,6 +243,16 @@ describe('App', () => {
     const markup = renderToStaticMarkup(<App initialState={{ ...state, run: null }} />);
 
     expect(markup).toContain('未运行');
+  });
+
+  it('renders failed run diagnosis card without raw error by default', () => {
+    const markup = renderToStaticMarkup(<App initialState={failedRunState()} />);
+
+    expect(markup).toContain('运行失败');
+    expect(markup).toContain('provider rejected duration');
+    expect(markup).toContain('查看 raw error');
+    expect(markup).toContain('node--err');
+    expect(markup).not.toContain('stack line 1');
   });
 
   it('renders pending proposal actions from workspace state', () => {
@@ -1032,5 +1068,37 @@ function restoredState(versionId: string, durationSec: number): WorkbenchState {
         summary: 'restore graph',
       },
     ],
+  };
+}
+
+function failedRunState(): WorkbenchState {
+  return {
+    ...state,
+    graph: {
+      ...state.graph,
+      nodes: state.graph.nodes.map((node) =>
+        node.id === 'video' ? { ...node, status: 'failed' } : node,
+      ),
+    },
+    run: {
+      ...state.run!,
+      status: 'failed',
+      error: {
+        summary: 'provider rejected duration',
+        raw: '{"error":"provider rejected duration","trace":"stack line 1"}',
+      },
+      steps: state.run!.steps.map((step) =>
+        step.nodeId === 'video'
+          ? {
+              ...step,
+              state: 'failed',
+              error: {
+                summary: 'provider rejected duration',
+                raw: '{"error":"provider rejected duration","trace":"stack line 1"}',
+              },
+            }
+          : step,
+      ),
+    },
   };
 }

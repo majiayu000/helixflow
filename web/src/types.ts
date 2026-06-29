@@ -148,12 +148,26 @@ const RunStepSchema = z.object({
   title: z.string(),
   state: RunStepStateSchema,
   provider: z.string().nullable(),
+  error: z
+    .object({
+      summary: z.string(),
+      raw: z.string().nullable().optional(),
+    })
+    .nullable()
+    .optional(),
 });
 
 const RunSchema = z.object({
   id: z.string(),
   label: z.string(),
   status: RunStatusSchema,
+  error: z
+    .object({
+      summary: z.string(),
+      raw: z.string().nullable().optional(),
+    })
+    .nullable()
+    .optional(),
   steps: z.array(RunStepSchema),
   cost: z.object({
     estimate: z.number(),
