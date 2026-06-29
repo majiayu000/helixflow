@@ -11,6 +11,7 @@ import {
   interruptRun as interruptRunRequest,
   queueWorkspaceRun,
   restoreWorkspaceVersion,
+  selectOutput as selectOutputRequest,
   sendWorkspaceMessage,
   undoWorkspaceVersion,
   type ConnectionStatus,
@@ -45,6 +46,7 @@ type WorkbenchStore = {
   exportWorkflow: () => Promise<WorkflowGraph | null>;
   undoVersion: () => Promise<void>;
   restoreVersion: (versionId: string) => Promise<void>;
+  selectOutput: (outputId: string) => Promise<void>;
   confirmRun: (runId: string) => Promise<void>;
   holdRun: (runId: string) => Promise<void>;
   applyProposal: (proposalId: string) => Promise<void>;
@@ -241,6 +243,22 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => ({
       set({ state: next, status: 'ready', error: null });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'workspace restore request failed';
+      set((current) => ({
+        state: current.state ? appendSystemError(current.state, message) : current.state,
+      }));
+    }
+  },
+  selectOutput: async (outputId) => {
+    const state = get().state;
+    if (!state) {
+      return;
+    }
+
+    try {
+      const next = await selectOutputRequest(outputId);
+      set({ state: next, status: 'ready', error: null });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'output select request failed';
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
       }));

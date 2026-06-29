@@ -1,7 +1,8 @@
 use helixflow_graph::{PreparedProposal, ProposalKind, ProposalOp, ProposalState, WorkflowGraph};
 use helixflow_run::{PendingRun, RunOutcome};
 use helixflow_store::{ArtifactRecord, CostLedgerRecord, ProposalRecord, RunRecord, RunStepRecord};
-use serde::Serialize;
+use serde::{Serialize, Serializer};
+use serde_json::{Value, json};
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -38,6 +39,33 @@ pub(crate) struct OutputPayload {
     pub(crate) storage_uri: String,
     pub(crate) selected: bool,
     pub(crate) meta: String,
+    pub(crate) mime: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) preview: Option<OutputPreviewPayload>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub(crate) struct OutputPreviewPayload {
+    pub(crate) kind: OutputPreviewKind,
+    pub(crate) content: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum OutputPreviewKind {
+    Html,
+    Text,
+}
+
+impl Serialize for OutputPreviewKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(match self {
+            Self::Html => "html",
+            Self::Text => "text",
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -134,17 +162,79 @@ pub(crate) fn pending_confirmation_from_run(
 }
 
 pub(crate) fn output_payload_from_artifact(artifact: &ArtifactRecord) -> OutputPayload {
+    let title = artifact
+        .node_id
+        .clone()
+        .unwrap_or_else(|| artifact.kind.clone());
     OutputPayload {
         id: artifact.id.clone(),
         kind: artifact.kind.clone(),
-        title: artifact
-            .node_id
-            .clone()
-            .unwrap_or_else(|| artifact.kind.clone()),
-        storage_uri: artifact.storage_uri.clone(),
+        title: title.clone(),
+        storage_uri: safe_download_uri(&artifact.id),
         selected: artifact.selected,
         meta: artifact.meta_json.clone().unwrap_or_default(),
+        mime: artifact.mime.clone(),
+        preview: output_preview_from_artifact(artifact, &title),
     }
+}
+
+pub(crate) fn safe_download_uri(artifact_id: &str) -> String {
+    format!("/api/outputs/{artifact_id}/download")
+}
+
+pub(crate) fn output_preview_from_artifact(
+    artifact: &ArtifactRecord,
+    title: &str,
+) -> Option<OutputPreviewPayload> {
+    let meta = artifact
+        .meta_json
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<Value>(value).ok())
+        .unwrap_or_else(|| json!({}));
+    let mut lines = vec![
+        format!("Artifact: {title}"),
+        format!("Kind: {}", artifact.kind),
+    ];
+    if let Some(mime) = &artifact.mime {
+        lines.push(format!("MIME: {mime}"));
+    }
+    if let (Some(width), Some(height)) = (artifact.width, artifact.height) {
+        lines.push(format!("Size: {width} x {height}"));
+    }
+    if let Some(duration_ms) = artifact.duration_ms {
+        lines.push(format!("Duration: {:.2}s", duration_ms as f64 / 1000.0));
+    }
+    if let Some(provider) = meta.get("provider").and_then(Value::as_str) {
+        lines.push(format!("Provider: {provider}"));
+    }
+    if let Some(capability) = meta.get("capability").and_then(Value::as_str) {
+        lines.push(format!("Capability: {capability}"));
+    }
+    lines.push(format!("Download: {}", safe_download_uri(&artifact.id)));
+
+    match artifact.kind.as_str() {
+        "html" => Some(OutputPreviewPayload {
+            kind: OutputPreviewKind::Html,
+            content: format!(
+                "<!doctype html><meta charset=\"utf-8\"><pre>{}</pre>",
+                html_escape(&lines.join("\n"))
+            ),
+        }),
+        "text" | "json" | "markdown" | "image" | "video" => Some(OutputPreviewPayload {
+            kind: OutputPreviewKind::Text,
+            content: lines.join("\n"),
+        }),
+        _ => None,
+    }
+}
+
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 pub(crate) fn proposal_payload_from_prepared(

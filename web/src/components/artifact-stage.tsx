@@ -27,7 +27,7 @@ export function ArtifactStage({ outputs }: ArtifactStageProps) {
         {artifact.preview.kind === 'html' ? (
           <iframe
             className="artifact-frame"
-            sandbox="allow-scripts"
+            sandbox=""
             srcDoc={artifact.preview.content}
             title={artifact.title}
           />
