@@ -10,7 +10,9 @@ import {
   holdWorkspaceRun,
   interruptRun as interruptRunRequest,
   queueWorkspaceRun,
+  restoreWorkspaceVersion,
   sendWorkspaceMessage,
+  undoWorkspaceVersion,
   type ConnectionStatus,
 } from './api';
 import type {
@@ -41,6 +43,8 @@ type WorkbenchStore = {
   queueRun: () => Promise<void>;
   interruptRun: (runId?: string) => Promise<void>;
   exportWorkflow: () => Promise<WorkflowGraph | null>;
+  undoVersion: () => Promise<void>;
+  restoreVersion: (versionId: string) => Promise<void>;
   confirmRun: (runId: string) => Promise<void>;
   holdRun: (runId: string) => Promise<void>;
   applyProposal: (proposalId: string) => Promise<void>;
@@ -208,6 +212,38 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
       }));
       return null;
+    }
+  },
+  undoVersion: async () => {
+    const state = get().state;
+    if (!state) {
+      return;
+    }
+
+    try {
+      const next = await undoWorkspaceVersion(state.workspace.id);
+      set({ state: next, status: 'ready', error: null });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'workspace undo request failed';
+      set((current) => ({
+        state: current.state ? appendSystemError(current.state, message) : current.state,
+      }));
+    }
+  },
+  restoreVersion: async (versionId) => {
+    const state = get().state;
+    if (!state) {
+      return;
+    }
+
+    try {
+      const next = await restoreWorkspaceVersion(state.workspace.id, versionId);
+      set({ state: next, status: 'ready', error: null });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'workspace restore request failed';
+      set((current) => ({
+        state: current.state ? appendSystemError(current.state, message) : current.state,
+      }));
     }
   },
   confirmRun: async (runId) => {

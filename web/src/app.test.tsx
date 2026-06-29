@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './app';
 import { shouldSubmitComposerKey } from './components/chat-pane';
+import { HistoryPanel } from './components/run-panels';
 import { applyRunEvent, useWorkbenchStore } from './store';
 import type { WorkbenchState } from './types';
 
@@ -503,6 +504,73 @@ describe('App', () => {
     expect(useWorkbenchStore.getState().state?.pendingProposal?.id).toBe('proposal_1');
   });
 
+  it('undoes the current workflow through the workspace version API', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        return jsonResponse(restoredState('ver_undo_1', 5));
+      }),
+    );
+    useWorkbenchStore.getState().setInitialState({
+      ...state,
+      history: [
+        { id: 'ver_base', kind: 'version', label: 'Base graph', time: '09:01', summary: 'manual graph' },
+        { id: 'ver_test_1', kind: 'version', label: 'Shorter clip', time: '09:05', summary: 'proposal graph' },
+      ],
+    });
+
+    await useWorkbenchStore.getState().undoVersion();
+
+    const fetchMock = vi.mocked(fetch);
+    expect(fetchMock).toHaveBeenCalledWith('/api/workspaces/ws_test/versions/undo', {
+      method: 'POST',
+    });
+    const updated = useWorkbenchStore.getState().state;
+    expect(updated?.workspace.versionId).toBe('ver_undo_1');
+    expect(updated?.workflowGraph?.nodes.video.params).toMatchObject({ duration_sec: 5 });
+  });
+
+  it('restores a history version through the workspace version API', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        return jsonResponse(restoredState('ver_restore_1', 5));
+      }),
+    );
+    useWorkbenchStore.getState().setInitialState(state);
+
+    await useWorkbenchStore.getState().restoreVersion('ver_base');
+
+    const fetchMock = vi.mocked(fetch);
+    expect(fetchMock).toHaveBeenCalledWith('/api/workspaces/ws_test/versions/ver_base/restore', {
+      method: 'POST',
+    });
+    expect(useWorkbenchStore.getState().state?.workspace.versionId).toBe('ver_restore_1');
+  });
+
+  it('renders restore actions for historical version rows', () => {
+    const markup = renderToStaticMarkup(
+      <HistoryPanel
+        busy={false}
+        currentVersionId="ver_current"
+        currentWorkspaceId="ws_test"
+        history={[
+          { id: 'ver_base', kind: 'version', label: 'Base graph', time: '09:01', summary: 'manual graph' },
+          { id: 'ver_current', kind: 'version', label: 'Current graph', time: '09:05', summary: 'proposal graph' },
+        ]}
+        onClose={() => undefined}
+        onOpenWorkspace={() => undefined}
+        onRestoreVersion={() => undefined}
+        open
+        workspaceListError={null}
+        workspaces={[]}
+      />,
+    );
+
+    expect(markup).toContain('恢复');
+    expect(markup).toContain('当前');
+  });
+
   it('resets per-run event sequencing when a new run snapshot arrives', async () => {
     vi.stubGlobal(
       'fetch',
@@ -784,5 +852,59 @@ function pendingProposal(): NonNullable<WorkbenchState['pendingProposal']> {
     },
     state: 'pending',
     messageId: 'msg_agent_proposal',
+  };
+}
+
+function restoredState(versionId: string, durationSec: number): WorkbenchState {
+  return {
+    ...state,
+    workspace: {
+      ...state.workspace,
+      versionId,
+    },
+    graph: {
+      ...state.graph,
+      nodes: state.graph.nodes.map((node) =>
+        node.id === 'video' ? { ...node, summary: `${durationSec} seconds` } : node,
+      ),
+    },
+    workflowGraph: {
+      schema_version: 1,
+      nodes: {
+        text: {
+          node_type: 'input.text',
+          title: 'Launch note',
+          params: { text: 'Create a vertical product teaser.' },
+          pos: [48, 158],
+        },
+        video: {
+          node_type: 'video.mock.text_to_video',
+          title: 'Video render',
+          params: {
+            prompt: 'clean product shot',
+            duration_sec: durationSec,
+            aspect_ratio: '9:16',
+          },
+          pos: [486, 156],
+        },
+      },
+      edges: [
+        {
+          from: ['text', 'text'],
+          to: ['video', 'prompt'],
+          edge_type: 'text',
+        },
+      ],
+    },
+    history: [
+      ...state.history,
+      {
+        id: versionId,
+        kind: 'version',
+        label: 'Restore Base graph',
+        time: '09:06',
+        summary: 'restore graph',
+      },
+    ],
   };
 }

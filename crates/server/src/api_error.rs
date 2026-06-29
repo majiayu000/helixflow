@@ -25,6 +25,13 @@ impl ApiError {
         }
     }
 
+    pub(crate) fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            message: message.into(),
+        }
+    }
+
     pub(crate) fn store(err: StoreError) -> Self {
         if err.is_not_found() {
             return Self::not_found("workspace record was not found");

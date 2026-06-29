@@ -42,6 +42,8 @@ export function App({ initialState, workspaceId }: AppProps) {
   const queueRun = useWorkbenchStore((store) => store.queueRun);
   const interruptRun = useWorkbenchStore((store) => store.interruptRun);
   const exportWorkflow = useWorkbenchStore((store) => store.exportWorkflow);
+  const undoVersion = useWorkbenchStore((store) => store.undoVersion);
+  const restoreVersion = useWorkbenchStore((store) => store.restoreVersion);
   const activeState = initialState ?? state;
 
   const refreshWorkspaces = useCallback(async () => {
@@ -97,6 +99,8 @@ export function App({ initialState, workspaceId }: AppProps) {
     (hasProviderNodes && !providerReady) ||
     Boolean(activeState.pendingConfirmation) ||
     Boolean(activeState.pendingProposal);
+  const versionHistoryCount = activeState.history.filter((item) => item.kind === 'version').length;
+  const undoDisabled = busy || versionHistoryCount < 2;
 
   const runAction = async (action: () => Promise<void>) => {
     setBusy(true);
@@ -154,9 +158,11 @@ export function App({ initialState, workspaceId }: AppProps) {
         onHistory={() => setHistoryOpen((open) => !open)}
         onNewWorkspace={createWorkspace}
         onQueue={() => void runAction(() => (activeRun ? interruptRun() : queueRun()))}
+        onUndo={() => void runAction(() => undoVersion())}
         runDisabled={activeRun ? false : queueDisabled}
         running={activeRun}
         state={uiState}
+        undoDisabled={undoDisabled}
       />
       {error && <div className="error-banner">{error}</div>}
       <div className="wb-body">
@@ -177,10 +183,13 @@ export function App({ initialState, workspaceId }: AppProps) {
             run={uiState.run}
           />
           <HistoryPanel
+            busy={busy}
             history={activeState.history}
             currentWorkspaceId={activeState.workspace.id}
+            currentVersionId={activeState.workspace.versionId}
             onClose={() => setHistoryOpen(false)}
             onOpenWorkspace={openWorkspace}
+            onRestoreVersion={(id) => void runAction(() => restoreVersion(id))}
             open={historyOpen}
             workspaceListError={workspaceListError}
             workspaces={workspaceList}

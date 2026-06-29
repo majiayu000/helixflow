@@ -546,12 +546,32 @@
 
 .history-row {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 9px;
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
   padding: 8px 9px;
+}
+
+.history-tail {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.history-action {
+  min-width: 36px;
+  height: 24px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+.history-action:disabled {
+  opacity: 0.55;
 }
 
 .history-section-title {

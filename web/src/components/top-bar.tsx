@@ -8,6 +8,7 @@ type TopBarProps = {
   historyOpen: boolean;
   agentRunDisabled: boolean;
   exportDisabled: boolean;
+  undoDisabled: boolean;
   runDisabled: boolean;
   running: boolean;
   busy: boolean;
@@ -15,6 +16,7 @@ type TopBarProps = {
   onNewWorkspace: () => void;
   onAgentRun: () => void;
   onExport: () => void;
+  onUndo: () => void;
   onQueue: () => void;
 };
 
@@ -24,6 +26,7 @@ export function TopBar({
   historyOpen,
   agentRunDisabled,
   exportDisabled,
+  undoDisabled,
   runDisabled,
   running,
   busy,
@@ -31,6 +34,7 @@ export function TopBar({
   onNewWorkspace,
   onAgentRun,
   onExport,
+  onUndo,
   onQueue,
 }: TopBarProps) {
   const nodeCount = state.graph.nodes.length;
@@ -72,7 +76,12 @@ export function TopBar({
             {providerOk ? 'Atlas 已配置' : 'Atlas 未配置'}
           </span>
         </div>
-        <button className="ibtn ibtn--icon" title="撤销上次应用" disabled>
+        <button
+          className="ibtn ibtn--icon"
+          title="撤销上次应用"
+          disabled={undoDisabled}
+          onClick={onUndo}
+        >
           <Icon n="undo" />
         </button>
         <button
