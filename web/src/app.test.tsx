@@ -957,6 +957,44 @@ describe('App', () => {
     expect(useWorkbenchStore.getState().state?.run?.status).toBe('interrupted');
   });
 
+  it('restores pending confirmation when a confirm request fails', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse(
+          {
+            error: 'provider unavailable',
+          },
+          503,
+        ),
+      ),
+    );
+    useWorkbenchStore.getState().setInitialState({
+      ...state,
+      run: {
+        ...(state.run as NonNullable<WorkbenchState['run']>),
+        status: 'waiting_confirmation',
+      },
+      pendingConfirmation: {
+        id: 'run_test_1',
+        title: 'Manual preview',
+        summary: 'Run is waiting for confirmation',
+        cost: { amount: 0, currency: 'USD' },
+      },
+    });
+
+    await useWorkbenchStore.getState().confirmRun('run_test_1');
+
+    const updated = useWorkbenchStore.getState().state;
+    expect(updated?.run?.status).toBe('waiting_confirmation');
+    expect(updated?.pendingConfirmation?.id).toBe('run_test_1');
+    expect(updated?.chat.messages.at(-1)).toMatchObject({
+      role: 'system',
+      kind: 'run_failed',
+      text: 'provider unavailable',
+    });
+  });
+
   it('holds a pending run through the run hold API', async () => {
     vi.stubGlobal(
       'fetch',
@@ -1081,9 +1119,9 @@ describe('chat composer keyboard handling', () => {
   });
 });
 
-function jsonResponse(value: unknown): Response {
+function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
-    status: 200,
+    status,
     headers: { 'content-type': 'application/json' },
   });
 }
