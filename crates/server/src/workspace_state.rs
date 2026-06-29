@@ -2,6 +2,7 @@ use axum::{
     Json,
     extract::{Path as AxumPath, State},
 };
+use helixflow_agent::TurnMode;
 use helixflow_graph::{ProposalOp, WorkflowGraph};
 use helixflow_store::{
     ArtifactRecord, CostLedgerRecord, MessageRecord, ProposalRecord, RunRecord, RunStepRecord,
@@ -184,13 +185,31 @@ async fn pending_proposal_payload(
 }
 
 fn chat_message_payload(message: &MessageRecord) -> Value {
-    json!({
+    let mut payload = json!({
         "id": message.id,
         "role": message.role,
         "kind": message.kind,
         "text": message.text.clone().unwrap_or_default(),
         "time": message.created_at,
-    })
+    });
+    if let Some(turn_mode) = message_turn_mode(message) {
+        payload["turnMode"] = json!(turn_mode);
+    }
+    payload
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MessageMetadata {
+    turn_mode: Option<TurnMode>,
+}
+
+fn message_turn_mode(message: &MessageRecord) -> Option<TurnMode> {
+    message
+        .attachment_ids_json
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<MessageMetadata>(value).ok())
+        .and_then(|metadata| metadata.turn_mode)
 }
 
 fn graph_payload(graph: &WorkflowGraph, step_by_node: &BTreeMap<&str, &RunStepRecord>) -> Value {
@@ -369,7 +388,7 @@ mod tests {
                 kind: "text",
                 text: Some("Build this"),
                 ref_id: None,
-                attachment_ids_json: None,
+                attachment_ids_json: Some(r#"{"turnMode":"modify_workflow"}"#),
             })
             .await
             .expect("create message");
@@ -382,6 +401,7 @@ mod tests {
         assert_eq!(body["workspace"]["id"], workspace_id);
         assert_eq!(body["workspace"]["name"], "Store workspace");
         assert_eq!(body["chat"]["messages"][0]["text"], "Build this");
+        assert_eq!(body["chat"]["messages"][0]["turnMode"], "modify_workflow");
         assert_eq!(body["graph"]["nodes"].as_array().expect("nodes").len(), 1);
         assert_eq!(body["run"], Value::Null);
         assert!(body["pendingConfirmation"].is_null());

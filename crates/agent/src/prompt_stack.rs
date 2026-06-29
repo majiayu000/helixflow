@@ -128,10 +128,7 @@ pub fn build_prompt_stack(request: &AgentSessionRequest) -> PromptStack {
         section(
             PromptSectionKey::RunContext,
             "Run context",
-            format!(
-                "Workspace: {}\nBase version: {}\nAgent skill: {:?}",
-                request.workspace_id, request.base_version_id, request.skill
-            ),
+            run_context_body(request),
             true,
         ),
     ];
@@ -191,6 +188,23 @@ pub fn build_prompt_stack(request: &AgentSessionRequest) -> PromptStack {
         sections,
         output_contract,
     }
+}
+
+fn run_context_body(request: &AgentSessionRequest) -> String {
+    let mut body = format!(
+        "Workspace: {}\nBase version: {}\nAgent skill: {:?}",
+        request.workspace_id, request.base_version_id, request.skill
+    );
+    if let Some(run_context) = request
+        .run_context
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        body.push_str("\n\nLatest run context:\n");
+        body.push_str(run_context);
+    }
+    body
 }
 
 fn section(

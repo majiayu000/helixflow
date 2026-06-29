@@ -12,6 +12,20 @@ const state: WorkbenchState = {
     versionId: 'ver_test_1',
     updatedAt: '2026-06-12T00:00:00Z',
   },
+  providers: {
+    defaultProvider: 'mock',
+    providers: [
+      {
+        id: 'mock',
+        displayName: 'Mock',
+        configured: true,
+        enabled: true,
+        label: 'Mock runtime',
+        endpoint: null,
+        health: { ok: true, message: 'Mock runtime provider configured' },
+      },
+    ],
+  },
   chat: {
     messages: [
       {
@@ -110,12 +124,13 @@ describe('App', () => {
   it('renders the primary workbench layout from backend state', () => {
     const markup = renderToStaticMarkup(<App initialState={state} />);
 
+    expect(markup).toContain('ComfyUI Agent');
     expect(markup).toContain('Test Workspace');
-    expect(markup).toContain('Chat');
-    expect(markup).toContain('Canvas');
-    expect(markup).toContain('Run');
-    expect(markup).toContain('Outputs');
-    expect(markup).toContain('History');
+    expect(markup).toContain('对话');
+    expect(markup).toContain('2 节点');
+    expect(markup).toContain('运行中');
+    expect(markup).toContain('1 个真实 artifact');
+    expect(markup).toContain('版本与运行历史');
     expect(markup).toContain('Agent requested run');
   });
 
@@ -130,8 +145,8 @@ describe('App', () => {
               {
                 id: 'agent-status-agent_session_1',
                 role: 'agent',
-                kind: 'agent_log:status',
-                text: 'Drafting graph proposal',
+                kind: 'agent_log:prompt',
+                text: 'Prompt telemetry: mode=create_workflow',
                 time: '09:11',
               },
             ],
@@ -140,9 +155,8 @@ describe('App', () => {
       />,
     );
 
-    expect(markup).toContain('Agent logs (1)');
-    expect(markup).toContain('data-kind="agent_log:status"');
-    expect(markup).toContain('Drafting graph proposal');
+    expect(markup).toContain('工具调用');
+    expect(markup).toContain('1 events');
   });
 
   it('applies websocket node state events to visible run state', () => {
@@ -199,8 +213,7 @@ describe('App', () => {
   it('renders workspace state without a run record', () => {
     const markup = renderToStaticMarkup(<App initialState={{ ...state, run: null }} />);
 
-    expect(markup).toContain('no run');
-    expect(markup).toContain('No run');
+    expect(markup).toContain('未运行');
   });
 
   it('renders pending proposal actions from workspace state', () => {
@@ -213,10 +226,10 @@ describe('App', () => {
       />,
     );
 
-    expect(markup).toContain('Proposal');
+    expect(markup).toContain('图变更提议');
     expect(markup).toContain('Shorter clip');
-    expect(markup).toContain('Dismiss');
-    expect(markup).toContain('Apply');
+    expect(markup).toContain('忽略');
+    expect(markup).toContain('应用到画布');
   });
 
   it('bootstraps by creating a blank workspace when none exists', async () => {
@@ -545,15 +558,22 @@ function pendingProposal(): NonNullable<WorkbenchState['pendingProposal']> {
     ops: [],
     diffSummary: [],
     previewGraph: {
-      schema_version: 1,
-      nodes: {
-        video: {
-          node_type: 'video.mock.text_to_video',
+      nodes: [
+        {
+          id: 'video',
+          nodeType: 'video.mock.text_to_video',
           title: 'Video render',
-          params: { prompt: 'clean product shot', duration_sec: 4, aspect_ratio: '9:16' },
-          pos: [486, 156],
+          category: 'Video',
+          status: 'queued',
+          position: { x: 486, y: 156 },
+          provider: 'mock',
+          summary: JSON.stringify({
+            prompt: 'clean product shot',
+            duration_sec: 4,
+            aspect_ratio: '9:16',
+          }),
         },
-      },
+      ],
       edges: [],
     },
     state: 'pending',

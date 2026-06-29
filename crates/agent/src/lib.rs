@@ -51,6 +51,7 @@ pub struct AgentSessionRequest {
     pub base_version_id: String,
     pub user_message: String,
     pub graph: WorkflowGraph,
+    pub run_context: Option<String>,
     pub sessions_dir: PathBuf,
     pub mode: TurnMode,
     pub skill: AgentSkill,

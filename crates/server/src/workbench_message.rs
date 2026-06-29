@@ -7,8 +7,9 @@ use axum::{
 use helixflow_agent::{AgentLogEntry, AgentSessionRequest, TurnMode, classify_turn_mode};
 use helixflow_graph::{ProposalKind, WorkflowGraph};
 use helixflow_run::AgentRunRequest;
-use helixflow_store::{MessageRecord, NewMessage, NewProposal};
+use helixflow_store::{MessageRecord, NewMessage, NewProposal, RunRecord, RunStepRecord};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
@@ -37,12 +38,15 @@ pub(crate) struct WorkspaceMessageResponse {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ChatMessagePayload {
     id: String,
     role: String,
     kind: String,
     text: String,
     time: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    turn_mode: Option<TurnMode>,
 }
 
 pub(crate) async fn post_workspace_message(
@@ -52,6 +56,7 @@ pub(crate) async fn post_workspace_message(
 ) -> Result<Json<WorkspaceMessageResponse>, ApiError> {
     let turn_mode = classify_turn_mode(&input.user_message, &input.graph)
         .map_err(|err| ApiError::bad_request(err.to_string()))?;
+    let turn_metadata = turn_metadata_json(turn_mode);
     state
         .store
         .create_message(NewMessage {
@@ -60,15 +65,17 @@ pub(crate) async fn post_workspace_message(
             kind: "text",
             text: Some(&input.user_message),
             ref_id: None,
-            attachment_ids_json: None,
+            attachment_ids_json: Some(&turn_metadata),
         })
         .await
         .map_err(ApiError::store)?;
+    let run_context = debug_run_context(&state, &workspace_id, turn_mode).await?;
     let request = AgentSessionRequest {
         workspace_id: workspace_id.clone(),
         base_version_id: input.base_version_id,
         user_message: input.user_message,
         graph: input.graph,
+        run_context,
         sessions_dir: state.agent_sessions_dir.clone(),
         mode: turn_mode,
         skill: turn_mode.agent_skill(),
@@ -237,14 +244,87 @@ async fn persist_agent_logs(
 
 impl ChatMessagePayload {
     fn from_record(record: MessageRecord) -> Self {
+        let turn_mode = message_turn_mode(&record);
         Self {
             id: record.id,
             role: record.role,
             kind: record.kind,
             text: record.text.unwrap_or_default(),
             time: record.created_at,
+            turn_mode,
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MessageMetadata {
+    turn_mode: Option<TurnMode>,
+}
+
+fn turn_metadata_json(turn_mode: TurnMode) -> String {
+    json!({ "turnMode": turn_mode }).to_string()
+}
+
+fn message_turn_mode(record: &MessageRecord) -> Option<TurnMode> {
+    record
+        .attachment_ids_json
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<MessageMetadata>(value).ok())
+        .and_then(|metadata| metadata.turn_mode)
+}
+
+async fn debug_run_context(
+    state: &AppState,
+    workspace_id: &str,
+    turn_mode: TurnMode,
+) -> Result<Option<String>, ApiError> {
+    if turn_mode != TurnMode::DebugWorkflow {
+        return Ok(None);
+    }
+    let Some(run) = state
+        .store
+        .latest_workspace_run(workspace_id)
+        .await
+        .map_err(ApiError::store)?
+    else {
+        return Ok(Some(
+            "No recent run is available for this workspace.".to_owned(),
+        ));
+    };
+    let steps = state
+        .store
+        .run_steps(&run.id)
+        .await
+        .map_err(ApiError::store)?;
+    Ok(Some(format_debug_run_context(&run, &steps)))
+}
+
+fn format_debug_run_context(run: &RunRecord, steps: &[RunStepRecord]) -> String {
+    let mut lines = vec![format!(
+        "Latest run: id={}, status={}, label={}",
+        run.id, run.status, run.label
+    )];
+    if let Some(error_json) = run.error_json.as_deref().map(truncate_debug_text) {
+        lines.push(format!("Run error: {error_json}"));
+    }
+    for step in steps.iter().filter(|step| step.state == "failed") {
+        lines.push(format!(
+            "Failed step: node_id={}, node_type={}, provider={}",
+            step.node_id,
+            step.node_type,
+            step.provider.as_deref().unwrap_or("none")
+        ));
+        if let Some(error_json) = step.error_json.as_deref().map(truncate_debug_text) {
+            lines.push(format!("Step error: {error_json}"));
+        }
+    }
+    lines.join("\n")
+}
+
+fn truncate_debug_text(value: &str) -> String {
+    const MAX_DEBUG_TEXT: usize = 800;
+    value.chars().take(MAX_DEBUG_TEXT).collect()
 }
 
 fn run_label(user_message: &str) -> String {
@@ -284,7 +364,7 @@ mod tests {
     };
     use helixflow_graph::{PreparedProposal, WorkflowGraph};
     use helixflow_run::EventBus;
-    use helixflow_store::{NewVersion, Store, VersionSource};
+    use helixflow_store::{NewRun, NewRunStep, NewVersion, Store, VersionSource};
 
     use super::*;
     use crate::app_state::{AppState, WorkbenchAgent};
@@ -321,6 +401,10 @@ mod tests {
             .expect("messages");
         assert_eq!(persisted.len(), 3);
         assert_eq!(persisted[0].role, "user");
+        assert_eq!(
+            persisted[0].attachment_ids_json.as_deref(),
+            Some(r#"{"turnMode":"chat"}"#)
+        );
         assert_eq!(persisted[1].role, "agent");
         assert_eq!(persisted[1].kind, "chat");
         assert_eq!(persisted[2].kind, "agent_log:status");
@@ -370,6 +454,10 @@ mod tests {
             .expect("messages");
         assert_eq!(persisted.len(), 2);
         assert_eq!(persisted[0].text.as_deref(), Some("运行当前 workflow"));
+        assert_eq!(
+            persisted[0].attachment_ids_json.as_deref(),
+            Some(r#"{"turnMode":"run_request"}"#)
+        );
         assert_eq!(persisted[1].kind, "run_requested");
         let run = state
             .store
@@ -417,6 +505,72 @@ mod tests {
         assert_eq!(persisted[1].kind, "proposal_pending");
         assert_eq!(persisted[1].ref_id.as_deref(), Some(proposal_id.as_str()));
         assert_eq!(persisted[2].kind, "agent_log:status");
+    }
+
+    #[tokio::test]
+    async fn post_message_routes_debug_with_latest_run_context() {
+        let (state, workspace_id, version_id, _dir) = state_with_workspace().await;
+        let run = state
+            .store
+            .create_run(NewRun {
+                workspace_id: &workspace_id,
+                version_id: &version_id,
+                group_id: None,
+                label: "Failed render",
+                trigger: "manual",
+                plan_json: None,
+                estimate_json: None,
+                status: "running",
+            })
+            .await
+            .expect("create run");
+        let step = state
+            .store
+            .create_run_step(NewRunStep {
+                run_id: &run.id,
+                node_id: "video",
+                node_type: "video.mock.text_to_video",
+                provider: Some("mock"),
+                state: "running",
+            })
+            .await
+            .expect("create run step");
+        let error_json = r#"{"error":"provider rejected duration"}"#;
+        state
+            .store
+            .update_run_step_state(&step.id, "failed", Some(1.0), None, Some(error_json))
+            .await
+            .expect("fail step");
+        state
+            .store
+            .update_run_status(&run.id, "failed", Some(error_json))
+            .await
+            .expect("fail run");
+
+        let response = post_workspace_message(
+            Path(workspace_id.clone()),
+            State(state.clone()),
+            Json(WorkspaceMessageRequest {
+                base_version_id: version_id,
+                user_message: "为什么失败了，帮我修复".to_owned(),
+                graph: sample_graph(),
+            }),
+        )
+        .await
+        .expect("debug response")
+        .0;
+
+        assert_eq!(response.turn_mode, TurnMode::DebugWorkflow);
+        assert!(response.proposal.is_some());
+        let persisted = state
+            .store
+            .workspace_messages(&workspace_id)
+            .await
+            .expect("messages");
+        assert_eq!(
+            persisted[0].attachment_ids_json.as_deref(),
+            Some(r#"{"turnMode":"debug_workflow"}"#)
+        );
     }
 
     async fn state_with_workspace() -> (AppState, String, String, tempfile::TempDir) {
@@ -479,6 +633,20 @@ mod tests {
             &self,
             request: AgentSessionRequest,
         ) -> Result<ValidatedAgentProposal, AgentError> {
+            if request.mode == TurnMode::DebugWorkflow {
+                let context = request
+                    .run_context
+                    .as_deref()
+                    .ok_or_else(|| AgentError::Runtime("missing debug run context".to_owned()))?;
+                if !context.contains("Latest run")
+                    || !context.contains("provider rejected duration")
+                    || !context.contains("Failed step")
+                {
+                    return Err(AgentError::Runtime(format!(
+                        "incomplete debug run context: {context}"
+                    )));
+                }
+            }
             Ok(ValidatedAgentProposal {
                 session_id: format!("{}_fake", request.workspace_id),
                 agent_logs: vec![AgentLogEntry {

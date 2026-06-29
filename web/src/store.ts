@@ -469,6 +469,9 @@ function agentMessageKind(event: RunEventEnvelope): ChatMessageKind {
 }
 
 function isChatMessageKind(value: string | null): value is ChatMessageKind {
+  if (typeof value !== 'string') {
+    return false;
+  }
   return (
     value === 'text' ||
     value === 'chat' ||
@@ -477,10 +480,7 @@ function isChatMessageKind(value: string | null): value is ChatMessageKind {
     value === 'proposal_dismissed' ||
     value === 'run_requested' ||
     value === 'run_failed' ||
-    value === 'agent_log:status' ||
-    value === 'agent_log:tool_call' ||
-    value === 'agent_log:tool_result' ||
-    value === 'agent_log:error'
+    value.startsWith('agent_log:')
   );
 }
 
