@@ -247,11 +247,13 @@ fn run_payload(run: &RunRecord, steps: &[RunStepRecord], cost: &CostSummary) -> 
         "id": run.id,
         "label": run.label,
         "status": run.status,
+        "error": error_payload(run.error_json.as_deref()),
         "steps": steps.iter().map(|step| json!({
             "nodeId": step.node_id,
             "title": step.node_id,
             "state": step.state,
             "provider": step.provider,
+            "error": error_payload(step.error_json.as_deref()),
         })).collect::<Vec<_>>(),
         "cost": {
             "estimate": cost.estimate,
@@ -259,6 +261,41 @@ fn run_payload(run: &RunRecord, steps: &[RunStepRecord], cost: &CostSummary) -> 
             "currency": cost.currency,
         },
     })
+}
+
+fn error_payload(error_json: Option<&str>) -> Value {
+    let Some(raw) = error_json.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Value::Null;
+    };
+    let summary = serde_json::from_str::<Value>(raw)
+        .ok()
+        .and_then(|value| error_summary_from_json(&value))
+        .unwrap_or_else(|| truncate_chars(raw, 1200));
+    json!({
+        "summary": truncate_chars(first_line(summary.trim()), 160),
+        "raw": truncate_chars(raw, 1200),
+    })
+}
+
+fn error_summary_from_json(value: &Value) -> Option<String> {
+    let object = value.as_object()?;
+    for key in ["error", "message", "reason"] {
+        if let Some(summary) = object.get(key).and_then(Value::as_str) {
+            let trimmed = summary.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_owned());
+            }
+        }
+    }
+    None
+}
+
+fn first_line(value: &str) -> &str {
+    value.lines().next().unwrap_or(value)
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
 }
 
 fn history_payload(
@@ -359,7 +396,7 @@ mod tests {
     };
     use helixflow_graph::{GraphEdge, GraphNode};
     use helixflow_run::EventBus;
-    use helixflow_store::{NewMessage, NewVersion, Store, VersionSource};
+    use helixflow_store::{NewMessage, NewRun, NewRunStep, NewVersion, Store, VersionSource};
     use serde_json::json;
     use std::path::Path;
     use std::path::PathBuf;
@@ -422,6 +459,77 @@ mod tests {
             0
         );
         assert!(body["run"].is_null());
+    }
+
+    #[tokio::test]
+    async fn workspace_state_includes_failed_run_error_payload() {
+        let (state, workspace_id, _dir) = state_with_workspace().await;
+        let version_id = state
+            .store
+            .workspace(&workspace_id)
+            .await
+            .expect("workspace")
+            .cur_version_id
+            .expect("current version");
+        let run = state
+            .store
+            .create_run(NewRun {
+                workspace_id: &workspace_id,
+                version_id: &version_id,
+                group_id: None,
+                label: "Failed render",
+                trigger: "manual",
+                plan_json: None,
+                estimate_json: None,
+                status: "running",
+            })
+            .await
+            .expect("create run");
+        let step = state
+            .store
+            .create_run_step(NewRunStep {
+                run_id: &run.id,
+                node_id: "input",
+                node_type: "input.text",
+                provider: Some("mock"),
+                state: "running",
+            })
+            .await
+            .expect("create step");
+        let error_json =
+            r#"{"error":"provider rejected duration","trace":"stack line 1\nstack line 2"}"#;
+        state
+            .store
+            .update_run_step_state(&step.id, "failed", Some(1.0), None, Some(error_json))
+            .await
+            .expect("fail step");
+        state
+            .store
+            .update_run_status(&run.id, "failed", Some(error_json))
+            .await
+            .expect("fail run");
+
+        let body = workspace_state(AxumPath(workspace_id), State(state))
+            .await
+            .expect("workspace state")
+            .0;
+
+        assert_eq!(body["run"]["status"], "failed");
+        assert_eq!(
+            body["run"]["error"]["summary"],
+            "provider rejected duration"
+        );
+        assert!(
+            body["run"]["error"]["raw"]
+                .as_str()
+                .expect("raw")
+                .contains("stack line")
+        );
+        assert_eq!(
+            body["run"]["steps"][0]["error"]["summary"],
+            "provider rejected duration"
+        );
+        assert_eq!(body["graph"]["nodes"][0]["status"], "failed");
     }
 
     #[tokio::test]

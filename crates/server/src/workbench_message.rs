@@ -562,6 +562,23 @@ mod tests {
 
         assert_eq!(response.turn_mode, TurnMode::DebugWorkflow);
         assert!(response.proposal.is_some());
+        assert_eq!(
+            state
+                .store
+                .workspace(&workspace_id)
+                .await
+                .expect("workspace")
+                .cur_version_id
+                .as_deref(),
+            Some(
+                response
+                    .proposal
+                    .as_ref()
+                    .expect("proposal")
+                    .base_version_id
+                    .as_str()
+            )
+        );
         let persisted = state
             .store
             .workspace_messages(&workspace_id)

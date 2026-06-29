@@ -43,6 +43,7 @@ const presets: Array<{ icon: IconName; label: string; text: string }> = [
 type ChatPaneProps = {
   messages: ChatMessage[];
   pendingProposal: WorkbenchState['pendingProposal'];
+  run: WorkbenchState['run'];
   busy: boolean;
   onSend: (text: string) => Promise<void>;
   onApplyProposal: (proposalId: string) => Promise<void>;
@@ -52,6 +53,7 @@ type ChatPaneProps = {
 export function ChatPane({
   messages,
   pendingProposal,
+  run,
   busy,
   onSend,
   onApplyProposal,
@@ -112,6 +114,7 @@ export function ChatPane({
             ),
           )
         )}
+        <RunErrorCard run={run} />
         {pendingProposal && <ProposalMessage
           busy={busy}
           onApply={() => onApplyProposal(pendingProposal.id)}
@@ -157,6 +160,40 @@ export function ChatPane({
         </div>
       </div>
     </aside>
+  );
+}
+
+function RunErrorCard({ run }: { run: WorkbenchState['run'] }) {
+  const [rawOpen, setRawOpen] = useState(false);
+  if (!run || run.status !== 'failed') return null;
+  const failedSteps = run.steps.filter((step) => step.state === 'failed');
+  const error = run.error ?? failedSteps.find((step) => step.error)?.error ?? null;
+  const raw = error?.raw?.trim();
+
+  return (
+    <div className="run-error-card">
+      <div className="run-error-head">
+        <span className="run-error-icon">
+          <Icon n="alert" s={13} />
+        </span>
+        <div>
+          <div className="run-error-title">运行失败</div>
+          <div className="run-error-meta">
+            {run.label}
+            {failedSteps.length > 0 ? ` · failed: ${failedSteps.map((step) => step.nodeId).join(', ')}` : ''}
+          </div>
+        </div>
+      </div>
+      <div className="run-error-summary">{error?.summary ?? '最近一次运行失败，暂无结构化错误摘要。'}</div>
+      {raw && (
+        <>
+          <button className="run-error-toggle" onClick={() => setRawOpen((open) => !open)}>
+            {rawOpen ? '收起 raw error' : '查看 raw error'}
+          </button>
+          {rawOpen && <pre className="run-error-raw">{raw}</pre>}
+        </>
+      )}
+    </div>
   );
 }
 

@@ -498,7 +498,7 @@ export function applyRunEvent(state: WorkbenchState, event: RunEventEnvelope): W
       run: {
         ...state.run,
         steps: state.run.steps.map((step) =>
-          step.nodeId === nodeId ? { ...step, state: nodeState } : step,
+          step.nodeId === nodeId ? { ...step, state: nodeState, error: eventError(event) } : step,
         ),
       },
     };
@@ -512,6 +512,7 @@ export function applyRunEvent(state: WorkbenchState, event: RunEventEnvelope): W
       run: {
         ...state.run,
         status: nextRunStatus,
+        error: nextRunStatus === 'failed' ? eventError(event) : state.run.error,
       },
     };
   }
@@ -610,6 +611,21 @@ function stepStateData(event: RunEventEnvelope, key: string): RunStepState | nul
     return value;
   }
   return null;
+}
+
+function eventError(event: RunEventEnvelope): { summary: string; raw?: string | null } | null {
+  const error = stringData(event, 'error');
+  if (!error) {
+    return null;
+  }
+  return {
+    summary: firstLine(error).slice(0, 160),
+    raw: error.slice(0, 1200),
+  };
+}
+
+function firstLine(value: string): string {
+  return value.split(/\r?\n/, 1)[0] ?? value;
 }
 
 function runStatusFromEvent(eventName: string): RunStatus | null {

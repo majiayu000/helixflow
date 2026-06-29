@@ -176,6 +176,7 @@ export function App({ initialState, workspaceId }: AppProps) {
             onDismissProposal={(id) => runAction(() => dismissProposal(id))}
             onSend={(text) => runAction(() => sendMessage(text))}
             pendingProposal={activeState.pendingProposal}
+            run={activeState.run}
           />
         </div>
         <section className="wb-canvas">
