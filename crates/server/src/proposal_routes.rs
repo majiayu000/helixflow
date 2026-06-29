@@ -4,7 +4,7 @@ use axum::{
     Json,
     extract::{Path, State},
 };
-use helixflow_graph::{GraphService, PreparedProposal, ProposalOp, ProposalState};
+use helixflow_graph::{GraphError, GraphService, PreparedProposal, ProposalOp, ProposalState};
 use helixflow_registry::NodeRegistry;
 use helixflow_store::{
     ApplyProposalVersionRecord, NewMessage, NewVersion, ProposalRecord, ProposalResolutionState,
@@ -43,7 +43,7 @@ pub(crate) async fn apply_workspace_proposal(
     let prepared = prepared_proposal(&state, &proposal).await?;
     let applied_graph = GraphService::new(NodeRegistry::builtin())
         .apply_proposal(&current_graph, current_version_id, &prepared)
-        .map_err(|err| ApiError::bad_request(err.to_string()))?;
+        .map_err(graph_apply_error)?;
     let graph_path = applied_graph_path(&proposal);
     let graph_hash = write_json_file(
         &state.data_dir,
@@ -182,6 +182,13 @@ fn applied_graph_path(proposal: &ProposalRecord) -> PathBuf {
         .join(format!("{}.json", proposal.id))
 }
 
+fn graph_apply_error(err: GraphError) -> ApiError {
+    match err {
+        GraphError::ProposalSuperseded { .. } => ApiError::conflict(err.to_string()),
+        _ => ApiError::bad_request(err.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -256,6 +263,49 @@ mod tests {
             body["workflowGraph"]["nodes"]["video"]["params"]["duration_sec"],
             5
         );
+    }
+
+    #[tokio::test]
+    async fn apply_workspace_proposal_rejects_stale_base_version_with_conflict() {
+        let (state, workspace_id, base_version_id, proposal_id, _dir) =
+            state_with_pending_proposal().await;
+        let next_graph_path = PathBuf::from("workspaces")
+            .join(&workspace_id)
+            .join("graphs")
+            .join("next.json");
+        tokio::fs::write(
+            state.data_dir.join(&next_graph_path),
+            serde_json::to_vec_pretty(&sample_graph()).expect("next graph json"),
+        )
+        .await
+        .expect("write next graph");
+        let next_graph_path_string = next_graph_path.to_string_lossy().into_owned();
+        state
+            .store
+            .create_version_after(
+                NewVersion {
+                    workspace_id: &workspace_id,
+                    label: "Manual change",
+                    source: VersionSource::Manual,
+                    graph_path: &next_graph_path_string,
+                    graph_hash: "sha256:next",
+                    parent_id: Some(&base_version_id),
+                },
+                &base_version_id,
+            )
+            .await
+            .expect("advance current version");
+
+        let err = apply_workspace_proposal(
+            Path((workspace_id.clone(), proposal_id.clone())),
+            State(state.clone()),
+        )
+        .await
+        .expect_err("stale proposal should conflict");
+
+        assert_eq!(err.status, axum::http::StatusCode::CONFLICT);
+        let proposal = state.store.proposal(&proposal_id).await.expect("proposal");
+        assert_eq!(proposal.state, "pending");
     }
 
     async fn state_with_pending_proposal() -> (AppState, String, String, String, tempfile::TempDir)

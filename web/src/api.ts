@@ -149,6 +149,47 @@ export async function exportWorkflowVersion(versionId: string): Promise<Workflow
   return WorkflowGraphSchema.parse(body);
 }
 
+export async function undoWorkspaceVersion(workspaceId: string): Promise<WorkbenchState> {
+  const response = await fetch(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/versions/undo`,
+    {
+      method: 'POST',
+    },
+  );
+  const body = await response.json();
+  if (!response.ok) {
+    const message =
+      body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+        ? body.error
+        : `workspace undo request failed: ${response.status}`;
+    throw new Error(message);
+  }
+
+  return WorkbenchStateSchema.parse(body);
+}
+
+export async function restoreWorkspaceVersion(
+  workspaceId: string,
+  versionId: string,
+): Promise<WorkbenchState> {
+  const response = await fetch(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/versions/${encodeURIComponent(versionId)}/restore`,
+    {
+      method: 'POST',
+    },
+  );
+  const body = await response.json();
+  if (!response.ok) {
+    const message =
+      body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+        ? body.error
+        : `workspace restore request failed: ${response.status}`;
+    throw new Error(message);
+  }
+
+  return WorkbenchStateSchema.parse(body);
+}
+
 export async function holdWorkspaceRun(
   workspaceId: string,
   runId: string,

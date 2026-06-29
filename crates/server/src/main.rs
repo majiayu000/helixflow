@@ -20,7 +20,7 @@ mod ws;
 use app_state::AppState;
 use proposal_routes::{apply_workspace_proposal, dismiss_workspace_proposal};
 use run_routes::{confirm_run, hold_run, interrupt_active_run, queue_workspace_run};
-use version_routes::export_workflow_version;
+use version_routes::{export_workflow_version, restore_workspace_version, undo_workspace_version};
 use workbench_message::post_workspace_message;
 use workspace_routes::{create_workspace, list_workspaces};
 use workspace_state::workspace_state;
@@ -79,6 +79,14 @@ fn app(state: AppState) -> Router {
         .route(
             "/api/versions/{version_id}/export",
             get(export_workflow_version),
+        )
+        .route(
+            "/api/workspaces/{workspace_id}/versions/undo",
+            post(undo_workspace_version),
+        )
+        .route(
+            "/api/workspaces/{workspace_id}/versions/{version_id}/restore",
+            post(restore_workspace_version),
         )
         .route("/ws", get(ws_handler))
         .with_state(state)

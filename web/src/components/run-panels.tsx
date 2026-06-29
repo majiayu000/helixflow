@@ -17,10 +17,13 @@ type HistoryPanelProps = {
   history: WorkbenchState['history'];
   workspaces: WorkspaceSummary[];
   currentWorkspaceId: string;
+  currentVersionId: string;
+  busy: boolean;
   workspaceListError: string | null;
   open: boolean;
   onClose: () => void;
   onOpenWorkspace: (id: string) => void;
+  onRestoreVersion: (id: string) => void;
 };
 
 export function RunDock({ run }: RunDockProps) {
@@ -130,10 +133,13 @@ export function HistoryPanel({
   history,
   workspaces,
   currentWorkspaceId,
+  currentVersionId,
+  busy,
   workspaceListError,
   open,
   onClose,
   onOpenWorkspace,
+  onRestoreVersion,
 }: HistoryPanelProps) {
   if (!open) return null;
   return (
@@ -182,7 +188,18 @@ export function HistoryPanel({
                 <div className="history-label">{item.label}</div>
                 <div className="history-summary">{item.summary}</div>
               </div>
-              <time>{formatTime(item.time)}</time>
+              <div className="history-tail">
+                <time>{formatTime(item.time)}</time>
+                {item.kind === 'version' && (
+                  <button
+                    className="history-action"
+                    disabled={busy || item.id === currentVersionId}
+                    onClick={() => onRestoreVersion(item.id)}
+                  >
+                    {item.id === currentVersionId ? '当前' : '恢复'}
+                  </button>
+                )}
+              </div>
             </div>
           ))
         )}

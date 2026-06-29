@@ -3,11 +3,13 @@ use axum::{
     extract::{Path, State},
 };
 use helixflow_graph::WorkflowGraph;
+use helixflow_store::{NewVersion, VersionRecord, VersionSource, WorkspaceRecord};
 use serde_json::Value;
 
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
 use crate::graph_files::read_graph_file;
+use crate::workspace_state::workspace_state_value;
 
 pub(crate) async fn export_workflow_version(
     Path(version_id): Path<String>,
@@ -21,6 +23,123 @@ pub(crate) async fn export_workflow_version(
     let graph = read_graph_file(&state.data_dir, &version.graph_path).await?;
     ensure_exportable_graph(&graph)?;
     Ok(Json(graph))
+}
+
+pub(crate) async fn undo_workspace_version(
+    Path(workspace_id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<Value>, ApiError> {
+    let (workspace, versions, current) = workspace_version_context(&state, &workspace_id).await?;
+    let target = undo_target(&versions, &current)?;
+    create_restore_version(&state, &workspace, &current, &target, RestoreAction::Undo).await?;
+
+    Ok(Json(workspace_state_value(&state, &workspace_id).await?))
+}
+
+pub(crate) async fn restore_workspace_version(
+    Path((workspace_id, version_id)): Path<(String, String)>,
+    State(state): State<AppState>,
+) -> Result<Json<Value>, ApiError> {
+    let (workspace, versions, current) = workspace_version_context(&state, &workspace_id).await?;
+    if version_id == current.id {
+        return Err(ApiError::conflict("version is already current"));
+    }
+    let target = versions
+        .iter()
+        .find(|version| version.id == version_id)
+        .cloned()
+        .ok_or_else(|| ApiError::not_found("version was not found in this workspace"))?;
+    create_restore_version(
+        &state,
+        &workspace,
+        &current,
+        &target,
+        RestoreAction::Restore,
+    )
+    .await?;
+
+    Ok(Json(workspace_state_value(&state, &workspace_id).await?))
+}
+
+async fn workspace_version_context(
+    state: &AppState,
+    workspace_id: &str,
+) -> Result<(WorkspaceRecord, Vec<VersionRecord>, VersionRecord), ApiError> {
+    let workspace = state
+        .store
+        .workspace(workspace_id)
+        .await
+        .map_err(ApiError::store)?;
+    let versions = state
+        .store
+        .versions_for_workspace(workspace_id)
+        .await
+        .map_err(ApiError::store)?;
+    let current_id = workspace
+        .cur_version_id
+        .as_deref()
+        .ok_or_else(|| ApiError::conflict("workspace has no current version"))?;
+    let current = versions
+        .iter()
+        .find(|version| version.id == current_id)
+        .cloned()
+        .ok_or_else(|| ApiError::conflict("workspace current version is missing from history"))?;
+
+    Ok((workspace, versions, current))
+}
+
+fn undo_target(
+    versions: &[VersionRecord],
+    current: &VersionRecord,
+) -> Result<VersionRecord, ApiError> {
+    if let Some(parent_id) = current.parent_id.as_deref()
+        && let Some(parent) = versions.iter().find(|version| version.id == parent_id)
+    {
+        return Ok(parent.clone());
+    }
+
+    let current_index = versions
+        .iter()
+        .position(|version| version.id == current.id)
+        .ok_or_else(|| ApiError::conflict("workspace current version is missing from history"))?;
+    if current_index == 0 {
+        return Err(ApiError::conflict("workspace has no undo target"));
+    }
+    Ok(versions[current_index - 1].clone())
+}
+
+async fn create_restore_version(
+    state: &AppState,
+    workspace: &WorkspaceRecord,
+    current: &VersionRecord,
+    target: &VersionRecord,
+    action: RestoreAction,
+) -> Result<VersionRecord, ApiError> {
+    let label = match action {
+        RestoreAction::Undo => format!("Undo to {}", target.label),
+        RestoreAction::Restore => format!("Restore {}", target.label),
+    };
+    state
+        .store
+        .create_version_after(
+            NewVersion {
+                workspace_id: &workspace.id,
+                label: &label,
+                source: VersionSource::Restore,
+                graph_path: &target.graph_path,
+                graph_hash: &target.graph_hash,
+                parent_id: Some(&current.id),
+            },
+            &current.id,
+        )
+        .await
+        .map_err(ApiError::store)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RestoreAction {
+    Undo,
+    Restore,
 }
 
 fn ensure_exportable_graph(graph: &WorkflowGraph) -> Result<(), ApiError> {
@@ -151,6 +270,97 @@ mod tests {
         assert!(!err.message.contains("sk_live"));
     }
 
+    #[tokio::test]
+    async fn undo_workspace_version_creates_restore_version_from_parent_graph() {
+        let (state, workspace_id, base_version_id, current_version_id, _dir) =
+            state_with_two_versions().await;
+
+        let body = undo_workspace_version(Path(workspace_id.clone()), State(state.clone()))
+            .await
+            .expect("undo version")
+            .0;
+        let restored_version_id = body["workspace"]["versionId"].as_str().expect("version id");
+        let restored_version = state
+            .store
+            .version(restored_version_id)
+            .await
+            .expect("restored version");
+        let base_version = state
+            .store
+            .version(&base_version_id)
+            .await
+            .expect("base version");
+
+        assert_ne!(restored_version_id, base_version_id);
+        assert_ne!(restored_version_id, current_version_id);
+        assert_eq!(restored_version.source, "restore");
+        assert_eq!(
+            restored_version.parent_id.as_deref(),
+            Some(current_version_id.as_str())
+        );
+        assert_eq!(restored_version.graph_path, base_version.graph_path);
+        assert_eq!(
+            body["workflowGraph"]["nodes"]["video"]["params"]["duration_sec"],
+            5
+        );
+        assert!(
+            body["history"]
+                .as_array()
+                .expect("history")
+                .iter()
+                .any(|item| item["summary"] == "restore graph")
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_workspace_version_creates_new_current_version_from_target_graph() {
+        let (state, workspace_id, base_version_id, current_version_id, _dir) =
+            state_with_two_versions().await;
+
+        let body = restore_workspace_version(
+            Path((workspace_id.clone(), base_version_id.clone())),
+            State(state.clone()),
+        )
+        .await
+        .expect("restore version")
+        .0;
+        let restored_version_id = body["workspace"]["versionId"].as_str().expect("version id");
+        let restored_version = state
+            .store
+            .version(restored_version_id)
+            .await
+            .expect("restored version");
+
+        assert_ne!(restored_version_id, base_version_id);
+        assert_eq!(restored_version.source, "restore");
+        assert_eq!(
+            restored_version.parent_id.as_deref(),
+            Some(current_version_id.as_str())
+        );
+        assert!(restored_version.label.contains("Restore"));
+        assert_eq!(
+            body["workflowGraph"]["nodes"]["video"]["params"]["duration_sec"],
+            5
+        );
+    }
+
+    #[tokio::test]
+    async fn undo_workspace_version_rejects_initial_version() {
+        let (state, version_id, _dir) = state_with_graph(current_graph()).await;
+        let workspace_id = state
+            .store
+            .version(&version_id)
+            .await
+            .expect("version")
+            .workspace_id;
+
+        let err = undo_workspace_version(Path(workspace_id), State(state))
+            .await
+            .expect_err("initial version cannot be undone");
+
+        assert_eq!(err.status, axum::http::StatusCode::CONFLICT);
+    }
+
     #[test]
     fn export_safety_rejects_camel_case_and_header_keys() {
         for key in [
@@ -238,6 +448,72 @@ mod tests {
             .await
             .expect("create proposal");
         (state, version_id, dir)
+    }
+
+    async fn state_with_two_versions() -> (AppState, String, String, String, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let data_dir = dir.path().to_path_buf();
+        let database_url = format!("sqlite://{}", data_dir.join("helixflow.sqlite").display());
+        let store = Store::open(&database_url).await.expect("open store");
+        let workspace = store
+            .create_workspace("Version route workspace")
+            .await
+            .expect("create workspace");
+        let graph_dir = PathBuf::from("workspaces")
+            .join(&workspace.id)
+            .join("graphs");
+        tokio::fs::create_dir_all(data_dir.join(&graph_dir))
+            .await
+            .expect("create graph dir");
+        let base_path = graph_dir.join("base.json");
+        let current_path = graph_dir.join("current.json");
+        tokio::fs::write(
+            data_dir.join(&base_path),
+            serde_json::to_vec_pretty(&current_graph()).expect("base graph json"),
+        )
+        .await
+        .expect("write base graph");
+        tokio::fs::write(
+            data_dir.join(&current_path),
+            serde_json::to_vec_pretty(&preview_graph()).expect("current graph json"),
+        )
+        .await
+        .expect("write current graph");
+        let base_path_string = base_path.to_string_lossy().into_owned();
+        let current_path_string = current_path.to_string_lossy().into_owned();
+        let base = store
+            .create_version(NewVersion {
+                workspace_id: &workspace.id,
+                label: "Base graph",
+                source: VersionSource::Manual,
+                graph_path: &base_path_string,
+                graph_hash: "sha256:base",
+                parent_id: None,
+            })
+            .await
+            .expect("create base version");
+        let current = store
+            .create_version_after(
+                NewVersion {
+                    workspace_id: &workspace.id,
+                    label: "Shorter clip",
+                    source: VersionSource::Proposal,
+                    graph_path: &current_path_string,
+                    graph_hash: "sha256:current",
+                    parent_id: Some(&base.id),
+                },
+                &base.id,
+            )
+            .await
+            .expect("create current version");
+        let state = AppState::with_store_agent(
+            EventBus::new(16),
+            store,
+            data_dir.clone(),
+            Arc::new(NoopWorkbenchAgent),
+            data_dir.join("sessions"),
+        );
+        (state, workspace.id, base.id, current.id, dir)
     }
 
     async fn state_with_graph(graph: WorkflowGraph) -> (AppState, String, tempfile::TempDir) {
