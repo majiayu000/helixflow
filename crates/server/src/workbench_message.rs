@@ -346,14 +346,43 @@ fn first_line(value: &str) -> &str {
 }
 
 fn redact_debug_text(value: &str) -> String {
-    value
+    let mut redacted = Vec::new();
+    let mut redact_next = false;
+    for token in value.split_whitespace() {
+        if redact_next {
+            redacted.push("[redacted]".to_owned());
+            redact_next = is_sensitive_debug_label(token);
+            continue;
+        }
+        if is_sensitive_debug_label(token) {
+            redacted.push("[redacted]".to_owned());
+            redact_next = true;
+            continue;
+        }
+        redacted.push(redact_debug_token(token));
+    }
+    redacted.join(" ")
+}
+
+fn is_sensitive_debug_label(token: &str) -> bool {
+    let normalized = token
+        .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
+        .to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "token" | "secret" | "password" | "api_key" | "apikey" | "authorization" | "bearer"
+    )
+}
+
+fn redact_debug_token(token: &str) -> String {
+    token
         .split_whitespace()
-        .map(redact_debug_token)
+        .map(redact_debug_token_segment)
         .collect::<Vec<_>>()
         .join(" ")
 }
 
-fn redact_debug_token(token: &str) -> String {
+fn redact_debug_token_segment(token: &str) -> String {
     let lower = token.to_ascii_lowercase();
     if lower.contains("sk-")
         || lower.contains("ghp_")
@@ -586,7 +615,7 @@ mod tests {
             })
             .await
             .expect("create run step");
-        let error_json = r#"{"error":"provider rejected duration OPENAI_API_KEY=sk-secret-value","trace":"raw stack line"}"#;
+        let error_json = r#"{"error":"provider rejected duration OPENAI_API_KEY=sk-secret-value Authorization: Bearer abc123 token leaked-token password hunter2","trace":"raw stack line"}"#;
         state
             .store
             .update_run_step_state(&step.id, "failed", Some(1.0), None, Some(error_json))
@@ -730,6 +759,9 @@ mod tests {
                 }
                 if context.contains("sk-secret")
                     || context.contains("OPENAI_API_KEY")
+                    || context.contains("abc123")
+                    || context.contains("leaked-token")
+                    || context.contains("hunter2")
                     || context.contains("raw stack")
                     || context.contains(r#"{"error""#)
                 {
