@@ -6,7 +6,6 @@ use axum::{
 };
 use helixflow_agent::{AgentLogEntry, AgentSessionRequest, TurnMode, classify_turn_mode};
 use helixflow_graph::{ProposalKind, WorkflowGraph};
-use helixflow_run::AgentRunRequest;
 use helixflow_store::{MessageRecord, NewMessage, NewProposal, RunRecord, RunStepRecord};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -14,9 +13,9 @@ use serde_json::{Value, json};
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
 use crate::graph_files::write_json_file;
+use crate::sweep_support::handle_run_request;
 use crate::workbench_payload::{
-    PendingConfirmationPayload, ProposalPayload, RunPayload, pending_confirmation_from_pending,
-    proposal_payload_from_prepared, run_payload_from_pending,
+    PendingConfirmationPayload, ProposalPayload, RunPayload, proposal_payload_from_prepared,
 };
 
 #[derive(Debug, Deserialize)]
@@ -184,26 +183,15 @@ pub(crate) async fn post_workspace_message(
             }))
         }
         TurnMode::RunRequest => {
-            let pending = state
-                .runner
-                .request_agent_run(AgentRunRequest {
-                    workspace_id: request.workspace_id.clone(),
-                    version_id: request.base_version_id.clone(),
-                    group_id: None,
-                    label: run_label(&request.user_message),
-                    graph: request.graph,
-                })
-                .await
-                .map_err(ApiError::run)?;
-            let message_text = format!("Run {} is waiting for confirmation.", pending.run.id);
+            let run_request = handle_run_request(&state, request).await?;
             let message = state
                 .store
                 .create_message(NewMessage {
                     workspace_id: &workspace_id,
                     role: "agent",
                     kind: "run_requested",
-                    text: Some(&message_text),
-                    ref_id: Some(&pending.run.id),
+                    text: Some(&run_request.message_text),
+                    ref_id: Some(&run_request.ref_id),
                     attachment_ids_json: None,
                 })
                 .await
@@ -212,8 +200,8 @@ pub(crate) async fn post_workspace_message(
                 turn_mode,
                 messages: vec![ChatMessagePayload::from_record(message)],
                 proposal: None,
-                run: Some(run_payload_from_pending(&pending)),
-                pending_confirmation: Some(pending_confirmation_from_pending(&pending)),
+                run: Some(run_request.run),
+                pending_confirmation: Some(run_request.pending_confirmation),
             }))
         }
     }
@@ -405,14 +393,6 @@ fn redact_debug_token_segment(token: &str) -> String {
 fn truncate_debug_text(value: &str) -> String {
     const MAX_DEBUG_TEXT: usize = 240;
     value.chars().take(MAX_DEBUG_TEXT).collect()
-}
-
-fn run_label(user_message: &str) -> String {
-    let trimmed = user_message.trim();
-    if trimmed.is_empty() {
-        return "Agent requested run".to_owned();
-    }
-    trimmed.chars().take(80).collect()
 }
 
 fn proposal_storage_paths(workspace_id: &str, session_id: &str) -> (PathBuf, PathBuf) {

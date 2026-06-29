@@ -124,6 +124,28 @@ export function ConfirmModal({ confirmation, busy, onApprove, onHold }: ConfirmM
               {confirmation.cost.amount.toFixed(2)} {confirmation.cost.currency}
             </span>
           </div>
+          {confirmation.runCount ? (
+            <div className="confirm-item">
+              <span className="k">运行数量</span>
+              <span className="v">{confirmation.runCount} 次运行</span>
+            </div>
+          ) : null}
+          {confirmation.pendingChanges?.length ? (
+            <div className="confirm-item confirm-item--stack">
+              <span className="k">待变更</span>
+              <div className="v confirm-changes">
+                {confirmation.pendingChanges.map((change) => (
+                  <span key={change}>{change}</span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {confirmation.interruptible !== undefined ? (
+            <div className="confirm-item">
+              <span className="k">中断</span>
+              <span className="v">{confirmation.interruptible ? '执行期间可中断' : '不可中断'}</span>
+            </div>
+          ) : null}
           <div className="confirm-item">
             <span className="k">真实执行</span>
             <span className="v">确认后才会调用运行服务</span>

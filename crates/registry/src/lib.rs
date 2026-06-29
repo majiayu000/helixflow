@@ -401,6 +401,7 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
                         "aspect_ratio",
                         ParamSpec::string_enum(&["1:1", "9:16", "16:9"]),
                     ),
+                    ("seed", ParamSpec::integer()),
                 ],
             ),
         ),

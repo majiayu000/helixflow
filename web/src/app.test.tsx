@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './app';
 import { ArtifactStage } from './components/artifact-stage';
 import { shouldSubmitComposerKey } from './components/chat-pane';
-import { HistoryPanel } from './components/run-panels';
+import { ConfirmModal, HistoryPanel } from './components/run-panels';
 import { applyRunEvent, useWorkbenchStore } from './store';
 import type { WorkbenchState } from './types';
 
@@ -135,6 +135,30 @@ describe('App', () => {
     expect(markup).toContain('1 个真实 artifact');
     expect(markup).toContain('版本与运行历史');
     expect(markup).toContain('Agent requested run');
+  });
+
+  it('renders seed sweep confirmation metadata', () => {
+    const markup = renderToStaticMarkup(
+      <ConfirmModal
+        busy={false}
+        confirmation={{
+          id: 'run_seed_404',
+          title: 'Seed sweep run plan',
+          summary: 'Seed sweep is waiting for confirmation (4 runs).',
+          cost: { amount: 1.68, currency: 'USD' },
+          runCount: 4,
+          pendingChanges: ['video.seed = 101', 'video.seed = 202'],
+          interruptible: true,
+        }}
+        onApprove={async () => {}}
+        onHold={async () => {}}
+      />,
+    );
+
+    expect(markup).toContain('4 次运行');
+    expect(markup).toContain('video.seed = 101');
+    expect(markup).toContain('执行期间可中断');
+    expect(markup).toContain('1.68 USD');
   });
 
   it('renders agent runtime logs in a collapsed log group', () => {
