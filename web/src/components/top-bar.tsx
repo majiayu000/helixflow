@@ -90,7 +90,9 @@ export function TopBar({
           className={running ? 'btn btn--danger btn--sm' : 'btn btn--primary btn--sm'}
           disabled={runDisabled || busy}
           title={
-            runDisabled && !providerOk
+            running
+              ? '中断当前运行'
+              : runDisabled && !providerOk
               ? (defaultProvider?.health.message ?? 'Atlas provider 未配置')
               : runDisabled
                 ? '等待当前请求完成'
