@@ -7,6 +7,7 @@ Locale: zh-CN
 ## 输入资料
 
 - `crates/store/src/run_records.rs`
+- `crates/store/src/failed_run_records.rs`
 - `crates/run/src/lib.rs`
 - `crates/server/src/workspace_state.rs`
 - `crates/server/src/workbench_message.rs`
@@ -81,9 +82,13 @@ Enhance `run_payload` in `crates/server/src/workspace_state.rs`:
 
 ### DebugWorkflow
 
-Keep `debug_run_context` and `format_debug_run_context` as the source for agent context. Extend tests to prove:
+Add `Store::latest_failed_workspace_run` so DebugWorkflow uses the most recent failed run even when a later successful run exists.
+
+Keep `debug_run_context` and `format_debug_run_context` as the source for agent context, but only pass safe error summaries. Raw `error_json` stays in workspace state for explicit ErrorCard expansion and must not be sent directly to the agent context. Extend tests to prove:
 
 - latest failed run context includes run/step error.
+- a later non-failed run does not hide the latest failed run context.
+- secret-like tokens in raw errors are redacted before agent context.
 - DebugWorkflow creates a pending proposal.
 - current workspace version remains unchanged until proposal apply.
 

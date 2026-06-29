@@ -13,7 +13,7 @@ Implement one PR for failed run diagnosis payloads, ErrorCard UI, and DebugWorkf
 | ID | Owner | Dependencies | Task | Done When | Verify |
 | --- | --- | --- | --- | --- | --- |
 | SP27-T1 | backend | none | Add structured run/step error payloads to workspace state. | Failed run state includes bounded `error.summary` and hidden-capable `raw` for run and failed steps. | `cargo test -p helixflow-server workspace_state` |
-| SP27-T2 | backend | SP27-T1 | Strengthen DebugWorkflow tests. | “修复报错” uses latest failed run context and leaves current version unchanged before apply. | `cargo test -p helixflow-server workbench_message` |
+| SP27-T2 | backend | SP27-T1 | Strengthen DebugWorkflow tests. | “修复报错” uses latest failed run context, redacts raw secret-like errors from agent context, and leaves current version unchanged before apply. | `cargo test -p helixflow-server workbench_message` |
 | SP27-T3 | frontend | SP27-T1 | Extend web run types and websocket error updates. | `run.error` and `step.error` parse from state and update from events. | `cd web && npm test -- app.test.tsx` |
 | SP27-T4 | frontend | SP27-T3 | Add ChatPane ErrorCard. | Failed run renders summary card; raw error is absent until expanded. | `cd web && npm test -- app.test.tsx`; `cd web && npm run build` |
 | SP27-T5 | verification | SP27-T1-SP27-T4 | Run deterministic verification. | Fresh commands pass and PR body records evidence. | full verification matrix |

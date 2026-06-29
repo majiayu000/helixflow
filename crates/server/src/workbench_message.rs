@@ -9,7 +9,7 @@ use helixflow_graph::{ProposalKind, WorkflowGraph};
 use helixflow_run::AgentRunRequest;
 use helixflow_store::{MessageRecord, NewMessage, NewProposal, RunRecord, RunStepRecord};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
@@ -284,12 +284,12 @@ async fn debug_run_context(
     }
     let Some(run) = state
         .store
-        .latest_workspace_run(workspace_id)
+        .latest_failed_workspace_run(workspace_id)
         .await
         .map_err(ApiError::store)?
     else {
         return Ok(Some(
-            "No recent run is available for this workspace.".to_owned(),
+            "No recent failed run is available for this workspace.".to_owned(),
         ));
     };
     let steps = state
@@ -302,11 +302,11 @@ async fn debug_run_context(
 
 fn format_debug_run_context(run: &RunRecord, steps: &[RunStepRecord]) -> String {
     let mut lines = vec![format!(
-        "Latest run: id={}, status={}, label={}",
+        "Latest failed run: id={}, status={}, label={}",
         run.id, run.status, run.label
     )];
-    if let Some(error_json) = run.error_json.as_deref().map(truncate_debug_text) {
-        lines.push(format!("Run error: {error_json}"));
+    if let Some(summary) = run.error_json.as_deref().and_then(safe_error_summary) {
+        lines.push(format!("Run error summary: {summary}"));
     }
     for step in steps.iter().filter(|step| step.state == "failed") {
         lines.push(format!(
@@ -315,15 +315,66 @@ fn format_debug_run_context(run: &RunRecord, steps: &[RunStepRecord]) -> String 
             step.node_type,
             step.provider.as_deref().unwrap_or("none")
         ));
-        if let Some(error_json) = step.error_json.as_deref().map(truncate_debug_text) {
-            lines.push(format!("Step error: {error_json}"));
+        if let Some(summary) = step.error_json.as_deref().and_then(safe_error_summary) {
+            lines.push(format!("Step error summary: {summary}"));
         }
     }
     lines.join("\n")
 }
 
+fn safe_error_summary(value: &str) -> Option<String> {
+    let summary = serde_json::from_str::<Value>(value)
+        .ok()
+        .and_then(|parsed| {
+            ["error", "message", "reason"]
+                .into_iter()
+                .find_map(|key| parsed.get(key).and_then(Value::as_str))
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| value.to_owned());
+    let redacted = redact_debug_text(first_line(summary.trim()));
+    let summary = truncate_debug_text(redacted.trim());
+    if summary.is_empty() {
+        None
+    } else {
+        Some(summary)
+    }
+}
+
+fn first_line(value: &str) -> &str {
+    value.lines().next().unwrap_or(value)
+}
+
+fn redact_debug_text(value: &str) -> String {
+    value
+        .split_whitespace()
+        .map(redact_debug_token)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn redact_debug_token(token: &str) -> String {
+    let lower = token.to_ascii_lowercase();
+    if lower.contains("sk-")
+        || lower.contains("ghp_")
+        || lower.contains("gho_")
+        || lower.contains("github_pat_")
+        || lower.contains("hf_")
+        || lower.contains("api_key")
+        || lower.contains("apikey")
+        || lower.contains("token")
+        || lower.contains("secret")
+        || lower.contains("password")
+        || lower.contains("authorization")
+    {
+        "[redacted]".to_owned()
+    } else {
+        token.to_owned()
+    }
+}
+
 fn truncate_debug_text(value: &str) -> String {
-    const MAX_DEBUG_TEXT: usize = 800;
+    const MAX_DEBUG_TEXT: usize = 240;
     value.chars().take(MAX_DEBUG_TEXT).collect()
 }
 
@@ -535,7 +586,7 @@ mod tests {
             })
             .await
             .expect("create run step");
-        let error_json = r#"{"error":"provider rejected duration"}"#;
+        let error_json = r#"{"error":"provider rejected duration OPENAI_API_KEY=sk-secret-value","trace":"raw stack line"}"#;
         state
             .store
             .update_run_step_state(&step.id, "failed", Some(1.0), None, Some(error_json))
@@ -546,6 +597,20 @@ mod tests {
             .update_run_status(&run.id, "failed", Some(error_json))
             .await
             .expect("fail run");
+        state
+            .store
+            .create_run(NewRun {
+                workspace_id: &workspace_id,
+                version_id: &version_id,
+                group_id: None,
+                label: "Succeeded later",
+                trigger: "manual",
+                plan_json: None,
+                estimate_json: None,
+                status: "succeeded",
+            })
+            .await
+            .expect("create later run");
 
         let response = post_workspace_message(
             Path(workspace_id.clone()),
@@ -655,12 +720,21 @@ mod tests {
                     .run_context
                     .as_deref()
                     .ok_or_else(|| AgentError::Runtime("missing debug run context".to_owned()))?;
-                if !context.contains("Latest run")
+                if !context.contains("Latest failed run")
                     || !context.contains("provider rejected duration")
                     || !context.contains("Failed step")
                 {
                     return Err(AgentError::Runtime(format!(
                         "incomplete debug run context: {context}"
+                    )));
+                }
+                if context.contains("sk-secret")
+                    || context.contains("OPENAI_API_KEY")
+                    || context.contains("raw stack")
+                    || context.contains(r#"{"error""#)
+                {
+                    return Err(AgentError::Runtime(format!(
+                        "unsafe debug run context: {context}"
                     )));
                 }
             }
