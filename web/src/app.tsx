@@ -1,9 +1,7 @@
-import { useEffect } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { connectWorkspaceEvents } from './api';
 import { useWorkbenchStore } from './store';
-import type { GraphNodeState, RunStepState, WorkbenchState } from './types';
-
-const DEFAULT_WORKSPACE_ID = 'demo';
+import type { ChatMessageKind, GraphNodeState, RunStepState, WorkbenchState } from './types';
 
 type AppProps = {
   initialState?: WorkbenchState;
@@ -14,11 +12,12 @@ export function App({ initialState }: AppProps) {
   const error = useWorkbenchStore((store) => store.error);
   const state = useWorkbenchStore((store) => store.state);
   const connection = useWorkbenchStore((store) => store.connection);
-  const hydrate = useWorkbenchStore((store) => store.hydrate);
+  const bootstrap = useWorkbenchStore((store) => store.bootstrap);
   const setInitialState = useWorkbenchStore((store) => store.setInitialState);
   const setConnection = useWorkbenchStore((store) => store.setConnection);
   const applyEvent = useWorkbenchStore((store) => store.applyEvent);
   const activeState = initialState ?? state;
+  const workspaceId = initialState?.workspace.id ?? workspaceIdFromLocation();
 
   useEffect(() => {
     if (initialState) {
@@ -26,9 +25,9 @@ export function App({ initialState }: AppProps) {
       return;
     }
     if (status === 'idle') {
-      void hydrate(DEFAULT_WORKSPACE_ID);
+      void bootstrap(workspaceId);
     }
-  }, [hydrate, initialState, setInitialState, status]);
+  }, [bootstrap, initialState, setInitialState, status, workspaceId]);
 
   useEffect(() => {
     if (!activeState) {
@@ -47,7 +46,7 @@ export function App({ initialState }: AppProps) {
         <section className="loading-panel">
           <p>Helixflow</p>
           <h1>{status === 'error' ? 'Workspace unavailable' : 'Loading workspace'}</h1>
-          {error ? <span>{error}</span> : <span>127.0.0.1:8787</span>}
+          {error ? <span>{error}</span> : <span>{workspaceId ?? 'Opening latest workspace'}</span>}
         </section>
       </main>
     );
@@ -68,6 +67,19 @@ export function App({ initialState }: AppProps) {
   );
 }
 
+function workspaceIdFromLocation(): string | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  const params = new URLSearchParams(window.location.search);
+  const fromQuery = params.get('workspace_id') ?? params.get('workspace');
+  if (fromQuery?.trim()) {
+    return fromQuery.trim();
+  }
+  const match = window.location.pathname.match(/\/workspaces\/([^/]+)/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
 function TopBar({
   state,
   connection,
@@ -75,6 +87,8 @@ function TopBar({
   state: WorkbenchState;
   connection: string;
 }) {
+  const createWorkspace = useWorkbenchStore((store) => store.createWorkspace);
+
   return (
     <header className="top-bar">
       <div>
@@ -83,38 +97,96 @@ function TopBar({
       </div>
       <div className="top-meta" aria-label="Workspace status">
         <span>{state.workspace.versionId}</span>
-        <span>{state.run.status}</span>
+        <span>{state.run?.status ?? 'no run'}</span>
         <span>{connection}</span>
       </div>
-      <button className="primary-action" type="button">
-        Run
+      <button className="primary-action" type="button" onClick={() => void createWorkspace()}>
+        New
       </button>
     </header>
   );
 }
 
 function ChatPane({ state }: { state: WorkbenchState }) {
+  const primaryMessages = state.chat.messages.filter((message) => !isAgentLog(message.kind));
+  const logMessages = state.chat.messages.filter((message) => isAgentLog(message.kind));
+  const sendMessage = useWorkbenchStore((store) => store.sendMessage);
+  const [draft, setDraft] = useState('');
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const message = draft.trim();
+    if (!message) {
+      return;
+    }
+    setDraft('');
+    void sendMessage(message);
+  }
+
   return (
     <aside className="panel chat-pane" aria-label="Chat">
       <div className="panel-heading">
         <h2>Chat</h2>
-        <span>{state.chat.messages.length}</span>
+        <span>{primaryMessages.length}</span>
       </div>
       <div className="message-list">
-        {state.chat.messages.map((message) => (
-          <article className="message-row" data-role={message.role} key={message.id}>
+        {primaryMessages.map((message) => (
+          <article
+            className="message-row"
+            data-kind={message.kind ?? 'text'}
+            data-role={message.role}
+            key={message.id}
+          >
             <span>{message.role}</span>
             <p>{message.text}</p>
             <time>{message.time}</time>
           </article>
         ))}
+        {logMessages.length > 0 ? (
+          <details className="agent-log-group">
+            <summary>Agent logs ({logMessages.length})</summary>
+            <ol>
+              {logMessages.map((message) => (
+                <li data-kind={message.kind} key={message.id}>
+                  <span>{agentLogLabel(message.kind)}</span>
+                  <p>{message.text}</p>
+                  <time>{message.time}</time>
+                </li>
+              ))}
+            </ol>
+          </details>
+        ) : null}
       </div>
-      <form className="composer" aria-label="Message composer">
-        <input aria-label="Message" placeholder="Ask for a graph change" />
-        <button type="button">Send</button>
+      <form className="composer" aria-label="Message composer" onSubmit={handleSubmit}>
+        <input
+          aria-label="Message"
+          onChange={(event) => setDraft(event.target.value)}
+          placeholder="Ask for a graph change"
+          value={draft}
+        />
+        <button disabled={draft.trim().length === 0} type="submit">
+          Send
+        </button>
       </form>
     </aside>
   );
+}
+
+function isAgentLog(kind: ChatMessageKind | undefined): boolean {
+  return kind?.startsWith('agent_log:') ?? false;
+}
+
+function agentLogLabel(kind: ChatMessageKind | undefined): string {
+  if (kind === 'agent_log:tool_call') {
+    return 'Tool call';
+  }
+  if (kind === 'agent_log:tool_result') {
+    return 'Tool result';
+  }
+  if (kind === 'agent_log:error') {
+    return 'Error';
+  }
+  return 'Status';
 }
 
 function GraphCanvas({ state }: { state: WorkbenchState }) {
@@ -174,6 +246,7 @@ function GraphNode({ node }: { node: GraphNodeState }) {
 function RightRail({ state }: { state: WorkbenchState }) {
   return (
     <aside className="right-rail" aria-label="Run details">
+      <ProposalDock state={state} />
       <RunDock state={state} />
       <OutputsStrip state={state} />
       <HistoryPanel state={state} />
@@ -181,7 +254,58 @@ function RightRail({ state }: { state: WorkbenchState }) {
   );
 }
 
+function ProposalDock({ state }: { state: WorkbenchState }) {
+  const proposal = state.pendingProposal;
+  const applyProposal = useWorkbenchStore((store) => store.applyProposal);
+  const dismissProposal = useWorkbenchStore((store) => store.dismissProposal);
+
+  if (!proposal) {
+    return null;
+  }
+
+  return (
+    <section className="panel proposal-dock" aria-label="Pending proposal">
+      <div className="panel-heading">
+        <h2>Proposal</h2>
+        <StatusPill state={proposal.state} />
+      </div>
+      <div className="proposal-summary">
+        <strong>{proposal.title}</strong>
+        <p>{proposal.summary}</p>
+        <span>
+          {Object.keys(proposal.previewGraph.nodes).length} nodes / {proposal.previewGraph.edges.length}{' '}
+          edges
+        </span>
+      </div>
+      <div className="proposal-actions">
+        <button type="button" onClick={() => void dismissProposal(proposal.id)}>
+          Dismiss
+        </button>
+        <button type="button" onClick={() => void applyProposal(proposal.id)}>
+          Apply
+        </button>
+      </div>
+    </section>
+  );
+}
+
 function RunDock({ state }: { state: WorkbenchState }) {
+  if (!state.run) {
+    return (
+      <section className="panel run-dock" aria-label="Run dock">
+        <div className="panel-heading">
+          <h2>Run</h2>
+          <StatusPill state="no run" />
+        </div>
+        <div className="run-summary">
+          <strong>No run</strong>
+          <span>No cost</span>
+        </div>
+        <ol className="step-list" />
+      </section>
+    );
+  }
+
   return (
     <section className="panel run-dock" aria-label="Run dock">
       <div className="panel-heading">
@@ -251,6 +375,9 @@ function ConfirmModal({
 }: {
   confirmation: NonNullable<WorkbenchState['pendingConfirmation']>;
 }) {
+  const confirmRun = useWorkbenchStore((store) => store.confirmRun);
+  const holdRun = useWorkbenchStore((store) => store.holdRun);
+
   return (
     <div className="modal-layer">
       <section className="confirm-modal" role="dialog" aria-modal="true" aria-label="Confirm run">
@@ -263,14 +390,30 @@ function ConfirmModal({
           {confirmation.cost.amount.toFixed(2)} {confirmation.cost.currency}
         </strong>
         <div className="modal-actions">
-          <button type="button">Hold</button>
-          <button type="button">Approve</button>
+          <button type="button" onClick={() => void holdRun(confirmation.id)}>
+            Hold
+          </button>
+          <button type="button" onClick={() => void confirmRun(confirmation.id)}>
+            Approve
+          </button>
         </div>
       </section>
     </div>
   );
 }
 
-function StatusPill({ state }: { state: RunStepState | WorkbenchState['run']['status'] }) {
-  return <span className="status-pill" data-state={state}>{state}</span>;
+function StatusPill({
+  state,
+}: {
+  state:
+    | RunStepState
+    | NonNullable<WorkbenchState['run']>['status']
+    | NonNullable<WorkbenchState['pendingProposal']>['state']
+    | 'no run';
+}) {
+  return (
+    <span className="status-pill" data-state={state}>
+      {state}
+    </span>
+  );
 }

@@ -6,9 +6,11 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+async-trait.workspace = true
 axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10"
 tokio.workspace = true
 
 helixflow-agent = { path = "../agent" }
@@ -20,4 +22,5 @@ helixflow-store = { path = "../store" }
 
 [dev-dependencies]
 futures-util.workspace = true
+tempfile = "3"
 tokio-tungstenite.workspace = true

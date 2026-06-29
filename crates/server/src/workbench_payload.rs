@@ -1,0 +1,237 @@
+use helixflow_graph::{PreparedProposal, ProposalKind, ProposalOp, ProposalState, WorkflowGraph};
+use helixflow_run::{PendingRun, RunOutcome};
+use helixflow_store::{ArtifactRecord, CostLedgerRecord, ProposalRecord, RunRecord, RunStepRecord};
+use serde::Serialize;
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RunPayload {
+    pub(crate) id: String,
+    pub(crate) label: String,
+    pub(crate) status: String,
+    pub(crate) steps: Vec<RunStepPayload>,
+    pub(crate) cost: RunCostPayload,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RunStepPayload {
+    pub(crate) node_id: String,
+    pub(crate) title: String,
+    pub(crate) state: String,
+    pub(crate) provider: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub(crate) struct RunCostPayload {
+    pub(crate) estimate: f64,
+    pub(crate) actual: f64,
+    pub(crate) currency: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub(crate) struct OutputPayload {
+    pub(crate) id: String,
+    pub(crate) kind: String,
+    pub(crate) title: String,
+    #[serde(rename = "storageUri")]
+    pub(crate) storage_uri: String,
+    pub(crate) selected: bool,
+    pub(crate) meta: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub(crate) struct PendingConfirmationPayload {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) summary: String,
+    pub(crate) cost: ConfirmationCostPayload,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub(crate) struct ConfirmationCostPayload {
+    pub(crate) amount: f64,
+    pub(crate) currency: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProposalPayload {
+    pub(crate) id: String,
+    pub(crate) base_version_id: String,
+    pub(crate) kind: ProposalKind,
+    pub(crate) title: String,
+    pub(crate) summary: String,
+    pub(crate) ops: Vec<ProposalOp>,
+    pub(crate) diff_summary: Vec<String>,
+    pub(crate) preview_graph: WorkflowGraph,
+    pub(crate) state: ProposalState,
+    pub(crate) message_id: Option<String>,
+}
+
+pub(crate) fn run_payload_from_pending(pending: &PendingRun) -> RunPayload {
+    RunPayload {
+        id: pending.run.id.clone(),
+        label: pending.run.label.clone(),
+        status: pending.run.status.clone(),
+        steps: run_step_payloads(&pending.steps),
+        cost: RunCostPayload {
+            estimate: pending.estimate.amount,
+            actual: 0.0,
+            currency: pending.estimate.currency.clone(),
+        },
+    }
+}
+
+pub(crate) fn run_payload_from_outcome(
+    outcome: &RunOutcome,
+    costs: &[CostLedgerRecord],
+) -> RunPayload {
+    RunPayload {
+        id: outcome.run.id.clone(),
+        label: outcome.run.label.clone(),
+        status: outcome.run.status.clone(),
+        steps: run_step_payloads(&outcome.steps),
+        cost: run_cost_from_ledger(costs),
+    }
+}
+
+pub(crate) fn pending_confirmation_from_pending(
+    pending: &PendingRun,
+) -> PendingConfirmationPayload {
+    PendingConfirmationPayload {
+        id: pending.run.id.clone(),
+        title: pending.run.label.clone(),
+        summary: "Run is waiting for confirmation".to_owned(),
+        cost: ConfirmationCostPayload {
+            amount: pending.estimate.amount,
+            currency: pending.estimate.currency.clone(),
+        },
+    }
+}
+
+pub(crate) fn pending_confirmation_from_run(
+    run: &RunRecord,
+    costs: &[CostLedgerRecord],
+) -> Option<PendingConfirmationPayload> {
+    if run.status != "waiting_confirmation" {
+        return None;
+    }
+    let cost = run_cost_from_ledger(costs);
+    Some(PendingConfirmationPayload {
+        id: run.id.clone(),
+        title: run.label.clone(),
+        summary: "Run is waiting for confirmation".to_owned(),
+        cost: ConfirmationCostPayload {
+            amount: if cost.estimate > 0.0 {
+                cost.estimate
+            } else {
+                cost.actual
+            },
+            currency: cost.currency,
+        },
+    })
+}
+
+pub(crate) fn output_payload_from_artifact(artifact: &ArtifactRecord) -> OutputPayload {
+    OutputPayload {
+        id: artifact.id.clone(),
+        kind: artifact.kind.clone(),
+        title: artifact
+            .node_id
+            .clone()
+            .unwrap_or_else(|| artifact.kind.clone()),
+        storage_uri: artifact.storage_uri.clone(),
+        selected: artifact.selected,
+        meta: artifact.meta_json.clone().unwrap_or_default(),
+    }
+}
+
+pub(crate) fn proposal_payload_from_prepared(
+    id: impl Into<String>,
+    proposal: &PreparedProposal,
+) -> ProposalPayload {
+    ProposalPayload {
+        id: id.into(),
+        base_version_id: proposal.base_version_id.clone(),
+        kind: proposal.kind,
+        title: proposal.title.clone(),
+        summary: proposal.summary.clone(),
+        ops: proposal.ops.clone(),
+        diff_summary: proposal.diff_summary.clone(),
+        preview_graph: proposal.preview_graph.clone(),
+        state: proposal.state,
+        message_id: proposal.message_id.clone(),
+    }
+}
+
+pub(crate) fn pending_proposal_payload_from_record(
+    record: &ProposalRecord,
+    ops: Vec<ProposalOp>,
+    preview_graph: WorkflowGraph,
+) -> Result<ProposalPayload, String> {
+    Ok(ProposalPayload {
+        id: record.id.clone(),
+        base_version_id: record.base_version_id.clone(),
+        kind: proposal_kind_from_str(&record.kind)?,
+        title: record.title.clone(),
+        summary: record.summary.clone(),
+        ops,
+        diff_summary: Vec::new(),
+        preview_graph,
+        state: proposal_state_from_str(&record.state)?,
+        message_id: record.message_id.clone(),
+    })
+}
+
+fn run_step_payloads(steps: &[RunStepRecord]) -> Vec<RunStepPayload> {
+    steps
+        .iter()
+        .map(|step| RunStepPayload {
+            node_id: step.node_id.clone(),
+            title: step.node_id.clone(),
+            state: step.state.clone(),
+            provider: step.provider.clone(),
+        })
+        .collect()
+}
+
+fn run_cost_from_ledger(costs: &[CostLedgerRecord]) -> RunCostPayload {
+    let mut cost = RunCostPayload {
+        estimate: 0.0,
+        actual: 0.0,
+        currency: "USD".to_owned(),
+    };
+    for entry in costs {
+        if cost.currency == "USD" {
+            cost.currency = entry.currency.clone();
+        }
+        if entry.estimated {
+            cost.estimate += entry.amount;
+        } else {
+            cost.actual += entry.amount;
+        }
+    }
+    cost
+}
+
+pub(crate) fn proposal_kind_from_str(value: &str) -> Result<ProposalKind, String> {
+    match value {
+        "create" => Ok(ProposalKind::Create),
+        "modify" => Ok(ProposalKind::Modify),
+        "fix" => Ok(ProposalKind::Fix),
+        "sweep" => Ok(ProposalKind::Sweep),
+        _ => Err(format!("unknown proposal kind `{value}`")),
+    }
+}
+
+fn proposal_state_from_str(value: &str) -> Result<ProposalState, String> {
+    match value {
+        "pending" => Ok(ProposalState::Pending),
+        "applied" => Ok(ProposalState::Applied),
+        "dismissed" => Ok(ProposalState::Dismissed),
+        "superseded" => Ok(ProposalState::Superseded),
+        "failed" => Ok(ProposalState::Invalid),
+        _ => Err(format!("unknown proposal state `{value}`")),
+    }
+}

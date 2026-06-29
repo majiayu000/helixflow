@@ -367,6 +367,45 @@ async fn agent_requested_run_waits_for_confirmation_and_records_costs() {
 }
 
 #[tokio::test]
+async fn holding_pending_run_marks_interrupted_without_invoking_provider() {
+    let (store, _dir) = open_temp_store().await;
+    let (workspace_id, version_id) = workspace_version(&store).await;
+    let provider = CountingProvider::default();
+    let service = RunService::with_provider(store.clone(), provider.clone());
+    let mut receiver = service.events().subscribe();
+    let pending = service
+        .request_agent_run(AgentRunRequest {
+            workspace_id,
+            version_id,
+            group_id: None,
+            label: "Hold requested run".to_owned(),
+            graph: executable_graph(),
+        })
+        .await
+        .expect("request agent run");
+
+    let outcome = service.hold_run(&pending.run.id).await.expect("hold run");
+
+    assert_eq!(outcome.run.status, "interrupted");
+    assert_eq!(provider.invoke_count(), 0);
+    assert!(
+        service
+            .confirm_run(&pending.run.id)
+            .await
+            .expect_err("held run cannot be confirmed")
+            .to_string()
+            .contains("expected status `waiting_confirmation`")
+    );
+    let mut events = Vec::new();
+    while let Ok(event) = receiver.try_recv() {
+        events.push(event);
+    }
+    assert!(events.iter().any(|event| event.ev == "run.requested"));
+    assert!(events.iter().any(|event| event.ev == "run.interrupted"));
+    assert!(!events.iter().any(|event| event.ev == "run.started"));
+}
+
+#[tokio::test]
 async fn concurrent_confirm_does_not_double_invoke_provider() {
     let (store, _dir) = open_temp_store().await;
     let (workspace_id, version_id) = workspace_version(&store).await;
@@ -564,7 +603,7 @@ impl CountingProvider {
 
 #[async_trait]
 impl Provider for FailingProvider {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> &str {
         "mock"
     }
 
@@ -598,7 +637,7 @@ impl Provider for FailingProvider {
 
 #[async_trait]
 impl Provider for BlockingProvider {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> &str {
         self.inner.id()
     }
 
@@ -629,7 +668,7 @@ impl Provider for BlockingProvider {
 
 #[async_trait]
 impl Provider for FailsOnVideoProvider {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> &str {
         self.inner.id()
     }
 
@@ -659,7 +698,7 @@ impl Provider for FailsOnVideoProvider {
 
 #[async_trait]
 impl Provider for CountingProvider {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> &str {
         self.inner.id()
     }
 

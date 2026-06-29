@@ -186,6 +186,22 @@ impl Store {
         .await?)
     }
 
+    pub async fn latest_workspace_run(&self, workspace_id: &str) -> StoreResult<Option<RunRecord>> {
+        Ok(sqlx::query_as::<_, RunRecord>(
+            r#"
+            SELECT id, workspace_id, version_id, group_id, label, trigger, plan_json,
+                   estimate_json, status, error_json, started_at, ended_at, created_at
+            FROM runs
+            WHERE workspace_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(workspace_id)
+        .fetch_optional(self.pool())
+        .await?)
+    }
+
     pub async fn update_run_status(
         &self,
         run_id: &str,

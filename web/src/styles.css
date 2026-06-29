@@ -136,6 +136,7 @@ button {
 
 .primary-action,
 .composer button,
+.proposal-actions button,
 .modal-actions button {
   min-height: 36px;
   border: 1px solid #20211f;
@@ -230,6 +231,29 @@ button {
 .message-row time {
   color: #77786f;
   font-size: 12px;
+}
+
+.agent-log-group {
+  border-left: 3px solid #a9a897;
+  color: #595a52;
+  font-size: 12px;
+  padding-left: 10px;
+}
+
+.agent-log-group summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.agent-log-group ol {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding-left: 16px;
+}
+
+.agent-log-group p {
+  margin: 2px 0;
 }
 
 .composer {
@@ -332,8 +356,50 @@ button {
 
 .right-rail {
   display: grid;
-  grid-template-rows: auto auto 1fr;
+  grid-template-rows: auto auto auto 1fr;
   gap: 12px;
+}
+
+.proposal-summary {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+}
+
+.proposal-summary strong {
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.proposal-summary p {
+  margin: 0;
+  color: #5c5d55;
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.proposal-summary span {
+  color: #596055;
+  font-size: 12px;
+}
+
+.proposal-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  border-top: 1px solid #d7d7cc;
+  padding: 12px;
+}
+
+.proposal-actions button {
+  min-width: 0;
+  padding: 0 10px;
+}
+
+.proposal-actions button:first-child {
+  background: #fffffa;
+  color: #20211f;
 }
 
 .run-summary {
@@ -394,11 +460,26 @@ button {
 }
 
 .status-pill[data-state="queued"],
+.status-pill[data-state="pending"],
 .status-pill[data-state="skipped"],
 .status-pill[data-state="interrupted"] {
   border-color: #b1843a;
   background: #f4ead7;
   color: #775719;
+}
+
+.status-pill[data-state="applied"] {
+  border-color: #6f7a48;
+  background: #ebf0d9;
+  color: #4e5c2c;
+}
+
+.status-pill[data-state="dismissed"],
+.status-pill[data-state="superseded"],
+.status-pill[data-state="invalid"] {
+  border-color: #a9a897;
+  background: #eeeee9;
+  color: #595a52;
 }
 
 .output-list,
