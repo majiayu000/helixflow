@@ -58,46 +58,44 @@ fn ensure_exportable_json(value: &Value, path: &str) -> Result<(), ApiError> {
 }
 
 fn is_non_exportable_key(key: &str) -> bool {
-    let normalized = key
+    let compact = key
         .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                '_'
-            }
-        })
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .map(|ch| ch.to_ascii_lowercase())
         .collect::<String>();
 
-    normalized.contains("secret")
-        || normalized.contains("password")
-        || normalized.contains("credential")
-        || normalized.contains("private_key")
-        || normalized.contains("api_key")
-        || normalized.contains("apikey")
-        || normalized.contains("access_token")
-        || normalized.contains("refresh_token")
-        || normalized.contains("authorization")
-        || normalized.contains("auth_header")
-        || normalized.contains("request_header")
-        || normalized == "headers"
-        || normalized == "header"
-        || normalized.contains("cookie")
-        || normalized == "run_id"
-        || normalized == "session_id"
-        || normalized == "trace_id"
-        || normalized == "provider_request_id"
-        || normalized.contains("runtime_metadata")
+    compact.contains("secret")
+        || compact.contains("password")
+        || compact.contains("credential")
+        || compact.contains("privatekey")
+        || compact.contains("apikey")
+        || compact == "token"
+        || compact.ends_with("token")
+        || compact.contains("authorization")
+        || compact.contains("authheader")
+        || compact.contains("requestheader")
+        || compact == "header"
+        || compact.ends_with("header")
+        || compact == "headers"
+        || compact.ends_with("headers")
+        || compact.contains("cookie")
+        || compact == "runid"
+        || compact.ends_with("runid")
+        || compact == "sessionid"
+        || compact.ends_with("sessionid")
+        || compact == "traceid"
+        || compact.ends_with("traceid")
+        || compact == "providerrequestid"
+        || compact.ends_with("providerrequestid")
+        || compact.contains("runtimemetadata")
+        || compact.contains("runtimeonly")
 }
 
 fn looks_like_local_absolute_path(value: &str) -> bool {
     let trimmed = value.trim();
-    trimmed.starts_with("/Users/")
-        || trimmed.starts_with("/home/")
-        || trimmed.starts_with("/tmp/")
-        || trimmed.starts_with("/private/")
-        || trimmed.starts_with("/Volumes/")
+    (trimmed.starts_with('/') && !trimmed.starts_with("//"))
         || trimmed.starts_with("~/")
+        || trimmed.starts_with('\\')
         || trimmed.as_bytes().get(1) == Some(&b':')
             && matches!(trimmed.as_bytes().get(2), Some(b'\\' | b'/'))
 }
@@ -151,6 +149,49 @@ mod tests {
         assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
         assert!(err.message.contains("non-exportable field"));
         assert!(!err.message.contains("sk_live"));
+    }
+
+    #[test]
+    fn export_safety_rejects_camel_case_and_header_keys() {
+        for key in [
+            "accessToken",
+            "privateKey",
+            "authHeader",
+            "requestHeaders",
+            "providerRequestId",
+            "runId",
+            "sessionId",
+            "traceId",
+            "runtimeOnlyMetadata",
+        ] {
+            assert!(is_non_exportable_key(key), "{key} should be non-exportable");
+        }
+    }
+
+    #[test]
+    fn export_safety_rejects_generic_absolute_paths() {
+        for value in [
+            "/etc/helixflow/config.json",
+            "/var/tmp/render.png",
+            "/opt/helixflow/model.safetensors",
+            "/root/.config/provider.json",
+            "/mnt/workflow/output.mp4",
+            "~/workflow/output.mp4",
+            "C:\\Users\\alice\\workflow.json",
+            "\\Users\\alice\\workflow.json",
+        ] {
+            assert!(
+                looks_like_local_absolute_path(value),
+                "{value} should be treated as a local absolute path"
+            );
+        }
+
+        assert!(!looks_like_local_absolute_path(
+            "workspace://outputs/run_1/video.mp4"
+        ));
+        assert!(!looks_like_local_absolute_path(
+            "https://example.com/workflow.json"
+        ));
     }
 
     async fn state_with_current_graph_and_pending_proposal() -> (AppState, String, tempfile::TempDir)
