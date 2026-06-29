@@ -1,8 +1,8 @@
 # Agent Turn Routing, PromptStack, and Tool Log Contract
 
-Status: draft  
-Issue: https://github.com/majiayu000/helixflow/issues/21  
-Locale: zh-CN  
+Status: draft
+Issue: https://github.com/majiayu000/helixflow/issues/21
+Locale: zh-CN
 
 ## 背景
 
