@@ -12,6 +12,7 @@ use serde::Serialize;
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
 use crate::graph_files::read_graph_file;
+use crate::sweep_support::interrupt_target_run;
 use crate::workbench_payload::{
     OutputPayload, PendingConfirmationPayload, RunPayload, output_payload_from_artifact,
     run_payload_from_outcome,
@@ -142,19 +143,20 @@ pub(crate) async fn interrupt_active_run(
     State(state): State<AppState>,
 ) -> Result<Json<RunConfirmationResponse>, ApiError> {
     let run = state.store.run(&run_id).await.map_err(ApiError::store)?;
-    if !is_interruptible_status(&run.status) {
+    let target_run = interrupt_target_run(&state, &run).await?;
+    if !is_interruptible_status(&target_run.status) {
         return Err(ApiError {
             status: StatusCode::CONFLICT,
-            message: format!("run `{run_id}` is not active"),
+            message: format!("run `{}` is not active", target_run.id),
         });
     }
 
     state
         .runner
-        .interrupt_run(&run_id)
+        .interrupt_run(&target_run.id)
         .await
         .map_err(ApiError::run)?;
-    response_from_run_id(&state, &run_id).await.map(Json)
+    response_from_run_id(&state, &target_run.id).await.map(Json)
 }
 
 async fn response_from_outcome(

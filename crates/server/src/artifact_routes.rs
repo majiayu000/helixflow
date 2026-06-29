@@ -2,7 +2,7 @@ use axum::{
     Json,
     extract::{Path, State},
 };
-use helixflow_store::ArtifactRecord;
+use helixflow_store::{ArtifactRecord, RunRecord};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -18,12 +18,18 @@ pub(crate) async fn select_output(
     State(state): State<AppState>,
 ) -> Result<Json<Value>, ApiError> {
     let artifact = artifact_by_id(&state, &output_id).await?;
-    ensure_latest_run_artifact(&state, &artifact).await?;
-    let selected = state
-        .store
-        .select_run_artifact(&artifact.id)
-        .await
-        .map_err(ApiError::store)?;
+    let selected = match latest_output_scope(&state, &artifact).await? {
+        OutputSelectionScope::Run => state
+            .store
+            .select_run_artifact(&artifact.id)
+            .await
+            .map_err(ApiError::store)?,
+        OutputSelectionScope::SweepGroup(group_id) => state
+            .store
+            .select_group_artifact(&artifact.id, &group_id)
+            .await
+            .map_err(ApiError::store)?,
+    };
 
     Ok(Json(
         workspace_state_value(&state, &selected.workspace_id).await?,
@@ -69,22 +75,59 @@ async fn artifact_by_id(state: &AppState, output_id: &str) -> Result<ArtifactRec
     }
 }
 
-async fn ensure_latest_run_artifact(
+enum OutputSelectionScope {
+    Run,
+    SweepGroup(String),
+}
+
+async fn latest_output_scope(
     state: &AppState,
     artifact: &ArtifactRecord,
-) -> Result<(), ApiError> {
+) -> Result<OutputSelectionScope, ApiError> {
     let latest_run = state
         .store
         .latest_workspace_run(&artifact.workspace_id)
         .await
         .map_err(ApiError::store)?
         .ok_or_else(|| ApiError::conflict("workspace has no latest run"))?;
-    if artifact.run_id.as_deref() != Some(latest_run.id.as_str()) {
+    let Some(artifact_run_id) = artifact.run_id.as_deref() else {
         return Err(ApiError::conflict(
-            "output is not attached to the latest workspace run",
+            "output is not attached to a workspace run",
         ));
+    };
+
+    if artifact_run_id == latest_run.id {
+        return Ok(selection_scope_for_run(&latest_run));
     }
-    Ok(())
+
+    if latest_run.trigger == "sweep"
+        && let Some(group_id) = latest_run.group_id.as_deref()
+    {
+        let artifact_run = state
+            .store
+            .run(artifact_run_id)
+            .await
+            .map_err(ApiError::store)?;
+        if artifact_run.workspace_id == artifact.workspace_id
+            && artifact_run.group_id.as_deref() == Some(group_id)
+        {
+            return Ok(OutputSelectionScope::SweepGroup(group_id.to_owned()));
+        }
+    }
+
+    Err(ApiError::conflict(
+        "output is not attached to the latest workspace run",
+    ))
+}
+
+fn selection_scope_for_run(run: &RunRecord) -> OutputSelectionScope {
+    if run.trigger == "sweep"
+        && let Some(group_id) = run.group_id.as_deref()
+    {
+        return OutputSelectionScope::SweepGroup(group_id.to_owned());
+    }
+
+    OutputSelectionScope::Run
 }
 
 #[derive(Debug, Serialize)]
@@ -181,6 +224,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn select_output_allows_artifacts_from_latest_sweep_group() {
+        let (state, first_id, second_id, _dir) = state_with_sweep_outputs().await;
+
+        let body = select_output(Path(first_id.clone()), State(state.clone()))
+            .await
+            .expect("select sweep output")
+            .0;
+        let outputs = body["outputs"].as_array().expect("outputs");
+
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(
+            outputs
+                .iter()
+                .filter(|output| output["selected"] == true)
+                .map(|output| output["id"].as_str().expect("id"))
+                .collect::<Vec<_>>(),
+            vec![first_id.as_str()]
+        );
+        assert_eq!(
+            state
+                .store
+                .artifact(&second_id)
+                .await
+                .expect("second")
+                .selected,
+            false
+        );
+    }
+
+    #[tokio::test]
     async fn preview_and_download_routes_hide_raw_storage_uri() {
         let (state, _first_id, second_id, _dir) = state_with_two_latest_outputs().await;
 
@@ -260,6 +333,67 @@ mod tests {
             .await
             .expect("latest run");
         (state, old.id, dir)
+    }
+
+    async fn state_with_sweep_outputs() -> (AppState, String, String, tempfile::TempDir) {
+        let (state, workspace_id, _manual_run_id, dir) = state_with_run().await;
+        let version_id = state
+            .store
+            .workspace(&workspace_id)
+            .await
+            .expect("workspace")
+            .cur_version_id
+            .expect("current version");
+        let first_run = state
+            .store
+            .create_run(NewRun {
+                workspace_id: &workspace_id,
+                version_id: &version_id,
+                group_id: Some("sweep_route_test"),
+                label: "Sweep one",
+                trigger: "sweep",
+                plan_json: None,
+                estimate_json: None,
+                status: "succeeded",
+            })
+            .await
+            .expect("first sweep run");
+        let second_run = state
+            .store
+            .create_run(NewRun {
+                workspace_id: &workspace_id,
+                version_id: &version_id,
+                group_id: Some("sweep_route_test"),
+                label: "Sweep two",
+                trigger: "sweep",
+                plan_json: None,
+                estimate_json: None,
+                status: "succeeded",
+            })
+            .await
+            .expect("second sweep run");
+        let first = create_artifact(
+            &state.store,
+            &workspace_id,
+            &first_run.id,
+            "first",
+            "video",
+            "workspace://outputs/sweep/first.mp4",
+            false,
+        )
+        .await;
+        let second = create_artifact(
+            &state.store,
+            &workspace_id,
+            &second_run.id,
+            "second",
+            "video",
+            "workspace://outputs/sweep/second.mp4",
+            true,
+        )
+        .await;
+
+        (state, first.id, second.id, dir)
     }
 
     async fn state_with_run() -> (AppState, String, String, tempfile::TempDir) {

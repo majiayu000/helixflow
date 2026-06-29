@@ -638,7 +638,7 @@ fn run_step_from_row(row: sqlx::sqlite::SqliteRow) -> StoreResult<RunStepRecord>
     })
 }
 
-fn artifact_from_row(row: sqlx::sqlite::SqliteRow) -> StoreResult<ArtifactRecord> {
+pub(crate) fn artifact_from_row(row: sqlx::sqlite::SqliteRow) -> StoreResult<ArtifactRecord> {
     let selected: i64 = row.try_get("selected")?;
     Ok(ArtifactRecord {
         id: row.try_get("id")?,

@@ -4,6 +4,7 @@ import { App } from './app';
 import { ArtifactStage } from './components/artifact-stage';
 import { shouldSubmitComposerKey } from './components/chat-pane';
 import { ConfirmModal, HistoryPanel } from './components/run-panels';
+import { TopBar } from './components/top-bar';
 import { applyRunEvent, useWorkbenchStore } from './store';
 import type { WorkbenchState } from './types';
 
@@ -159,6 +160,32 @@ describe('App', () => {
     expect(markup).toContain('video.seed = 101');
     expect(markup).toContain('执行期间可中断');
     expect(markup).toContain('1.68 USD');
+  });
+
+  it('keeps the interrupt button enabled while another run action is busy', () => {
+    const markup = renderToStaticMarkup(
+      <TopBar
+        agentRunDisabled={true}
+        busy={true}
+        connection="live"
+        exportDisabled={true}
+        historyOpen={false}
+        onAgentRun={() => {}}
+        onExport={() => {}}
+        onHistory={() => {}}
+        onNewWorkspace={() => {}}
+        onQueue={() => {}}
+        onUndo={() => {}}
+        runDisabled={false}
+        running={true}
+        state={state}
+        undoDisabled={true}
+      />,
+    );
+
+    expect(markup).toContain('中断');
+    expect(markup).toContain('title="中断当前运行"');
+    expect(markup).not.toContain('title="中断当前运行" disabled=""');
   });
 
   it('renders agent runtime logs in a collapsed log group', () => {
@@ -875,6 +902,59 @@ describe('App', () => {
     expect(updated?.run?.status).toBe('succeeded');
     expect(updated?.pendingConfirmation).toBeNull();
     expect(updated?.graph.nodes.find((node) => node.id === 'video')?.status).toBe('succeeded');
+  });
+
+  it('marks a confirming run as running before the confirmation response returns', async () => {
+    const fetchControl: { resolve?: (response: Response) => void } = {};
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            fetchControl.resolve = resolve;
+          }),
+      ),
+    );
+    useWorkbenchStore.getState().setInitialState({
+      ...state,
+      run: {
+        ...(state.run as NonNullable<WorkbenchState['run']>),
+        status: 'waiting_confirmation',
+      },
+      pendingConfirmation: {
+        id: 'run_test_1',
+        title: 'Manual preview',
+        summary: 'Run is waiting for confirmation',
+        cost: { amount: 0, currency: 'USD' },
+      },
+    });
+
+    const pending = useWorkbenchStore.getState().confirmRun('run_test_1');
+
+    expect(useWorkbenchStore.getState().state?.run?.status).toBe('running');
+    expect(useWorkbenchStore.getState().state?.pendingConfirmation).toBeNull();
+    if (!fetchControl.resolve) {
+      throw new Error('fetch resolver was not installed');
+    }
+    fetchControl.resolve(
+      jsonResponse({
+        run: {
+          id: 'run_test_1',
+          label: 'Manual preview',
+          status: 'interrupted',
+          steps: [
+            { nodeId: 'text', title: 'text', state: 'skipped', provider: null },
+            { nodeId: 'video', title: 'video', state: 'skipped', provider: 'mock' },
+          ],
+          cost: { estimate: 0, actual: 0, currency: 'USD' },
+        },
+        outputs: [],
+        pendingConfirmation: null,
+      }),
+    );
+    await pending;
+
+    expect(useWorkbenchStore.getState().state?.run?.status).toBe('interrupted');
   });
 
   it('holds a pending run through the run hold API', async () => {

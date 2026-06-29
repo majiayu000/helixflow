@@ -2,6 +2,7 @@ use helixflow_agent::AgentSessionRequest;
 use helixflow_graph::WorkflowGraph;
 use helixflow_registry::NodeRegistry;
 use helixflow_run::{AgentRunRequest, SweepPlan, SweepVariant};
+use helixflow_store::RunRecord;
 use serde_json::{Number, Value};
 
 use crate::api_error::ApiError;
@@ -45,6 +46,28 @@ pub(crate) async fn handle_run_request(
         run: run_payload_from_pending(&pending),
         pending_confirmation: pending_confirmation_from_pending(&pending),
     })
+}
+
+pub(crate) async fn interrupt_target_run(
+    state: &AppState,
+    run: &RunRecord,
+) -> Result<RunRecord, ApiError> {
+    if run.trigger != "sweep" {
+        return Ok(run.clone());
+    }
+    let Some(group_id) = run.group_id.as_deref() else {
+        return Ok(run.clone());
+    };
+    let runs = state
+        .store
+        .runs_for_group(group_id)
+        .await
+        .map_err(ApiError::store)?;
+    Ok(runs
+        .iter()
+        .find(|candidate| candidate.status == "running")
+        .cloned()
+        .unwrap_or_else(|| run.clone()))
 }
 
 async fn request_seed_sweep(

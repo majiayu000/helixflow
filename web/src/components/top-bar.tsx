@@ -106,7 +106,7 @@ export function TopBar({
         </button>
         <button
           className={running ? 'btn btn--danger btn--sm' : 'btn btn--primary btn--sm'}
-          disabled={runDisabled || busy}
+          disabled={runDisabled || (!running && busy)}
           title={
             running
               ? '中断当前运行'

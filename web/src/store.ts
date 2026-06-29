@@ -270,6 +270,9 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => ({
       return;
     }
 
+    set((current) => ({
+      state: current.state ? markRunConfirming(current.state, runId) : current.state,
+    }));
     try {
       const response = await confirmWorkspaceRun(state.workspace.id, runId);
       set((current) => ({
@@ -414,6 +417,20 @@ function applyRunConfirmation(
     },
     response.run,
   );
+}
+
+function markRunConfirming(state: WorkbenchState, runId: string): WorkbenchState {
+  return {
+    ...state,
+    pendingConfirmation: null,
+    run:
+      state.run?.id === runId
+        ? {
+            ...state.run,
+            status: 'running',
+          }
+        : state.run,
+  };
 }
 
 function applyRunSnapshot(

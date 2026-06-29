@@ -61,7 +61,7 @@ pub struct SweepOutcome {
     pub group_id: String,
     pub runs: Vec<RunOutcome>,
     pub artifacts: Vec<ArtifactRecord>,
-    pub recommendation: ArtifactRecord,
+    pub recommendation: Option<ArtifactRecord>,
 }
 
 impl<P> RunService<P>
@@ -278,22 +278,30 @@ where
                 } else {
                     None
                 }
-            })
-            .ok_or_else(|| {
-                RunError::InvalidSweepPlan(
-                    "recommended run did not produce an output artifact".to_owned(),
-                )
-            })?;
+            });
+        if recommendation.is_none() && !interrupted {
+            return Err(RunError::InvalidSweepPlan(
+                "recommended run did not produce an output artifact".to_owned(),
+            ));
+        }
 
         let mut refreshed_artifacts = Vec::new();
         for artifact in artifacts {
             refreshed_artifacts.push(
                 self.store
-                    .update_artifact_selected(&artifact.id, artifact.id == recommendation.id)
+                    .update_artifact_selected(
+                        &artifact.id,
+                        recommendation
+                            .as_ref()
+                            .is_some_and(|selected| artifact.id == selected.id),
+                    )
                     .await?,
             );
         }
-        let recommendation = self.store.artifact(&recommendation.id).await?;
+        let recommendation = match recommendation {
+            Some(artifact) => Some(self.store.artifact(&artifact.id).await?),
+            None => None,
+        };
 
         Ok(SweepOutcome {
             group_id,
