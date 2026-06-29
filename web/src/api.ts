@@ -1,7 +1,14 @@
 import {
+  RunConfirmationResponseSchema,
   RunEventEnvelopeSchema,
+  WorkspaceSummarySchema,
+  WorkspaceMessageResponseSchema,
   WorkbenchStateSchema,
+  type RunConfirmationResponse,
   type RunEventEnvelope,
+  type WorkflowGraph,
+  type WorkspaceSummary,
+  type WorkspaceMessageResponse,
   type WorkbenchState,
 } from './types';
 
@@ -19,6 +26,146 @@ export async function fetchWorkspaceState(workspaceId: string): Promise<Workbenc
   }
 
   return WorkbenchStateSchema.parse(await response.json());
+}
+
+export async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
+  const response = await fetch('/api/workspaces');
+  if (!response.ok) {
+    throw new Error(`workspace list request failed: ${response.status}`);
+  }
+
+  return WorkspaceSummarySchema.array().parse(await response.json());
+}
+
+export async function createWorkspace(name?: string): Promise<WorkspaceSummary> {
+  const response = await fetch('/api/workspaces', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  const body = await response.json();
+  if (!response.ok) {
+    const message =
+      body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+        ? body.error
+        : `workspace create request failed: ${response.status}`;
+    throw new Error(message);
+  }
+
+  return WorkspaceSummarySchema.parse(body);
+}
+
+export async function sendWorkspaceMessage(
+  workspaceId: string,
+  input: {
+    baseVersionId: string;
+    userMessage: string;
+    graph: WorkflowGraph;
+  },
+): Promise<WorkspaceMessageResponse> {
+  const response = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  const body = await response.json();
+  if (!response.ok) {
+    const message =
+      body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+        ? body.error
+        : `workspace message request failed: ${response.status}`;
+    throw new Error(message);
+  }
+
+  return WorkspaceMessageResponseSchema.parse(body);
+}
+
+export async function confirmWorkspaceRun(
+  workspaceId: string,
+  runId: string,
+): Promise<RunConfirmationResponse> {
+  const response = await fetch(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/confirm`,
+    {
+      method: 'POST',
+    },
+  );
+  const body = await response.json();
+  if (!response.ok) {
+    const message =
+      body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+        ? body.error
+        : `run confirmation request failed: ${response.status}`;
+    throw new Error(message);
+  }
+
+  return RunConfirmationResponseSchema.parse(body);
+}
+
+export async function holdWorkspaceRun(
+  workspaceId: string,
+  runId: string,
+): Promise<RunConfirmationResponse> {
+  const response = await fetch(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/runs/${encodeURIComponent(runId)}/hold`,
+    {
+      method: 'POST',
+    },
+  );
+  const body = await response.json();
+  if (!response.ok) {
+    const message =
+      body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+        ? body.error
+        : `run hold request failed: ${response.status}`;
+    throw new Error(message);
+  }
+
+  return RunConfirmationResponseSchema.parse(body);
+}
+
+export async function applyWorkspaceProposal(
+  workspaceId: string,
+  proposalId: string,
+): Promise<WorkbenchState> {
+  const response = await fetch(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/proposals/${encodeURIComponent(proposalId)}/apply`,
+    {
+      method: 'POST',
+    },
+  );
+  const body = await response.json();
+  if (!response.ok) {
+    const message =
+      body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+        ? body.error
+        : `proposal apply request failed: ${response.status}`;
+    throw new Error(message);
+  }
+
+  return WorkbenchStateSchema.parse(body);
+}
+
+export async function dismissWorkspaceProposal(
+  workspaceId: string,
+  proposalId: string,
+): Promise<WorkbenchState> {
+  const response = await fetch(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/proposals/${encodeURIComponent(proposalId)}/dismiss`,
+    {
+      method: 'POST',
+    },
+  );
+  const body = await response.json();
+  if (!response.ok) {
+    const message =
+      body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+        ? body.error
+        : `proposal dismiss request failed: ${response.status}`;
+    throw new Error(message);
+  }
+
+  return WorkbenchStateSchema.parse(body);
 }
 
 export function connectWorkspaceEvents(

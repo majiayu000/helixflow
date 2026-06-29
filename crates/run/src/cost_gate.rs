@@ -77,6 +77,38 @@ where
         self.execute_confirmed_run(run, plan).await
     }
 
+    pub async fn hold_run(&self, run_id: &str) -> RunResult<RunOutcome> {
+        let run = self.store.run(run_id).await?;
+        if run.status != RunStatus::WaitingConfirmation.as_str() {
+            return Err(RunError::InvalidRunStatus {
+                run_id: run.id,
+                expected: RunStatus::WaitingConfirmation.as_str(),
+                actual: run.status,
+            });
+        }
+        let Some(run) = self
+            .store
+            .update_run_status_if_current(
+                run_id,
+                RunStatus::WaitingConfirmation.as_str(),
+                RunStatus::Interrupted.as_str(),
+                None,
+            )
+            .await?
+        else {
+            let current = self.store.run(run_id).await?;
+            return Err(RunError::InvalidRunStatus {
+                run_id: current.id,
+                expected: RunStatus::WaitingConfirmation.as_str(),
+                actual: current.status,
+            });
+        };
+
+        self.emit(&run.workspace_id, &run.id, "run.interrupted", json!({}))
+            .await?;
+        self.outcome(&run.id).await
+    }
+
     async fn claim_run_for_confirmation(
         &self,
         run_id: &str,

@@ -6,9 +6,13 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Executor, Row, SqlitePool};
 use uuid::Uuid;
 
+mod proposal_records;
 mod run_records;
+mod workspace_records;
 
+pub use proposal_records::*;
 pub use run_records::*;
+pub use workspace_records::*;
 
 pub fn module_name() -> &'static str {
     "store"
@@ -29,6 +33,15 @@ pub enum StoreError {
         workspace_id: String,
         version_id: String,
         actual_workspace_id: Option<String>,
+    },
+    ProposalStateConflict {
+        proposal_id: String,
+        expected_state: String,
+        actual_state: Option<String>,
+    },
+    ProposalWorkspaceMismatch {
+        proposal_id: String,
+        workspace_id: String,
     },
 }
 
@@ -53,11 +66,32 @@ impl fmt::Display for StoreError {
                 f,
                 "run workspace `{workspace_id}` cannot use version `{version_id}` from workspace `{actual_workspace_id:?}`"
             ),
+            Self::ProposalStateConflict {
+                proposal_id,
+                expected_state,
+                actual_state,
+            } => write!(
+                f,
+                "proposal `{proposal_id}` expected state `{expected_state}` but found `{actual_state:?}`"
+            ),
+            Self::ProposalWorkspaceMismatch {
+                proposal_id,
+                workspace_id,
+            } => write!(
+                f,
+                "proposal `{proposal_id}` was not found in workspace `{workspace_id}`"
+            ),
         }
     }
 }
 
 impl std::error::Error for StoreError {}
+
+impl StoreError {
+    pub fn is_not_found(&self) -> bool {
+        matches!(self, Self::Sqlx(sqlx::Error::RowNotFound))
+    }
+}
 
 impl From<sqlx::Error> for StoreError {
     fn from(err: sqlx::Error) -> Self {
@@ -259,6 +293,10 @@ impl Store {
         .execute(&self.pool)
         .await?;
 
+        self.provider_status(provider_id).await
+    }
+
+    pub async fn provider_status(&self, provider_id: &str) -> StoreResult<ProviderRecord> {
         let provider = sqlx::query_as::<_, ProviderRecord>(
             r#"
             SELECT id, enabled, status, catalog_hash, catalog_path, last_checked_at

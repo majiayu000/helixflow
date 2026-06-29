@@ -586,6 +586,7 @@ dependencies = [
 name = "helixflow-server"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "futures-util",
  "helixflow-agent",
@@ -596,6 +597,8 @@ dependencies = [
  "helixflow-store",
  "serde",
  "serde_json",
+ "sha2",
+ "tempfile",
  "tokio",
  "tokio-tungstenite",
 ]

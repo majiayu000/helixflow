@@ -5,6 +5,10 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+mod runtime_provider;
+
+pub use runtime_provider::{RuntimeProvider, UnavailableProvider};
+
 pub fn module_name() -> &'static str {
     "gateway"
 }
@@ -13,7 +17,7 @@ pub type ProviderResultValue<T> = Result<T, ProviderError>;
 
 #[async_trait]
 pub trait Provider: Send + Sync {
-    fn id(&self) -> &'static str;
+    fn id(&self) -> &str;
     async fn health(&self) -> ProviderHealth;
     async fn catalog(&self) -> ProviderResultValue<ProviderCatalog>;
     async fn estimate(&self, req: ProviderRequest) -> ProviderResultValue<CostEstimate>;
@@ -100,6 +104,7 @@ pub enum ProviderError {
     WrongProvider { expected: String, actual: String },
     UnsupportedCapability(String),
     CancelUnsupported(String),
+    Unavailable { provider: String, reason: String },
 }
 
 impl fmt::Display for ProviderError {
@@ -113,6 +118,9 @@ impl fmt::Display for ProviderError {
             }
             Self::CancelUnsupported(provider_task_id) => {
                 write!(f, "cancel is unsupported for mock task: {provider_task_id}")
+            }
+            Self::Unavailable { provider, reason } => {
+                write!(f, "runtime provider `{provider}` is unavailable: {reason}")
             }
         }
     }
@@ -174,7 +182,7 @@ impl MockProvider {
 
 #[async_trait]
 impl Provider for MockProvider {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> &str {
         "mock"
     }
 
@@ -350,6 +358,43 @@ mod tests {
         assert_eq!(
             err,
             ProviderError::UnsupportedCapability("missing".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_provider_delegates_to_mock_provider() {
+        let provider = RuntimeProvider::mock();
+
+        let result = provider
+            .invoke(request("prompt_writer"))
+            .await
+            .expect("mock runtime provider invoke");
+
+        assert_eq!(provider.id(), "mock");
+        assert!(result.outputs.contains_key("prompt"));
+    }
+
+    #[tokio::test]
+    async fn unavailable_runtime_provider_rejects_invocation() {
+        let provider = RuntimeProvider::unavailable("openai", "missing connector config");
+
+        let health = provider.health().await;
+        let err = provider
+            .invoke(ProviderRequest {
+                provider: "openai".to_owned(),
+                ..request("prompt_writer")
+            })
+            .await
+            .expect_err("unavailable provider should reject invoke");
+
+        assert_eq!(provider.id(), "openai");
+        assert!(!health.ok);
+        assert_eq!(
+            err,
+            ProviderError::Unavailable {
+                provider: "openai".to_owned(),
+                reason: "missing connector config".to_owned(),
+            }
         );
     }
 }

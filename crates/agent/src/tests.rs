@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use helixflow_graph::{GraphEdge, GraphNode};
+use helixflow_graph::{GraphEdge, GraphNode, ProposalKind};
 use helixflow_run::EventBus;
 use serde_json::{Value, json};
 
@@ -51,8 +51,23 @@ fn request(dir: &tempfile::TempDir) -> AgentSessionRequest {
         base_version_id: "ver_1".to_owned(),
         user_message: "make it shorter".to_owned(),
         graph: sample_graph(),
+        run_context: None,
         sessions_dir: dir.path().join("agent_sessions"),
+        mode: TurnMode::ModifyWorkflow,
         skill: AgentSkill::ModifyWorkflow,
+    }
+}
+
+fn chat_request(dir: &tempfile::TempDir) -> AgentSessionRequest {
+    AgentSessionRequest {
+        workspace_id: "ws_1".to_owned(),
+        base_version_id: "ver_1".to_owned(),
+        user_message: "你好，你是谁？".to_owned(),
+        graph: sample_graph(),
+        run_context: None,
+        sessions_dir: dir.path().join("agent_sessions"),
+        mode: TurnMode::Chat,
+        skill: AgentSkill::Chat,
     }
 }
 
@@ -72,8 +87,79 @@ fn creates_ctx_out_contract_without_provider_secret_values() {
     assert!(session.out_dir.exists());
 
     let ctx = fs::read_to_string(session.ctx_dir.join("instructions.md")).expect("ctx");
-    assert!(ctx.contains("Write exactly one result file under `out/`"));
+    assert!(ctx.contains("Write exactly one result file: `out/proposal.json`"));
     assert!(!ctx.contains("PROVIDER_API_KEY"));
+}
+
+#[test]
+fn chat_contract_skips_graph_context_and_records_prompt_metadata() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let session = create_session_contract(&chat_request(&dir)).expect("session");
+
+    assert_eq!(session.mode, TurnMode::Chat);
+    assert_eq!(session.output_contract, OutputContract::ReplyJson);
+    assert_eq!(session.prompt_metadata.mode, TurnMode::Chat);
+    assert_eq!(
+        session.prompt_metadata.output_contract,
+        OutputContract::ReplyJson
+    );
+    assert!(!session.ctx_dir.join("graph.json").exists());
+    assert!(!session.ctx_dir.join("node_defs/catalog.json").exists());
+
+    let ctx = fs::read_to_string(session.ctx_dir.join("instructions.md")).expect("ctx");
+    assert!(ctx.contains("Mode: Chat"));
+    assert!(ctx.contains("out/reply.json"));
+    assert!(ctx.contains("Do not read `ctx/graph.json`"));
+
+    let metadata: Value = serde_json::from_slice(
+        &fs::read(session.root_dir.join("prompt_metadata.json")).expect("metadata"),
+    )
+    .expect("metadata json");
+    assert_eq!(metadata["mode"], "chat");
+    assert_eq!(metadata["output_contract"], "reply_json");
+    assert_eq!(
+        metadata["sections"][0]["key"],
+        Value::String("mode_override".to_owned())
+    );
+}
+
+#[test]
+fn classifies_run_requests_without_falling_back_to_workflow_change() {
+    assert_eq!(
+        classify_turn_mode("运行当前 workflow", &sample_graph()).expect("mode"),
+        TurnMode::RunRequest
+    );
+    assert_eq!(
+        classify_turn_mode("你好", &sample_graph()).expect("mode"),
+        TurnMode::Chat
+    );
+    assert!(classify_turn_mode("继续", &sample_graph()).is_err());
+}
+
+#[test]
+fn classifies_modify_requests_before_broad_workflow_creation() {
+    assert_eq!(
+        classify_turn_mode("modify workflow duration", &sample_graph()).expect("mode"),
+        TurnMode::ModifyWorkflow
+    );
+    assert_eq!(
+        classify_turn_mode("把工作流时长改短", &sample_graph()).expect("mode"),
+        TurnMode::ModifyWorkflow
+    );
+    assert_eq!(
+        classify_turn_mode("创建一个 workflow", &sample_graph()).expect("mode"),
+        TurnMode::CreateWorkflow
+    );
+    assert!(classify_turn_mode("workflow", &sample_graph()).is_err());
+    let empty_graph = WorkflowGraph {
+        schema_version: 1,
+        nodes: BTreeMap::new(),
+        edges: Vec::new(),
+    };
+    assert_eq!(
+        classify_turn_mode("workflow", &empty_graph).expect("mode"),
+        TurnMode::CreateWorkflow
+    );
 }
 
 #[test]
@@ -103,7 +189,7 @@ fn codex_runtime_uses_array_command_in_session_dir() {
 #[test]
 fn safe_runtime_env_removes_provider_secret_keys() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let env = safe_runtime_env(
+    let env = runtime::safe_runtime_env(
         [
             ("PATH".to_owned(), "/bin".to_owned()),
             ("CODEX_HOME".to_owned(), "/tmp/codex".to_owned()),
@@ -125,7 +211,7 @@ fn safe_runtime_env_removes_provider_secret_keys() {
 #[test]
 fn safe_runtime_env_derives_codex_home_without_exposing_real_home() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let env = safe_runtime_env(
+    let env = runtime::safe_runtime_env(
         [("HOME".to_owned(), "/Users/example".to_owned())],
         dir.path(),
     );
@@ -222,7 +308,7 @@ fn validates_proposal_output_before_returning() {
 async fn service_streams_agent_status_and_reads_runtime_proposal() {
     let dir = tempfile::tempdir().expect("temp dir");
     let events = EventBus::new(16);
-    let service = AgentService::new(FakeRuntime::new(), events.clone());
+    let service = AgentService::new(FakeRuntime::proposal(), events.clone());
     let mut receiver = events.subscribe();
 
     let proposal = service
@@ -231,6 +317,51 @@ async fn service_streams_agent_status_and_reads_runtime_proposal() {
         .expect("proposal");
 
     assert_eq!(proposal.proposal.title, "Shorter video");
+    assert!(
+        proposal
+            .agent_logs
+            .iter()
+            .any(|log| log.kind == "agent_log:status" && log.text == "drafting proposal")
+    );
+    assert!(proposal.agent_logs.iter().any(|log| {
+        log.text.contains("Prompt telemetry: mode=modify_workflow")
+            && log.text.contains("output_contract=proposal_json")
+            && log.text.contains("mode_override")
+    }));
+
+    let mut event_names = Vec::new();
+    while let Ok(event) = receiver.try_recv() {
+        event_names.push(event.ev);
+    }
+    assert!(event_names.iter().any(|event| event == "agent.status"));
+    assert!(event_names.iter().any(|event| event == "agent.status.end"));
+}
+
+#[tokio::test]
+async fn service_streams_agent_status_and_reads_chat_reply() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let events = EventBus::new(16);
+    let service = AgentService::new(FakeRuntime::reply(), events.clone());
+    let mut receiver = events.subscribe();
+
+    let reply = service
+        .answer_chat(chat_request(&dir))
+        .await
+        .expect("reply");
+
+    assert_eq!(reply.message, "我是 Helixflow agent。");
+    assert!(
+        reply
+            .agent_logs
+            .iter()
+            .any(|log| log.kind == "agent_log:status" && log.text == "drafting reply")
+    );
+    assert!(reply.agent_logs.iter().any(|log| {
+        log.text.contains("Prompt telemetry: mode=chat")
+            && log.text.contains("output_contract=reply_json")
+            && log.text.contains("mode_override")
+            && !log.text.contains("你好，你是谁")
+    }));
 
     let mut event_names = Vec::new();
     while let Ok(event) = receiver.try_recv() {
@@ -270,10 +401,11 @@ fn write_proposal(session: &AgentSession, value: Value) {
 #[derive(Clone, Default)]
 struct FakeRuntime {
     events: Arc<Mutex<VecDeque<RuntimeEvent>>>,
+    output: FakeOutput,
 }
 
 impl FakeRuntime {
-    fn new() -> Self {
+    fn proposal() -> Self {
         Self {
             events: Arc::new(Mutex::new(VecDeque::from([
                 RuntimeEvent::Status {
@@ -281,8 +413,28 @@ impl FakeRuntime {
                 },
                 RuntimeEvent::Finished,
             ]))),
+            output: FakeOutput::Proposal,
         }
     }
+
+    fn reply() -> Self {
+        Self {
+            events: Arc::new(Mutex::new(VecDeque::from([
+                RuntimeEvent::Status {
+                    message: "drafting reply".to_owned(),
+                },
+                RuntimeEvent::Finished,
+            ]))),
+            output: FakeOutput::Reply,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+enum FakeOutput {
+    #[default]
+    Proposal,
+    Reply,
 }
 
 #[async_trait]
@@ -301,7 +453,10 @@ impl AgentRuntime for FakeRuntime {
     }
 
     async fn send(&self, handle: &RuntimeHandle, _turn: AgentTurn) -> RuntimeResult<()> {
-        write_valid_proposal_to_path(&handle.out_dir)
+        match self.output {
+            FakeOutput::Proposal => write_valid_proposal_to_path(&handle.out_dir),
+            FakeOutput::Reply => write_reply_to_path(&handle.out_dir),
+        }
     }
 
     async fn next_event(&self, _handle: &RuntimeHandle) -> Option<RuntimeEvent> {
@@ -330,6 +485,15 @@ fn write_valid_proposal_to_path(out_dir: &Path) -> RuntimeResult<()> {
             }]
         }))
         .map_err(|err| RuntimeError::Failed(err.to_string()))?,
+    )
+    .map_err(|err| RuntimeError::Failed(err.to_string()))
+}
+
+fn write_reply_to_path(out_dir: &Path) -> RuntimeResult<()> {
+    fs::write(
+        out_dir.join("reply.json"),
+        serde_json::to_vec(&json!({ "message": "我是 Helixflow agent。" }))
+            .map_err(|err| RuntimeError::Failed(err.to_string()))?,
     )
     .map_err(|err| RuntimeError::Failed(err.to_string()))
 }

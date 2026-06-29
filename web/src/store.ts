@@ -1,6 +1,25 @@
 import { create } from 'zustand';
-import { fetchWorkspaceState, type ConnectionStatus } from './api';
-import type { RunEventEnvelope, RunStatus, RunStepState, WorkbenchState } from './types';
+import {
+  applyWorkspaceProposal,
+  confirmWorkspaceRun,
+  createWorkspace,
+  dismissWorkspaceProposal,
+  fetchWorkspaceState,
+  fetchWorkspaces,
+  holdWorkspaceRun,
+  sendWorkspaceMessage,
+  type ConnectionStatus,
+} from './api';
+import type {
+  ChatMessageKind,
+  RunConfirmationResponse,
+  RunEventEnvelope,
+  RunStatus,
+  RunStepState,
+  WorkflowGraph,
+  WorkspaceMessageResponse,
+  WorkbenchState,
+} from './types';
 
 type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
 
@@ -9,17 +28,43 @@ type WorkbenchStore = {
   error: string | null;
   connection: ConnectionStatus;
   state: WorkbenchState | null;
+  bootstrap: (workspaceId?: string | null) => Promise<void>;
   hydrate: (workspaceId: string) => Promise<void>;
+  createWorkspace: () => Promise<void>;
   setInitialState: (state: WorkbenchState) => void;
   setConnection: (status: ConnectionStatus) => void;
   applyEvent: (event: RunEventEnvelope) => void;
+  sendMessage: (text: string) => Promise<void>;
+  confirmRun: (runId: string) => Promise<void>;
+  holdRun: (runId: string) => Promise<void>;
+  applyProposal: (proposalId: string) => Promise<void>;
+  dismissProposal: (proposalId: string) => Promise<void>;
 };
 
-export const useWorkbenchStore = create<WorkbenchStore>((set) => ({
+export const useWorkbenchStore = create<WorkbenchStore>((set, get) => ({
   status: 'idle',
   error: null,
   connection: 'offline',
   state: null,
+  bootstrap: async (workspaceId) => {
+    if (workspaceId) {
+      await get().hydrate(workspaceId);
+      return;
+    }
+
+    set({ status: 'loading', error: null });
+    try {
+      const workspaces = await fetchWorkspaces();
+      const workspace = workspaces[0] ?? (await createWorkspace());
+      const state = await fetchWorkspaceState(workspace.id);
+      set({ status: 'ready', state, error: null });
+    } catch (error) {
+      set({
+        status: 'error',
+        error: error instanceof Error ? error.message : 'workspace bootstrap request failed',
+      });
+    }
+  },
   hydrate: async (workspaceId) => {
     set({ status: 'loading', error: null });
     try {
@@ -32,13 +77,288 @@ export const useWorkbenchStore = create<WorkbenchStore>((set) => ({
       });
     }
   },
+  createWorkspace: async () => {
+    set({ status: 'loading', error: null });
+    try {
+      const workspace = await createWorkspace();
+      const state = await fetchWorkspaceState(workspace.id);
+      set({ status: 'ready', state, error: null });
+    } catch (error) {
+      set({
+        status: 'error',
+        error: error instanceof Error ? error.message : 'workspace create request failed',
+      });
+    }
+  },
   setInitialState: (state) => set({ status: 'ready', state, error: null }),
   setConnection: (connection) => set({ connection }),
+  sendMessage: async (text) => {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    const state = get().state;
+    if (!state) {
+      return;
+    }
+    const request = {
+      workspaceId: state.workspace.id,
+      baseVersionId: state.workspace.versionId,
+      graph: workflowGraphFromState(state),
+    };
+
+    set({
+      state: appendChatMessages(state, [
+        {
+          id: `msg_user_${Date.now()}`,
+          role: 'user',
+          kind: 'text',
+          text: trimmed,
+          time: messageTime(),
+        },
+      ]),
+    });
+
+    try {
+      const response = await sendWorkspaceMessage(request.workspaceId, {
+        baseVersionId: request.baseVersionId,
+        userMessage: trimmed,
+        graph: request.graph,
+      });
+      set((current) => ({
+        state: current.state ? applyMessageResponse(current.state, response) : current.state,
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'workspace message request failed';
+      set((current) => ({
+        state: current.state
+          ? appendChatMessages(current.state, [
+              {
+                id: `msg_system_${Date.now()}`,
+                role: 'system',
+                kind: 'run_failed',
+                text: message,
+                time: messageTime(),
+              },
+            ])
+          : current.state,
+      }));
+    }
+  },
   applyEvent: (event) =>
     set((current) => ({
       state: current.state ? applyRunEvent(current.state, event) : current.state,
     })),
+  confirmRun: async (runId) => {
+    const state = get().state;
+    if (!state) {
+      return;
+    }
+
+    try {
+      const response = await confirmWorkspaceRun(state.workspace.id, runId);
+      set((current) => ({
+        state: current.state ? applyRunConfirmation(current.state, response) : current.state,
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'run confirmation request failed';
+      set((current) => ({
+        state: current.state
+          ? appendChatMessages(current.state, [
+              {
+                id: `msg_system_${Date.now()}`,
+                role: 'system',
+                kind: 'run_failed',
+                text: message,
+                time: messageTime(),
+              },
+            ])
+          : current.state,
+      }));
+    }
+  },
+  holdRun: async (runId) => {
+    const state = get().state;
+    if (!state) {
+      return;
+    }
+
+    try {
+      const response = await holdWorkspaceRun(state.workspace.id, runId);
+      set((current) => ({
+        state: current.state ? applyRunConfirmation(current.state, response) : current.state,
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'run hold request failed';
+      set((current) => ({
+        state: current.state
+          ? appendChatMessages(current.state, [
+              {
+                id: `msg_system_${Date.now()}`,
+                role: 'system',
+                kind: 'run_failed',
+                text: message,
+                time: messageTime(),
+              },
+            ])
+          : current.state,
+      }));
+    }
+  },
+  applyProposal: async (proposalId) => {
+    const state = get().state;
+    if (!state) {
+      return;
+    }
+
+    try {
+      const next = await applyWorkspaceProposal(state.workspace.id, proposalId);
+      set({ state: next, status: 'ready', error: null });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'proposal apply request failed';
+      set((current) => ({
+        state: current.state
+          ? appendChatMessages(current.state, [
+              {
+                id: `msg_system_${Date.now()}`,
+                role: 'system',
+                kind: 'run_failed',
+                text: message,
+                time: messageTime(),
+              },
+            ])
+          : current.state,
+      }));
+    }
+  },
+  dismissProposal: async (proposalId) => {
+    const state = get().state;
+    if (!state) {
+      return;
+    }
+
+    try {
+      const next = await dismissWorkspaceProposal(state.workspace.id, proposalId);
+      set({ state: next, status: 'ready', error: null });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'proposal dismiss request failed';
+      set((current) => ({
+        state: current.state
+          ? appendChatMessages(current.state, [
+              {
+                id: `msg_system_${Date.now()}`,
+                role: 'system',
+                kind: 'run_failed',
+                text: message,
+                time: messageTime(),
+              },
+            ])
+          : current.state,
+      }));
+    }
+  },
 }));
+
+function appendChatMessages(
+  state: WorkbenchState,
+  messages: WorkbenchState['chat']['messages'],
+): WorkbenchState {
+  return {
+    ...state,
+    chat: {
+      ...state.chat,
+      messages: [...state.chat.messages, ...messages],
+    },
+  };
+}
+
+function applyMessageResponse(
+  state: WorkbenchState,
+  response: WorkspaceMessageResponse,
+): WorkbenchState {
+  let next = appendChatMessages(state, response.messages);
+  if (response.run) {
+    next = applyRunSnapshot(next, response.run);
+  }
+  if (response.proposal) {
+    next = {
+      ...next,
+      pendingProposal: response.proposal,
+    };
+  }
+  if (response.pendingConfirmation !== undefined) {
+    next = {
+      ...next,
+      pendingConfirmation: response.pendingConfirmation,
+    };
+  }
+  return next;
+}
+
+function applyRunConfirmation(
+  state: WorkbenchState,
+  response: RunConfirmationResponse,
+): WorkbenchState {
+  return applyRunSnapshot(
+    {
+      ...state,
+      outputs: response.outputs,
+      pendingConfirmation: response.pendingConfirmation,
+    },
+    response.run,
+  );
+}
+
+function applyRunSnapshot(
+  state: WorkbenchState,
+  run: NonNullable<WorkbenchState['run']>,
+): WorkbenchState {
+  const eventSeq = state.run?.id === run.id ? state.eventSeq : 0;
+
+  return {
+    ...state,
+    eventSeq,
+    run,
+    graph: {
+      ...state.graph,
+      nodes: state.graph.nodes.map((node) => {
+        const step = run.steps.find((candidate) => candidate.nodeId === node.id);
+        return step ? { ...node, status: step.state, provider: step.provider } : node;
+      }),
+    },
+  };
+}
+
+function workflowGraphFromState(state: WorkbenchState): WorkflowGraph {
+  if (state.workflowGraph) {
+    return state.workflowGraph;
+  }
+
+  return {
+    schema_version: 1,
+    nodes: Object.fromEntries(
+      state.graph.nodes.map((node) => [
+        node.id,
+        {
+          node_type: node.nodeType,
+          title: node.title,
+          params: {},
+          pos: [node.position.x, node.position.y] as [number, number],
+        },
+      ]),
+    ),
+    edges: state.graph.edges.map((edge) => ({
+      from: [edge.from.nodeId, edge.from.port],
+      to: [edge.to.nodeId, edge.to.port],
+      edge_type: edge.kind,
+    })),
+  };
+}
+
+function messageTime(): string {
+  return new Date().toISOString();
+}
 
 export function applyRunEvent(state: WorkbenchState, event: RunEventEnvelope): WorkbenchState {
   if (event.workspace_id !== state.workspace.id) {
@@ -49,7 +369,7 @@ export function applyRunEvent(state: WorkbenchState, event: RunEventEnvelope): W
     return applyAgentStatusEvent(state, event);
   }
 
-  if (event.run_id !== state.run.id || event.seq <= state.eventSeq) {
+  if (!state.run || event.run_id !== state.run.id || event.seq <= state.eventSeq) {
     return state;
   }
 
@@ -100,6 +420,7 @@ function applyAgentStatusEvent(state: WorkbenchState, event: RunEventEnvelope): 
   const message = {
     id: messageId,
     role: 'agent' as const,
+    kind: agentMessageKind(event),
     text,
     time: event.server_time,
   };
@@ -118,7 +439,7 @@ function applyAgentStatusEvent(state: WorkbenchState, event: RunEventEnvelope): 
 }
 
 function isAgentStatusEvent(eventName: string): boolean {
-  return eventName === 'agent.status' || eventName === 'agent.status.end';
+  return eventName === 'agent.status' || eventName === 'agent.status.end' || eventName === 'agent.log';
 }
 
 function agentStatusText(event: RunEventEnvelope): string {
@@ -136,6 +457,34 @@ function agentStatusText(event: RunEventEnvelope): string {
     }
   }
   return status;
+}
+
+function agentMessageKind(event: RunEventEnvelope): ChatMessageKind {
+  const kind = stringData(event, 'message_kind');
+  if (isChatMessageKind(kind)) {
+    return kind;
+  }
+  const status = stringData(event, 'status');
+  if (status === 'agent.status.end') {
+    return 'chat';
+  }
+  return 'agent_log:status';
+}
+
+function isChatMessageKind(value: string | null): value is ChatMessageKind {
+  if (typeof value !== 'string') {
+    return false;
+  }
+  return (
+    value === 'text' ||
+    value === 'chat' ||
+    value === 'proposal_pending' ||
+    value === 'proposal_applied' ||
+    value === 'proposal_dismissed' ||
+    value === 'run_requested' ||
+    value === 'run_failed' ||
+    value.startsWith('agent_log:')
+  );
 }
 
 function stringData(event: RunEventEnvelope, key: string): string | null {
