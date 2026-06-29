@@ -7,6 +7,15 @@ type PendingProposal = NonNullable<WorkbenchState['pendingProposal']>;
 type ChatEntry =
   | { type: 'message'; message: ChatMessage }
   | { type: 'assistantTurn'; id: string; message?: ChatMessage; logs: ChatMessage[] };
+type ComposerKeyEvent = {
+  key: string;
+  shiftKey: boolean;
+  nativeEvent: {
+    isComposing?: boolean;
+    keyCode?: number;
+    which?: number;
+  };
+};
 
 const presets: Array<{ icon: IconName; label: string; text: string }> = [
   {
@@ -50,6 +59,7 @@ export function ChatPane({
 }: ChatPaneProps) {
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const isComposingRef = useRef(false);
   const entries = chatEntries(messages);
 
   useEffect(() => {
@@ -115,8 +125,14 @@ export function ChatPane({
             aria-label="message composer"
             disabled={busy}
             onChange={(event) => setDraft(event.target.value)}
+            onCompositionEnd={() => {
+              isComposingRef.current = false;
+            }}
+            onCompositionStart={() => {
+              isComposingRef.current = true;
+            }}
             onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) {
+              if (shouldSubmitComposerKey(event, isComposingRef.current)) {
                 event.preventDefault();
                 void submit();
               }
@@ -142,6 +158,18 @@ export function ChatPane({
       </div>
     </aside>
   );
+}
+
+export function shouldSubmitComposerKey(event: ComposerKeyEvent, isComposing = false): boolean {
+  if (event.key !== 'Enter' || event.shiftKey) return false;
+  return !isImeComposing(event, isComposing);
+}
+
+function isImeComposing(event: ComposerKeyEvent, isComposing: boolean): boolean {
+  return isComposing
+    || event.nativeEvent.isComposing === true
+    || event.nativeEvent.keyCode === 229
+    || event.nativeEvent.which === 229;
 }
 
 function ProposalMessage({
