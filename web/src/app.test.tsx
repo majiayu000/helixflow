@@ -20,6 +20,13 @@ import {
   positionUpdatesFromDrafts,
   selectionForNodePointer,
 } from './components/graph-canvas-layout';
+import {
+  buildComparableNodeMap,
+  buildEdgeSignatureSet,
+  buildNodeMap,
+  buildRunStepStateMap,
+  nodeDiffState,
+} from './components/graph-canvas-rendering';
 import { ConfirmModal, HistoryPanel } from './components/run-panels';
 import { TopBar } from './components/top-bar';
 import { applyRunEvent, useWorkbenchStore } from './store';
@@ -1253,6 +1260,50 @@ describe('GraphCanvas layout editing', () => {
       'text',
       'video',
     ]);
+  });
+});
+
+describe('GraphCanvas rendering helpers', () => {
+  it('builds stable maps and sets for large graph rendering lookups', () => {
+    const nodes = Array.from({ length: 120 }, (_, index) => ({
+      ...state.graph.nodes[index % state.graph.nodes.length],
+      id: `node_${index}`,
+      position: { x: index * 12, y: index * 5 },
+    }));
+    const steps = nodes.map((node, index) => ({
+      nodeId: node.id,
+      title: node.title,
+      state: index === 80 ? 'running' as const : 'queued' as const,
+      provider: node.provider,
+    }));
+    const edges = [
+      {
+        id: 'edge_large_1',
+        from: { nodeId: 'node_1', port: 'text' },
+        to: { nodeId: 'node_2', port: 'prompt' },
+        kind: 'text',
+      },
+    ];
+
+    const nodeById = buildNodeMap(nodes);
+    const stepStateByNodeId = buildRunStepStateMap(steps);
+    const edgeIds = buildEdgeSignatureSet(edges);
+
+    expect(nodeById.get('node_80')?.position).toEqual({ x: 960, y: 400 });
+    expect(stepStateByNodeId.get('node_80')).toBe('running');
+    expect(edgeIds.has('node_1:text>node_2:prompt:text')).toBe(true);
+  });
+
+  it('detects proposal node additions and updates from comparable node snapshots', () => {
+    const baseNode = state.graph.nodes[0];
+    const baseComparable = buildComparableNodeMap([baseNode]);
+
+    expect(nodeDiffState(baseNode, baseComparable.get(baseNode.id), true)).toBeNull();
+    expect(
+      nodeDiffState({ ...baseNode, title: 'Updated title' }, baseComparable.get(baseNode.id), true),
+    ).toBe('upd');
+    expect(nodeDiffState({ ...baseNode, id: 'new_node' }, undefined, true)).toBe('add');
+    expect(nodeDiffState({ ...baseNode, title: 'Updated title' }, baseComparable.get(baseNode.id), false)).toBeNull();
   });
 });
 
