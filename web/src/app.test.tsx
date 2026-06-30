@@ -49,6 +49,7 @@ import {
 import { ConfirmModal, HistoryPanel } from './components/run-panels';
 import { TopBar } from './components/top-bar';
 import { applyRunEvent, useWorkbenchStore } from './store';
+import { CanvasMessageContextSchema } from './types';
 import type { NodeCatalog, WorkbenchState } from './types';
 
 const state: WorkbenchState = {
@@ -284,6 +285,31 @@ describe('App', () => {
     expect(markup).toContain('1 events');
   });
 
+  it('renders canvas ops evidence inside the tool log group', () => {
+    const markup = renderToStaticMarkup(
+      <App
+        initialState={{
+          ...state,
+          chat: {
+            messages: [
+              ...state.chat.messages,
+              {
+                id: 'agent-canvas-ops-1',
+                role: 'agent',
+                kind: 'agent_log:canvas_ops',
+                text: 'Canvas ops context ready: graph_nodes=2, selected_nodes=1',
+                time: '09:11',
+              },
+            ],
+          },
+        }}
+      />,
+    );
+
+    expect(markup).toContain('Canvas ops evidence');
+    expect(markup).toContain('1 events');
+  });
+
   it('applies websocket node state events to visible run state', () => {
     const updated = applyRunEvent(state, {
       workspace_id: 'ws_test',
@@ -466,7 +492,9 @@ describe('App', () => {
     );
     useWorkbenchStore.getState().setInitialState(state);
 
-    await useWorkbenchStore.getState().sendMessage('你好');
+    await useWorkbenchStore.getState().sendMessage('你好', {
+      selection: { nodeIds: ['video'] },
+    });
 
     const fetchMock = vi.mocked(fetch);
     expect(fetchMock).toHaveBeenCalledWith('/api/workspaces/ws_test/messages', {
@@ -478,6 +506,7 @@ describe('App', () => {
     expect(body).toMatchObject({
       baseVersionId: 'ver_test_1',
       userMessage: '你好',
+      canvasContext: { selection: { nodeIds: ['video'] } },
       graph: { schema_version: 1 },
     });
     expect(useWorkbenchStore.getState().state?.chat.messages.at(-1)).toMatchObject({
@@ -485,6 +514,20 @@ describe('App', () => {
       kind: 'chat',
       text: '我是 Helixflow agent。',
     });
+  });
+
+  it('rejects unknown canvas message context fields locally', () => {
+    expect(
+      CanvasMessageContextSchema.safeParse({
+        selection: { nodeIds: ['video'], rawProviderConfig: true },
+      }).success,
+    ).toBe(false);
+    expect(
+      CanvasMessageContextSchema.safeParse({
+        selection: { nodeIds: ['video'] },
+        localPath: '/Users/example/private',
+      }).success,
+    ).toBe(false);
   });
 
   it('applies run request responses to pending confirmation state', async () => {

@@ -20,6 +20,7 @@ import {
 } from './api';
 import type {
   ChatMessageKind,
+  CanvasMessageContext,
   LayoutPositionUpdate,
   ManualProposalInput,
   RunConfirmationResponse,
@@ -44,7 +45,7 @@ type WorkbenchStore = {
   setInitialState: (state: WorkbenchState) => void;
   setConnection: (status: ConnectionStatus) => void;
   applyEvent: (event: RunEventEnvelope) => void;
-  sendMessage: (text: string) => Promise<void>;
+  sendMessage: (text: string, canvasContext?: CanvasMessageContext) => Promise<void>;
   queueRun: () => Promise<void>;
   interruptRun: (runId?: string) => Promise<void>;
   exportWorkflow: () => Promise<WorkflowGraph | null>;
@@ -110,7 +111,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => ({
   },
   setInitialState: (state) => set({ status: 'ready', state, error: null }),
   setConnection: (connection) => set({ connection }),
-  sendMessage: async (text) => {
+  sendMessage: async (text, canvasContext) => {
     const trimmed = text.trim();
     if (!trimmed) {
       return;
@@ -141,6 +142,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => ({
     try {
       const response = await sendWorkspaceMessage(request.workspaceId, {
         baseVersionId: request.baseVersionId,
+        canvasContext,
         userMessage: trimmed,
         graph: request.graph,
       });

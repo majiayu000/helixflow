@@ -82,6 +82,9 @@ where
         );
         agent_logs.push(agent_log_entry("ctx.created", &json!({})));
         agent_logs.push(prompt_metadata_log_entry(&session.prompt_metadata));
+        if request.mode.uses_graph_context() {
+            agent_logs.push(canvas_ops_log_entry(request));
+        }
 
         let handle = self
             .runtime
@@ -229,6 +232,22 @@ fn prompt_metadata_log_entry(metadata: &PromptStackMetadata) -> AgentLogEntry {
         text: format!(
             "Prompt telemetry: mode={}, output_contract={}, sections=[{}]",
             metadata.mode, metadata.output_contract, sections
+        ),
+    }
+}
+
+fn canvas_ops_log_entry(request: &AgentSessionRequest) -> AgentLogEntry {
+    let selection_count = request
+        .canvas_context
+        .as_ref()
+        .map(|context| context.selection.node_ids.len())
+        .unwrap_or_default();
+    AgentLogEntry {
+        kind: "agent_log:canvas_ops".to_owned(),
+        text: format!(
+            "Canvas ops context ready: graph_nodes={}, selected_nodes={}, allowed_ops=[read_state, read_selection, propose_layout, propose_graph_ops, run_selected_workflow]",
+            request.graph.nodes.len(),
+            selection_count
         ),
     }
 }

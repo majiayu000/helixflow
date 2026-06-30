@@ -77,6 +77,7 @@ type GraphCanvasProps = {
   pendingProposal: WorkbenchState['pendingProposal'];
   run: NonNullable<WorkbenchState['run']>;
   onSaveLayout?: (positions: LayoutPositionUpdate[]) => Promise<void>;
+  onSelectionChange?: (nodeIds: string[]) => void;
 };
 
 type DragState = {
@@ -109,6 +110,7 @@ export function GraphCanvas({
   pendingProposal,
   run,
   onSaveLayout,
+  onSelectionChange,
 }: GraphCanvasProps) {
   const canvasRef = useRef<HTMLElement | null>(null);
   const [view, setView] = useState<ViewState>(DEFAULT_GRAPH_VIEW);
@@ -138,6 +140,7 @@ export function GraphCanvas({
     () => displayNodes.filter((node) => selectedIds.has(node.id)),
     [displayNodes, selectedIds],
   );
+  const selectedIdList = useMemo(() => [...selectedIds], [selectedIds]);
   const nodeCount = displayNodes.length;
   const layoutUpdates = useMemo(
     () => (pendingProposal ? [] : positionUpdatesFromDrafts(graph.nodes, draftPositions)),
@@ -161,6 +164,10 @@ export function GraphCanvas({
     setClipboardStatus(null);
     nodeDrag.current = null;
   }, [workspaceId, versionId, pendingProposal?.id]);
+
+  useEffect(() => {
+    onSelectionChange?.(selectedIdList);
+  }, [onSelectionChange, selectedIdList]);
 
   useEffect(() => {
     const current = canvasRef.current;

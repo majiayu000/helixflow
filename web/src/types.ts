@@ -252,6 +252,18 @@ export const NodeCatalogSchema = z.object({
   nodes: z.array(NodeDefinitionSchema),
 });
 
+export const CanvasSelectionContextSchema = z
+  .object({
+    nodeIds: z.array(z.string()),
+  })
+  .strict();
+
+export const CanvasMessageContextSchema = z
+  .object({
+    selection: CanvasSelectionContextSchema,
+  })
+  .strict();
+
 export const WorkbenchStateSchema = z.object({
   eventSeq: z.number(),
   workspace: z.object({
@@ -327,6 +339,7 @@ export type RunConfirmationResponse = z.infer<typeof RunConfirmationResponseSche
 export type WorkspaceSummary = z.infer<typeof WorkspaceSummarySchema>;
 export type NodeCatalog = z.infer<typeof NodeCatalogSchema>;
 export type NodeDefinition = z.infer<typeof NodeDefinitionSchema>;
+export type CanvasMessageContext = z.infer<typeof CanvasMessageContextSchema>;
 export type ManualProposalInput = {
   baseVersionId: string;
   title?: string;

@@ -8,6 +8,7 @@ import {
   NodeCatalogSchema,
   type RunConfirmationResponse,
   type RunEventEnvelope,
+  type CanvasMessageContext,
   type LayoutPositionUpdate,
   type ManualProposalInput,
   type NodeCatalog,
@@ -75,6 +76,7 @@ export async function sendWorkspaceMessage(
     baseVersionId: string;
     userMessage: string;
     graph: WorkflowGraph;
+    canvasContext?: CanvasMessageContext;
   },
 ): Promise<WorkspaceMessageResponse> {
   const response = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/messages`, {
