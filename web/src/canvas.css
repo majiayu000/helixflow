@@ -408,6 +408,39 @@
   font-size: 12px;
 }
 
+.canvas-minimap {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 5;
+  width: 188px;
+  height: 124px;
+  overflow: hidden;
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  box-shadow: var(--sh-md);
+  cursor: crosshair;
+}
+
+.canvas-minimap-node,
+.canvas-minimap-viewport {
+  position: absolute;
+  display: block;
+  border-radius: 2px;
+}
+
+.canvas-minimap-node {
+  background: var(--accent);
+  opacity: 0.72;
+}
+
+.canvas-minimap-viewport {
+  border: 1px solid var(--accent-ink);
+  background: color-mix(in srgb, var(--accent-soft) 58%, transparent);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.72);
+}
+
 .empty-canvas {
   position: absolute;
   inset: 0;

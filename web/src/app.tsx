@@ -193,6 +193,7 @@ export function App({ initialState, workspaceId }: AppProps) {
               graph={activeState.graph}
               pendingProposal={activeState.pendingProposal}
               run={uiState.run}
+              workspaceId={activeState.workspace.id}
             />
           )}
           <HistoryPanel
