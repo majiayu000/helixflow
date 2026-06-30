@@ -21,12 +21,25 @@ import {
   selectionForNodePointer,
 } from './components/graph-canvas-layout';
 import {
+  GraphSelectionInspector,
+} from './components/graph-canvas-inspector';
+import {
   buildComparableNodeMap,
   buildEdgeSignatureSet,
   buildNodeMap,
   buildRunStepStateMap,
   nodeDiffState,
 } from './components/graph-canvas-rendering';
+import {
+  fitViewToNodes,
+  graphShortcutFromEvent,
+  mergeSelection,
+  sanitizeClipboardText,
+  selectedIdsInWorldRect,
+  selectionClipboardText,
+  selectionRectFromPoints,
+  worldRectFromLocalRect,
+} from './components/graph-canvas-selection';
 import { ConfirmModal, HistoryPanel } from './components/run-panels';
 import { TopBar } from './components/top-bar';
 import { applyRunEvent, useWorkbenchStore } from './store';
@@ -1304,6 +1317,69 @@ describe('GraphCanvas rendering helpers', () => {
     ).toBe('upd');
     expect(nodeDiffState({ ...baseNode, id: 'new_node' }, undefined, true)).toBe('add');
     expect(nodeDiffState({ ...baseNode, title: 'Updated title' }, baseComparable.get(baseNode.id), false)).toBeNull();
+  });
+});
+
+describe('GraphCanvas selection and clipboard helpers', () => {
+  it('renders a multi-selection inspector summary', () => {
+    const markup = renderToStaticMarkup(
+      <GraphSelectionInspector nodes={state.graph.nodes} onClose={() => undefined} />,
+    );
+
+    expect(markup).toContain('多选 · 2 个节点');
+    expect(markup).toContain('Selection summary');
+    expect(markup).toContain('Launch note');
+  });
+
+  it('selects nodes from local drag rectangles in graph world coordinates', () => {
+    const localRect = selectionRectFromPoints({ x: 50, y: 40 }, { x: 380, y: 260 });
+    const worldRect = worldRectFromLocalRect(localRect, { x: 20, y: 18, z: 0.78 });
+    const hitIds = selectedIdsInWorldRect(state.graph.nodes, worldRect);
+
+    expect(localRect).toEqual({ x: 50, y: 40, width: 330, height: 220 });
+    expect(hitIds.has('text')).toBe(true);
+    expect(hitIds.has('video')).toBe(false);
+    expect([...mergeSelection(new Set(['video']), hitIds, true)].sort()).toEqual(['text', 'video']);
+  });
+
+  it('maps canvas keyboard shortcuts while skipping IME composition', () => {
+    expect(graphShortcutFromEvent({ key: 'Escape' })).toBe('clear_selection');
+    expect(graphShortcutFromEvent({ key: 'a', metaKey: true })).toBe('select_all');
+    expect(graphShortcutFromEvent({ key: '0', ctrlKey: true })).toBe('fit_view');
+    expect(graphShortcutFromEvent({ key: 'c', ctrlKey: true })).toBe('copy_selection');
+    expect(graphShortcutFromEvent({ key: 'c' })).toBeNull();
+    expect(graphShortcutFromEvent({ key: 'c', ctrlKey: true, nativeEvent: { isComposing: true } })).toBeNull();
+    expect(graphShortcutFromEvent({ key: 'a', metaKey: true, nativeEvent: { keyCode: 229 } })).toBeNull();
+  });
+
+  it('fits view to visible nodes without mutating graph data', () => {
+    const next = fitViewToNodes(state.graph.nodes, { width: 900, height: 640 });
+
+    expect(next.z).toBeGreaterThan(0.4);
+    expect(next.z).toBeLessThanOrEqual(1.4);
+    expect(next.x).not.toBe(DEFAULT_GRAPH_VIEW.x);
+  });
+
+  it('copies stable sanitized selection text without provider or local path fields', () => {
+    const nodes = [
+      {
+        ...state.graph.nodes[0],
+        title: 'Input sk-secretvalue123456',
+        summary: 'Read /Users/alice/private.txt with apiKey and https://example.test/raw',
+        provider: 'mock-secret-provider',
+      },
+      state.graph.nodes[1],
+    ];
+    const text = selectionClipboardText(nodes, state.graph.edges);
+
+    expect(text).toContain('Helixflow selection (2 nodes)');
+    expect(text).toContain('"schema_version": 1');
+    expect(text).toContain('"edge_type": "text"');
+    expect(text).not.toContain('mock-secret-provider');
+    expect(text).not.toContain('/Users/alice');
+    expect(text).not.toContain('sk-secretvalue123456');
+    expect(text).not.toContain('https://example.test');
+    expect(sanitizeClipboardText('C:\\Users\\alice\\token.txt')).toContain('[redacted-path]');
   });
 });
 
