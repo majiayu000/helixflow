@@ -4,6 +4,7 @@ use axum::{
 };
 use helixflow_agent::TurnMode;
 use helixflow_graph::{ProposalOp, WorkflowGraph};
+use helixflow_registry::NodeRegistry;
 use helixflow_store::{
     ArtifactRecord, CostLedgerRecord, MessageRecord, ProposalRecord, RunRecord, RunStepRecord,
     VersionRecord, WorkspaceRecord,
@@ -103,6 +104,8 @@ pub(crate) async fn workspace_state_value(
         &artifacts,
         &costs,
         event_seq,
+        serde_json::to_value(&state.provider_catalog)
+            .map_err(|err| ApiError::server_error(err.to_string()))?,
     ))
 }
 
@@ -154,7 +157,9 @@ fn workspace_state_payload(
     artifacts: &[ArtifactRecord],
     costs: &[CostLedgerRecord],
     event_seq: i64,
+    providers: Value,
 ) -> Value {
+    let registry = NodeRegistry::builtin();
     let step_by_node = steps
         .iter()
         .map(|step| (step.node_id.as_str(), step))
@@ -168,10 +173,11 @@ fn workspace_state_payload(
             "versionId": workspace.cur_version_id.clone().unwrap_or_default(),
             "updatedAt": workspace.updated_at,
         },
+        "providers": providers,
         "chat": {
             "messages": messages.iter().map(chat_message_payload).collect::<Vec<_>>(),
         },
-        "graph": graph_payload(graph, &step_by_node),
+        "graph": graph_payload(graph, &step_by_node, &registry),
         "run": latest_run.map(|run| run_payload(run, steps, &run_cost)),
         "outputs": artifacts.iter().map(output_payload_from_artifact).collect::<Vec<_>>(),
         "history": history_payload(versions, latest_run, proposals),
@@ -230,7 +236,11 @@ fn message_turn_mode(message: &MessageRecord) -> Option<TurnMode> {
         .and_then(|metadata| metadata.turn_mode)
 }
 
-fn graph_payload(graph: &WorkflowGraph, step_by_node: &BTreeMap<&str, &RunStepRecord>) -> Value {
+fn graph_payload(
+    graph: &WorkflowGraph,
+    step_by_node: &BTreeMap<&str, &RunStepRecord>,
+    registry: &NodeRegistry,
+) -> Value {
     json!({
         "nodes": graph.nodes.iter().map(|(id, node)| {
             let step = step_by_node.get(id.as_str()).copied();
@@ -241,7 +251,7 @@ fn graph_payload(graph: &WorkflowGraph, step_by_node: &BTreeMap<&str, &RunStepRe
                 "category": node_category(&node.node_type),
                 "status": step.map(|item| item.state.as_str()).unwrap_or("queued"),
                 "position": { "x": node.pos[0], "y": node.pos[1] },
-                "provider": step.and_then(|item| item.provider.clone()),
+                "provider": step.and_then(|item| item.provider.clone()).or_else(|| node_provider(&node.node_type, registry)),
                 "summary": node_summary(&node.node_type, &node.params),
             })
         }).collect::<Vec<_>>(),
@@ -257,6 +267,13 @@ fn graph_payload(graph: &WorkflowGraph, step_by_node: &BTreeMap<&str, &RunStepRe
             })
         }).collect::<Vec<_>>(),
     })
+}
+
+fn node_provider(node_type: &str, registry: &NodeRegistry) -> Option<String> {
+    registry
+        .definition(node_type)
+        .ok()
+        .and_then(|definition| definition.provider.clone())
 }
 
 fn run_payload(run: &RunRecord, steps: &[RunStepRecord], cost: &CostSummary) -> Value {
@@ -406,11 +423,8 @@ fn summarize_cost(costs: &[CostLedgerRecord]) -> CostSummary {
 mod tests {
     use std::sync::Arc;
 
-    use async_trait::async_trait;
     use axum::extract::{Path as AxumPath, State};
-    use helixflow_agent::{
-        AgentError, AgentSessionRequest, ValidatedAgentProposal, ValidatedAgentReply,
-    };
+    use helixflow_gateway::RuntimeProvider;
     use helixflow_graph::{GraphEdge, GraphNode};
     use helixflow_run::EventBus;
     use helixflow_store::{NewMessage, NewRun, NewRunStep, NewVersion, Store, VersionSource};
@@ -419,7 +433,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::app_state::{AppState, WorkbenchAgent};
+    use crate::app_state::AppState;
+    use crate::test_support::FailingWorkbenchAgent;
 
     #[tokio::test]
     async fn workspace_state_uses_store_records_and_graph_file() {
@@ -447,9 +462,99 @@ mod tests {
         assert_eq!(body["chat"]["messages"][0]["text"], "Build this");
         assert_eq!(body["chat"]["messages"][0]["turnMode"], "modify_workflow");
         assert_eq!(body["graph"]["nodes"].as_array().expect("nodes").len(), 1);
+        assert_eq!(body["providers"]["defaultProvider"], "mock");
+        assert_eq!(body["providers"]["runtimeProviders"][0]["id"], "mock");
+        assert_eq!(
+            body["providers"]["runtimeProviders"][0]["kind"],
+            "local_test"
+        );
+        assert_eq!(
+            body["providers"]["runtimeProviders"][0]["status"],
+            "healthy"
+        );
+        assert_eq!(body["providers"]["apiConnectors"][0]["provider"], "mock");
         assert_eq!(body["run"], Value::Null);
         assert!(body["pendingConfirmation"].is_null());
         assert_ne!(body["workspace"]["name"], "Helixflow Demo");
+    }
+
+    #[test]
+    fn graph_payload_populates_provider_from_node_registry_before_run_steps() {
+        let graph = WorkflowGraph {
+            schema_version: 1,
+            nodes: BTreeMap::from([(
+                "video".to_owned(),
+                GraphNode {
+                    node_type: "video.mock.text_to_video".to_owned(),
+                    title: "Video".to_owned(),
+                    params: json!({
+                        "prompt": "clean product shot",
+                        "duration_sec": 4,
+                        "aspect_ratio": "9:16"
+                    }),
+                    pos: [10.0, 20.0],
+                },
+            )]),
+            edges: Vec::new(),
+        };
+
+        let body = graph_payload(&graph, &BTreeMap::new(), &NodeRegistry::builtin());
+
+        assert_eq!(body["nodes"][0]["provider"], "mock");
+        assert_eq!(body["nodes"][0]["status"], "queued");
+    }
+
+    #[tokio::test]
+    async fn workspace_state_includes_unavailable_provider_without_mock_fallback()
+    -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|err| err.to_string())?;
+        let store = open_store(dir.path()).await;
+        let workspace = store
+            .create_workspace("Unavailable provider workspace")
+            .await
+            .map_err(|err| err.to_string())?;
+        let state = test_state_with_provider(
+            store,
+            dir.path().to_path_buf(),
+            RuntimeProvider::unavailable(
+                "openai",
+                "runtime provider `openai` is not configured by this build",
+            ),
+        );
+
+        let body = workspace_state(AxumPath(workspace.id), State(state))
+            .await
+            .map_err(|err| err.message)?
+            .0;
+
+        assert_eq!(body["providers"]["defaultProvider"], "openai");
+        assert_eq!(body["providers"]["runtimeProviders"][0]["id"], "openai");
+        assert_eq!(
+            body["providers"]["runtimeProviders"][0]["kind"],
+            "unavailable"
+        );
+        assert_eq!(
+            body["providers"]["runtimeProviders"][0]["status"],
+            "unavailable"
+        );
+        assert_eq!(body["providers"]["runtimeProviders"][0]["enabled"], false);
+        assert_eq!(
+            body["providers"]["runtimeProviders"][0]["capabilities"]
+                .as_array()
+                .map(Vec::len),
+            Some(0)
+        );
+        assert_eq!(
+            body["providers"]["workflowBackends"]
+                .as_array()
+                .map(Vec::len),
+            Some(0)
+        );
+        assert_eq!(
+            body["providers"]["apiConnectors"].as_array().map(Vec::len),
+            Some(0)
+        );
+        Ok(())
     }
 
     #[tokio::test]
@@ -622,8 +727,23 @@ mod tests {
             EventBus::new(16),
             store,
             data_dir.clone(),
-            Arc::new(NoopWorkbenchAgent),
+            Arc::new(FailingWorkbenchAgent),
             data_dir.join("sessions"),
+        )
+    }
+
+    fn test_state_with_provider(
+        store: Store,
+        data_dir: PathBuf,
+        provider: RuntimeProvider,
+    ) -> AppState {
+        AppState::with_store_agent_provider(
+            EventBus::new(16),
+            store,
+            data_dir.clone(),
+            Arc::new(FailingWorkbenchAgent),
+            data_dir.join("sessions"),
+            provider,
         )
     }
 
@@ -644,25 +764,6 @@ mod tests {
                 to: ["input".to_owned(), "text".to_owned()],
                 edge_type: "text".to_owned(),
             }],
-        }
-    }
-
-    struct NoopWorkbenchAgent;
-
-    #[async_trait]
-    impl WorkbenchAgent for NoopWorkbenchAgent {
-        async fn answer_chat(
-            &self,
-            _request: AgentSessionRequest,
-        ) -> Result<ValidatedAgentReply, AgentError> {
-            Err(AgentError::Runtime("noop agent".to_owned()))
-        }
-
-        async fn propose_graph_change(
-            &self,
-            _request: AgentSessionRequest,
-        ) -> Result<ValidatedAgentProposal, AgentError> {
-            Err(AgentError::Runtime("noop agent".to_owned()))
         }
     }
 }

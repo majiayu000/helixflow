@@ -38,6 +38,44 @@ pub struct ProviderCatalog {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderCatalogSnapshot {
+    pub default_provider: String,
+    pub runtime_providers: Vec<RuntimeProviderSummary>,
+    pub workflow_backends: Vec<WorkflowBackendSummary>,
+    pub api_connectors: Vec<ApiConnectorSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeProviderSummary {
+    pub id: String,
+    pub label: String,
+    pub kind: String,
+    pub enabled: bool,
+    pub status: String,
+    pub message: Option<String>,
+    pub capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowBackendSummary {
+    pub id: String,
+    pub label: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiConnectorSummary {
+    pub id: String,
+    pub provider: String,
+    pub capability: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProviderCapability {
     pub artifact_kind: ArtifactKind,
     pub output_name: String,
@@ -136,7 +174,7 @@ impl MockProvider {
         Self
     }
 
-    fn catalog_value() -> ProviderCatalog {
+    pub(crate) fn catalog_value() -> ProviderCatalog {
         ProviderCatalog {
             provider: "mock".to_owned(),
             capabilities: BTreeMap::from([
@@ -374,6 +412,39 @@ mod tests {
         assert!(result.outputs.contains_key("prompt"));
     }
 
+    #[test]
+    fn mock_runtime_provider_exports_safe_catalog_snapshot() {
+        let provider = RuntimeProvider::mock();
+
+        let snapshot = provider.catalog_snapshot();
+
+        assert_eq!(snapshot.default_provider, "mock");
+        assert_eq!(snapshot.runtime_providers[0].id, "mock");
+        assert_eq!(snapshot.runtime_providers[0].label, "Mock Provider");
+        assert_eq!(snapshot.runtime_providers[0].kind, "local_test");
+        assert!(snapshot.runtime_providers[0].enabled);
+        assert_eq!(snapshot.runtime_providers[0].status, "healthy");
+        assert!(
+            snapshot.runtime_providers[0]
+                .capabilities
+                .contains(&"text_to_video".to_owned())
+        );
+        assert_eq!(snapshot.workflow_backends[0].id, "helixflow_graph");
+        assert!(
+            snapshot
+                .api_connectors
+                .iter()
+                .any(|connector| connector.id == "mock.text_to_video")
+        );
+
+        let encoded = match serde_json::to_string(&snapshot) {
+            Ok(value) => value,
+            Err(err) => panic!("serialize provider snapshot: {err}"),
+        };
+        assert!(!encoded.contains("API_KEY"));
+        assert!(!encoded.contains("Authorization"));
+    }
+
     #[tokio::test]
     async fn unavailable_runtime_provider_rejects_invocation() {
         let provider = RuntimeProvider::unavailable("openai", "missing connector config");
@@ -396,5 +467,48 @@ mod tests {
                 reason: "missing connector config".to_owned(),
             }
         );
+    }
+
+    #[test]
+    fn unavailable_runtime_provider_exports_unavailable_snapshot_without_mock_fallback() {
+        let provider = RuntimeProvider::unavailable("openai", "missing connector config");
+
+        let snapshot = provider.catalog_snapshot();
+
+        assert_eq!(snapshot.default_provider, "openai");
+        assert_eq!(snapshot.runtime_providers[0].id, "openai");
+        assert_eq!(snapshot.runtime_providers[0].kind, "unavailable");
+        assert!(!snapshot.runtime_providers[0].enabled);
+        assert_eq!(snapshot.runtime_providers[0].status, "unavailable");
+        assert_eq!(
+            snapshot.runtime_providers[0].message.as_deref(),
+            Some("missing connector config")
+        );
+        assert!(snapshot.runtime_providers[0].capabilities.is_empty());
+        assert!(snapshot.workflow_backends.is_empty());
+        assert!(snapshot.api_connectors.is_empty());
+    }
+
+    #[test]
+    fn unavailable_runtime_provider_snapshot_redacts_unsafe_env_values() {
+        let provider = RuntimeProvider::unavailable(
+            "sk-secret-token",
+            "runtime provider `sk-secret-token` from https://example.test/key is not configured",
+        );
+
+        let snapshot = provider.catalog_snapshot();
+        let encoded = match serde_json::to_string(&snapshot) {
+            Ok(value) => value,
+            Err(err) => panic!("serialize provider snapshot: {err}"),
+        };
+
+        assert_eq!(snapshot.default_provider, "invalid");
+        assert_eq!(snapshot.runtime_providers[0].id, "invalid");
+        assert_eq!(
+            snapshot.runtime_providers[0].message.as_deref(),
+            Some("runtime provider `invalid` is unavailable")
+        );
+        assert!(!encoded.contains("sk-secret-token"));
+        assert!(!encoded.contains("https://example.test"));
     }
 }

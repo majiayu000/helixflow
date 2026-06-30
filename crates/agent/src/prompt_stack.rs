@@ -140,25 +140,25 @@ pub fn build_prompt_stack(request: &AgentSessionRequest) -> PromptStack {
             section(
                 PromptSectionKey::ResearchCommandContract,
                 "Research command contract",
-                "Read only the declared context files under `ctx/`: graph, node catalog, and selected skill. Do not inspect unrelated workspace files.",
+                "Read only the declared context files under `ctx/`: `graph.json`, `node_defs/catalog.json`, `workflow_backends/catalog.json`, `runtime_providers/catalog.json`, `api_connectors/catalog.json`, `canvas_state.json`, `canvas_ops.json`, and the selected skill. Do not inspect unrelated workspace files.",
                 false,
             ),
             section(
                 PromptSectionKey::WorkflowBackend,
                 "Workflow backend",
-                "Use `ctx/graph.json` as the current workflow state and `ctx/node_defs/catalog.json` as the authoritative node catalog.",
+                "Use `ctx/graph.json` as the current workflow state, `ctx/node_defs/catalog.json` as the authoritative node catalog, and `ctx/workflow_backends/catalog.json` as the backend boundary.",
                 false,
             ),
             section(
                 PromptSectionKey::RuntimeProvider,
                 "Runtime provider",
-                "External provider execution is backend-managed. Do not call provider APIs or read provider secrets.",
+                "Read `ctx/runtime_providers/catalog.json` before proposing provider work. External provider execution is backend-managed. Do not call provider APIs or read provider secrets.",
                 false,
             ),
             section(
                 PromptSectionKey::ApiConnectorCatalog,
                 "API connector catalog",
-                "Only use connector capabilities that the backend exposes through context files. Do not invent providers or fields.",
+                "Read `ctx/api_connectors/catalog.json` and only use connector capabilities that the backend exposes through context files. Do not invent providers or fields.",
                 false,
             ),
             section(

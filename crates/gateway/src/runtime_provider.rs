@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 
 use crate::{
-    CostEstimate, MockProvider, Provider, ProviderCatalog, ProviderError, ProviderHealth,
-    ProviderRequest, ProviderResult, ProviderResultValue, ProviderTaskHandle,
+    ApiConnectorSummary, CostEstimate, MockProvider, Provider, ProviderCatalog,
+    ProviderCatalogSnapshot, ProviderError, ProviderHealth, ProviderRequest, ProviderResult,
+    ProviderResultValue, ProviderTaskHandle, RuntimeProviderSummary, WorkflowBackendSummary,
 };
 
 #[derive(Debug, Clone)]
@@ -18,6 +19,57 @@ impl RuntimeProvider {
 
     pub fn unavailable(id: impl Into<String>, reason: impl Into<String>) -> Self {
         Self::Unavailable(UnavailableProvider::new(id, reason))
+    }
+
+    pub fn catalog_snapshot(&self) -> ProviderCatalogSnapshot {
+        match self {
+            Self::Mock(_) => mock_catalog_snapshot(),
+            Self::Unavailable(provider) => ProviderCatalogSnapshot {
+                default_provider: provider.safe_id(),
+                runtime_providers: vec![RuntimeProviderSummary {
+                    id: provider.safe_id(),
+                    label: provider.safe_id(),
+                    kind: "unavailable".to_owned(),
+                    enabled: false,
+                    status: "unavailable".to_owned(),
+                    message: Some(provider.safe_reason()),
+                    capabilities: Vec::new(),
+                }],
+                workflow_backends: Vec::new(),
+                api_connectors: Vec::new(),
+            },
+        }
+    }
+}
+
+fn mock_catalog_snapshot() -> ProviderCatalogSnapshot {
+    let catalog = MockProvider::catalog_value();
+    let capabilities = catalog.capabilities.keys().cloned().collect::<Vec<_>>();
+    ProviderCatalogSnapshot {
+        default_provider: catalog.provider.clone(),
+        runtime_providers: vec![RuntimeProviderSummary {
+            id: catalog.provider.clone(),
+            label: "Mock Provider".to_owned(),
+            kind: "local_test".to_owned(),
+            enabled: true,
+            status: "healthy".to_owned(),
+            message: Some("mock provider ready".to_owned()),
+            capabilities: capabilities.clone(),
+        }],
+        workflow_backends: vec![WorkflowBackendSummary {
+            id: "helixflow_graph".to_owned(),
+            label: "Helixflow Graph".to_owned(),
+            status: "healthy".to_owned(),
+        }],
+        api_connectors: capabilities
+            .into_iter()
+            .map(|capability| ApiConnectorSummary {
+                id: format!("{}.{}", catalog.provider, capability),
+                provider: catalog.provider.clone(),
+                capability,
+                status: "healthy".to_owned(),
+            })
+            .collect(),
     }
 }
 
@@ -80,10 +132,21 @@ impl UnavailableProvider {
         }
     }
 
+    fn safe_id(&self) -> String {
+        sanitize_provider_id(&self.id)
+    }
+
+    fn safe_reason(&self) -> String {
+        if is_safe_provider_message(&self.reason) && self.id == self.safe_id() {
+            return self.reason.clone();
+        }
+        format!("runtime provider `{}` is unavailable", self.safe_id())
+    }
+
     fn unavailable<T>(&self) -> ProviderResultValue<T> {
         Err(ProviderError::Unavailable {
-            provider: self.id.clone(),
-            reason: self.reason.clone(),
+            provider: self.safe_id(),
+            reason: self.safe_reason(),
         })
     }
 }
@@ -97,7 +160,7 @@ impl Provider for UnavailableProvider {
     async fn health(&self) -> ProviderHealth {
         ProviderHealth {
             ok: false,
-            message: Some(self.reason.clone()),
+            message: Some(self.safe_reason()),
         }
     }
 
@@ -116,4 +179,43 @@ impl Provider for UnavailableProvider {
     async fn cancel(&self, _handle: ProviderTaskHandle) -> ProviderResultValue<()> {
         self.unavailable()
     }
+}
+
+fn sanitize_provider_id(id: &str) -> String {
+    let trimmed = id.trim();
+    if is_safe_provider_id(trimmed) && is_safe_provider_message(trimmed) {
+        trimmed.to_owned()
+    } else {
+        "invalid".to_owned()
+    }
+}
+
+fn is_safe_provider_id(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    value.len() <= 64
+        && first.is_ascii_alphanumeric()
+        && value.chars().all(|ch| {
+            ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '-' | '_' | '.')
+        })
+}
+
+fn is_safe_provider_message(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    !value.contains("://")
+        && !value.contains("/Users/")
+        && !value.contains("\\Users\\")
+        && !value.contains("file://")
+        && !value.contains("Bearer ")
+        && !lower.contains("authorization")
+        && !lower.contains("api_key")
+        && !lower.contains("apikey")
+        && !lower.contains("token")
+        && !lower.contains("secret")
+        && !lower.contains("password")
+        && !lower.contains("signed_url")
+        && !lower.contains("signedurl")
+        && !lower.contains("sk-")
 }

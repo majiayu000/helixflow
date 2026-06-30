@@ -7,6 +7,7 @@ repository.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+helixflow-gateway.workspace = true
 helixflow-graph.workspace = true
 helixflow-registry.workspace = true
 helixflow-run.workspace = true

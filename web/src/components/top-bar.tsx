@@ -39,10 +39,14 @@ export function TopBar({
 }: TopBarProps) {
   const nodeCount = state.graph.nodes.length;
   const defaultProvider =
-    state.providers.providers.find((provider) => provider.id === state.providers.defaultProvider) ??
-    state.providers.providers[0] ??
+    state.providers.runtimeProviders.find(
+      (provider) => provider.id === state.providers.defaultProvider,
+    ) ??
+    state.providers.runtimeProviders[0] ??
     null;
-  const providerOk = Boolean(defaultProvider?.enabled);
+  const providerOk = Boolean(defaultProvider?.enabled && defaultProvider.status === 'healthy');
+  const providerLabel = defaultProvider?.label ?? 'Provider state missing';
+  const providerMessage = defaultProvider?.message ?? providerStatusLabel(defaultProvider);
 
   return (
     <div className="wb-top">
@@ -61,7 +65,7 @@ export function TopBar({
         <div className="endpoint-box">
           <span className="endpoint">
             <Icon n="lock" s={11} />
-            {defaultProvider?.label ?? 'API provider'}
+            {providerLabel}
           </span>
           <span className="pill pill--ok">
             <span className="led" />
@@ -73,7 +77,7 @@ export function TopBar({
           </span>
           <span className={providerOk ? 'pill pill--live' : 'pill pill--off'}>
             <span className="led" />
-            {providerOk ? 'Atlas 已配置' : 'Atlas 未配置'}
+            {providerStatusLabel(defaultProvider)}
           </span>
         </div>
         <button
@@ -111,7 +115,7 @@ export function TopBar({
             running
               ? '中断当前运行'
               : runDisabled && !providerOk
-              ? (defaultProvider?.health.message ?? 'Atlas provider 未配置')
+              ? providerMessage
               : runDisabled
                 ? '等待当前请求完成'
                 : '提交当前工作流运行'
@@ -130,4 +134,16 @@ function connectionLabel(connection: ConnectionStatus): string {
   if (connection === 'live') return '在线';
   if (connection === 'connecting') return '连接中';
   return '离线';
+}
+
+function providerStatusLabel(
+  provider: WorkbenchState['providers']['runtimeProviders'][number] | null,
+): string {
+  if (!provider) return 'Provider 状态缺失';
+  if (provider.kind === 'local_test' && provider.enabled && provider.status === 'healthy') {
+    return '本地测试';
+  }
+  if (provider.enabled && provider.status === 'healthy') return '可用';
+  if (provider.status === 'missing') return 'Provider 状态缺失';
+  return '不可用';
 }

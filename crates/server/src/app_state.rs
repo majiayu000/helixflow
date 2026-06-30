@@ -8,7 +8,7 @@ use helixflow_agent::{
     AgentError, AgentService, AgentSessionRequest, CodexRuntime, ValidatedAgentProposal,
     ValidatedAgentReply,
 };
-use helixflow_gateway::{Provider, RuntimeProvider};
+use helixflow_gateway::{Provider, ProviderCatalogSnapshot, RuntimeProvider};
 use helixflow_run::{EventBus, RunService};
 use helixflow_store::{Store, StoreError};
 use tokio::sync::Mutex;
@@ -20,6 +20,7 @@ pub(crate) struct AppState {
     pub(crate) agent_sessions_dir: PathBuf,
     pub(crate) store: Store,
     pub(crate) data_dir: PathBuf,
+    pub(crate) provider_catalog: ProviderCatalogSnapshot,
     pub(crate) runner: RunService<RuntimeProvider>,
     pub(crate) run_queue_locks: Arc<Mutex<BTreeMap<String, Arc<Mutex<()>>>>>,
 }
@@ -42,6 +43,7 @@ impl AppState {
         provider: RuntimeProvider,
     ) -> Self {
         let agent_sessions_dir = default_agent_sessions_dir();
+        let provider_catalog = provider.catalog_snapshot();
         let agent = Arc::new(CodexWorkbenchAgent {
             program: default_codex_program(),
             events: events.clone(),
@@ -54,6 +56,7 @@ impl AppState {
             agent_sessions_dir,
             store,
             data_dir,
+            provider_catalog,
             runner,
             run_queue_locks,
         }
@@ -67,11 +70,9 @@ impl AppState {
         agent: Arc<dyn WorkbenchAgent>,
         agent_sessions_dir: PathBuf,
     ) -> Self {
-        let runner = RunService::with_provider_and_events(
-            store.clone(),
-            RuntimeProvider::mock(),
-            events.clone(),
-        );
+        let provider = RuntimeProvider::mock();
+        let provider_catalog = provider.catalog_snapshot();
+        let runner = RunService::with_provider_and_events(store.clone(), provider, events.clone());
         let run_queue_locks = Arc::new(Mutex::new(BTreeMap::new()));
         Self {
             events,
@@ -80,6 +81,31 @@ impl AppState {
             runner,
             store,
             data_dir,
+            provider_catalog,
+            run_queue_locks,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_store_agent_provider(
+        events: EventBus,
+        store: Store,
+        data_dir: PathBuf,
+        agent: Arc<dyn WorkbenchAgent>,
+        agent_sessions_dir: PathBuf,
+        provider: RuntimeProvider,
+    ) -> Self {
+        let provider_catalog = provider.catalog_snapshot();
+        let runner = RunService::with_provider_and_events(store.clone(), provider, events.clone());
+        let run_queue_locks = Arc::new(Mutex::new(BTreeMap::new()));
+        Self {
+            events,
+            agent,
+            agent_sessions_dir,
+            runner,
+            store,
+            data_dir,
+            provider_catalog,
             run_queue_locks,
         }
     }
@@ -192,9 +218,10 @@ async fn persist_runtime_provider_status(
     provider: &RuntimeProvider,
 ) -> Result<(), AppStateError> {
     let health = provider.health().await;
+    let provider_id = provider.catalog_snapshot().default_provider;
     let status = if health.ok { "healthy" } else { "unavailable" };
     store
-        .upsert_provider_status(provider.id(), health.ok, status, None, None)
+        .upsert_provider_status(&provider_id, health.ok, status, None, None)
         .await?;
     Ok(())
 }
@@ -252,6 +279,30 @@ mod tests {
             .expect("provider status row");
 
         assert_eq!(record.id, "openai");
+        assert!(!record.enabled);
+        assert_eq!(record.status, "unavailable");
+    }
+
+    #[tokio::test]
+    async fn persist_runtime_provider_status_uses_safe_provider_id() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let database_url = format!("sqlite://{}", dir.path().join("helixflow.sqlite").display());
+        let store = Store::open(&database_url).await.expect("open store");
+        let provider = RuntimeProvider::unavailable(
+            "sk-secret-token",
+            "runtime provider `sk-secret-token` is not configured",
+        );
+
+        persist_runtime_provider_status(&store, &provider)
+            .await
+            .expect("persist provider status");
+
+        let record = store
+            .provider_status("invalid")
+            .await
+            .expect("safe provider status row");
+
+        assert_eq!(record.id, "invalid");
         assert!(!record.enabled);
         assert_eq!(record.status, "unavailable");
     }

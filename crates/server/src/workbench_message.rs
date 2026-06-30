@@ -86,6 +86,7 @@ pub(crate) async fn post_workspace_message(
         base_version_id: input.base_version_id,
         user_message: input.user_message,
         graph: input.graph,
+        provider_catalog: state.provider_catalog.clone(),
         run_context,
         sessions_dir: state.agent_sessions_dir.clone(),
         mode: turn_mode,

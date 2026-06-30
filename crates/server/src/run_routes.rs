@@ -341,18 +341,15 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    use async_trait::async_trait;
     use axum::extract::{Path, State};
-    use helixflow_agent::{
-        AgentError, AgentSessionRequest, ValidatedAgentProposal, ValidatedAgentReply,
-    };
     use helixflow_graph::{GraphEdge, GraphNode, WorkflowGraph};
     use helixflow_run::{AgentRunRequest, EventBus, SweepPlan, SweepVariant};
     use helixflow_store::{NewVersion, Store, VersionSource};
     use serde_json::json;
 
     use super::*;
-    use crate::app_state::{AppState, WorkbenchAgent};
+    use crate::app_state::AppState;
+    use crate::test_support::FailingWorkbenchAgent;
 
     #[tokio::test]
     async fn confirm_route_executes_waiting_run() {
@@ -666,7 +663,7 @@ mod tests {
             EventBus::new(16),
             store,
             data_dir.clone(),
-            Arc::new(NoopWorkbenchAgent),
+            Arc::new(FailingWorkbenchAgent),
             data_dir.join("sessions"),
         );
         (state, workspace.id, version.id, dir)
@@ -746,24 +743,5 @@ mod tests {
         )
         .await
         .expect("write graph");
-    }
-
-    struct NoopWorkbenchAgent;
-
-    #[async_trait]
-    impl WorkbenchAgent for NoopWorkbenchAgent {
-        async fn answer_chat(
-            &self,
-            _request: AgentSessionRequest,
-        ) -> Result<ValidatedAgentReply, AgentError> {
-            Err(AgentError::Runtime("noop agent".to_owned()))
-        }
-
-        async fn propose_graph_change(
-            &self,
-            _request: AgentSessionRequest,
-        ) -> Result<ValidatedAgentProposal, AgentError> {
-            Err(AgentError::Runtime("noop agent".to_owned()))
-        }
     }
 }

@@ -108,39 +108,51 @@ const GraphStateSchema = z.object({
   ),
 });
 
-const ProviderHealthSchema = z.object({
-  ok: z.boolean(),
-  message: z.string().nullable(),
+const RuntimeProviderStatusSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  kind: z.string(),
+  enabled: z.boolean(),
+  status: z.string(),
+  message: z.string().nullable().optional(),
+  capabilities: z.array(z.string()),
 });
 
-const ProviderStatusSchema = z.object({
+const WorkflowBackendStatusSchema = z.object({
   id: z.string(),
-  displayName: z.string(),
-  configured: z.boolean(),
-  enabled: z.boolean(),
   label: z.string(),
-  endpoint: z.string().nullable(),
-  health: ProviderHealthSchema,
+  status: z.string(),
+});
+
+const ApiConnectorStatusSchema = z.object({
+  id: z.string(),
+  provider: z.string(),
+  capability: z.string(),
+  status: z.string(),
 });
 
 const ProvidersSchema = z
   .object({
     defaultProvider: z.string(),
-    providers: z.array(ProviderStatusSchema),
+    runtimeProviders: z.array(RuntimeProviderStatusSchema),
+    workflowBackends: z.array(WorkflowBackendStatusSchema),
+    apiConnectors: z.array(ApiConnectorStatusSchema),
   })
   .default({
-    defaultProvider: 'mock',
-    providers: [
+    defaultProvider: 'missing',
+    runtimeProviders: [
       {
-        id: 'mock',
-        displayName: 'Mock',
-        configured: true,
-        enabled: true,
-        label: 'Mock runtime',
-        endpoint: null,
-        health: { ok: true, message: 'Mock runtime provider configured' },
+        id: 'missing',
+        label: 'Provider state missing',
+        kind: 'missing',
+        enabled: false,
+        status: 'missing',
+        message: 'Backend did not include provider state',
+        capabilities: [],
       },
     ],
+    workflowBackends: [],
+    apiConnectors: [],
   });
 
 const RunStepSchema = z.object({
