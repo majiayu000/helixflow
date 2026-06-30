@@ -235,6 +235,7 @@ mod tests {
                 sessions_dir: state.agent_sessions_dir.clone(),
                 mode: TurnMode::RunRequest,
                 skill: TurnMode::RunRequest.agent_skill(),
+                canvas_context: None,
             },
         )
         .await

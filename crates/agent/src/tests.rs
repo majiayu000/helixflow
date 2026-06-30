@@ -55,6 +55,7 @@ fn request(dir: &tempfile::TempDir) -> AgentSessionRequest {
         sessions_dir: dir.path().join("agent_sessions"),
         mode: TurnMode::ModifyWorkflow,
         skill: AgentSkill::ModifyWorkflow,
+        canvas_context: None,
     }
 }
 
@@ -68,6 +69,7 @@ fn chat_request(dir: &tempfile::TempDir) -> AgentSessionRequest {
         sessions_dir: dir.path().join("agent_sessions"),
         mode: TurnMode::Chat,
         skill: AgentSkill::Chat,
+        canvas_context: None,
     }
 }
 
@@ -88,7 +90,11 @@ fn creates_ctx_out_contract_without_provider_secret_values() {
 
     let ctx = fs::read_to_string(session.ctx_dir.join("instructions.md")).expect("ctx");
     assert!(ctx.contains("Write exactly one result file: `out/proposal.json`"));
+    assert!(session.ctx_dir.join("canvas_state.json").exists());
+    assert!(session.ctx_dir.join("canvas_ops.json").exists());
     assert!(ctx.contains("Top-level keys must be exactly"));
+    assert!(ctx.contains("Bounded canvas ops"));
+    assert!(ctx.contains("propose_layout"));
     assert!(ctx.contains("\"base_version_id\""));
     assert!(ctx.contains("\"ops\""));
     assert!(ctx.contains("Do not put top-level \"schema_version\", \"nodes\", or \"edges\""));
@@ -96,6 +102,58 @@ fn creates_ctx_out_contract_without_provider_secret_values() {
     assert!(ctx.contains("\"node_type\":\"input.text\""));
     assert!(ctx.contains("\"to\":[\"output\",\"artifact\"],\"edge_type\":\"artifact\""));
     assert!(!ctx.contains("PROVIDER_API_KEY"));
+}
+
+#[test]
+fn writes_compact_canvas_state_with_filtered_selection() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut input = request(&dir);
+    input.canvas_context = Some(CanvasOpsContext::from_graph(
+        &input.workspace_id,
+        &input.base_version_id,
+        &input.graph,
+        CanvasSelection {
+            node_ids: vec![
+                "video".to_owned(),
+                "missing".to_owned(),
+                "video".to_owned(),
+                "input".to_owned(),
+            ],
+        },
+        CanvasGateState {
+            pending_proposal: true,
+            pending_confirmation: false,
+        },
+    ));
+    let session = create_session_contract(&input).expect("session");
+
+    let canvas: Value = serde_json::from_slice(
+        &fs::read(session.ctx_dir.join("canvas_state.json")).expect("canvas state"),
+    )
+    .expect("canvas json");
+    assert_eq!(canvas["workspace_id"], "ws_1");
+    assert_eq!(canvas["base_version_id"], "ver_1");
+    assert_eq!(canvas["graph"]["node_count"], 2);
+    assert_eq!(canvas["selection"]["node_ids"], json!(["video", "input"]));
+    assert_eq!(canvas["gates"]["pending_proposal"], true);
+    assert!(canvas.to_string().contains("video.mock.text_to_video"));
+    assert!(!canvas.to_string().contains("OPENAI_API_KEY"));
+}
+
+#[test]
+fn rejects_unknown_fields_in_canvas_ops_contract_input() {
+    let value = json!({
+        "schema_version": 1,
+        "ops": [{
+            "op": "propose_layout",
+            "moves": [{ "id": "video", "pos": [10.0, 12.0], "secret": "nope" }]
+        }]
+    });
+
+    let err = serde_json::from_value::<CanvasOpsRequest>(value)
+        .expect_err("nested unknown canvas op field should fail");
+
+    assert!(err.to_string().contains("unknown field"));
 }
 
 #[test]
@@ -112,6 +170,8 @@ fn chat_contract_skips_graph_context_and_records_prompt_metadata() {
     );
     assert!(!session.ctx_dir.join("graph.json").exists());
     assert!(!session.ctx_dir.join("node_defs/catalog.json").exists());
+    assert!(!session.ctx_dir.join("canvas_state.json").exists());
+    assert!(!session.ctx_dir.join("canvas_ops.json").exists());
 
     let ctx = fs::read_to_string(session.ctx_dir.join("instructions.md")).expect("ctx");
     assert!(ctx.contains("Mode: Chat"));
@@ -335,6 +395,11 @@ async fn service_streams_agent_status_and_reads_runtime_proposal() {
             && log.text.contains("output_contract=proposal_json")
             && log.text.contains("mode_override")
     }));
+    assert!(
+        proposal.agent_logs.iter().any(|log| {
+            log.kind == "agent_log:canvas_ops" && log.text.contains("read_selection")
+        })
+    );
 
     let mut event_names = Vec::new();
     while let Ok(event) = receiver.try_recv() {

@@ -19,6 +19,7 @@ mod run_routes;
 mod sweep_support;
 mod version_routes;
 mod workbench_message;
+mod workbench_message_canvas;
 mod workbench_payload;
 mod workspace_routes;
 mod workspace_state;

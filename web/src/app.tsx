@@ -25,6 +25,7 @@ export function App({ initialState, workspaceId }: AppProps) {
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(initialWorkspaceId);
   const [busy, setBusy] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [selectedCanvasNodeIds, setSelectedCanvasNodeIds] = useState<string[]>([]);
   const [workspaceList, setWorkspaceList] = useState<WorkspaceSummary[]>([]);
   const [workspaceListError, setWorkspaceListError] = useState<string | null>(null);
   const status = useWorkbenchStore((store) => store.status);
@@ -183,7 +184,13 @@ export function App({ initialState, workspaceId }: AppProps) {
             messages={activeState.chat.messages}
             onApplyProposal={(id) => runAction(() => applyProposal(id))}
             onDismissProposal={(id) => runAction(() => dismissProposal(id))}
-            onSend={(text) => runAction(() => sendMessage(text))}
+            onSend={(text) =>
+              runAction(() =>
+                sendMessage(text, {
+                  selection: { nodeIds: selectedCanvasNodeIds },
+                }),
+              )
+            }
             pendingProposal={activeState.pendingProposal}
             run={activeState.run}
           />
@@ -195,6 +202,7 @@ export function App({ initialState, workspaceId }: AppProps) {
             <>
               <GraphCanvas
                 graph={activeState.graph}
+                onSelectionChange={setSelectedCanvasNodeIds}
                 onSaveLayout={(positions) => runAction(() => saveLayout(positions))}
                 pendingProposal={activeState.pendingProposal}
                 run={uiState.run}

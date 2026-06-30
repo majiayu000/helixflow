@@ -14,16 +14,19 @@ use crate::api_error::ApiError;
 use crate::app_state::AppState;
 use crate::graph_files::write_json_file;
 use crate::sweep_support::handle_run_request;
+use crate::workbench_message_canvas::{WorkspaceCanvasContext, prepare_agent_canvas_context};
 use crate::workbench_payload::{
     PendingConfirmationPayload, ProposalPayload, RunPayload, proposal_payload_from_prepared,
 };
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct WorkspaceMessageRequest {
     base_version_id: String,
     user_message: String,
     graph: WorkflowGraph,
+    #[serde(default)]
+    canvas_context: Option<WorkspaceCanvasContext>,
 }
 
 #[derive(Debug, Serialize)]
@@ -55,6 +58,15 @@ pub(crate) async fn post_workspace_message(
 ) -> Result<Json<WorkspaceMessageResponse>, ApiError> {
     let turn_mode = classify_turn_mode(&input.user_message, &input.graph)
         .map_err(|err| ApiError::bad_request(err.to_string()))?;
+    let canvas_context = prepare_agent_canvas_context(
+        &state,
+        &workspace_id,
+        turn_mode,
+        &input.base_version_id,
+        &input.graph,
+        input.canvas_context.clone(),
+    )
+    .await?;
     let turn_metadata = turn_metadata_json(turn_mode);
     state
         .store
@@ -78,6 +90,7 @@ pub(crate) async fn post_workspace_message(
         sessions_dir: state.agent_sessions_dir.clone(),
         mode: turn_mode,
         skill: turn_mode.agent_skill(),
+        canvas_context,
     };
 
     match turn_mode {
@@ -440,6 +453,7 @@ mod tests {
                 base_version_id: version_id,
                 user_message: "你好".to_owned(),
                 graph: sample_graph(),
+                canvas_context: None,
             }),
         )
         .await
@@ -486,6 +500,7 @@ mod tests {
                 base_version_id: version_id,
                 user_message: "运行当前 workflow".to_owned(),
                 graph: sample_graph(),
+                canvas_context: None,
             }),
         )
         .await
@@ -538,6 +553,7 @@ mod tests {
                 base_version_id: version_id,
                 user_message: "创建一个 workflow".to_owned(),
                 graph: sample_graph(),
+                canvas_context: None,
             }),
         )
         .await
@@ -628,6 +644,7 @@ mod tests {
                 base_version_id: version_id,
                 user_message: "为什么失败了，帮我修复".to_owned(),
                 graph: sample_graph(),
+                canvas_context: None,
             }),
         )
         .await
