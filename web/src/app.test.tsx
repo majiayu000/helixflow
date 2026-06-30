@@ -35,16 +35,22 @@ const state: WorkbenchState = {
   },
   providers: {
     defaultProvider: 'mock',
-    providers: [
+    runtimeProviders: [
       {
         id: 'mock',
-        displayName: 'Mock',
-        configured: true,
+        label: 'Mock Provider',
+        kind: 'local_test',
         enabled: true,
-        label: 'Mock runtime',
-        endpoint: null,
-        health: { ok: true, message: 'Mock runtime provider configured' },
+        status: 'healthy',
+        message: 'mock provider ready',
+        capabilities: ['prompt_writer', 'image_generate', 'text_to_video'],
       },
+    ],
+    workflowBackends: [{ id: 'helixflow_graph', label: 'Helixflow Graph', status: 'healthy' }],
+    apiConnectors: [
+      { id: 'mock.prompt_writer', provider: 'mock', capability: 'prompt_writer', status: 'healthy' },
+      { id: 'mock.image_generate', provider: 'mock', capability: 'image_generate', status: 'healthy' },
+      { id: 'mock.text_to_video', provider: 'mock', capability: 'text_to_video', status: 'healthy' },
     ],
   },
   chat: {
@@ -149,6 +155,8 @@ describe('App', () => {
     expect(markup).toContain('Test Workspace');
     expect(markup).toContain('对话');
     expect(markup).toContain('2 节点');
+    expect(markup).toContain('Mock Provider');
+    expect(markup).toContain('本地测试');
     expect(markup).toContain('运行中');
     expect(markup).toContain('1 个真实 artifact');
     expect(markup).toContain('版本与运行历史');
@@ -203,6 +211,52 @@ describe('App', () => {
     expect(markup).toContain('中断');
     expect(markup).toContain('title="中断当前运行"');
     expect(markup).not.toContain('title="中断当前运行" disabled=""');
+  });
+
+  it('renders unavailable provider status without Atlas fallback copy', () => {
+    const markup = renderToStaticMarkup(
+      <TopBar
+        agentRunDisabled={true}
+        busy={false}
+        connection="live"
+        exportDisabled={true}
+        historyOpen={false}
+        onAgentRun={() => {}}
+        onExport={() => {}}
+        onHistory={() => {}}
+        onNewWorkspace={() => {}}
+        onQueue={() => {}}
+        onUndo={() => {}}
+        runDisabled={true}
+        running={false}
+        state={{
+          ...state,
+          providers: {
+            defaultProvider: 'openai',
+            runtimeProviders: [
+              {
+                id: 'openai',
+                label: 'openai',
+                kind: 'unavailable',
+                enabled: false,
+                status: 'unavailable',
+                message: 'runtime provider `openai` is not configured by this build',
+                capabilities: [],
+              },
+            ],
+            workflowBackends: [],
+            apiConnectors: [],
+          },
+        }}
+        undoDisabled={true}
+      />,
+    );
+
+    expect(markup).toContain('openai');
+    expect(markup).toContain('不可用');
+    expect(markup).toContain('runtime provider `openai` is not configured by this build');
+    expect(markup).not.toContain(['Atlas', '已配置'].join(' '));
+    expect(markup).not.toContain(['Atlas', '未配置'].join(' '));
   });
 
   it('renders agent runtime logs in a collapsed log group', () => {

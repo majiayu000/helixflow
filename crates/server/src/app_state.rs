@@ -8,7 +8,7 @@ use helixflow_agent::{
     AgentError, AgentService, AgentSessionRequest, CodexRuntime, ValidatedAgentProposal,
     ValidatedAgentReply,
 };
-use helixflow_gateway::{Provider, RuntimeProvider};
+use helixflow_gateway::{Provider, ProviderCatalogSnapshot, RuntimeProvider};
 use helixflow_run::{EventBus, RunService};
 use helixflow_store::{Store, StoreError};
 use tokio::sync::Mutex;
@@ -20,6 +20,7 @@ pub(crate) struct AppState {
     pub(crate) agent_sessions_dir: PathBuf,
     pub(crate) store: Store,
     pub(crate) data_dir: PathBuf,
+    pub(crate) provider_catalog: ProviderCatalogSnapshot,
     pub(crate) runner: RunService<RuntimeProvider>,
     pub(crate) run_queue_locks: Arc<Mutex<BTreeMap<String, Arc<Mutex<()>>>>>,
 }
@@ -42,6 +43,7 @@ impl AppState {
         provider: RuntimeProvider,
     ) -> Self {
         let agent_sessions_dir = default_agent_sessions_dir();
+        let provider_catalog = provider.catalog_snapshot();
         let agent = Arc::new(CodexWorkbenchAgent {
             program: default_codex_program(),
             events: events.clone(),
@@ -54,6 +56,7 @@ impl AppState {
             agent_sessions_dir,
             store,
             data_dir,
+            provider_catalog,
             runner,
             run_queue_locks,
         }
@@ -67,11 +70,9 @@ impl AppState {
         agent: Arc<dyn WorkbenchAgent>,
         agent_sessions_dir: PathBuf,
     ) -> Self {
-        let runner = RunService::with_provider_and_events(
-            store.clone(),
-            RuntimeProvider::mock(),
-            events.clone(),
-        );
+        let provider = RuntimeProvider::mock();
+        let provider_catalog = provider.catalog_snapshot();
+        let runner = RunService::with_provider_and_events(store.clone(), provider, events.clone());
         let run_queue_locks = Arc::new(Mutex::new(BTreeMap::new()));
         Self {
             events,
@@ -80,6 +81,31 @@ impl AppState {
             runner,
             store,
             data_dir,
+            provider_catalog,
+            run_queue_locks,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_store_agent_provider(
+        events: EventBus,
+        store: Store,
+        data_dir: PathBuf,
+        agent: Arc<dyn WorkbenchAgent>,
+        agent_sessions_dir: PathBuf,
+        provider: RuntimeProvider,
+    ) -> Self {
+        let provider_catalog = provider.catalog_snapshot();
+        let runner = RunService::with_provider_and_events(store.clone(), provider, events.clone());
+        let run_queue_locks = Arc::new(Mutex::new(BTreeMap::new()));
+        Self {
+            events,
+            agent,
+            agent_sessions_dir,
+            runner,
+            store,
+            data_dir,
+            provider_catalog,
             run_queue_locks,
         }
     }

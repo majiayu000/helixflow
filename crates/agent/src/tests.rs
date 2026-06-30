@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use helixflow_gateway::RuntimeProvider;
 use helixflow_graph::{GraphEdge, GraphNode, ProposalKind};
 use helixflow_run::EventBus;
 use serde_json::{Value, json};
@@ -51,6 +52,7 @@ fn request(dir: &tempfile::TempDir) -> AgentSessionRequest {
         base_version_id: "ver_1".to_owned(),
         user_message: "make it shorter".to_owned(),
         graph: sample_graph(),
+        provider_catalog: RuntimeProvider::mock().catalog_snapshot(),
         run_context: None,
         sessions_dir: dir.path().join("agent_sessions"),
         mode: TurnMode::ModifyWorkflow,
@@ -64,6 +66,7 @@ fn chat_request(dir: &tempfile::TempDir) -> AgentSessionRequest {
         base_version_id: "ver_1".to_owned(),
         user_message: "你好，你是谁？".to_owned(),
         graph: sample_graph(),
+        provider_catalog: RuntimeProvider::mock().catalog_snapshot(),
         run_context: None,
         sessions_dir: dir.path().join("agent_sessions"),
         mode: TurnMode::Chat,
@@ -83,6 +86,19 @@ fn creates_ctx_out_contract_without_provider_secret_values() {
 
     assert!(session.ctx_dir.join("graph.json").exists());
     assert!(session.ctx_dir.join("node_defs/catalog.json").exists());
+    assert!(
+        session
+            .ctx_dir
+            .join("workflow_backends/catalog.json")
+            .exists()
+    );
+    assert!(
+        session
+            .ctx_dir
+            .join("runtime_providers/catalog.json")
+            .exists()
+    );
+    assert!(session.ctx_dir.join("api_connectors/catalog.json").exists());
     assert!(session.ctx_dir.join("skills/modify_workflow.md").exists());
     assert!(session.out_dir.exists());
 
@@ -95,7 +111,41 @@ fn creates_ctx_out_contract_without_provider_secret_values() {
     assert!(ctx.contains("\"op\":\"add_node\""));
     assert!(ctx.contains("\"node_type\":\"input.text\""));
     assert!(ctx.contains("\"to\":[\"output\",\"artifact\"],\"edge_type\":\"artifact\""));
-    assert!(!ctx.contains("PROVIDER_API_KEY"));
+    assert_no_raw_auth_material(&ctx);
+
+    let workflow_catalog =
+        fs::read_to_string(session.ctx_dir.join("workflow_backends/catalog.json"))
+            .expect("workflow backend catalog");
+    let runtime_catalog =
+        fs::read_to_string(session.ctx_dir.join("runtime_providers/catalog.json"))
+            .expect("runtime provider catalog");
+    let api_catalog = fs::read_to_string(session.ctx_dir.join("api_connectors/catalog.json"))
+        .expect("api connector catalog");
+    assert!(runtime_catalog.contains("\"id\": \"mock\""));
+    assert!(runtime_catalog.contains("\"kind\": \"local_test\""));
+    assert!(api_catalog.contains("\"capability\": \"text_to_video\""));
+    assert_no_raw_auth_material(&workflow_catalog);
+    assert_no_raw_auth_material(&runtime_catalog);
+    assert_no_raw_auth_material(&api_catalog);
+}
+
+fn assert_no_raw_auth_material(content: &str) {
+    for needle in [
+        "PROVIDER_API_KEY",
+        "Authorization",
+        "Bearer ",
+        "signed_url",
+        "signedUrl",
+        "access_token",
+        "refresh_token",
+        "client_secret",
+        "secret_key",
+        "SECRET=",
+        "file://",
+        "/Users/",
+    ] {
+        assert!(!content.contains(needle), "found raw auth marker {needle}");
+    }
 }
 
 #[test]
@@ -112,6 +162,12 @@ fn chat_contract_skips_graph_context_and_records_prompt_metadata() {
     );
     assert!(!session.ctx_dir.join("graph.json").exists());
     assert!(!session.ctx_dir.join("node_defs/catalog.json").exists());
+    assert!(
+        !session
+            .ctx_dir
+            .join("runtime_providers/catalog.json")
+            .exists()
+    );
 
     let ctx = fs::read_to_string(session.ctx_dir.join("instructions.md")).expect("ctx");
     assert!(ctx.contains("Mode: Chat"));

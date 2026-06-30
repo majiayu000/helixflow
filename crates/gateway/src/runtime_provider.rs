@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 
 use crate::{
-    CostEstimate, MockProvider, Provider, ProviderCatalog, ProviderError, ProviderHealth,
-    ProviderRequest, ProviderResult, ProviderResultValue, ProviderTaskHandle,
+    ApiConnectorSummary, CostEstimate, MockProvider, Provider, ProviderCatalog,
+    ProviderCatalogSnapshot, ProviderError, ProviderHealth, ProviderRequest, ProviderResult,
+    ProviderResultValue, ProviderTaskHandle, RuntimeProviderSummary, WorkflowBackendSummary,
 };
 
 #[derive(Debug, Clone)]
@@ -18,6 +19,57 @@ impl RuntimeProvider {
 
     pub fn unavailable(id: impl Into<String>, reason: impl Into<String>) -> Self {
         Self::Unavailable(UnavailableProvider::new(id, reason))
+    }
+
+    pub fn catalog_snapshot(&self) -> ProviderCatalogSnapshot {
+        match self {
+            Self::Mock(_) => mock_catalog_snapshot(),
+            Self::Unavailable(provider) => ProviderCatalogSnapshot {
+                default_provider: provider.id.clone(),
+                runtime_providers: vec![RuntimeProviderSummary {
+                    id: provider.id.clone(),
+                    label: provider.id.clone(),
+                    kind: "unavailable".to_owned(),
+                    enabled: false,
+                    status: "unavailable".to_owned(),
+                    message: Some(provider.reason.clone()),
+                    capabilities: Vec::new(),
+                }],
+                workflow_backends: Vec::new(),
+                api_connectors: Vec::new(),
+            },
+        }
+    }
+}
+
+fn mock_catalog_snapshot() -> ProviderCatalogSnapshot {
+    let catalog = MockProvider::catalog_value();
+    let capabilities = catalog.capabilities.keys().cloned().collect::<Vec<_>>();
+    ProviderCatalogSnapshot {
+        default_provider: catalog.provider.clone(),
+        runtime_providers: vec![RuntimeProviderSummary {
+            id: catalog.provider.clone(),
+            label: "Mock Provider".to_owned(),
+            kind: "local_test".to_owned(),
+            enabled: true,
+            status: "healthy".to_owned(),
+            message: Some("mock provider ready".to_owned()),
+            capabilities: capabilities.clone(),
+        }],
+        workflow_backends: vec![WorkflowBackendSummary {
+            id: "helixflow_graph".to_owned(),
+            label: "Helixflow Graph".to_owned(),
+            status: "healthy".to_owned(),
+        }],
+        api_connectors: capabilities
+            .into_iter()
+            .map(|capability| ApiConnectorSummary {
+                id: format!("{}.{}", catalog.provider, capability),
+                provider: catalog.provider.clone(),
+                capability,
+                status: "healthy".to_owned(),
+            })
+            .collect(),
     }
 }
 

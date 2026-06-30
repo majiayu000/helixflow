@@ -92,8 +92,11 @@ export function App({ initialState, workspaceId }: AppProps) {
         activeState.run.status === 'estimating'),
   );
   const hasProviderNodes = activeState.graph.nodes.some((node) => Boolean(node.provider));
-  const providerReady = activeState.providers.providers.some(
-    (provider) => provider.id === activeState.providers.defaultProvider && provider.enabled,
+  const providerReady = activeState.providers.runtimeProviders.some(
+    (provider) =>
+      provider.id === activeState.providers.defaultProvider &&
+      provider.enabled &&
+      provider.status === 'healthy',
   );
   const queueDisabled =
     busy ||

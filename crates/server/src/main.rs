@@ -12,7 +12,11 @@ mod graph_files;
 mod layout_routes;
 mod proposal_routes;
 mod run_routes;
+#[cfg(test)]
+mod run_routes_unavailable_tests;
 mod sweep_support;
+#[cfg(test)]
+mod test_support;
 mod version_routes;
 mod workbench_message;
 mod workbench_payload;
@@ -123,15 +127,11 @@ async fn system() -> Json<Value> {
 mod tests {
     use std::sync::Arc;
 
-    use async_trait::async_trait;
-    use helixflow_agent::{
-        AgentError, AgentSessionRequest, ValidatedAgentProposal, ValidatedAgentReply,
-    };
     use helixflow_run::RunEventEnvelope;
     use helixflow_store::Store;
 
     use super::*;
-    use crate::app_state::WorkbenchAgent;
+    use crate::test_support::FailingWorkbenchAgent;
 
     #[tokio::test]
     async fn health_reports_service_status() {
@@ -237,28 +237,9 @@ mod tests {
             events,
             store,
             data_dir.clone(),
-            Arc::new(NoopWorkbenchAgent),
+            Arc::new(FailingWorkbenchAgent),
             data_dir.join("sessions"),
         );
         (dir, state)
-    }
-
-    struct NoopWorkbenchAgent;
-
-    #[async_trait]
-    impl WorkbenchAgent for NoopWorkbenchAgent {
-        async fn answer_chat(
-            &self,
-            _request: AgentSessionRequest,
-        ) -> Result<ValidatedAgentReply, AgentError> {
-            Err(AgentError::Runtime("noop agent".to_owned()))
-        }
-
-        async fn propose_graph_change(
-            &self,
-            _request: AgentSessionRequest,
-        ) -> Result<ValidatedAgentProposal, AgentError> {
-            Err(AgentError::Runtime("noop agent".to_owned()))
-        }
     }
 }

@@ -212,6 +212,7 @@ mod tests {
         AgentError, AgentLogEntry, AgentSessionRequest, TurnMode, ValidatedAgentProposal,
         ValidatedAgentReply,
     };
+    use helixflow_gateway::RuntimeProvider;
     use helixflow_graph::{GraphEdge, GraphNode, PreparedProposal, WorkflowGraph};
     use helixflow_run::EventBus;
     use helixflow_store::{NewVersion, Store, VersionSource};
@@ -231,6 +232,7 @@ mod tests {
                 base_version_id: version_id,
                 user_message: "为当前工作流设计 4 个不同 seed 的真实运行计划".to_owned(),
                 graph: seed_graph(),
+                provider_catalog: RuntimeProvider::mock().catalog_snapshot(),
                 run_context: None,
                 sessions_dir: state.agent_sessions_dir.clone(),
                 mode: TurnMode::RunRequest,

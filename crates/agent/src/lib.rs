@@ -2,6 +2,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use helixflow_gateway::ProviderCatalogSnapshot;
 use helixflow_graph::WorkflowGraph;
 use helixflow_registry::NodeRegistry;
 use serde::{Deserialize, Serialize};
@@ -51,6 +52,7 @@ pub struct AgentSessionRequest {
     pub base_version_id: String,
     pub user_message: String,
     pub graph: WorkflowGraph,
+    pub provider_catalog: ProviderCatalogSnapshot,
     pub run_context: Option<String>,
     pub sessions_dir: PathBuf,
     pub mode: TurnMode,
@@ -66,6 +68,9 @@ pub fn create_session_contract(request: &AgentSessionRequest) -> AgentResult<Age
     let tmp_dir = root_dir.join("tmp");
     let skills_dir = ctx_dir.join("skills");
     let node_defs_dir = ctx_dir.join("node_defs");
+    let workflow_backends_dir = ctx_dir.join("workflow_backends");
+    let runtime_providers_dir = ctx_dir.join("runtime_providers");
+    let api_connectors_dir = ctx_dir.join("api_connectors");
 
     fs::create_dir_all(&ctx_dir)?;
     fs::create_dir_all(&out_dir)?;
@@ -78,10 +83,25 @@ pub fn create_session_contract(request: &AgentSessionRequest) -> AgentResult<Age
     if request.mode.uses_graph_context() {
         fs::create_dir_all(&skills_dir)?;
         fs::create_dir_all(&node_defs_dir)?;
+        fs::create_dir_all(&workflow_backends_dir)?;
+        fs::create_dir_all(&runtime_providers_dir)?;
+        fs::create_dir_all(&api_connectors_dir)?;
         write_json(ctx_dir.join("graph.json"), &request.graph)?;
         write_json(
             node_defs_dir.join("catalog.json"),
             &NodeRegistry::builtin().export_catalog(),
+        )?;
+        write_json(
+            workflow_backends_dir.join("catalog.json"),
+            &request.provider_catalog.workflow_backends,
+        )?;
+        write_json(
+            runtime_providers_dir.join("catalog.json"),
+            &request.provider_catalog.runtime_providers,
+        )?;
+        write_json(
+            api_connectors_dir.join("catalog.json"),
+            &request.provider_catalog.api_connectors,
         )?;
         fs::write(skills_dir.join("node_library.md"), node_library_skill())?;
         fs::write(

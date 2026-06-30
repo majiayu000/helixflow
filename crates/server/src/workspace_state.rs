@@ -103,6 +103,8 @@ pub(crate) async fn workspace_state_value(
         &artifacts,
         &costs,
         event_seq,
+        serde_json::to_value(&state.provider_catalog)
+            .map_err(|err| ApiError::server_error(err.to_string()))?,
     ))
 }
 
@@ -154,6 +156,7 @@ fn workspace_state_payload(
     artifacts: &[ArtifactRecord],
     costs: &[CostLedgerRecord],
     event_seq: i64,
+    providers: Value,
 ) -> Value {
     let step_by_node = steps
         .iter()
@@ -168,6 +171,7 @@ fn workspace_state_payload(
             "versionId": workspace.cur_version_id.clone().unwrap_or_default(),
             "updatedAt": workspace.updated_at,
         },
+        "providers": providers,
         "chat": {
             "messages": messages.iter().map(chat_message_payload).collect::<Vec<_>>(),
         },
@@ -406,11 +410,8 @@ fn summarize_cost(costs: &[CostLedgerRecord]) -> CostSummary {
 mod tests {
     use std::sync::Arc;
 
-    use async_trait::async_trait;
     use axum::extract::{Path as AxumPath, State};
-    use helixflow_agent::{
-        AgentError, AgentSessionRequest, ValidatedAgentProposal, ValidatedAgentReply,
-    };
+    use helixflow_gateway::RuntimeProvider;
     use helixflow_graph::{GraphEdge, GraphNode};
     use helixflow_run::EventBus;
     use helixflow_store::{NewMessage, NewRun, NewRunStep, NewVersion, Store, VersionSource};
@@ -419,7 +420,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::app_state::{AppState, WorkbenchAgent};
+    use crate::app_state::AppState;
+    use crate::test_support::FailingWorkbenchAgent;
 
     #[tokio::test]
     async fn workspace_state_uses_store_records_and_graph_file() {
@@ -447,9 +449,73 @@ mod tests {
         assert_eq!(body["chat"]["messages"][0]["text"], "Build this");
         assert_eq!(body["chat"]["messages"][0]["turnMode"], "modify_workflow");
         assert_eq!(body["graph"]["nodes"].as_array().expect("nodes").len(), 1);
+        assert_eq!(body["providers"]["defaultProvider"], "mock");
+        assert_eq!(body["providers"]["runtimeProviders"][0]["id"], "mock");
+        assert_eq!(
+            body["providers"]["runtimeProviders"][0]["kind"],
+            "local_test"
+        );
+        assert_eq!(
+            body["providers"]["runtimeProviders"][0]["status"],
+            "healthy"
+        );
+        assert_eq!(body["providers"]["apiConnectors"][0]["provider"], "mock");
         assert_eq!(body["run"], Value::Null);
         assert!(body["pendingConfirmation"].is_null());
         assert_ne!(body["workspace"]["name"], "Helixflow Demo");
+    }
+
+    #[tokio::test]
+    async fn workspace_state_includes_unavailable_provider_without_mock_fallback()
+    -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|err| err.to_string())?;
+        let store = open_store(dir.path()).await;
+        let workspace = store
+            .create_workspace("Unavailable provider workspace")
+            .await
+            .map_err(|err| err.to_string())?;
+        let state = test_state_with_provider(
+            store,
+            dir.path().to_path_buf(),
+            RuntimeProvider::unavailable(
+                "openai",
+                "runtime provider `openai` is not configured by this build",
+            ),
+        );
+
+        let body = workspace_state(AxumPath(workspace.id), State(state))
+            .await
+            .map_err(|err| err.message)?
+            .0;
+
+        assert_eq!(body["providers"]["defaultProvider"], "openai");
+        assert_eq!(body["providers"]["runtimeProviders"][0]["id"], "openai");
+        assert_eq!(
+            body["providers"]["runtimeProviders"][0]["kind"],
+            "unavailable"
+        );
+        assert_eq!(
+            body["providers"]["runtimeProviders"][0]["status"],
+            "unavailable"
+        );
+        assert_eq!(body["providers"]["runtimeProviders"][0]["enabled"], false);
+        assert_eq!(
+            body["providers"]["runtimeProviders"][0]["capabilities"]
+                .as_array()
+                .map(Vec::len),
+            Some(0)
+        );
+        assert_eq!(
+            body["providers"]["workflowBackends"]
+                .as_array()
+                .map(Vec::len),
+            Some(0)
+        );
+        assert_eq!(
+            body["providers"]["apiConnectors"].as_array().map(Vec::len),
+            Some(0)
+        );
+        Ok(())
     }
 
     #[tokio::test]
@@ -622,8 +688,23 @@ mod tests {
             EventBus::new(16),
             store,
             data_dir.clone(),
-            Arc::new(NoopWorkbenchAgent),
+            Arc::new(FailingWorkbenchAgent),
             data_dir.join("sessions"),
+        )
+    }
+
+    fn test_state_with_provider(
+        store: Store,
+        data_dir: PathBuf,
+        provider: RuntimeProvider,
+    ) -> AppState {
+        AppState::with_store_agent_provider(
+            EventBus::new(16),
+            store,
+            data_dir.clone(),
+            Arc::new(FailingWorkbenchAgent),
+            data_dir.join("sessions"),
+            provider,
         )
     }
 
@@ -644,25 +725,6 @@ mod tests {
                 to: ["input".to_owned(), "text".to_owned()],
                 edge_type: "text".to_owned(),
             }],
-        }
-    }
-
-    struct NoopWorkbenchAgent;
-
-    #[async_trait]
-    impl WorkbenchAgent for NoopWorkbenchAgent {
-        async fn answer_chat(
-            &self,
-            _request: AgentSessionRequest,
-        ) -> Result<ValidatedAgentReply, AgentError> {
-            Err(AgentError::Runtime("noop agent".to_owned()))
-        }
-
-        async fn propose_graph_change(
-            &self,
-            _request: AgentSessionRequest,
-        ) -> Result<ValidatedAgentProposal, AgentError> {
-            Err(AgentError::Runtime("noop agent".to_owned()))
         }
     }
 }
