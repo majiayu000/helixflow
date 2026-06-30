@@ -45,6 +45,7 @@ export function App({ initialState, workspaceId }: AppProps) {
   const exportWorkflow = useWorkbenchStore((store) => store.exportWorkflow);
   const undoVersion = useWorkbenchStore((store) => store.undoVersion);
   const restoreVersion = useWorkbenchStore((store) => store.restoreVersion);
+  const saveLayout = useWorkbenchStore((store) => store.saveLayout);
   const selectOutput = useWorkbenchStore((store) => store.selectOutput);
   const activeState = initialState ?? state;
 
@@ -191,8 +192,10 @@ export function App({ initialState, workspaceId }: AppProps) {
           ) : (
             <GraphCanvas
               graph={activeState.graph}
+              onSaveLayout={(positions) => runAction(() => saveLayout(positions))}
               pendingProposal={activeState.pendingProposal}
               run={uiState.run}
+              versionId={activeState.workspace.versionId}
               workspaceId={activeState.workspace.id}
             />
           )}

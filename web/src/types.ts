@@ -282,6 +282,7 @@ export type RunEventEnvelope = z.infer<typeof RunEventEnvelopeSchema>;
 export type RunStepState = z.infer<typeof RunStepStateSchema>;
 export type RunStatus = z.infer<typeof RunStatusSchema>;
 export type GraphNodeState = WorkbenchState['graph']['nodes'][number];
+export type LayoutPositionUpdate = { id: string; x: number; y: number };
 export type ChatMessageKind = z.infer<typeof ChatMessageKindSchema>;
 export type WorkflowGraph = z.infer<typeof WorkflowGraphSchema>;
 export type WorkspaceMessageResponse = z.infer<typeof WorkspaceMessageResponseSchema>;
