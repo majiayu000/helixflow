@@ -228,22 +228,41 @@ fn mode_override(mode: TurnMode, output_contract: OutputContract) -> String {
             output_contract.file_name()
         ),
         TurnMode::CreateWorkflow => format!(
-            "Mode: CreateWorkflow. Read the graph and catalogs, design a valid workflow from the user's intent, and write `out/{}`. Do not mutate the graph directly.",
-            output_contract.file_name()
+            "Mode: CreateWorkflow. Read the graph and catalogs, design a valid workflow from the user's intent, and write `out/{}`. Do not mutate the graph directly.\n\n{}",
+            output_contract.file_name(),
+            proposal_output_contract()
         ),
         TurnMode::ModifyWorkflow => format!(
-            "Mode: ModifyWorkflow. Preserve the current graph and write the smallest valid proposal diff to `out/{}`. Do not apply changes directly.",
-            output_contract.file_name()
+            "Mode: ModifyWorkflow. Preserve the current graph and write the smallest valid proposal diff to `out/{}`. Do not apply changes directly.\n\n{}",
+            output_contract.file_name(),
+            proposal_output_contract()
         ),
         TurnMode::DebugWorkflow => format!(
-            "Mode: DebugWorkflow. Inspect the declared graph/run context and write a fix proposal to `out/{}`. If context is insufficient, produce a proposal that clearly explains the blocker.",
-            output_contract.file_name()
+            "Mode: DebugWorkflow. Inspect the declared graph/run context and write a fix proposal to `out/{}`. If context is insufficient, produce a proposal that clearly explains the blocker.\n\n{}",
+            output_contract.file_name(),
+            proposal_output_contract()
         ),
         TurnMode::RunRequest => format!(
             "Mode: RunRequest. Validate that the user wants to run the current graph and write `out/{}`. Do not redesign or modify the graph; backend owns provider execution.",
             output_contract.file_name()
         ),
     }
+}
+
+fn proposal_output_contract() -> &'static str {
+    r#"Proposal output contract:
+- Write a proposal wrapper JSON, not a full graph JSON.
+- Top-level keys must be exactly: "base_version_id", "kind", "title", "summary", "ops", optional "message_id".
+- "base_version_id" must equal the current Base version from Run context.
+- "kind" must be one of "create", "modify", "fix", or "sweep".
+- Do not put top-level "schema_version", "nodes", or "edges" in out/proposal.json.
+- Use proposal ops. Supported ops include:
+  {"op":"add_node","id":"text_input","node":{"node_type":"input.text","title":"Input Text","params":{"text":"make a product clip"},"pos":[0,0]}}
+  {"op":"add_edge","edge":{"from":["text_input","text"],"to":["video","prompt"],"edge_type":"text"}}
+  {"op":"add_edge","edge":{"from":["video","video"],"to":["output","artifact"],"edge_type":"artifact"}}
+  {"op":"set_param","id":"video","key":"duration_sec","value":5}
+- Graph node objects must use "node_type", "title", "params", and "pos"; never use "type" as an alias for "node_type".
+- Graph edges must use tuple arrays: "from":["node_id","port"], "to":["node_id","port"], and "edge_type"."#
 }
 
 fn runtime_tool_policy(mode: TurnMode) -> &'static str {
