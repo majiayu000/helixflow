@@ -3,6 +3,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './app';
 import { ArtifactStage } from './components/artifact-stage';
 import { shouldSubmitComposerKey } from './components/chat-pane';
+import {
+  DEFAULT_GRAPH_VIEW,
+  GraphCanvas,
+  computeMinimapLayout,
+  loadGraphCanvasView,
+  minimapViewportRect,
+  saveGraphCanvasView,
+  viewForMinimapPoint,
+  viewStorageKey,
+  zoomViewAtPoint,
+} from './components/graph-canvas';
 import { ConfirmModal, HistoryPanel } from './components/run-panels';
 import { TopBar } from './components/top-bar';
 import { applyRunEvent, useWorkbenchStore } from './store';
@@ -615,6 +626,13 @@ describe('App', () => {
     expect(markup).toContain('canvas-grid');
   });
 
+  it('renders graph canvas minimap when graph outputs have no preview', () => {
+    const markup = renderToStaticMarkup(<App initialState={{ ...state, outputs: [] }} />);
+
+    expect(markup).toContain('canvas-minimap');
+    expect(markup).toContain('Graph minimap');
+  });
+
   it('sandboxes HTML artifact previews without script permissions', () => {
     const markup = renderToStaticMarkup(
       <ArtifactStage
@@ -1083,6 +1101,78 @@ describe('App', () => {
   });
 });
 
+describe('GraphCanvas navigation', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('loads and saves viewport per workspace', () => {
+    const store = new Map<string, string>();
+    vi.stubGlobal('localStorage', localStorageStub(store));
+
+    saveGraphCanvasView('ws-a', { x: 120, y: -40, z: 1.2 });
+
+    expect(store.has(viewStorageKey('ws-a'))).toBe(true);
+    expect(loadGraphCanvasView('ws-a')).toEqual({ x: 120, y: -40, z: 1.2 });
+    expect(loadGraphCanvasView('ws-b')).toEqual(DEFAULT_GRAPH_VIEW);
+
+    store.set(viewStorageKey('ws-a'), '{"x":10,"y":20,"z":99}');
+    expect(loadGraphCanvasView('ws-a')).toEqual({ x: 10, y: 20, z: 1.4 });
+
+    store.set(viewStorageKey('ws-a'), 'not-json');
+    expect(loadGraphCanvasView('ws-a')).toEqual(DEFAULT_GRAPH_VIEW);
+  });
+
+  it('keeps the pointer world coordinate stable during wheel zoom', () => {
+    const before = { x: 20, y: 18, z: 0.78 };
+    const localX = 320;
+    const localY = 180;
+    const worldBefore = {
+      x: (localX - before.x) / before.z,
+      y: (localY - before.y) / before.z,
+    };
+
+    const after = zoomViewAtPoint(before, { deltaY: -160, localX, localY });
+
+    expect(after.z).toBeGreaterThan(before.z);
+    expect((localX - after.x) / after.z).toBeCloseTo(worldBefore.x);
+    expect((localY - after.y) / after.z).toBeCloseTo(worldBefore.y);
+  });
+
+  it('computes minimap navigation from graph bounds without mutating graph data', () => {
+    const layout = computeMinimapLayout(state.graph.nodes, { width: 188, height: 124 });
+
+    expect(layout?.nodes).toHaveLength(2);
+    expect(layout?.nodes[0]?.width).toBeGreaterThan(0);
+
+    const current = { x: 20, y: 18, z: 0.78 };
+    const next = viewForMinimapPoint(layout!, { x: 94, y: 62 }, current, {
+      width: 900,
+      height: 640,
+    });
+    const viewport = minimapViewportRect(layout!, next, { width: 900, height: 640 });
+
+    expect(next.z).toBe(current.z);
+    expect(next.x).not.toBe(current.x);
+    expect(viewport.width).toBeGreaterThan(0);
+  });
+
+  it('keeps pending proposal preview graph and diff styling while navigation UI is present', () => {
+    const markup = renderToStaticMarkup(
+      <GraphCanvas
+        graph={state.graph}
+        pendingProposal={pendingProposal()}
+        run={state.run!}
+        workspaceId="ws_test"
+      />,
+    );
+
+    expect(markup).toContain('待确认的图变更');
+    expect(markup).toContain('node--upd');
+    expect(markup).toContain('canvas-minimap');
+  });
+});
+
 describe('chat composer keyboard handling', () => {
   it('does not submit Enter while IME composition is active', () => {
     expect(shouldSubmitComposerKey({
@@ -1124,6 +1214,23 @@ function jsonResponse(value: unknown, status = 200): Response {
     status,
     headers: { 'content-type': 'application/json' },
   });
+}
+
+function localStorageStub(store: Map<string, string>): Storage {
+  return {
+    get length() {
+      return store.size;
+    },
+    clear: () => store.clear(),
+    getItem: (key: string) => store.get(key) ?? null,
+    key: (index: number) => Array.from(store.keys())[index] ?? null,
+    removeItem: (key: string) => {
+      store.delete(key);
+    },
+    setItem: (key: string, value: string) => {
+      store.set(key, value);
+    },
+  };
 }
 
 function pendingProposal(): NonNullable<WorkbenchState['pendingProposal']> {
