@@ -10,7 +10,11 @@ mod app_state;
 mod artifact_routes;
 mod graph_files;
 mod layout_routes;
+mod manual_proposal_routes;
+#[cfg(test)]
+mod manual_proposal_routes_tests;
 mod proposal_routes;
+mod registry_routes;
 mod run_routes;
 mod sweep_support;
 mod version_routes;
@@ -23,7 +27,9 @@ mod ws;
 use app_state::AppState;
 use artifact_routes::{download_output, preview_output, select_output};
 use layout_routes::save_workspace_layout;
+use manual_proposal_routes::create_manual_workspace_proposal;
 use proposal_routes::{apply_workspace_proposal, dismiss_workspace_proposal};
+use registry_routes::node_registry_catalog;
 use run_routes::{confirm_run, hold_run, interrupt_active_run, queue_workspace_run};
 use version_routes::{export_workflow_version, restore_workspace_version, undo_workspace_version};
 use workbench_message::post_workspace_message;
@@ -51,6 +57,7 @@ fn app(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(health))
         .route("/api/system", get(system))
+        .route("/api/registry/catalog", get(node_registry_catalog))
         .route(
             "/api/workspaces",
             get(list_workspaces).post(create_workspace),
@@ -67,6 +74,10 @@ fn app(state: AppState) -> Router {
         .route(
             "/api/workspaces/{workspace_id}/proposals/{proposal_id}/dismiss",
             post(dismiss_workspace_proposal),
+        )
+        .route(
+            "/api/workspaces/{workspace_id}/proposals/manual",
+            post(create_manual_workspace_proposal),
         )
         .route(
             "/api/workspaces/{workspace_id}/runs/{run_id}/confirm",

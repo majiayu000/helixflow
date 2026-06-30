@@ -5,9 +5,12 @@ import {
   WorkspaceSummarySchema,
   WorkspaceMessageResponseSchema,
   WorkbenchStateSchema,
+  NodeCatalogSchema,
   type RunConfirmationResponse,
   type RunEventEnvelope,
   type LayoutPositionUpdate,
+  type ManualProposalInput,
+  type NodeCatalog,
   type WorkflowGraph,
   type WorkspaceSummary,
   type WorkspaceMessageResponse,
@@ -37,6 +40,15 @@ export async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
   }
 
   return WorkspaceSummarySchema.array().parse(await response.json());
+}
+
+export async function fetchNodeCatalog(): Promise<NodeCatalog> {
+  const response = await fetch('/api/registry/catalog');
+  if (!response.ok) {
+    throw new Error(`node catalog request failed: ${response.status}`);
+  }
+
+  return NodeCatalogSchema.parse(await response.json());
 }
 
 export async function createWorkspace(name?: string): Promise<WorkspaceSummary> {
@@ -269,6 +281,30 @@ export async function applyWorkspaceProposal(
       body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
         ? body.error
         : `proposal apply request failed: ${response.status}`;
+    throw new Error(message);
+  }
+
+  return WorkbenchStateSchema.parse(body);
+}
+
+export async function createManualWorkspaceProposal(
+  workspaceId: string,
+  input: ManualProposalInput,
+): Promise<WorkbenchState> {
+  const response = await fetch(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/proposals/manual`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+  );
+  const body = await response.json();
+  if (!response.ok) {
+    const message =
+      body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+        ? body.error
+        : `manual proposal request failed: ${response.status}`;
     throw new Error(message);
   }
 

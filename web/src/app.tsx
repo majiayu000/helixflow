@@ -3,6 +3,7 @@ import { connectWorkspaceEvents, fetchWorkspaces } from './api';
 import { ArtifactStage, hasPreviewArtifact } from './components/artifact-stage';
 import { ChatPane } from './components/chat-pane';
 import { GraphCanvas } from './components/graph-canvas';
+import { ManualProposalPanel } from './components/manual-proposal-panel';
 import { ConfirmModal, HistoryPanel, OutputsStrip, RunDock } from './components/run-panels';
 import { TopBar } from './components/top-bar';
 import { useWorkbenchStore } from './store';
@@ -40,6 +41,7 @@ export function App({ initialState, workspaceId }: AppProps) {
   const dismissProposal = useWorkbenchStore((store) => store.dismissProposal);
   const confirmRun = useWorkbenchStore((store) => store.confirmRun);
   const holdRun = useWorkbenchStore((store) => store.holdRun);
+  const createManualProposal = useWorkbenchStore((store) => store.createManualProposal);
   const queueRun = useWorkbenchStore((store) => store.queueRun);
   const interruptRun = useWorkbenchStore((store) => store.interruptRun);
   const exportWorkflow = useWorkbenchStore((store) => store.exportWorkflow);
@@ -190,14 +192,21 @@ export function App({ initialState, workspaceId }: AppProps) {
           {hasPreviewArtifact(activeState.outputs) ? (
             <ArtifactStage outputs={activeState.outputs} />
           ) : (
-            <GraphCanvas
-              graph={activeState.graph}
-              onSaveLayout={(positions) => runAction(() => saveLayout(positions))}
-              pendingProposal={activeState.pendingProposal}
-              run={uiState.run}
-              versionId={activeState.workspace.versionId}
-              workspaceId={activeState.workspace.id}
-            />
+            <>
+              <GraphCanvas
+                graph={activeState.graph}
+                onSaveLayout={(positions) => runAction(() => saveLayout(positions))}
+                pendingProposal={activeState.pendingProposal}
+                run={uiState.run}
+                versionId={activeState.workspace.versionId}
+                workspaceId={activeState.workspace.id}
+              />
+              <ManualProposalPanel
+                busy={busy}
+                state={activeState}
+                onCreateProposal={(input) => runAction(() => createManualProposal(input))}
+              />
+            </>
           )}
           <HistoryPanel
             busy={busy}
