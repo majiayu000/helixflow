@@ -9,6 +9,7 @@ mod api_error;
 mod app_state;
 mod artifact_routes;
 mod graph_files;
+mod layout_routes;
 mod proposal_routes;
 mod run_routes;
 mod sweep_support;
@@ -21,6 +22,7 @@ mod ws;
 
 use app_state::AppState;
 use artifact_routes::{download_output, preview_output, select_output};
+use layout_routes::save_workspace_layout;
 use proposal_routes::{apply_workspace_proposal, dismiss_workspace_proposal};
 use run_routes::{confirm_run, hold_run, interrupt_active_run, queue_workspace_run};
 use version_routes::{export_workflow_version, restore_workspace_version, undo_workspace_version};
@@ -89,6 +91,10 @@ fn app(state: AppState) -> Router {
         .route(
             "/api/workspaces/{workspace_id}/versions/undo",
             post(undo_workspace_version),
+        )
+        .route(
+            "/api/workspaces/{workspace_id}/versions/layout",
+            post(save_workspace_layout),
         )
         .route(
             "/api/workspaces/{workspace_id}/versions/{version_id}/restore",

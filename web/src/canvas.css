@@ -147,6 +147,23 @@
   font-size: 12px;
 }
 
+.layout-save {
+  height: 30px;
+  border: 1px solid var(--green);
+  border-radius: var(--r-sm);
+  background: var(--green);
+  color: #fff;
+  padding: 0 11px;
+  box-shadow: var(--sh-sm);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.layout-save:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
 .world {
   position: absolute;
   width: 1800px;
@@ -174,7 +191,14 @@
   border-radius: var(--r-md);
   background: var(--surface);
   box-shadow: var(--sh-md);
+  cursor: grab;
   font-size: 11.5px;
+  touch-action: none;
+  user-select: none;
+}
+
+.node:active {
+  cursor: grabbing;
 }
 
 .node-title {
@@ -286,6 +310,15 @@
 .node--upd {
   border-color: var(--amber);
   box-shadow: 0 0 0 1px var(--amber), var(--sh-md);
+}
+
+.node--dirty {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), var(--sh-md);
+}
+
+.node--locked {
+  cursor: default;
 }
 
 .node--err .node-title {

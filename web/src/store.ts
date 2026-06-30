@@ -11,6 +11,7 @@ import {
   interruptRun as interruptRunRequest,
   queueWorkspaceRun,
   restoreWorkspaceVersion,
+  saveWorkspaceLayout,
   selectOutput as selectOutputRequest,
   sendWorkspaceMessage,
   undoWorkspaceVersion,
@@ -18,6 +19,7 @@ import {
 } from './api';
 import type {
   ChatMessageKind,
+  LayoutPositionUpdate,
   RunConfirmationResponse,
   RunEventEnvelope,
   RunStatus,
@@ -46,6 +48,7 @@ type WorkbenchStore = {
   exportWorkflow: () => Promise<WorkflowGraph | null>;
   undoVersion: () => Promise<void>;
   restoreVersion: (versionId: string) => Promise<void>;
+  saveLayout: (positions: LayoutPositionUpdate[]) => Promise<void>;
   selectOutput: (outputId: string) => Promise<void>;
   confirmRun: (runId: string) => Promise<void>;
   holdRun: (runId: string) => Promise<void>;
@@ -243,6 +246,25 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => ({
       set({ state: next, status: 'ready', error: null });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'workspace restore request failed';
+      set((current) => ({
+        state: current.state ? appendSystemError(current.state, message) : current.state,
+      }));
+    }
+  },
+  saveLayout: async (positions) => {
+    const state = get().state;
+    if (!state || positions.length === 0) {
+      return;
+    }
+
+    try {
+      const next = await saveWorkspaceLayout(state.workspace.id, {
+        baseVersionId: state.workspace.versionId,
+        positions,
+      });
+      set({ state: next, status: 'ready', error: null });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'workspace layout request failed';
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
       }));

@@ -9,24 +9,61 @@ import {
   type WheelEvent,
 } from 'react';
 import { Icon, Port, portColor } from '../icons';
-import type { GraphNodeState, RunStepState, WorkbenchState } from '../types';
+import type {
+  GraphNodeState,
+  LayoutPositionUpdate,
+  RunStepState,
+  WorkbenchState,
+} from '../types';
+import {
+  applyPositionDrafts,
+  moveNodeDrafts,
+  positionUpdatesFromDrafts,
+  selectionForNodePointer,
+  type DragNodeStart,
+  type PositionDrafts,
+} from './graph-canvas-layout';
+import {
+  DEFAULT_GRAPH_VIEW,
+  GRAPH_NODE_HEAD_HEIGHT,
+  GRAPH_NODE_ROW_HEIGHT,
+  GRAPH_NODE_WIDTH,
+  MINIMAP_HEIGHT,
+  MINIMAP_WIDTH,
+  computeMinimapLayout,
+  loadGraphCanvasView,
+  minimapViewportRect,
+  normalizeView,
+  saveGraphCanvasView,
+  viewForMinimapPoint,
+  zoomViewAtPoint,
+  type MinimapLayout,
+  type ViewState,
+  type ViewportSize,
+} from './graph-canvas-navigation';
+
+export {
+  DEFAULT_GRAPH_VIEW,
+  GRAPH_CANVAS_VIEW_STORAGE_PREFIX,
+  clampZoom,
+  computeMinimapLayout,
+  loadGraphCanvasView,
+  minimapViewportRect,
+  normalizeView,
+  saveGraphCanvasView,
+  viewForMinimapPoint,
+  viewStorageKey,
+  zoomViewAtPoint,
+} from './graph-canvas-navigation';
+export type { MinimapLayout, ViewState, ViewportSize } from './graph-canvas-navigation';
 
 type GraphCanvasProps = {
   workspaceId: string;
+  versionId: string;
   graph: WorkbenchState['graph'];
   pendingProposal: WorkbenchState['pendingProposal'];
   run: NonNullable<WorkbenchState['run']>;
-};
-
-export type ViewState = {
-  x: number;
-  y: number;
-  z: number;
-};
-
-type ViewportSize = {
-  width: number;
-  height: number;
+  onSaveLayout?: (positions: LayoutPositionUpdate[]) => Promise<void>;
 };
 
 type DragState = {
@@ -37,6 +74,13 @@ type DragState = {
   oy: number;
 };
 
+type NodeDragState = {
+  pointerId: number;
+  sx: number;
+  sy: number;
+  starts: DragNodeStart[];
+};
+
 type Param = {
   key: string;
   value: string;
@@ -44,49 +88,64 @@ type Param = {
 
 type DiffState = 'add' | 'upd' | null;
 
-export const DEFAULT_GRAPH_VIEW: ViewState = { x: 20, y: 18, z: 0.78 };
-export const GRAPH_CANVAS_VIEW_STORAGE_PREFIX = 'helixflow:graph-canvas-view:';
-const minZoom = 0.4;
-const maxZoom = 1.4;
-const nodeWidth = 188;
-const headHeight = 31;
-const rowHeight = 26;
-const minimapWidth = 188;
-const minimapHeight = 124;
-const minimapPadding = 260;
-
-export function GraphCanvas({ workspaceId, graph, pendingProposal, run }: GraphCanvasProps) {
+export function GraphCanvas({
+  workspaceId,
+  versionId,
+  graph,
+  pendingProposal,
+  run,
+  onSaveLayout,
+}: GraphCanvasProps) {
   const canvasRef = useRef<HTMLElement | null>(null);
   const [view, setView] = useState<ViewState>(DEFAULT_GRAPH_VIEW);
   const [viewportSize, setViewportSize] = useState<ViewportSize>({ width: 900, height: 640 });
   const [mode, setMode] = useState<'view' | 'edit' | 'review'>('view');
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [draftPositions, setDraftPositions] = useState<PositionDrafts>({});
+  const [layoutSaving, setLayoutSaving] = useState(false);
   const drag = useRef<DragState | null>(null);
+  const nodeDrag = useRef<NodeDragState | null>(null);
   const drawGraph = pendingProposal?.previewGraph ?? graph;
   const activeMode = pendingProposal ? 'review' : mode;
+  const displayNodes = useMemo(
+    () => applyPositionDrafts(drawGraph.nodes, draftPositions),
+    [drawGraph.nodes, draftPositions],
+  );
   const baseNodeById = useMemo(
     () => new Map(graph.nodes.map((node) => [node.id, node] as const)),
     [graph.nodes],
   );
   const nodeById = useMemo(
-    () => new Map(drawGraph.nodes.map((node) => [node.id, node] as const)),
-    [drawGraph.nodes],
+    () => new Map(displayNodes.map((node) => [node.id, node] as const)),
+    [displayNodes],
   );
   const baseEdgeIds = useMemo(
     () => new Set(graph.edges.map((edge) => edgeSignature(edge))),
     [graph.edges],
   );
-  const selectedNode = selected ? nodeById.get(selected) : null;
-  const nodeCount = drawGraph.nodes.length;
+  const selectedNodeId = selectedIds.values().next().value as string | undefined;
+  const selectedNode = selectedNodeId ? nodeById.get(selectedNodeId) : null;
+  const nodeCount = displayNodes.length;
+  const layoutUpdates = useMemo(
+    () => (pendingProposal ? [] : positionUpdatesFromDrafts(graph.nodes, draftPositions)),
+    [draftPositions, graph.nodes, pendingProposal],
+  );
+  const hasDirtyLayout = layoutUpdates.length > 0;
   const minimapLayout = useMemo(
-    () => computeMinimapLayout(drawGraph.nodes, { width: minimapWidth, height: minimapHeight }),
-    [drawGraph.nodes],
+    () => computeMinimapLayout(displayNodes, { width: MINIMAP_WIDTH, height: MINIMAP_HEIGHT }),
+    [displayNodes],
   );
 
   useEffect(() => {
     setView(loadGraphCanvasView(workspaceId));
-    setSelected(null);
+    setSelectedIds(new Set());
   }, [workspaceId]);
+
+  useEffect(() => {
+    setDraftPositions({});
+    setSelectedIds(new Set());
+    nodeDrag.current = null;
+  }, [workspaceId, versionId, pendingProposal?.id]);
 
   useEffect(() => {
     const current = canvasRef.current;
@@ -147,11 +206,69 @@ export function GraphCanvas({ workspaceId, graph, pendingProposal, run }: GraphC
     drag.current = null;
   };
 
+  const handleNodePointerDown = (node: GraphNodeState, event: PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.stopPropagation();
+    const additive = event.shiftKey || event.metaKey || event.ctrlKey;
+    const nextSelection = selectionForNodePointer(selectedIds, node.id, additive);
+    setSelectedIds(nextSelection);
+    if (pendingProposal) return;
+
+    const starts = [...nextSelection]
+      .map((nodeId) => nodeById.get(nodeId))
+      .filter((item): item is GraphNodeState => Boolean(item))
+      .map((item) => ({
+        id: item.id,
+        x: item.position.x,
+        y: item.position.y,
+      }));
+    if (starts.length === 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    nodeDrag.current = {
+      pointerId: event.pointerId,
+      sx: event.clientX,
+      sy: event.clientY,
+      starts,
+    };
+  };
+
+  const handleNodePointerMove = (event: PointerEvent<HTMLDivElement>) => {
+    const currentDrag = nodeDrag.current;
+    if (!currentDrag || currentDrag.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+    const moved = moveNodeDrafts(currentDrag.starts, {
+      x: (event.clientX - currentDrag.sx) / view.z,
+      y: (event.clientY - currentDrag.sy) / view.z,
+    });
+    setDraftPositions((current) => ({ ...current, ...moved }));
+  };
+
+  const stopNodeDrag = (event: PointerEvent<HTMLDivElement>) => {
+    const currentDrag = nodeDrag.current;
+    if (!currentDrag || currentDrag.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    nodeDrag.current = null;
+  };
+
+  const saveLayout = async () => {
+    if (!onSaveLayout || !hasDirtyLayout || pendingProposal || layoutSaving) return;
+    setLayoutSaving(true);
+    try {
+      await onSaveLayout(layoutUpdates);
+      setDraftPositions({});
+    } finally {
+      setLayoutSaving(false);
+    }
+  };
+
   return (
     <section
       ref={canvasRef}
       className="p-canvas cv-bold"
-      onClick={() => setSelected(null)}
+      onClick={() => setSelectedIds(new Set())}
       onPointerDown={(event) => {
         if (event.button !== 0) return;
         event.currentTarget.setPointerCapture(event.pointerId);
@@ -199,6 +316,15 @@ export function GraphCanvas({ workspaceId, graph, pendingProposal, run }: GraphC
           <span className="led" />
           {pendingProposal ? '待确认的图变更 — 预览中' : runStatusLabel(run.status)}
         </span>
+        {!pendingProposal && hasDirtyLayout && (
+          <button
+            className="layout-save"
+            disabled={layoutSaving || !onSaveLayout}
+            onClick={() => void saveLayout()}
+          >
+            {layoutSaving ? '保存中' : `保存布局 · ${layoutUpdates.length}`}
+          </button>
+        )}
       </div>
       <div
         className="world"
@@ -227,14 +353,19 @@ export function GraphCanvas({ workspaceId, graph, pendingProposal, run }: GraphC
             );
           })}
         </svg>
-        {drawGraph.nodes.map((node) => (
+        {displayNodes.map((node) => (
           <WorkflowNode
             key={node.id}
             diffState={nodeDiffState(node, baseNodeById.get(node.id), Boolean(pendingProposal))}
+            dirty={Boolean(draftPositions[node.id]) && !pendingProposal}
+            locked={Boolean(pendingProposal)}
             node={node}
-            selected={selected === node.id}
+            selected={selectedIds.has(node.id)}
             stepState={run.steps.find((step) => step.nodeId === node.id)?.state ?? node.status}
-            onSelect={() => setSelected(node.id)}
+            onPointerCancel={stopNodeDrag}
+            onPointerDown={(event) => handleNodePointerDown(node, event)}
+            onPointerMove={handleNodePointerMove}
+            onPointerUp={stopNodeDrag}
           />
         ))}
       </div>
@@ -266,7 +397,7 @@ export function GraphCanvas({ workspaceId, graph, pendingProposal, run }: GraphC
           viewportSize={viewportSize}
         />
       )}
-      {selectedNode && <Inspector node={selectedNode} onClose={() => setSelected(null)} />}
+      {selectedNode && <Inspector node={selectedNode} onClose={() => setSelectedIds(new Set())} />}
     </section>
   );
 }
@@ -274,15 +405,25 @@ export function GraphCanvas({ workspaceId, graph, pendingProposal, run }: GraphC
 function WorkflowNode({
   node,
   diffState,
+  dirty,
+  locked,
   selected,
   stepState,
-  onSelect,
+  onPointerCancel,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
 }: {
   node: GraphNodeState;
   diffState: DiffState;
+  dirty: boolean;
+  locked: boolean;
   selected: boolean;
   stepState: RunStepState;
-  onSelect: () => void;
+  onPointerCancel: (event: PointerEvent<HTMLDivElement>) => void;
+  onPointerDown: (event: PointerEvent<HTMLDivElement>) => void;
+  onPointerMove: (event: PointerEvent<HTMLDivElement>) => void;
+  onPointerUp: (event: PointerEvent<HTMLDivElement>) => void;
 }) {
   const params = paramsFromSummary(node.summary);
   const active = stepState === 'running';
@@ -292,6 +433,8 @@ function WorkflowNode({
     'node',
     diffState === 'add' ? 'node--add' : '',
     diffState === 'upd' ? 'node--upd' : '',
+    dirty ? 'node--dirty' : '',
+    locked ? 'node--locked' : '',
     selected ? 'p-sel' : '',
     active ? 'p-active' : '',
     failed ? 'node--err' : '',
@@ -302,14 +445,15 @@ function WorkflowNode({
   return (
     <div
       className={classes}
-      onClick={(event) => {
-        event.stopPropagation();
-        onSelect();
-      }}
+      onClick={(event) => event.stopPropagation()}
+      onPointerCancel={onPointerCancel}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
       style={{
         left: node.position.x,
         top: node.position.y,
-        width: nodeWidth,
+        width: GRAPH_NODE_WIDTH,
         '--swatch': categorySwatch(node.category),
       } as CSSProperties}
     >
@@ -451,186 +595,6 @@ function CanvasMinimap({
   );
 }
 
-export type MinimapLayout = {
-  width: number;
-  height: number;
-  worldBounds: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  };
-  scale: number;
-  offset: {
-    x: number;
-    y: number;
-  };
-  nodes: Array<{
-    id: string;
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  }>;
-};
-
-export function viewStorageKey(workspaceId: string): string {
-  return `${GRAPH_CANVAS_VIEW_STORAGE_PREFIX}${workspaceId}`;
-}
-
-export function loadGraphCanvasView(workspaceId: string): ViewState {
-  const storage = safeLocalStorage();
-  if (!storage || !workspaceId) return DEFAULT_GRAPH_VIEW;
-  try {
-    return normalizeView(JSON.parse(storage.getItem(viewStorageKey(workspaceId)) ?? 'null'));
-  } catch {
-    return DEFAULT_GRAPH_VIEW;
-  }
-}
-
-export function saveGraphCanvasView(workspaceId: string, view: ViewState): void {
-  const storage = safeLocalStorage();
-  if (!storage || !workspaceId) return;
-  storage.setItem(viewStorageKey(workspaceId), JSON.stringify(normalizeView(view)));
-}
-
-export function zoomViewAtPoint(
-  view: ViewState,
-  input: { deltaY: number; localX: number; localY: number },
-): ViewState {
-  const current = normalizeView(view);
-  const nextZ = clampZoom(current.z * Math.pow(1.1, -input.deltaY / 100));
-  const worldX = (input.localX - current.x) / current.z;
-  const worldY = (input.localY - current.y) / current.z;
-  return normalizeView({
-    x: input.localX - worldX * nextZ,
-    y: input.localY - worldY * nextZ,
-    z: nextZ,
-  });
-}
-
-export function clampZoom(value: number): number {
-  if (!Number.isFinite(value)) return DEFAULT_GRAPH_VIEW.z;
-  return Math.min(maxZoom, Math.max(minZoom, value));
-}
-
-export function normalizeView(value: unknown): ViewState {
-  if (!isRecord(value)) return DEFAULT_GRAPH_VIEW;
-  const x = typeof value.x === 'number' && Number.isFinite(value.x) ? value.x : DEFAULT_GRAPH_VIEW.x;
-  const y = typeof value.y === 'number' && Number.isFinite(value.y) ? value.y : DEFAULT_GRAPH_VIEW.y;
-  const z = typeof value.z === 'number' && Number.isFinite(value.z) ? value.z : DEFAULT_GRAPH_VIEW.z;
-  return { x, y, z: clampZoom(z) };
-}
-
-export function computeMinimapLayout(
-  nodes: GraphNodeState[],
-  size: ViewportSize = { width: minimapWidth, height: minimapHeight },
-): MinimapLayout | null {
-  const measured = nodes
-    .map((node) => ({
-      id: node.id,
-      x: node.position.x,
-      y: node.position.y,
-      width: nodeWidth,
-      height: nodeVisualHeight(node),
-    }))
-    .filter((node) =>
-      [node.x, node.y, node.width, node.height].every((item) => Number.isFinite(item)),
-    );
-  if (measured.length === 0) return null;
-
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  measured.forEach((node) => {
-    minX = Math.min(minX, node.x);
-    minY = Math.min(minY, node.y);
-    maxX = Math.max(maxX, node.x + node.width);
-    maxY = Math.max(maxY, node.y + node.height);
-  });
-
-  const worldBounds = {
-    x: minX - minimapPadding,
-    y: minY - minimapPadding,
-    width: Math.max(1, maxX - minX + minimapPadding * 2),
-    height: Math.max(1, maxY - minY + minimapPadding * 2),
-  };
-  const scale = Math.min(size.width / worldBounds.width, size.height / worldBounds.height);
-  const contentWidth = worldBounds.width * scale;
-  const contentHeight = worldBounds.height * scale;
-  const offset = {
-    x: (size.width - contentWidth) / 2,
-    y: (size.height - contentHeight) / 2,
-  };
-
-  return {
-    width: size.width,
-    height: size.height,
-    worldBounds,
-    scale,
-    offset,
-    nodes: measured.map((node) => ({
-      id: node.id,
-      x: (node.x - worldBounds.x) * scale + offset.x,
-      y: (node.y - worldBounds.y) * scale + offset.y,
-      width: Math.max(2, node.width * scale),
-      height: Math.max(2, node.height * scale),
-    })),
-  };
-}
-
-export function viewForMinimapPoint(
-  layout: MinimapLayout,
-  point: { x: number; y: number },
-  view: ViewState,
-  viewportSize: ViewportSize,
-): ViewState {
-  const worldX = (point.x - layout.offset.x) / layout.scale + layout.worldBounds.x;
-  const worldY = (point.y - layout.offset.y) / layout.scale + layout.worldBounds.y;
-  return normalizeView({
-    x: viewportSize.width / 2 - worldX * view.z,
-    y: viewportSize.height / 2 - worldY * view.z,
-    z: view.z,
-  });
-}
-
-export function minimapViewportRect(
-  layout: MinimapLayout,
-  view: ViewState,
-  viewportSize: ViewportSize,
-) {
-  const left = -view.x / view.z;
-  const top = -view.y / view.z;
-  const width = viewportSize.width / view.z;
-  const height = viewportSize.height / view.z;
-  const x = (left - layout.worldBounds.x) * layout.scale + layout.offset.x;
-  const y = (top - layout.worldBounds.y) * layout.scale + layout.offset.y;
-  return {
-    x,
-    y,
-    width: Math.max(4, width * layout.scale),
-    height: Math.max(4, height * layout.scale),
-  };
-}
-
-function nodeVisualHeight(node: GraphNodeState): number {
-  const params = paramsFromSummary(node.summary);
-  return headHeight + rowHeight + Math.max(1, Math.min(4, params.length || 1)) * rowHeight;
-}
-
-function safeLocalStorage(): Storage | null {
-  try {
-    return typeof globalThis.localStorage === 'undefined' ? null : globalThis.localStorage;
-  } catch {
-    return null;
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 function nodeDiffState(
   node: GraphNodeState,
   baseNode: GraphNodeState | undefined,
@@ -658,10 +622,10 @@ function edgeSignature(edge: WorkbenchState['graph']['edges'][number]): string {
 }
 
 function edgePath(from: GraphNodeState, to: GraphNodeState): string {
-  const x1 = from.position.x + nodeWidth;
-  const y1 = from.position.y + headHeight + rowHeight;
+  const x1 = from.position.x + GRAPH_NODE_WIDTH;
+  const y1 = from.position.y + GRAPH_NODE_HEAD_HEIGHT + GRAPH_NODE_ROW_HEIGHT;
   const x2 = to.position.x;
-  const y2 = to.position.y + headHeight + rowHeight;
+  const y2 = to.position.y + GRAPH_NODE_HEAD_HEIGHT + GRAPH_NODE_ROW_HEIGHT;
   const dx = Math.max(40, Math.abs(x2 - x1) * 0.5);
   return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
 }

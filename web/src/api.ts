@@ -7,6 +7,7 @@ import {
   WorkbenchStateSchema,
   type RunConfirmationResponse,
   type RunEventEnvelope,
+  type LayoutPositionUpdate,
   type WorkflowGraph,
   type WorkspaceSummary,
   type WorkspaceMessageResponse,
@@ -184,6 +185,30 @@ export async function restoreWorkspaceVersion(
       body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
         ? body.error
         : `workspace restore request failed: ${response.status}`;
+    throw new Error(message);
+  }
+
+  return WorkbenchStateSchema.parse(body);
+}
+
+export async function saveWorkspaceLayout(
+  workspaceId: string,
+  input: { baseVersionId: string; positions: LayoutPositionUpdate[] },
+): Promise<WorkbenchState> {
+  const response = await fetch(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/versions/layout`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+  );
+  const body = await response.json();
+  if (!response.ok) {
+    const message =
+      body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+        ? body.error
+        : `workspace layout request failed: ${response.status}`;
     throw new Error(message);
   }
 

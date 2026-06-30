@@ -14,6 +14,12 @@ import {
   viewStorageKey,
   zoomViewAtPoint,
 } from './components/graph-canvas';
+import {
+  applyPositionDrafts,
+  moveNodeDrafts,
+  positionUpdatesFromDrafts,
+  selectionForNodePointer,
+} from './components/graph-canvas-layout';
 import { ConfirmModal, HistoryPanel } from './components/run-panels';
 import { TopBar } from './components/top-bar';
 import { applyRunEvent, useWorkbenchStore } from './store';
@@ -779,6 +785,43 @@ describe('App', () => {
     expect(useWorkbenchStore.getState().state?.workspace.versionId).toBe('ver_restore_1');
   });
 
+  it('saves graph layout through the workspace version API', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          ...state,
+          workspace: { ...state.workspace, versionId: 'ver_layout_1' },
+          graph: {
+            ...state.graph,
+            nodes: state.graph.nodes.map((node) =>
+              node.id === 'video' ? { ...node, position: { x: 620, y: 210 } } : node,
+            ),
+          },
+        }),
+      ),
+    );
+    useWorkbenchStore.getState().setInitialState(state);
+
+    await useWorkbenchStore.getState().saveLayout([{ id: 'video', x: 620, y: 210 }]);
+
+    const fetchMock = vi.mocked(fetch);
+    expect(fetchMock).toHaveBeenCalledWith('/api/workspaces/ws_test/versions/layout', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: expect.any(String),
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      baseVersionId: 'ver_test_1',
+      positions: [{ id: 'video', x: 620, y: 210 }],
+    });
+    expect(useWorkbenchStore.getState().state?.workspace.versionId).toBe('ver_layout_1');
+    expect(useWorkbenchStore.getState().state?.graph.nodes.find((node) => node.id === 'video')?.position).toEqual({
+      x: 620,
+      y: 210,
+    });
+  });
+
   it('renders restore actions for historical version rows', () => {
     const markup = renderToStaticMarkup(
       <HistoryPanel
@@ -1163,13 +1206,53 @@ describe('GraphCanvas navigation', () => {
         graph={state.graph}
         pendingProposal={pendingProposal()}
         run={state.run!}
+        versionId="ver_test_1"
         workspaceId="ws_test"
       />,
     );
 
     expect(markup).toContain('待确认的图变更');
     expect(markup).toContain('node--upd');
+    expect(markup).toContain('node--locked');
     expect(markup).toContain('canvas-minimap');
+    expect(markup).not.toContain('保存布局');
+  });
+});
+
+describe('GraphCanvas layout editing', () => {
+  it('computes single-node and multi-node layout drafts without mutating base nodes', () => {
+    const drafts = moveNodeDrafts(
+      [
+        { id: 'text', x: 48, y: 158 },
+        { id: 'video', x: 486, y: 156 },
+      ],
+      { x: 24, y: -18 },
+    );
+
+    const moved = applyPositionDrafts(state.graph.nodes, drafts);
+    const updates = positionUpdatesFromDrafts(state.graph.nodes, drafts);
+
+    expect(moved.find((node) => node.id === 'text')?.position).toEqual({ x: 72, y: 140 });
+    expect(moved.find((node) => node.id === 'video')?.position).toEqual({ x: 510, y: 138 });
+    expect(state.graph.nodes.find((node) => node.id === 'text')?.position).toEqual({
+      x: 48,
+      y: 158,
+    });
+    expect(updates).toEqual([
+      { id: 'text', x: 72, y: 140 },
+      { id: 'video', x: 510, y: 138 },
+    ]);
+  });
+
+  it('preserves selected groups for drag and toggles modifier selection', () => {
+    const group = new Set(['text', 'video']);
+
+    expect([...selectionForNodePointer(group, 'video', false)]).toEqual(['text', 'video']);
+    expect([...selectionForNodePointer(group, 'video', true)]).toEqual(['text']);
+    expect([...selectionForNodePointer(new Set(['text']), 'video', true)]).toEqual([
+      'text',
+      'video',
+    ]);
   });
 });
 
