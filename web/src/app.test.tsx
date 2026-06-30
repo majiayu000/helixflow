@@ -31,6 +31,12 @@ import {
   nodeDiffState,
 } from './components/graph-canvas-rendering';
 import {
+  ManualProposalPanel,
+  buildManualProposalInput,
+  defaultParamsForDefinition,
+  parseManualJson,
+} from './components/manual-proposal-panel';
+import {
   fitViewToNodes,
   graphShortcutFromEvent,
   mergeSelection,
@@ -43,7 +49,7 @@ import {
 import { ConfirmModal, HistoryPanel } from './components/run-panels';
 import { TopBar } from './components/top-bar';
 import { applyRunEvent, useWorkbenchStore } from './store';
-import type { WorkbenchState } from './types';
+import type { NodeCatalog, WorkbenchState } from './types';
 
 const state: WorkbenchState = {
   eventSeq: 0,
@@ -145,6 +151,34 @@ const state: WorkbenchState = {
     cost: { amount: 0, currency: 'USD' },
   },
   pendingProposal: null,
+  workflowGraph: {
+    schema_version: 1,
+    nodes: {
+      text: {
+        node_type: 'input.text',
+        title: 'Launch note',
+        params: { text: 'Create a vertical product teaser.' },
+        pos: [48, 158],
+      },
+      video: {
+        node_type: 'video.mock.text_to_video',
+        title: 'Video render',
+        params: {
+          prompt: 'clean product shot',
+          duration_sec: 4,
+          aspect_ratio: '9:16',
+        },
+        pos: [486, 156],
+      },
+    },
+    edges: [
+      {
+        from: ['text', 'text'],
+        to: ['video', 'prompt'],
+        edge_type: 'text',
+      },
+    ],
+  },
 };
 
 describe('App', () => {
@@ -1162,6 +1196,51 @@ describe('App', () => {
       { method: 'POST' },
     ]);
   });
+
+  it('creates manual proposals through the bounded manual proposal API', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          ...state,
+          pendingProposal: pendingProposal(),
+        }),
+      ),
+    );
+    useWorkbenchStore.getState().setInitialState(state);
+
+    await useWorkbenchStore.getState().createManualProposal({
+      baseVersionId: 'ver_test_1',
+      op: { op: 'set_param', id: 'video', key: 'duration_sec', value: 4 },
+    });
+
+    const fetchMock = vi.mocked(fetch);
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/workspaces/ws_test/proposals/manual');
+    expect(init).toMatchObject({
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({
+      baseVersionId: 'ver_test_1',
+      op: { op: 'set_param', id: 'video', key: 'duration_sec', value: 4 },
+    });
+    expect(useWorkbenchStore.getState().state?.pendingProposal?.id).toBe('proposal_1');
+  });
+
+  it('surfaces manual proposal API errors in state and to the caller', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ error: 'invalid param' }, 400)));
+    useWorkbenchStore.getState().setInitialState(state);
+
+    await expect(
+      useWorkbenchStore.getState().createManualProposal({
+        baseVersionId: 'ver_test_1',
+        op: { op: 'set_param', id: 'video', key: 'duration_sec', value: 'slow' },
+      }),
+    ).rejects.toThrow('invalid param');
+
+    expect(useWorkbenchStore.getState().state?.chat.messages.at(-1)?.text).toBe('invalid param');
+  });
 });
 
 describe('GraphCanvas navigation', () => {
@@ -1383,6 +1462,65 @@ describe('GraphCanvas selection and clipboard helpers', () => {
   });
 });
 
+describe('ManualProposalPanel', () => {
+  it('builds bounded manual proposal inputs and validates JSON locally', () => {
+    const input = buildManualProposalInput({
+      baseVersionId: 'ver_test_1',
+      edgeIndex: '0',
+      edgeType: 'text',
+      fromNode: 'text',
+      fromPort: 'text',
+      nodeId: 'manual_text',
+      nodeTitle: '',
+      nodeType: 'input.text',
+      operation: 'set_param',
+      paramKey: 'duration_sec',
+      paramValue: '4',
+      paramsText: '{"text":"manual input"}',
+      targetNodeId: 'video',
+      toNode: 'video',
+      toPort: 'prompt',
+      workflowGraph: state.workflowGraph,
+      x: '120',
+      y: '320',
+    });
+
+    expect(input).toEqual({
+      baseVersionId: 'ver_test_1',
+      title: 'Manual set param',
+      op: { op: 'set_param', id: 'video', key: 'duration_sec', value: 4 },
+    });
+    expect(() => parseManualJson('{bad')).toThrow('Invalid JSON');
+  });
+
+  it('renders manual controls and pending disabled state', () => {
+    const markup = renderToStaticMarkup(
+      <ManualProposalPanel
+        busy={false}
+        initialCatalog={nodeCatalog()}
+        state={{ ...state, pendingProposal: pendingProposal() }}
+        onCreateProposal={async () => undefined}
+      />,
+    );
+
+    expect(markup).toContain('Manual proposal');
+    expect(markup).toContain('pending');
+    expect(markup).toContain('edit param');
+    expect(markup).toContain('text · Launch note');
+    expect(markup).toContain('Create proposal');
+  });
+
+  it('derives valid default params from required catalog schema values', () => {
+    const definition = nodeCatalog().nodes.find((item) => item.type === 'video.mock.text_to_video')!;
+
+    expect(defaultParamsForDefinition(definition)).toEqual({
+      prompt: '',
+      duration_sec: 1,
+      aspect_ratio: '1:1',
+    });
+  });
+});
+
 describe('chat composer keyboard handling', () => {
   it('does not submit Enter while IME composition is active', () => {
     expect(shouldSubmitComposerKey({
@@ -1440,6 +1578,57 @@ function localStorageStub(store: Map<string, string>): Storage {
     setItem: (key: string, value: string) => {
       store.set(key, value);
     },
+  };
+}
+
+function nodeCatalog(): NodeCatalog {
+  return {
+    schema_version: 1,
+    nodes: [
+      {
+        type: 'input.text',
+        title: 'Text Input',
+        category: 'input',
+        provider: null,
+        capability: null,
+        description: 'A user-provided text value.',
+        inputs: [],
+        outputs: [{ name: 'text', type: 'TEXT' as const, required: true }],
+        params_schema: {
+          required: ['text'],
+          properties: {
+            text: { type: 'string' as const, enum_values: [], minimum: null, maximum: null },
+          },
+          allow_unknown: false,
+        },
+        estimated_cost: null,
+      },
+      {
+        type: 'video.mock.text_to_video',
+        title: 'Mock Text To Video',
+        category: 'video',
+        provider: 'mock',
+        capability: 'text_to_video',
+        description: 'Generates a deterministic placeholder video artifact.',
+        inputs: [{ name: 'prompt', type: 'TEXT' as const, required: true }],
+        outputs: [{ name: 'video', type: 'VIDEO' as const, required: true }],
+        params_schema: {
+          required: ['prompt', 'duration_sec', 'aspect_ratio'],
+          properties: {
+            prompt: { type: 'string' as const, enum_values: [], minimum: null, maximum: null },
+            duration_sec: { type: 'integer' as const, enum_values: [], minimum: 1, maximum: 10 },
+            aspect_ratio: {
+              type: 'string' as const,
+              enum_values: ['1:1', '9:16', '16:9'],
+              minimum: null,
+              maximum: null,
+            },
+          },
+          allow_unknown: false,
+        },
+        estimated_cost: { unit: 'call', catalog_key: 'mock.text_to_video' },
+      },
+    ],
   };
 }
 
