@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import {
   applyWorkspaceProposal,
   confirmWorkspaceRun,
+  createManualWorkspaceProposal,
   createWorkspace,
   dismissWorkspaceProposal,
   exportWorkflowVersion,
@@ -19,7 +20,9 @@ import {
 } from './api';
 import type {
   ChatMessageKind,
+  CanvasMessageContext,
   LayoutPositionUpdate,
+  ManualProposalInput,
   RunConfirmationResponse,
   RunEventEnvelope,
   RunStatus,
@@ -42,7 +45,7 @@ type WorkbenchStore = {
   setInitialState: (state: WorkbenchState) => void;
   setConnection: (status: ConnectionStatus) => void;
   applyEvent: (event: RunEventEnvelope) => void;
-  sendMessage: (text: string) => Promise<void>;
+  sendMessage: (text: string, canvasContext?: CanvasMessageContext) => Promise<void>;
   queueRun: () => Promise<void>;
   interruptRun: (runId?: string) => Promise<void>;
   exportWorkflow: () => Promise<WorkflowGraph | null>;
@@ -52,6 +55,7 @@ type WorkbenchStore = {
   selectOutput: (outputId: string) => Promise<void>;
   confirmRun: (runId: string) => Promise<void>;
   holdRun: (runId: string) => Promise<void>;
+  createManualProposal: (input: ManualProposalInput) => Promise<void>;
   applyProposal: (proposalId: string) => Promise<void>;
   dismissProposal: (proposalId: string) => Promise<void>;
 };
@@ -107,7 +111,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => ({
   },
   setInitialState: (state) => set({ status: 'ready', state, error: null }),
   setConnection: (connection) => set({ connection }),
-  sendMessage: async (text) => {
+  sendMessage: async (text, canvasContext) => {
     const trimmed = text.trim();
     if (!trimmed) {
       return;
@@ -138,6 +142,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => ({
     try {
       const response = await sendWorkspaceMessage(request.workspaceId, {
         baseVersionId: request.baseVersionId,
+        canvasContext,
         userMessage: trimmed,
         graph: request.graph,
       });
@@ -335,6 +340,25 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => ({
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
       }));
+    }
+  },
+  createManualProposal: async (input) => {
+    const state = get().state;
+    if (!state) {
+      return;
+    }
+
+    try {
+      const next = await createManualWorkspaceProposal(state.workspace.id, input);
+      set({ state: next, status: 'ready', error: null });
+    } catch (error) {
+      const normalized =
+        error instanceof Error ? error : new Error('manual proposal request failed');
+      const message = normalized.message;
+      set((current) => ({
+        state: current.state ? appendSystemError(current.state, message) : current.state,
+      }));
+      throw normalized;
     }
   },
   applyProposal: async (proposalId) => {

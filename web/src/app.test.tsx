@@ -20,10 +20,37 @@ import {
   positionUpdatesFromDrafts,
   selectionForNodePointer,
 } from './components/graph-canvas-layout';
+import {
+  GraphSelectionInspector,
+} from './components/graph-canvas-inspector';
+import {
+  buildComparableNodeMap,
+  buildEdgeSignatureSet,
+  buildNodeMap,
+  buildRunStepStateMap,
+  nodeDiffState,
+} from './components/graph-canvas-rendering';
+import {
+  ManualProposalPanel,
+  buildManualProposalInput,
+  defaultParamsForDefinition,
+  parseManualJson,
+} from './components/manual-proposal-panel';
+import {
+  fitViewToNodes,
+  graphShortcutFromEvent,
+  mergeSelection,
+  sanitizeClipboardText,
+  selectedIdsInWorldRect,
+  selectionClipboardText,
+  selectionRectFromPoints,
+  worldRectFromLocalRect,
+} from './components/graph-canvas-selection';
 import { ConfirmModal, HistoryPanel } from './components/run-panels';
 import { TopBar } from './components/top-bar';
 import { applyRunEvent, useWorkbenchStore } from './store';
-import type { WorkbenchState } from './types';
+import { CanvasMessageContextSchema } from './types';
+import type { NodeCatalog, WorkbenchState } from './types';
 
 const state: WorkbenchState = {
   eventSeq: 0,
@@ -131,6 +158,34 @@ const state: WorkbenchState = {
     cost: { amount: 0, currency: 'USD' },
   },
   pendingProposal: null,
+  workflowGraph: {
+    schema_version: 1,
+    nodes: {
+      text: {
+        node_type: 'input.text',
+        title: 'Launch note',
+        params: { text: 'Create a vertical product teaser.' },
+        pos: [48, 158],
+      },
+      video: {
+        node_type: 'video.mock.text_to_video',
+        title: 'Video render',
+        params: {
+          prompt: 'clean product shot',
+          duration_sec: 4,
+          aspect_ratio: '9:16',
+        },
+        pos: [486, 156],
+      },
+    },
+    edges: [
+      {
+        from: ['text', 'text'],
+        to: ['video', 'prompt'],
+        edge_type: 'text',
+      },
+    ],
+  },
 };
 
 describe('App', () => {
@@ -259,6 +314,38 @@ describe('App', () => {
     expect(markup).not.toContain(['Atlas', '未配置'].join(' '));
   });
 
+  it('disables queue when provider-backed nodes use an unavailable provider', () => {
+    const markup = renderToStaticMarkup(
+      <App
+        initialState={{
+          ...state,
+          pendingConfirmation: null,
+          run: null,
+          providers: {
+            defaultProvider: 'openai',
+            runtimeProviders: [
+              {
+                id: 'openai',
+                label: 'openai',
+                kind: 'unavailable',
+                enabled: false,
+                status: 'unavailable',
+                message: 'runtime provider `openai` is not configured by this build',
+                capabilities: [],
+              },
+            ],
+            workflowBackends: [],
+            apiConnectors: [],
+          },
+        }}
+      />,
+    );
+
+    expect(markup).toContain('title="runtime provider `openai` is not configured by this build"');
+    expect(markup).toContain('运行 Queue</button>');
+    expect(markup).toContain('disabled=""');
+  });
+
   it('renders agent runtime logs in a collapsed log group', () => {
     const markup = renderToStaticMarkup(
       <App
@@ -281,6 +368,31 @@ describe('App', () => {
     );
 
     expect(markup).toContain('工具调用');
+    expect(markup).toContain('1 events');
+  });
+
+  it('renders canvas ops evidence inside the tool log group', () => {
+    const markup = renderToStaticMarkup(
+      <App
+        initialState={{
+          ...state,
+          chat: {
+            messages: [
+              ...state.chat.messages,
+              {
+                id: 'agent-canvas-ops-1',
+                role: 'agent',
+                kind: 'agent_log:canvas_ops',
+                text: 'Canvas ops context ready: graph_nodes=2, selected_nodes=1',
+                time: '09:11',
+              },
+            ],
+          },
+        }}
+      />,
+    );
+
+    expect(markup).toContain('Canvas ops evidence');
     expect(markup).toContain('1 events');
   });
 
@@ -466,7 +578,9 @@ describe('App', () => {
     );
     useWorkbenchStore.getState().setInitialState(state);
 
-    await useWorkbenchStore.getState().sendMessage('你好');
+    await useWorkbenchStore.getState().sendMessage('你好', {
+      selection: { nodeIds: ['video'] },
+    });
 
     const fetchMock = vi.mocked(fetch);
     expect(fetchMock).toHaveBeenCalledWith('/api/workspaces/ws_test/messages', {
@@ -478,6 +592,7 @@ describe('App', () => {
     expect(body).toMatchObject({
       baseVersionId: 'ver_test_1',
       userMessage: '你好',
+      canvasContext: { selection: { nodeIds: ['video'] } },
       graph: { schema_version: 1 },
     });
     expect(useWorkbenchStore.getState().state?.chat.messages.at(-1)).toMatchObject({
@@ -485,6 +600,20 @@ describe('App', () => {
       kind: 'chat',
       text: '我是 Helixflow agent。',
     });
+  });
+
+  it('rejects unknown canvas message context fields locally', () => {
+    expect(
+      CanvasMessageContextSchema.safeParse({
+        selection: { nodeIds: ['video'], rawProviderConfig: true },
+      }).success,
+    ).toBe(false);
+    expect(
+      CanvasMessageContextSchema.safeParse({
+        selection: { nodeIds: ['video'] },
+        localPath: '/Users/example/private',
+      }).success,
+    ).toBe(false);
   });
 
   it('applies run request responses to pending confirmation state', async () => {
@@ -1196,6 +1325,51 @@ describe('App', () => {
       { method: 'POST' },
     ]);
   });
+
+  it('creates manual proposals through the bounded manual proposal API', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          ...state,
+          pendingProposal: pendingProposal(),
+        }),
+      ),
+    );
+    useWorkbenchStore.getState().setInitialState(state);
+
+    await useWorkbenchStore.getState().createManualProposal({
+      baseVersionId: 'ver_test_1',
+      op: { op: 'set_param', id: 'video', key: 'duration_sec', value: 4 },
+    });
+
+    const fetchMock = vi.mocked(fetch);
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/workspaces/ws_test/proposals/manual');
+    expect(init).toMatchObject({
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    });
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({
+      baseVersionId: 'ver_test_1',
+      op: { op: 'set_param', id: 'video', key: 'duration_sec', value: 4 },
+    });
+    expect(useWorkbenchStore.getState().state?.pendingProposal?.id).toBe('proposal_1');
+  });
+
+  it('surfaces manual proposal API errors in state and to the caller', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ error: 'invalid param' }, 400)));
+    useWorkbenchStore.getState().setInitialState(state);
+
+    await expect(
+      useWorkbenchStore.getState().createManualProposal({
+        baseVersionId: 'ver_test_1',
+        op: { op: 'set_param', id: 'video', key: 'duration_sec', value: 'slow' },
+      }),
+    ).rejects.toThrow('invalid param');
+
+    expect(useWorkbenchStore.getState().state?.chat.messages.at(-1)?.text).toBe('invalid param');
+  });
 });
 
 describe('GraphCanvas navigation', () => {
@@ -1310,6 +1484,172 @@ describe('GraphCanvas layout editing', () => {
   });
 });
 
+describe('GraphCanvas rendering helpers', () => {
+  it('builds stable maps and sets for large graph rendering lookups', () => {
+    const nodes = Array.from({ length: 120 }, (_, index) => ({
+      ...state.graph.nodes[index % state.graph.nodes.length],
+      id: `node_${index}`,
+      position: { x: index * 12, y: index * 5 },
+    }));
+    const steps = nodes.map((node, index) => ({
+      nodeId: node.id,
+      title: node.title,
+      state: index === 80 ? 'running' as const : 'queued' as const,
+      provider: node.provider,
+    }));
+    const edges = [
+      {
+        id: 'edge_large_1',
+        from: { nodeId: 'node_1', port: 'text' },
+        to: { nodeId: 'node_2', port: 'prompt' },
+        kind: 'text',
+      },
+    ];
+
+    const nodeById = buildNodeMap(nodes);
+    const stepStateByNodeId = buildRunStepStateMap(steps);
+    const edgeIds = buildEdgeSignatureSet(edges);
+
+    expect(nodeById.get('node_80')?.position).toEqual({ x: 960, y: 400 });
+    expect(stepStateByNodeId.get('node_80')).toBe('running');
+    expect(edgeIds.has('node_1:text>node_2:prompt:text')).toBe(true);
+  });
+
+  it('detects proposal node additions and updates from comparable node snapshots', () => {
+    const baseNode = state.graph.nodes[0];
+    const baseComparable = buildComparableNodeMap([baseNode]);
+
+    expect(nodeDiffState(baseNode, baseComparable.get(baseNode.id), true)).toBeNull();
+    expect(
+      nodeDiffState({ ...baseNode, title: 'Updated title' }, baseComparable.get(baseNode.id), true),
+    ).toBe('upd');
+    expect(nodeDiffState({ ...baseNode, id: 'new_node' }, undefined, true)).toBe('add');
+    expect(nodeDiffState({ ...baseNode, title: 'Updated title' }, baseComparable.get(baseNode.id), false)).toBeNull();
+  });
+});
+
+describe('GraphCanvas selection and clipboard helpers', () => {
+  it('renders a multi-selection inspector summary', () => {
+    const markup = renderToStaticMarkup(
+      <GraphSelectionInspector nodes={state.graph.nodes} onClose={() => undefined} />,
+    );
+
+    expect(markup).toContain('多选 · 2 个节点');
+    expect(markup).toContain('Selection summary');
+    expect(markup).toContain('Launch note');
+  });
+
+  it('selects nodes from local drag rectangles in graph world coordinates', () => {
+    const localRect = selectionRectFromPoints({ x: 50, y: 40 }, { x: 380, y: 260 });
+    const worldRect = worldRectFromLocalRect(localRect, { x: 20, y: 18, z: 0.78 });
+    const hitIds = selectedIdsInWorldRect(state.graph.nodes, worldRect);
+
+    expect(localRect).toEqual({ x: 50, y: 40, width: 330, height: 220 });
+    expect(hitIds.has('text')).toBe(true);
+    expect(hitIds.has('video')).toBe(false);
+    expect([...mergeSelection(new Set(['video']), hitIds, true)].sort()).toEqual(['text', 'video']);
+  });
+
+  it('maps canvas keyboard shortcuts while skipping IME composition', () => {
+    expect(graphShortcutFromEvent({ key: 'Escape' })).toBe('clear_selection');
+    expect(graphShortcutFromEvent({ key: 'a', metaKey: true })).toBe('select_all');
+    expect(graphShortcutFromEvent({ key: '0', ctrlKey: true })).toBe('fit_view');
+    expect(graphShortcutFromEvent({ key: 'c', ctrlKey: true })).toBe('copy_selection');
+    expect(graphShortcutFromEvent({ key: 'c' })).toBeNull();
+    expect(graphShortcutFromEvent({ key: 'c', ctrlKey: true, nativeEvent: { isComposing: true } })).toBeNull();
+    expect(graphShortcutFromEvent({ key: 'a', metaKey: true, nativeEvent: { keyCode: 229 } })).toBeNull();
+  });
+
+  it('fits view to visible nodes without mutating graph data', () => {
+    const next = fitViewToNodes(state.graph.nodes, { width: 900, height: 640 });
+
+    expect(next.z).toBeGreaterThan(0.4);
+    expect(next.z).toBeLessThanOrEqual(1.4);
+    expect(next.x).not.toBe(DEFAULT_GRAPH_VIEW.x);
+  });
+
+  it('copies stable sanitized selection text without provider or local path fields', () => {
+    const nodes = [
+      {
+        ...state.graph.nodes[0],
+        title: 'Input sk-secretvalue123456',
+        summary: 'Read /Users/alice/private.txt with apiKey and https://example.test/raw',
+        provider: 'mock-secret-provider',
+      },
+      state.graph.nodes[1],
+    ];
+    const text = selectionClipboardText(nodes, state.graph.edges);
+
+    expect(text).toContain('Helixflow selection (2 nodes)');
+    expect(text).toContain('"schema_version": 1');
+    expect(text).toContain('"edge_type": "text"');
+    expect(text).not.toContain('mock-secret-provider');
+    expect(text).not.toContain('/Users/alice');
+    expect(text).not.toContain('sk-secretvalue123456');
+    expect(text).not.toContain('https://example.test');
+    expect(sanitizeClipboardText('C:\\Users\\alice\\token.txt')).toContain('[redacted-path]');
+  });
+});
+
+describe('ManualProposalPanel', () => {
+  it('builds bounded manual proposal inputs and validates JSON locally', () => {
+    const input = buildManualProposalInput({
+      baseVersionId: 'ver_test_1',
+      edgeIndex: '0',
+      edgeType: 'text',
+      fromNode: 'text',
+      fromPort: 'text',
+      nodeId: 'manual_text',
+      nodeTitle: '',
+      nodeType: 'input.text',
+      operation: 'set_param',
+      paramKey: 'duration_sec',
+      paramValue: '4',
+      paramsText: '{"text":"manual input"}',
+      targetNodeId: 'video',
+      toNode: 'video',
+      toPort: 'prompt',
+      workflowGraph: state.workflowGraph,
+      x: '120',
+      y: '320',
+    });
+
+    expect(input).toEqual({
+      baseVersionId: 'ver_test_1',
+      title: 'Manual set param',
+      op: { op: 'set_param', id: 'video', key: 'duration_sec', value: 4 },
+    });
+    expect(() => parseManualJson('{bad')).toThrow('Invalid JSON');
+  });
+
+  it('renders manual controls and pending disabled state', () => {
+    const markup = renderToStaticMarkup(
+      <ManualProposalPanel
+        busy={false}
+        initialCatalog={nodeCatalog()}
+        state={{ ...state, pendingProposal: pendingProposal() }}
+        onCreateProposal={async () => undefined}
+      />,
+    );
+
+    expect(markup).toContain('Manual proposal');
+    expect(markup).toContain('pending');
+    expect(markup).toContain('edit param');
+    expect(markup).toContain('text · Launch note');
+    expect(markup).toContain('Create proposal');
+  });
+
+  it('derives valid default params from required catalog schema values', () => {
+    const definition = nodeCatalog().nodes.find((item) => item.type === 'video.mock.text_to_video')!;
+
+    expect(defaultParamsForDefinition(definition)).toEqual({
+      prompt: '',
+      duration_sec: 1,
+      aspect_ratio: '1:1',
+    });
+  });
+});
+
 describe('chat composer keyboard handling', () => {
   it('does not submit Enter while IME composition is active', () => {
     expect(shouldSubmitComposerKey({
@@ -1367,6 +1707,57 @@ function localStorageStub(store: Map<string, string>): Storage {
     setItem: (key: string, value: string) => {
       store.set(key, value);
     },
+  };
+}
+
+function nodeCatalog(): NodeCatalog {
+  return {
+    schema_version: 1,
+    nodes: [
+      {
+        type: 'input.text',
+        title: 'Text Input',
+        category: 'input',
+        provider: null,
+        capability: null,
+        description: 'A user-provided text value.',
+        inputs: [],
+        outputs: [{ name: 'text', type: 'TEXT' as const, required: true }],
+        params_schema: {
+          required: ['text'],
+          properties: {
+            text: { type: 'string' as const, enum_values: [], minimum: null, maximum: null },
+          },
+          allow_unknown: false,
+        },
+        estimated_cost: null,
+      },
+      {
+        type: 'video.mock.text_to_video',
+        title: 'Mock Text To Video',
+        category: 'video',
+        provider: 'mock',
+        capability: 'text_to_video',
+        description: 'Generates a deterministic placeholder video artifact.',
+        inputs: [{ name: 'prompt', type: 'TEXT' as const, required: true }],
+        outputs: [{ name: 'video', type: 'VIDEO' as const, required: true }],
+        params_schema: {
+          required: ['prompt', 'duration_sec', 'aspect_ratio'],
+          properties: {
+            prompt: { type: 'string' as const, enum_values: [], minimum: null, maximum: null },
+            duration_sec: { type: 'integer' as const, enum_values: [], minimum: 1, maximum: 10 },
+            aspect_ratio: {
+              type: 'string' as const,
+              enum_values: ['1:1', '9:16', '16:9'],
+              minimum: null,
+              maximum: null,
+            },
+          },
+          allow_unknown: false,
+        },
+        estimated_cost: { unit: 'call', catalog_key: 'mock.text_to_video' },
+      },
+    ],
   };
 }
 

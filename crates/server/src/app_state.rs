@@ -218,9 +218,10 @@ async fn persist_runtime_provider_status(
     provider: &RuntimeProvider,
 ) -> Result<(), AppStateError> {
     let health = provider.health().await;
+    let provider_id = provider.catalog_snapshot().default_provider;
     let status = if health.ok { "healthy" } else { "unavailable" };
     store
-        .upsert_provider_status(provider.id(), health.ok, status, None, None)
+        .upsert_provider_status(&provider_id, health.ok, status, None, None)
         .await?;
     Ok(())
 }
@@ -278,6 +279,30 @@ mod tests {
             .expect("provider status row");
 
         assert_eq!(record.id, "openai");
+        assert!(!record.enabled);
+        assert_eq!(record.status, "unavailable");
+    }
+
+    #[tokio::test]
+    async fn persist_runtime_provider_status_uses_safe_provider_id() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let database_url = format!("sqlite://{}", dir.path().join("helixflow.sqlite").display());
+        let store = Store::open(&database_url).await.expect("open store");
+        let provider = RuntimeProvider::unavailable(
+            "sk-secret-token",
+            "runtime provider `sk-secret-token` is not configured",
+        );
+
+        persist_runtime_provider_status(&store, &provider)
+            .await
+            .expect("persist provider status");
+
+        let record = store
+            .provider_status("invalid")
+            .await
+            .expect("safe provider status row");
+
+        assert_eq!(record.id, "invalid");
         assert!(!record.enabled);
         assert_eq!(record.status, "unavailable");
     }

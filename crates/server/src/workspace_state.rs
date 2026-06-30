@@ -4,6 +4,7 @@ use axum::{
 };
 use helixflow_agent::TurnMode;
 use helixflow_graph::{ProposalOp, WorkflowGraph};
+use helixflow_registry::NodeRegistry;
 use helixflow_store::{
     ArtifactRecord, CostLedgerRecord, MessageRecord, ProposalRecord, RunRecord, RunStepRecord,
     VersionRecord, WorkspaceRecord,
@@ -158,6 +159,7 @@ fn workspace_state_payload(
     event_seq: i64,
     providers: Value,
 ) -> Value {
+    let registry = NodeRegistry::builtin();
     let step_by_node = steps
         .iter()
         .map(|step| (step.node_id.as_str(), step))
@@ -175,7 +177,7 @@ fn workspace_state_payload(
         "chat": {
             "messages": messages.iter().map(chat_message_payload).collect::<Vec<_>>(),
         },
-        "graph": graph_payload(graph, &step_by_node),
+        "graph": graph_payload(graph, &step_by_node, &registry),
         "run": latest_run.map(|run| run_payload(run, steps, &run_cost)),
         "outputs": artifacts.iter().map(output_payload_from_artifact).collect::<Vec<_>>(),
         "history": history_payload(versions, latest_run, proposals),
@@ -234,7 +236,11 @@ fn message_turn_mode(message: &MessageRecord) -> Option<TurnMode> {
         .and_then(|metadata| metadata.turn_mode)
 }
 
-fn graph_payload(graph: &WorkflowGraph, step_by_node: &BTreeMap<&str, &RunStepRecord>) -> Value {
+fn graph_payload(
+    graph: &WorkflowGraph,
+    step_by_node: &BTreeMap<&str, &RunStepRecord>,
+    registry: &NodeRegistry,
+) -> Value {
     json!({
         "nodes": graph.nodes.iter().map(|(id, node)| {
             let step = step_by_node.get(id.as_str()).copied();
@@ -245,7 +251,7 @@ fn graph_payload(graph: &WorkflowGraph, step_by_node: &BTreeMap<&str, &RunStepRe
                 "category": node_category(&node.node_type),
                 "status": step.map(|item| item.state.as_str()).unwrap_or("queued"),
                 "position": { "x": node.pos[0], "y": node.pos[1] },
-                "provider": step.and_then(|item| item.provider.clone()),
+                "provider": step.and_then(|item| item.provider.clone()).or_else(|| node_provider(&node.node_type, registry)),
                 "summary": node_summary(&node.node_type, &node.params),
             })
         }).collect::<Vec<_>>(),
@@ -261,6 +267,13 @@ fn graph_payload(graph: &WorkflowGraph, step_by_node: &BTreeMap<&str, &RunStepRe
             })
         }).collect::<Vec<_>>(),
     })
+}
+
+fn node_provider(node_type: &str, registry: &NodeRegistry) -> Option<String> {
+    registry
+        .definition(node_type)
+        .ok()
+        .and_then(|definition| definition.provider.clone())
 }
 
 fn run_payload(run: &RunRecord, steps: &[RunStepRecord], cost: &CostSummary) -> Value {
@@ -463,6 +476,32 @@ mod tests {
         assert_eq!(body["run"], Value::Null);
         assert!(body["pendingConfirmation"].is_null());
         assert_ne!(body["workspace"]["name"], "Helixflow Demo");
+    }
+
+    #[test]
+    fn graph_payload_populates_provider_from_node_registry_before_run_steps() {
+        let graph = WorkflowGraph {
+            schema_version: 1,
+            nodes: BTreeMap::from([(
+                "video".to_owned(),
+                GraphNode {
+                    node_type: "video.mock.text_to_video".to_owned(),
+                    title: "Video".to_owned(),
+                    params: json!({
+                        "prompt": "clean product shot",
+                        "duration_sec": 4,
+                        "aspect_ratio": "9:16"
+                    }),
+                    pos: [10.0, 20.0],
+                },
+            )]),
+            edges: Vec::new(),
+        };
+
+        let body = graph_payload(&graph, &BTreeMap::new(), &NodeRegistry::builtin());
+
+        assert_eq!(body["nodes"][0]["provider"], "mock");
+        assert_eq!(body["nodes"][0]["status"], "queued");
     }
 
     #[tokio::test]

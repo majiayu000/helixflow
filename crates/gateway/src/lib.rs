@@ -488,4 +488,27 @@ mod tests {
         assert!(snapshot.workflow_backends.is_empty());
         assert!(snapshot.api_connectors.is_empty());
     }
+
+    #[test]
+    fn unavailable_runtime_provider_snapshot_redacts_unsafe_env_values() {
+        let provider = RuntimeProvider::unavailable(
+            "sk-secret-token",
+            "runtime provider `sk-secret-token` from https://example.test/key is not configured",
+        );
+
+        let snapshot = provider.catalog_snapshot();
+        let encoded = match serde_json::to_string(&snapshot) {
+            Ok(value) => value,
+            Err(err) => panic!("serialize provider snapshot: {err}"),
+        };
+
+        assert_eq!(snapshot.default_provider, "invalid");
+        assert_eq!(snapshot.runtime_providers[0].id, "invalid");
+        assert_eq!(
+            snapshot.runtime_providers[0].message.as_deref(),
+            Some("runtime provider `invalid` is unavailable")
+        );
+        assert!(!encoded.contains("sk-secret-token"));
+        assert!(!encoded.contains("https://example.test"));
+    }
 }

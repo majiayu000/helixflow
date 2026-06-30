@@ -530,6 +530,9 @@ function commandText(message: ChatMessage): string {
 }
 
 function toolGroupTitle(messages: ChatMessage[]): string {
+  if (messages.some((message) => message.kind === 'agent_log:canvas_ops')) {
+    return 'Canvas ops evidence';
+  }
   const commandCount = messages.filter((message) =>
     message.kind?.includes('command_execution'),
   ).length;
@@ -540,6 +543,9 @@ function toolGroupTitle(messages: ChatMessage[]): string {
 }
 
 function cleanLogLabel(message: ChatMessage): string {
+  if (message.kind === 'agent_log:canvas_ops') {
+    return 'canvas ops';
+  }
   return (message.label ?? message.kind ?? 'runtime')
     .replace(/^agent_log:/, '')
     .replaceAll('_', ' ');

@@ -9,12 +9,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
+mod canvas_ops;
 mod contract;
 mod prompt_stack;
 mod runtime;
 mod service;
 mod turn_mode;
 
+pub use canvas_ops::{
+    CanvasGateState, CanvasOp, CanvasOpsContext, CanvasOpsContract, CanvasOpsRequest,
+    CanvasSelection,
+};
 pub use contract::{
     AgentLogEntry, RunRequestAction, RunRequestOutput, ValidatedAgentProposal, ValidatedAgentReply,
     ValidatedRunRequest, read_validated_proposal, read_validated_reply, read_validated_run_request,
@@ -57,6 +62,7 @@ pub struct AgentSessionRequest {
     pub sessions_dir: PathBuf,
     pub mode: TurnMode,
     pub skill: AgentSkill,
+    pub canvas_context: Option<CanvasOpsContext>,
 }
 
 pub fn create_session_contract(request: &AgentSessionRequest) -> AgentResult<AgentSession> {
@@ -87,6 +93,11 @@ pub fn create_session_contract(request: &AgentSessionRequest) -> AgentResult<Age
         fs::create_dir_all(&runtime_providers_dir)?;
         fs::create_dir_all(&api_connectors_dir)?;
         write_json(ctx_dir.join("graph.json"), &request.graph)?;
+        write_json(
+            ctx_dir.join("canvas_state.json"),
+            &canvas_context_from_request(request),
+        )?;
+        write_json(ctx_dir.join("canvas_ops.json"), &CanvasOpsContract::v1())?;
         write_json(
             node_defs_dir.join("catalog.json"),
             &NodeRegistry::builtin().export_catalog(),
@@ -146,6 +157,18 @@ fn ensure_request_consistency(request: &AgentSessionRequest) -> AgentResult<()> 
         });
     }
     Ok(())
+}
+
+fn canvas_context_from_request(request: &AgentSessionRequest) -> CanvasOpsContext {
+    request.canvas_context.clone().unwrap_or_else(|| {
+        CanvasOpsContext::from_graph(
+            &request.workspace_id,
+            &request.base_version_id,
+            &request.graph,
+            CanvasSelection::default(),
+            CanvasGateState::default(),
+        )
+    })
 }
 
 fn write_json(path: impl AsRef<Path>, value: &impl Serialize) -> AgentResult<()> {

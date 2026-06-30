@@ -227,6 +227,55 @@ const ProposalSchema = z.object({
   messageId: z.string().nullable(),
 });
 
+const PortDefinitionSchema = z.object({
+  name: z.string(),
+  type: z.enum(['TEXT', 'IMAGE', 'VIDEO', 'AUDIO', 'MASK', 'JSON']),
+  required: z.boolean(),
+});
+
+const ParamSpecSchema = z.object({
+  type: z.enum(['string', 'integer', 'number', 'boolean']),
+  enum_values: z.array(z.unknown()),
+  minimum: z.number().nullable(),
+  maximum: z.number().nullable(),
+});
+
+const ParamsSchema = z.object({
+  required: z.array(z.string()),
+  properties: z.record(z.string(), ParamSpecSchema),
+  allow_unknown: z.boolean(),
+});
+
+export const NodeDefinitionSchema = z.object({
+  type: z.string(),
+  title: z.string(),
+  category: z.string(),
+  provider: z.string().nullable(),
+  capability: z.string().nullable(),
+  description: z.string(),
+  inputs: z.array(PortDefinitionSchema),
+  outputs: z.array(PortDefinitionSchema),
+  params_schema: ParamsSchema,
+  estimated_cost: z.unknown().nullable(),
+});
+
+export const NodeCatalogSchema = z.object({
+  schema_version: z.number(),
+  nodes: z.array(NodeDefinitionSchema),
+});
+
+export const CanvasSelectionContextSchema = z
+  .object({
+    nodeIds: z.array(z.string()),
+  })
+  .strict();
+
+export const CanvasMessageContextSchema = z
+  .object({
+    selection: CanvasSelectionContextSchema,
+  })
+  .strict();
+
 export const WorkbenchStateSchema = z.object({
   eventSeq: z.number(),
   workspace: z.object({
@@ -300,6 +349,27 @@ export type WorkflowGraph = z.infer<typeof WorkflowGraphSchema>;
 export type WorkspaceMessageResponse = z.infer<typeof WorkspaceMessageResponseSchema>;
 export type RunConfirmationResponse = z.infer<typeof RunConfirmationResponseSchema>;
 export type WorkspaceSummary = z.infer<typeof WorkspaceSummarySchema>;
+export type NodeCatalog = z.infer<typeof NodeCatalogSchema>;
+export type NodeDefinition = z.infer<typeof NodeDefinitionSchema>;
+export type CanvasMessageContext = z.infer<typeof CanvasMessageContextSchema>;
+export type ManualProposalInput = {
+  baseVersionId: string;
+  title?: string;
+  summary?: string;
+  op:
+    | {
+        op: 'add_node';
+        id: string;
+        node_type: string;
+        title?: string;
+        params: unknown;
+        pos: [number, number];
+      }
+    | { op: 'remove_node'; id: string }
+    | { op: 'set_param'; id: string; key: string; value: unknown }
+    | { op: 'add_edge'; from: [string, string]; to: [string, string]; edge_type: string }
+    | { op: 'remove_edge'; from: [string, string]; to: [string, string]; edge_type: string };
+};
 
 function workflowGraphToGraphState(
   graph: z.infer<typeof WorkflowGraphSchema>,

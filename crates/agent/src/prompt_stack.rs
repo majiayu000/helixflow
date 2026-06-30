@@ -20,6 +20,7 @@ pub enum PromptSectionKey {
     UserRequest,
     AttachmentHint,
     CommentHint,
+    CanvasOps,
 }
 
 impl fmt::Display for PromptSectionKey {
@@ -38,6 +39,7 @@ impl fmt::Display for PromptSectionKey {
             Self::UserRequest => "user_request",
             Self::AttachmentHint => "attachment_hint",
             Self::CommentHint => "comment_hint",
+            Self::CanvasOps => "canvas_ops",
         };
         f.write_str(value)
     }
@@ -138,25 +140,31 @@ pub fn build_prompt_stack(request: &AgentSessionRequest) -> PromptStack {
             section(
                 PromptSectionKey::ResearchCommandContract,
                 "Research command contract",
-                "Read only the declared context files under `ctx/`: graph, node catalog, and selected skill. Do not inspect unrelated workspace files.",
+                "Read only the declared context files under `ctx/`: `graph.json`, `node_defs/catalog.json`, `workflow_backends/catalog.json`, `runtime_providers/catalog.json`, `api_connectors/catalog.json`, `canvas_state.json`, `canvas_ops.json`, and the selected skill. Do not inspect unrelated workspace files.",
                 false,
             ),
             section(
                 PromptSectionKey::WorkflowBackend,
                 "Workflow backend",
-                "Use `ctx/graph.json` as the current workflow state and `ctx/node_defs/catalog.json` as the authoritative node catalog.",
+                "Use `ctx/graph.json` as the current workflow state, `ctx/node_defs/catalog.json` as the authoritative node catalog, and `ctx/workflow_backends/catalog.json` as the backend boundary.",
                 false,
             ),
             section(
                 PromptSectionKey::RuntimeProvider,
                 "Runtime provider",
-                "External provider execution is backend-managed. Do not call provider APIs or read provider secrets.",
+                "Read `ctx/runtime_providers/catalog.json` before proposing provider work. External provider execution is backend-managed. Do not call provider APIs or read provider secrets.",
                 false,
             ),
             section(
                 PromptSectionKey::ApiConnectorCatalog,
                 "API connector catalog",
-                "Only use connector capabilities that the backend exposes through context files. Do not invent providers or fields.",
+                "Read `ctx/api_connectors/catalog.json` and only use connector capabilities that the backend exposes through context files. Do not invent providers or fields.",
+                false,
+            ),
+            section(
+                PromptSectionKey::CanvasOps,
+                "Bounded canvas ops",
+                canvas_ops_contract(mode),
                 false,
             ),
         ]);
@@ -263,6 +271,29 @@ fn proposal_output_contract() -> &'static str {
   {"op":"set_param","id":"video","key":"duration_sec","value":5}
 - Graph node objects must use "node_type", "title", "params", and "pos"; never use "type" as an alias for "node_type".
 - Graph edges must use tuple arrays: "from":["node_id","port"], "to":["node_id","port"], and "edge_type"."#
+}
+
+fn canvas_ops_contract(mode: TurnMode) -> &'static str {
+    match mode {
+        TurnMode::CreateWorkflow | TurnMode::ModifyWorkflow | TurnMode::DebugWorkflow => {
+            r#"Canvas ops contract:
+- Read compact canvas state from `ctx/canvas_state.json`.
+- Read allowed canvas ops from `ctx/canvas_ops.json`.
+- `read_state` means inspect only the declared compact graph state.
+- `read_selection` means inspect only `selection.node_ids`; an empty selection is valid.
+- `propose_layout` must be expressed as `move_node` ops in `out/proposal.json`.
+- `propose_graph_ops` must be expressed as bounded proposal ops in `out/proposal.json`.
+- Never apply, dismiss, restore, save layout, or mutate graph state directly."#
+        }
+        TurnMode::RunRequest => {
+            r#"Canvas ops contract:
+- Read compact canvas state from `ctx/canvas_state.json`.
+- `run_selected_workflow` is only a run request contract for the current workflow/version.
+- Write `out/run_request.json`; backend creates pending confirmation before any provider execution.
+- Do not confirm runs, queue provider execution directly, or implement selected-subgraph execution."#
+        }
+        TurnMode::Chat => "Canvas ops are not available in chat mode.",
+    }
 }
 
 fn runtime_tool_policy(mode: TurnMode) -> &'static str {

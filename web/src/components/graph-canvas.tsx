@@ -4,17 +4,14 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
+  type KeyboardEvent,
   type PointerEvent,
   type WheelEvent,
 } from 'react';
-import { Icon, Port, portColor } from '../icons';
-import type {
-  GraphNodeState,
-  LayoutPositionUpdate,
-  RunStepState,
-  WorkbenchState,
-} from '../types';
+import { Icon } from '../icons';
+import type { GraphNodeState, LayoutPositionUpdate, WorkbenchState } from '../types';
+import { GraphEdges } from './graph-canvas-edges';
+import { GraphInspector, GraphSelectionInspector } from './graph-canvas-inspector';
 import {
   applyPositionDrafts,
   moveNodeDrafts,
@@ -25,22 +22,38 @@ import {
 } from './graph-canvas-layout';
 import {
   DEFAULT_GRAPH_VIEW,
-  GRAPH_NODE_HEAD_HEIGHT,
-  GRAPH_NODE_ROW_HEIGHT,
-  GRAPH_NODE_WIDTH,
   MINIMAP_HEIGHT,
   MINIMAP_WIDTH,
   computeMinimapLayout,
   loadGraphCanvasView,
-  minimapViewportRect,
   normalizeView,
   saveGraphCanvasView,
   viewForMinimapPoint,
   zoomViewAtPoint,
-  type MinimapLayout,
   type ViewState,
   type ViewportSize,
 } from './graph-canvas-navigation';
+import { CanvasMinimap } from './graph-canvas-minimap';
+import { WorkflowNode } from './graph-canvas-node';
+import {
+  buildComparableNodeMap,
+  buildEdgeSignatureSet,
+  buildNodeMap,
+  buildRunStepStateMap,
+  nodeDiffState,
+  runStatusLabel,
+} from './graph-canvas-rendering';
+import {
+  fitViewToNodes,
+  graphShortcutFromEvent,
+  isEditableShortcutTarget,
+  mergeSelection,
+  selectedIdsInWorldRect,
+  selectionClipboardText,
+  selectionRectFromPoints,
+  worldRectFromLocalRect,
+  type Point,
+} from './graph-canvas-selection';
 
 export {
   DEFAULT_GRAPH_VIEW,
@@ -64,6 +77,7 @@ type GraphCanvasProps = {
   pendingProposal: WorkbenchState['pendingProposal'];
   run: NonNullable<WorkbenchState['run']>;
   onSaveLayout?: (positions: LayoutPositionUpdate[]) => Promise<void>;
+  onSelectionChange?: (nodeIds: string[]) => void;
 };
 
 type DragState = {
@@ -81,12 +95,13 @@ type NodeDragState = {
   starts: DragNodeStart[];
 };
 
-type Param = {
-  key: string;
-  value: string;
+type SelectionDragState = {
+  pointerId: number;
+  start: Point;
+  current: Point;
+  additive: boolean;
+  baseIds: Set<string>;
 };
-
-type DiffState = 'add' | 'upd' | null;
 
 export function GraphCanvas({
   workspaceId,
@@ -95,6 +110,7 @@ export function GraphCanvas({
   pendingProposal,
   run,
   onSaveLayout,
+  onSelectionChange,
 }: GraphCanvasProps) {
   const canvasRef = useRef<HTMLElement | null>(null);
   const [view, setView] = useState<ViewState>(DEFAULT_GRAPH_VIEW);
@@ -103,28 +119,28 @@ export function GraphCanvas({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [draftPositions, setDraftPositions] = useState<PositionDrafts>({});
   const [layoutSaving, setLayoutSaving] = useState(false);
+  const [selectionDrag, setSelectionDrag] = useState<SelectionDragState | null>(null);
+  const [clipboardStatus, setClipboardStatus] = useState<string | null>(null);
   const drag = useRef<DragState | null>(null);
   const nodeDrag = useRef<NodeDragState | null>(null);
+  const suppressNextClick = useRef(false);
   const drawGraph = pendingProposal?.previewGraph ?? graph;
   const activeMode = pendingProposal ? 'review' : mode;
   const displayNodes = useMemo(
     () => applyPositionDrafts(drawGraph.nodes, draftPositions),
     [drawGraph.nodes, draftPositions],
   );
-  const baseNodeById = useMemo(
-    () => new Map(graph.nodes.map((node) => [node.id, node] as const)),
-    [graph.nodes],
-  );
-  const nodeById = useMemo(
-    () => new Map(displayNodes.map((node) => [node.id, node] as const)),
-    [displayNodes],
-  );
-  const baseEdgeIds = useMemo(
-    () => new Set(graph.edges.map((edge) => edgeSignature(edge))),
-    [graph.edges],
-  );
+  const baseComparableById = useMemo(() => buildComparableNodeMap(graph.nodes), [graph.nodes]);
+  const nodeById = useMemo(() => buildNodeMap(displayNodes), [displayNodes]);
+  const baseEdgeIds = useMemo(() => buildEdgeSignatureSet(graph.edges), [graph.edges]);
+  const stepStateByNodeId = useMemo(() => buildRunStepStateMap(run.steps), [run.steps]);
   const selectedNodeId = selectedIds.values().next().value as string | undefined;
   const selectedNode = selectedNodeId ? nodeById.get(selectedNodeId) : null;
+  const selectedNodes = useMemo(
+    () => displayNodes.filter((node) => selectedIds.has(node.id)),
+    [displayNodes, selectedIds],
+  );
+  const selectedIdList = useMemo(() => [...selectedIds], [selectedIds]);
   const nodeCount = displayNodes.length;
   const layoutUpdates = useMemo(
     () => (pendingProposal ? [] : positionUpdatesFromDrafts(graph.nodes, draftPositions)),
@@ -144,8 +160,14 @@ export function GraphCanvas({
   useEffect(() => {
     setDraftPositions({});
     setSelectedIds(new Set());
+    setSelectionDrag(null);
+    setClipboardStatus(null);
     nodeDrag.current = null;
   }, [workspaceId, versionId, pendingProposal?.id]);
+
+  useEffect(() => {
+    onSelectionChange?.(selectedIdList);
+  }, [onSelectionChange, selectedIdList]);
 
   useEffect(() => {
     const current = canvasRef.current;
@@ -206,6 +228,14 @@ export function GraphCanvas({
     drag.current = null;
   };
 
+  const canvasLocalPoint = (event: PointerEvent<HTMLElement>): Point => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  };
+
+  const shouldStartSelectionDrag = (event: PointerEvent<HTMLElement>) =>
+    activeMode === 'edit' || event.shiftKey || event.metaKey || event.ctrlKey;
+
   const handleNodePointerDown = (node: GraphNodeState, event: PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     event.stopPropagation();
@@ -264,14 +294,86 @@ export function GraphCanvas({
     }
   };
 
+  const completeSelectionDrag = (event: PointerEvent<HTMLElement>) => {
+    const current = selectionDrag;
+    if (!current || current.pointerId !== event.pointerId) return false;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const rect = selectionRectFromPoints(current.start, current.current);
+    const worldRect = worldRectFromLocalRect(rect, view);
+    const hitIds = selectedIdsInWorldRect(displayNodes, worldRect);
+    setSelectedIds(mergeSelection(current.baseIds, hitIds, current.additive));
+    setSelectionDrag(null);
+    suppressNextClick.current = rect.width > 2 || rect.height > 2;
+    return true;
+  };
+
+  const copySelection = async () => {
+    if (selectedNodes.length === 0) return;
+    const text = selectionClipboardText(selectedNodes, drawGraph.edges);
+    if (!navigator.clipboard?.writeText) {
+      setClipboardStatus('复制失败：浏览器不支持 clipboard');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      setClipboardStatus(`已复制 ${selectedNodes.length} 个节点`);
+    } catch (error) {
+      setClipboardStatus(error instanceof Error ? `复制失败：${error.message}` : '复制失败');
+    }
+  };
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (isEditableShortcutTarget(event.target)) return;
+    const shortcut = graphShortcutFromEvent(event);
+    if (!shortcut) return;
+    event.preventDefault();
+    if (shortcut === 'clear_selection') {
+      setSelectedIds(new Set());
+      setClipboardStatus(null);
+    }
+    if (shortcut === 'select_all') {
+      setSelectedIds(new Set(displayNodes.map((node) => node.id)));
+    }
+    if (shortcut === 'fit_view') {
+      updateView(fitViewToNodes(displayNodes, viewportSize));
+    }
+    if (shortcut === 'copy_selection') {
+      void copySelection();
+    }
+  };
+
   return (
     <section
       ref={canvasRef}
       className="p-canvas cv-bold"
-      onClick={() => setSelectedIds(new Set())}
+      tabIndex={0}
+      onClick={() => {
+        if (suppressNextClick.current) {
+          suppressNextClick.current = false;
+          return;
+        }
+        setSelectedIds(new Set());
+        setClipboardStatus(null);
+      }}
+      onKeyDown={handleKeyDown}
       onPointerDown={(event) => {
         if (event.button !== 0) return;
         event.currentTarget.setPointerCapture(event.pointerId);
+        event.currentTarget.focus();
+        if (shouldStartSelectionDrag(event)) {
+          const start = canvasLocalPoint(event);
+          setSelectionDrag({
+            pointerId: event.pointerId,
+            start,
+            current: start,
+            additive: event.shiftKey || event.metaKey || event.ctrlKey,
+            baseIds: new Set(selectedIds),
+          });
+          drag.current = null;
+          return;
+        }
         drag.current = {
           pointerId: event.pointerId,
           sx: event.clientX,
@@ -281,6 +383,12 @@ export function GraphCanvas({
         };
       }}
       onPointerMove={(event) => {
+        if (selectionDrag?.pointerId === event.pointerId) {
+          setSelectionDrag((current) =>
+            current ? { ...current, current: canvasLocalPoint(event) } : current,
+          );
+          return;
+        }
         const currentDrag = drag.current;
         if (!currentDrag || currentDrag.pointerId !== event.pointerId) return;
         const nextX = currentDrag.ox + event.clientX - currentDrag.sx;
@@ -291,8 +399,14 @@ export function GraphCanvas({
           y: nextY,
         }));
       }}
-      onPointerCancel={stopDrag}
-      onPointerUp={stopDrag}
+      onPointerCancel={(event) => {
+        if (completeSelectionDrag(event)) return;
+        stopDrag(event);
+      }}
+      onPointerUp={(event) => {
+        if (completeSelectionDrag(event)) return;
+        stopDrag(event);
+      }}
       onWheel={handleWheel}
     >
       <div className="canvas-grid" />
@@ -325,6 +439,7 @@ export function GraphCanvas({
             {layoutSaving ? '保存中' : `保存布局 · ${layoutUpdates.length}`}
           </button>
         )}
+        {clipboardStatus && <span className="canvas-pill">{clipboardStatus}</span>}
       </div>
       <div
         className="world"
@@ -334,34 +449,25 @@ export function GraphCanvas({
           transform: `scale(${view.z})`,
         }}
       >
-        <svg className="edge-svg">
-          {drawGraph.edges.map((edge) => {
-            const from = nodeById.get(edge.from.nodeId);
-            const to = nodeById.get(edge.to.nodeId);
-            if (!from || !to) return null;
-            const isNew = pendingProposal ? !baseEdgeIds.has(edgeSignature(edge)) : false;
-            return (
-              <path
-                className={isNew ? 'edge-path edge-path--new' : 'edge-path'}
-                d={edgePath(from, to)}
-                fill="none"
-                key={edge.id}
-                stroke={portColor(edge.kind)}
-                strokeLinecap="round"
-                strokeWidth="3"
-              />
-            );
-          })}
-        </svg>
+        <GraphEdges
+          baseEdgeIds={baseEdgeIds}
+          edges={drawGraph.edges}
+          hasProposal={Boolean(pendingProposal)}
+          nodeById={nodeById}
+        />
         {displayNodes.map((node) => (
           <WorkflowNode
             key={node.id}
-            diffState={nodeDiffState(node, baseNodeById.get(node.id), Boolean(pendingProposal))}
+            diffState={nodeDiffState(
+              node,
+              baseComparableById.get(node.id),
+              Boolean(pendingProposal),
+            )}
             dirty={Boolean(draftPositions[node.id]) && !pendingProposal}
             locked={Boolean(pendingProposal)}
             node={node}
             selected={selectedIds.has(node.id)}
-            stepState={run.steps.find((step) => step.nodeId === node.id)?.state ?? node.status}
+            stepState={stepStateByNodeId.get(node.id) ?? node.status}
             onPointerCancel={stopNodeDrag}
             onPointerDown={(event) => handleNodePointerDown(node, event)}
             onPointerMove={handleNodePointerMove}
@@ -380,6 +486,12 @@ export function GraphCanvas({
           </div>
         </div>
       )}
+      {selectionDrag && (
+        <span
+          className="selection-rect"
+          style={selectionRectFromPoints(selectionDrag.start, selectionDrag.current)}
+        />
+      )}
       <div className="zoom-ctl" onPointerDown={(event) => event.stopPropagation()}>
         <button onClick={() => updateView((current) => ({ ...current, z: current.z - 0.1 }))}>
           -
@@ -397,268 +509,12 @@ export function GraphCanvas({
           viewportSize={viewportSize}
         />
       )}
-      {selectedNode && <Inspector node={selectedNode} onClose={() => setSelectedIds(new Set())} />}
+      {selectedNodes.length > 1 && (
+        <GraphSelectionInspector nodes={selectedNodes} onClose={() => setSelectedIds(new Set())} />
+      )}
+      {selectedNodes.length === 1 && selectedNode && (
+        <GraphInspector node={selectedNode} onClose={() => setSelectedIds(new Set())} />
+      )}
     </section>
   );
-}
-
-function WorkflowNode({
-  node,
-  diffState,
-  dirty,
-  locked,
-  selected,
-  stepState,
-  onPointerCancel,
-  onPointerDown,
-  onPointerMove,
-  onPointerUp,
-}: {
-  node: GraphNodeState;
-  diffState: DiffState;
-  dirty: boolean;
-  locked: boolean;
-  selected: boolean;
-  stepState: RunStepState;
-  onPointerCancel: (event: PointerEvent<HTMLDivElement>) => void;
-  onPointerDown: (event: PointerEvent<HTMLDivElement>) => void;
-  onPointerMove: (event: PointerEvent<HTMLDivElement>) => void;
-  onPointerUp: (event: PointerEvent<HTMLDivElement>) => void;
-}) {
-  const params = paramsFromSummary(node.summary);
-  const active = stepState === 'running';
-  const done = stepState === 'succeeded';
-  const failed = stepState === 'failed';
-  const classes = [
-    'node',
-    diffState === 'add' ? 'node--add' : '',
-    diffState === 'upd' ? 'node--upd' : '',
-    dirty ? 'node--dirty' : '',
-    locked ? 'node--locked' : '',
-    selected ? 'p-sel' : '',
-    active ? 'p-active' : '',
-    failed ? 'node--err' : '',
-  ]
-    .filter(Boolean)
-    .join(' ');
-
-  return (
-    <div
-      className={classes}
-      onClick={(event) => event.stopPropagation()}
-      onPointerCancel={onPointerCancel}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      style={{
-        left: node.position.x,
-        top: node.position.y,
-        width: GRAPH_NODE_WIDTH,
-        '--swatch': categorySwatch(node.category),
-      } as CSSProperties}
-    >
-      {done && (
-        <span className="p-done">
-          <Icon n="check" s={10} sw={2.2} />
-        </span>
-      )}
-      {active && <span className="p-spin" />}
-      {diffState === 'add' && <span className="node-flag add">+ 新增</span>}
-      {diffState === 'upd' && <span className="node-flag upd">~ 修改</span>}
-      {failed && <span className="node-flag err">失败</span>}
-      <div className="node-title">
-        <span className="swatch" />
-        {node.title}
-        <span className="p-nid">{node.id}</span>
-      </div>
-      <div className="node-body">
-        <div className="io-row">
-          <span className="io-in">
-            <Port type={node.category} />
-            {node.category}
-          </span>
-          <span className="io-out">
-            <Port type={node.nodeType} />
-            {node.nodeType.split('.').at(-1) ?? 'out'}
-          </span>
-        </div>
-        {params.length === 0 ? (
-          <div className="param-row">
-            <span className="param-k">type</span>
-            <span className="param-v">{node.nodeType}</span>
-          </div>
-        ) : (
-          params.slice(0, 4).map((param) => (
-            <div className="param-row" key={param.key}>
-              <span className="param-k">{param.key}</span>
-              <span className="param-v">{param.value}</span>
-            </div>
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
-
-function Inspector({ node, onClose }: { node: GraphNodeState; onClose: () => void }) {
-  const params = paramsFromSummary(node.summary);
-  return (
-    <div className="inspector p-inspector" onClick={(event) => event.stopPropagation()}>
-      <div className="inspector-head">
-        <div className="kicker">选中节点 · {node.id}</div>
-        <div className="title">
-          <span style={{ background: categorySwatch(node.category) }} />
-          {node.title}
-        </div>
-        <button className="p-close" onClick={onClose}>
-          x
-        </button>
-      </div>
-      <div className="inspector-body">
-        <div className="field">
-          <span className="field-label">node type</span>
-          <span className="field-input">{node.nodeType}</span>
-        </div>
-        <div className="field">
-          <span className="field-label">provider</span>
-          <span className="field-input">{node.provider ?? 'local/builtin'}</span>
-        </div>
-        {params.map((param) => (
-          <div className="field" key={param.key}>
-            <span className="field-label">{param.key}</span>
-            <span className="field-input field-area">{param.value}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function CanvasMinimap({
-  layout,
-  view,
-  viewportSize,
-  onNavigate,
-}: {
-  layout: MinimapLayout;
-  view: ViewState;
-  viewportSize: ViewportSize;
-  onNavigate: (x: number, y: number) => void;
-}) {
-  const [dragging, setDragging] = useState(false);
-  const viewportRect = minimapViewportRect(layout, view, viewportSize);
-
-  const navigate = (event: PointerEvent<HTMLDivElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect();
-    onNavigate(event.clientX - rect.left, event.clientY - rect.top);
-  };
-
-  return (
-    <div
-      aria-label="Graph minimap"
-      className="canvas-minimap"
-      onPointerDown={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        event.currentTarget.setPointerCapture(event.pointerId);
-        setDragging(true);
-        navigate(event);
-      }}
-      onPointerMove={(event) => {
-        if (dragging) navigate(event);
-      }}
-      onPointerUp={() => setDragging(false)}
-      onPointerCancel={() => setDragging(false)}
-    >
-      {layout.nodes.map((node) => (
-        <span
-          className="canvas-minimap-node"
-          key={node.id}
-          style={{
-            left: node.x,
-            top: node.y,
-            width: node.width,
-            height: node.height,
-          }}
-        />
-      ))}
-      <span
-        className="canvas-minimap-viewport"
-        style={{
-          left: viewportRect.x,
-          top: viewportRect.y,
-          width: viewportRect.width,
-          height: viewportRect.height,
-        }}
-      />
-    </div>
-  );
-}
-
-function nodeDiffState(
-  node: GraphNodeState,
-  baseNode: GraphNodeState | undefined,
-  hasProposal: boolean,
-): DiffState {
-  if (!hasProposal) return null;
-  if (!baseNode) return 'add';
-  return comparableNode(node) === comparableNode(baseNode) ? null : 'upd';
-}
-
-function comparableNode(node: GraphNodeState): string {
-  return JSON.stringify({
-    id: node.id,
-    nodeType: node.nodeType,
-    title: node.title,
-    category: node.category,
-    position: node.position,
-    provider: node.provider,
-    summary: node.summary,
-  });
-}
-
-function edgeSignature(edge: WorkbenchState['graph']['edges'][number]): string {
-  return `${edge.from.nodeId}:${edge.from.port}>${edge.to.nodeId}:${edge.to.port}:${edge.kind}`;
-}
-
-function edgePath(from: GraphNodeState, to: GraphNodeState): string {
-  const x1 = from.position.x + GRAPH_NODE_WIDTH;
-  const y1 = from.position.y + GRAPH_NODE_HEAD_HEIGHT + GRAPH_NODE_ROW_HEIGHT;
-  const x2 = to.position.x;
-  const y2 = to.position.y + GRAPH_NODE_HEAD_HEIGHT + GRAPH_NODE_ROW_HEIGHT;
-  const dx = Math.max(40, Math.abs(x2 - x1) * 0.5);
-  return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
-}
-
-function paramsFromSummary(summary: string): Param[] {
-  if (!summary || summary === '{}') return [];
-  try {
-    const parsed = JSON.parse(summary) as Record<string, unknown>;
-    return Object.entries(parsed).map(([key, value]) => ({
-      key,
-      value: typeof value === 'string' ? value : JSON.stringify(value),
-    }));
-  } catch {
-    return [{ key: 'summary', value: summary }];
-  }
-}
-
-function categorySwatch(category: string): string {
-  const key = category.toLowerCase();
-  if (key.includes('input')) return 'var(--t-image)';
-  if (key.includes('text')) return 'var(--t-cond)';
-  if (key.includes('video')) return 'var(--t-clip)';
-  if (key.includes('image')) return 'var(--t-image)';
-  if (key.includes('output')) return 'var(--green)';
-  if (key.includes('mock')) return 'var(--amber)';
-  return 'var(--accent)';
-}
-
-function runStatusLabel(status: NonNullable<WorkbenchState['run']>['status']): string {
-  if (status === 'running') return '运行中';
-  if (status === 'succeeded') return '已完成';
-  if (status === 'failed') return '失败';
-  if (status === 'interrupted') return '已中断';
-  if (status === 'estimating') return '估算中';
-  return '未运行';
 }
