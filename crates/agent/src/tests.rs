@@ -88,6 +88,13 @@ fn creates_ctx_out_contract_without_provider_secret_values() {
 
     let ctx = fs::read_to_string(session.ctx_dir.join("instructions.md")).expect("ctx");
     assert!(ctx.contains("Write exactly one result file: `out/proposal.json`"));
+    assert!(ctx.contains("Top-level keys must be exactly"));
+    assert!(ctx.contains("\"base_version_id\""));
+    assert!(ctx.contains("\"ops\""));
+    assert!(ctx.contains("Do not put top-level \"schema_version\", \"nodes\", or \"edges\""));
+    assert!(ctx.contains("\"op\":\"add_node\""));
+    assert!(ctx.contains("\"node_type\":\"input.text\""));
+    assert!(ctx.contains("\"to\":[\"output\",\"artifact\"],\"edge_type\":\"artifact\""));
     assert!(!ctx.contains("PROVIDER_API_KEY"));
 }
 
