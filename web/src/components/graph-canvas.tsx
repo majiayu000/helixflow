@@ -4,13 +4,14 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent,
   type PointerEvent,
   type WheelEvent,
 } from 'react';
 import { Icon } from '../icons';
 import type { GraphNodeState, LayoutPositionUpdate, WorkbenchState } from '../types';
 import { GraphEdges } from './graph-canvas-edges';
-import { GraphInspector } from './graph-canvas-inspector';
+import { GraphInspector, GraphSelectionInspector } from './graph-canvas-inspector';
 import {
   applyPositionDrafts,
   moveNodeDrafts,
@@ -42,6 +43,17 @@ import {
   nodeDiffState,
   runStatusLabel,
 } from './graph-canvas-rendering';
+import {
+  fitViewToNodes,
+  graphShortcutFromEvent,
+  isEditableShortcutTarget,
+  mergeSelection,
+  selectedIdsInWorldRect,
+  selectionClipboardText,
+  selectionRectFromPoints,
+  worldRectFromLocalRect,
+  type Point,
+} from './graph-canvas-selection';
 
 export {
   DEFAULT_GRAPH_VIEW,
@@ -82,6 +94,14 @@ type NodeDragState = {
   starts: DragNodeStart[];
 };
 
+type SelectionDragState = {
+  pointerId: number;
+  start: Point;
+  current: Point;
+  additive: boolean;
+  baseIds: Set<string>;
+};
+
 export function GraphCanvas({
   workspaceId,
   versionId,
@@ -97,8 +117,11 @@ export function GraphCanvas({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [draftPositions, setDraftPositions] = useState<PositionDrafts>({});
   const [layoutSaving, setLayoutSaving] = useState(false);
+  const [selectionDrag, setSelectionDrag] = useState<SelectionDragState | null>(null);
+  const [clipboardStatus, setClipboardStatus] = useState<string | null>(null);
   const drag = useRef<DragState | null>(null);
   const nodeDrag = useRef<NodeDragState | null>(null);
+  const suppressNextClick = useRef(false);
   const drawGraph = pendingProposal?.previewGraph ?? graph;
   const activeMode = pendingProposal ? 'review' : mode;
   const displayNodes = useMemo(
@@ -111,6 +134,10 @@ export function GraphCanvas({
   const stepStateByNodeId = useMemo(() => buildRunStepStateMap(run.steps), [run.steps]);
   const selectedNodeId = selectedIds.values().next().value as string | undefined;
   const selectedNode = selectedNodeId ? nodeById.get(selectedNodeId) : null;
+  const selectedNodes = useMemo(
+    () => displayNodes.filter((node) => selectedIds.has(node.id)),
+    [displayNodes, selectedIds],
+  );
   const nodeCount = displayNodes.length;
   const layoutUpdates = useMemo(
     () => (pendingProposal ? [] : positionUpdatesFromDrafts(graph.nodes, draftPositions)),
@@ -130,6 +157,8 @@ export function GraphCanvas({
   useEffect(() => {
     setDraftPositions({});
     setSelectedIds(new Set());
+    setSelectionDrag(null);
+    setClipboardStatus(null);
     nodeDrag.current = null;
   }, [workspaceId, versionId, pendingProposal?.id]);
 
@@ -192,6 +221,14 @@ export function GraphCanvas({
     drag.current = null;
   };
 
+  const canvasLocalPoint = (event: PointerEvent<HTMLElement>): Point => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  };
+
+  const shouldStartSelectionDrag = (event: PointerEvent<HTMLElement>) =>
+    activeMode === 'edit' || event.shiftKey || event.metaKey || event.ctrlKey;
+
   const handleNodePointerDown = (node: GraphNodeState, event: PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     event.stopPropagation();
@@ -250,14 +287,86 @@ export function GraphCanvas({
     }
   };
 
+  const completeSelectionDrag = (event: PointerEvent<HTMLElement>) => {
+    const current = selectionDrag;
+    if (!current || current.pointerId !== event.pointerId) return false;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const rect = selectionRectFromPoints(current.start, current.current);
+    const worldRect = worldRectFromLocalRect(rect, view);
+    const hitIds = selectedIdsInWorldRect(displayNodes, worldRect);
+    setSelectedIds(mergeSelection(current.baseIds, hitIds, current.additive));
+    setSelectionDrag(null);
+    suppressNextClick.current = rect.width > 2 || rect.height > 2;
+    return true;
+  };
+
+  const copySelection = async () => {
+    if (selectedNodes.length === 0) return;
+    const text = selectionClipboardText(selectedNodes, drawGraph.edges);
+    if (!navigator.clipboard?.writeText) {
+      setClipboardStatus('复制失败：浏览器不支持 clipboard');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      setClipboardStatus(`已复制 ${selectedNodes.length} 个节点`);
+    } catch (error) {
+      setClipboardStatus(error instanceof Error ? `复制失败：${error.message}` : '复制失败');
+    }
+  };
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (isEditableShortcutTarget(event.target)) return;
+    const shortcut = graphShortcutFromEvent(event);
+    if (!shortcut) return;
+    event.preventDefault();
+    if (shortcut === 'clear_selection') {
+      setSelectedIds(new Set());
+      setClipboardStatus(null);
+    }
+    if (shortcut === 'select_all') {
+      setSelectedIds(new Set(displayNodes.map((node) => node.id)));
+    }
+    if (shortcut === 'fit_view') {
+      updateView(fitViewToNodes(displayNodes, viewportSize));
+    }
+    if (shortcut === 'copy_selection') {
+      void copySelection();
+    }
+  };
+
   return (
     <section
       ref={canvasRef}
       className="p-canvas cv-bold"
-      onClick={() => setSelectedIds(new Set())}
+      tabIndex={0}
+      onClick={() => {
+        if (suppressNextClick.current) {
+          suppressNextClick.current = false;
+          return;
+        }
+        setSelectedIds(new Set());
+        setClipboardStatus(null);
+      }}
+      onKeyDown={handleKeyDown}
       onPointerDown={(event) => {
         if (event.button !== 0) return;
         event.currentTarget.setPointerCapture(event.pointerId);
+        event.currentTarget.focus();
+        if (shouldStartSelectionDrag(event)) {
+          const start = canvasLocalPoint(event);
+          setSelectionDrag({
+            pointerId: event.pointerId,
+            start,
+            current: start,
+            additive: event.shiftKey || event.metaKey || event.ctrlKey,
+            baseIds: new Set(selectedIds),
+          });
+          drag.current = null;
+          return;
+        }
         drag.current = {
           pointerId: event.pointerId,
           sx: event.clientX,
@@ -267,6 +376,12 @@ export function GraphCanvas({
         };
       }}
       onPointerMove={(event) => {
+        if (selectionDrag?.pointerId === event.pointerId) {
+          setSelectionDrag((current) =>
+            current ? { ...current, current: canvasLocalPoint(event) } : current,
+          );
+          return;
+        }
         const currentDrag = drag.current;
         if (!currentDrag || currentDrag.pointerId !== event.pointerId) return;
         const nextX = currentDrag.ox + event.clientX - currentDrag.sx;
@@ -277,8 +392,14 @@ export function GraphCanvas({
           y: nextY,
         }));
       }}
-      onPointerCancel={stopDrag}
-      onPointerUp={stopDrag}
+      onPointerCancel={(event) => {
+        if (completeSelectionDrag(event)) return;
+        stopDrag(event);
+      }}
+      onPointerUp={(event) => {
+        if (completeSelectionDrag(event)) return;
+        stopDrag(event);
+      }}
       onWheel={handleWheel}
     >
       <div className="canvas-grid" />
@@ -311,6 +432,7 @@ export function GraphCanvas({
             {layoutSaving ? '保存中' : `保存布局 · ${layoutUpdates.length}`}
           </button>
         )}
+        {clipboardStatus && <span className="canvas-pill">{clipboardStatus}</span>}
       </div>
       <div
         className="world"
@@ -357,6 +479,12 @@ export function GraphCanvas({
           </div>
         </div>
       )}
+      {selectionDrag && (
+        <span
+          className="selection-rect"
+          style={selectionRectFromPoints(selectionDrag.start, selectionDrag.current)}
+        />
+      )}
       <div className="zoom-ctl" onPointerDown={(event) => event.stopPropagation()}>
         <button onClick={() => updateView((current) => ({ ...current, z: current.z - 0.1 }))}>
           -
@@ -374,7 +502,10 @@ export function GraphCanvas({
           viewportSize={viewportSize}
         />
       )}
-      {selectedNode && (
+      {selectedNodes.length > 1 && (
+        <GraphSelectionInspector nodes={selectedNodes} onClose={() => setSelectedIds(new Set())} />
+      )}
+      {selectedNodes.length === 1 && selectedNode && (
         <GraphInspector node={selectedNode} onClose={() => setSelectedIds(new Set())} />
       )}
     </section>
