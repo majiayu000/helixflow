@@ -511,4 +511,30 @@ mod tests {
         assert!(!encoded.contains("sk-secret-token"));
         assert!(!encoded.contains("https://example.test"));
     }
+
+    #[test]
+    fn unavailable_runtime_provider_snapshot_redacts_bearer_markers_case_insensitively() {
+        for marker in ["bearer eyJhbGciOiJIUzI1NiJ9", "bEaReR abc123"] {
+            let provider = RuntimeProvider::unavailable(
+                "openai",
+                format!("runtime provider `openai` returned {marker}"),
+            );
+
+            let snapshot = provider.catalog_snapshot();
+            let encoded = match serde_json::to_string(&snapshot) {
+                Ok(value) => value,
+                Err(err) => panic!("serialize provider snapshot: {err}"),
+            };
+            let lower = encoded.to_ascii_lowercase();
+
+            assert_eq!(snapshot.default_provider, "openai");
+            assert_eq!(
+                snapshot.runtime_providers[0].message.as_deref(),
+                Some("runtime provider `openai` is unavailable")
+            );
+            assert!(!lower.contains("bearer"));
+            assert!(!encoded.contains("eyJ"));
+            assert!(!encoded.contains("abc123"));
+        }
+    }
 }

@@ -208,7 +208,7 @@ fn is_safe_provider_message(value: &str) -> bool {
         && !value.contains("/Users/")
         && !value.contains("\\Users\\")
         && !value.contains("file://")
-        && !value.contains("Bearer ")
+        && !lower.contains("bearer ")
         && !lower.contains("authorization")
         && !lower.contains("api_key")
         && !lower.contains("apikey")
