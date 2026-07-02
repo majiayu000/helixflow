@@ -26,9 +26,14 @@ import {
   portAnchorPoint,
   portTypeMatches,
   type ConnectionPort,
-  type PortDirection,
   type PortHighlight,
 } from './graph-canvas-connections';
+import {
+  confirmReplace,
+  portDropTargetFromPoint,
+  releaseConnectionCapture,
+} from './graph-canvas-connection-events';
+import { createCanvasEditActions } from './graph-canvas-edit-actions';
 import { GraphEdges } from './graph-canvas-edges';
 import { GraphInspector, GraphSelectionInspector } from './graph-canvas-inspector';
 import {
@@ -68,11 +73,11 @@ import {
   isEditableShortcutTarget,
   mergeSelection,
   selectedIdsInWorldRect,
-  selectionClipboardText,
   selectionRectFromPoints,
   worldRectFromLocalRect,
   type Point,
 } from './graph-canvas-selection';
+import { NodeLibrary } from './node-library';
 
 export {
   DEFAULT_GRAPH_VIEW,
@@ -130,11 +135,6 @@ type ConnectionDragState = {
   source: ConnectionPort;
   sourcePoint: Point;
   currentPoint: Point;
-};
-
-type PortDropTarget = ConnectionPort & {
-  direction: PortDirection;
-  index: number;
 };
 
 export function GraphCanvas({
@@ -205,6 +205,16 @@ export function GraphCanvas({
     () => computeMinimapLayout(displayNodes, { width: MINIMAP_WIDTH, height: MINIMAP_HEIGHT }),
     [displayNodes],
   );
+  const editActions = createCanvasEditActions({
+    disabled: connectionDisabled,
+    drawGraph,
+    onCreateProposal,
+    setClipboardStatus,
+    versionId,
+    view,
+    viewportSize,
+    workflowGraph,
+  });
 
   useEffect(() => {
     setView(loadGraphCanvasView(workspaceId));
@@ -481,21 +491,6 @@ export function GraphCanvas({
     return true;
   };
 
-  const copySelection = async () => {
-    if (selectedNodes.length === 0) return;
-    const text = selectionClipboardText(selectedNodes, drawGraph.edges);
-    if (!navigator.clipboard?.writeText) {
-      setClipboardStatus('复制失败：浏览器不支持 clipboard');
-      return;
-    }
-    try {
-      await navigator.clipboard.writeText(text);
-      setClipboardStatus(`已复制 ${selectedNodes.length} 个节点`);
-    } catch (error) {
-      setClipboardStatus(error instanceof Error ? `复制失败：${error.message}` : '复制失败');
-    }
-  };
-
   const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     if (isEditableShortcutTarget(event.target)) return;
     const shortcut = graphShortcutFromEvent(event);
@@ -512,7 +507,13 @@ export function GraphCanvas({
       updateView(fitViewToNodes(displayNodes, viewportSize));
     }
     if (shortcut === 'copy_selection') {
-      void copySelection();
+      void editActions.copySelection(selectedNodes);
+    }
+    if (shortcut === 'paste_selection') {
+      void editActions.pasteSelection();
+    }
+    if (shortcut === 'delete_selection') {
+      editActions.deleteSelection(selectedIds);
     }
   };
 
@@ -531,6 +532,19 @@ export function GraphCanvas({
         setClipboardStatus(null);
       }}
       onKeyDown={handleKeyDown}
+      onDragOver={(event) => {
+        if (!connectionDisabled && event.dataTransfer.types.includes('application/x-helixflow-node-type')) {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = 'copy';
+        }
+      }}
+      onDrop={(event) => {
+        const nodeType = event.dataTransfer.getData('application/x-helixflow-node-type');
+        const definition = definitionByType.get(nodeType);
+        if (!definition || connectionDisabled) return;
+        event.preventDefault();
+        editActions.addNode(definition, worldPointFromClient(event.clientX, event.clientY));
+      }}
       onPointerDown={(event) => {
         if (event.button !== 0) return;
         event.currentTarget.setPointerCapture(event.pointerId);
@@ -598,6 +612,12 @@ export function GraphCanvas({
       onWheel={handleWheel}
     >
       <div className="canvas-grid" />
+      <NodeLibrary
+        catalog={catalog}
+        disabled={connectionDisabled}
+        error={catalogError}
+        onAddNode={editActions.addNode}
+      />
       <div className="canvas-toolbar" onPointerDown={(event) => event.stopPropagation()}>
         <div className="mode-seg">
           <button className={activeMode === 'view' ? 'on' : ''} onClick={() => setMode('view')}>
@@ -730,36 +750,4 @@ export function GraphCanvas({
       )}
     </section>
   );
-}
-
-function releaseConnectionCapture(event: PointerEvent<HTMLElement>) {
-  const target = event.target instanceof HTMLElement ? event.target : null;
-  if (target?.hasPointerCapture(event.pointerId)) {
-    target.releasePointerCapture(event.pointerId);
-  }
-}
-
-function portDropTargetFromPoint(clientX: number, clientY: number): PortDropTarget | null {
-  if (typeof document === 'undefined') return null;
-  const element = document.elementFromPoint(clientX, clientY);
-  const port = element?.closest<HTMLElement>('[data-port-node-id]');
-  if (!port) return null;
-  const direction = port.dataset.portDirection;
-  if (direction !== 'input' && direction !== 'output') return null;
-  const nodeId = port.dataset.portNodeId;
-  const name = port.dataset.portName;
-  const type = port.dataset.portType;
-  if (!nodeId || !name || !type) return null;
-  return {
-    nodeId,
-    port: name,
-    type,
-    direction,
-    index: Number.parseInt(port.dataset.portIndex ?? '0', 10) || 0,
-  };
-}
-
-function confirmReplace(target: ConnectionPort): boolean {
-  if (typeof window === 'undefined' || typeof window.confirm !== 'function') return false;
-  return window.confirm(`输入端口 ${target.nodeId}.${target.port} 已有连线，是否替换？`);
 }

@@ -1,0 +1,113 @@
+.node-library {
+  position: absolute;
+  z-index: 7;
+  top: 72px;
+  left: 14px;
+  width: 236px;
+  max-height: min(520px, calc(100% - 148px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  box-shadow: var(--sh-md);
+  padding: 10px;
+}
+
+.node-library-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.node-library-head span {
+  color: var(--amber);
+  font-size: 11px;
+}
+
+.node-library-search {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--r-xs);
+  background: var(--surface-2);
+  color: var(--text);
+  padding: 7px 8px;
+  font-size: 12px;
+}
+
+.node-library-tabs {
+  display: flex;
+  gap: 5px;
+  overflow-x: auto;
+}
+
+.node-library-tabs button {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-xs);
+  background: var(--surface-2);
+  color: var(--text-2);
+  padding: 4px 7px;
+  font-size: 11px;
+}
+
+.node-library-tabs button.on {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.node-library-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.node-library-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-xs);
+  background: var(--surface-2);
+  color: var(--text);
+  padding: 7px 8px;
+  text-align: left;
+  cursor: grab;
+}
+
+.node-library-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.node-library-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.node-library-type {
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-library-empty {
+  border: 1px dashed var(--border);
+  border-radius: var(--r-xs);
+  color: var(--text-3);
+  padding: 12px;
+  font-size: 12px;
+}

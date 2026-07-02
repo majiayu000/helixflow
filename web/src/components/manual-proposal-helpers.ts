@@ -1,4 +1,5 @@
-import type { ManualProposalInput, NodeDefinition, WorkflowGraph } from '../types';
+import type { ManualProposalInput, WorkflowGraph } from '../types';
+import { defaultParamsForDefinition } from './graph-canvas-editing';
 
 export type ManualProposalOperation =
   | 'add_node'
@@ -97,23 +98,7 @@ export function parseManualJson(value: string): unknown {
   }
 }
 
-export function defaultParamsForDefinition(definition: NodeDefinition): Record<string, unknown> {
-  return Object.fromEntries(
-    definition.params_schema.required.map((key) => [
-      key,
-      defaultValueForParam(definition.params_schema.properties[key]),
-    ]),
-  );
-}
-
-function defaultValueForParam(
-  spec: NodeDefinition['params_schema']['properties'][string] | undefined,
-): unknown {
-  if (spec?.enum_values[0] !== undefined) return spec.enum_values[0];
-  if (spec?.type === 'integer' || spec?.type === 'number') return 1;
-  if (spec?.type === 'boolean') return false;
-  return '';
-}
+export { defaultParamsForDefinition };
 
 function requiredValue(value: string, label: string): string {
   const trimmed = value.trim();
