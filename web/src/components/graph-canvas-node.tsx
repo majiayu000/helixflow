@@ -1,6 +1,7 @@
 import type { CSSProperties, PointerEvent } from 'react';
 import { Icon, Port } from '../icons';
-import type { GraphNodeState, RunStepState } from '../types';
+import type { GraphNodeState, NodeDefinition, RunStepState } from '../types';
+import { portKey, type PortHighlight } from './graph-canvas-connections';
 import { GRAPH_NODE_WIDTH } from './graph-canvas-navigation';
 import {
   categorySwatch,
@@ -10,11 +11,20 @@ import {
 
 type WorkflowNodeProps = {
   node: GraphNodeState;
+  definition?: NodeDefinition;
   diffState: DiffState;
   dirty: boolean;
   locked: boolean;
+  connectionDisabled: boolean;
+  portHighlights: Map<string, PortHighlight>;
   selected: boolean;
   stepState: RunStepState;
+  onOutputPortPointerDown: (
+    node: GraphNodeState,
+    port: { name: string; type: string },
+    index: number,
+    event: PointerEvent<HTMLSpanElement>,
+  ) => void;
   onPointerCancel: (event: PointerEvent<HTMLDivElement>) => void;
   onPointerDown: (event: PointerEvent<HTMLDivElement>) => void;
   onPointerMove: (event: PointerEvent<HTMLDivElement>) => void;
@@ -23,11 +33,15 @@ type WorkflowNodeProps = {
 
 export function WorkflowNode({
   node,
+  definition,
   diffState,
   dirty,
   locked,
+  connectionDisabled,
+  portHighlights,
   selected,
   stepState,
+  onOutputPortPointerDown,
   onPointerCancel,
   onPointerDown,
   onPointerMove,
@@ -38,6 +52,8 @@ export function WorkflowNode({
   const done = stepState === 'succeeded';
   const failed = stepState === 'failed';
   const cached = done && node.cached;
+  const inputs = definition?.inputs ?? [];
+  const outputs = definition?.outputs ?? [];
   const classes = [
     'node',
     diffState === 'add' ? 'node--add' : '',
@@ -83,13 +99,60 @@ export function WorkflowNode({
       </div>
       <div className="node-body">
         <div className="io-row">
-          <span className="io-in">
-            <Port type={node.category} />
-            {node.category}
+          <span className="port-stack port-stack--input">
+            {inputs.length === 0 ? (
+              <span className="port-empty">{node.category}</span>
+            ) : (
+              inputs.map((port, index) => (
+                <span
+                  className={portTargetClass(
+                    'input',
+                    portHighlights.get(portKey(node.id, 'input', port.name)),
+                    connectionDisabled,
+                  )}
+                  data-port-direction="input"
+                  data-port-index={index}
+                  data-port-name={port.name}
+                  data-port-node-id={node.id}
+                  data-port-type={port.type}
+                  key={port.name}
+                  title={`${port.name} · ${port.type}`}
+                >
+                  <Port type={port.type} />
+                  <span>{port.name}</span>
+                </span>
+              ))
+            )}
           </span>
-          <span className="io-out">
-            <Port type={node.nodeType} />
-            {node.nodeType.split('.').at(-1) ?? 'out'}
+          <span className="port-stack port-stack--output">
+            {outputs.length === 0 ? (
+              <span className="port-empty">{node.nodeType.split('.').at(-1) ?? 'out'}</span>
+            ) : (
+              outputs.map((port, index) => (
+                <span
+                  className={portTargetClass(
+                    'output',
+                    portHighlights.get(portKey(node.id, 'output', port.name)),
+                    connectionDisabled,
+                  )}
+                  data-port-direction="output"
+                  data-port-index={index}
+                  data-port-name={port.name}
+                  data-port-node-id={node.id}
+                  data-port-type={port.type}
+                  key={port.name}
+                  onPointerDown={(event) => {
+                    if (!connectionDisabled) {
+                      onOutputPortPointerDown(node, port, index, event);
+                    }
+                  }}
+                  title={`${port.name} · ${port.type}`}
+                >
+                  <span>{port.name}</span>
+                  <Port type={port.type} />
+                </span>
+              ))
+            )}
           </span>
         </div>
         {params.length === 0 ? (
@@ -108,4 +171,19 @@ export function WorkflowNode({
       </div>
     </div>
   );
+}
+
+function portTargetClass(
+  direction: 'input' | 'output',
+  highlight: PortHighlight | undefined,
+  disabled: boolean,
+): string {
+  return [
+    'port-target',
+    `port-target--${direction}`,
+    disabled ? 'port-target--disabled' : '',
+    highlight ? `port-target--${highlight}` : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
 }
