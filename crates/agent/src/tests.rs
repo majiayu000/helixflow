@@ -220,6 +220,7 @@ fn chat_contract_skips_graph_context_and_records_prompt_metadata() {
     assert!(ctx.contains("Mode: Chat"));
     assert!(ctx.contains("out/reply.json"));
     assert!(ctx.contains("Do not read `ctx/graph.json`"));
+    assert!(ctx.contains("create, modify, run, or debug a workflow"));
 
     let metadata: Value = serde_json::from_slice(
         &fs::read(session.root_dir.join("prompt_metadata.json")).expect("metadata"),
@@ -236,38 +237,55 @@ fn chat_contract_skips_graph_context_and_records_prompt_metadata() {
 #[test]
 fn classifies_run_requests_without_falling_back_to_workflow_change() {
     assert_eq!(
-        classify_turn_mode("运行当前 workflow", &sample_graph()).expect("mode"),
+        classify_turn_mode("运行当前 workflow", &sample_graph())
+            .expect("mode")
+            .mode,
         TurnMode::RunRequest
     );
     assert_eq!(
-        classify_turn_mode("你好", &sample_graph()).expect("mode"),
+        classify_turn_mode("你好", &sample_graph())
+            .expect("mode")
+            .mode,
         TurnMode::Chat
     );
-    assert!(classify_turn_mode("继续", &sample_graph()).is_err());
+    let fallback = classify_turn_mode("继续", &sample_graph()).expect("mode");
+    assert_eq!(fallback.mode, TurnMode::Chat);
+    assert_eq!(fallback.source, TurnModeSource::AmbiguousFallback);
+    assert!(classify_turn_mode("   ", &sample_graph()).is_err());
 }
 
 #[test]
 fn classifies_modify_requests_before_broad_workflow_creation() {
     assert_eq!(
-        classify_turn_mode("modify workflow duration", &sample_graph()).expect("mode"),
+        classify_turn_mode("modify workflow duration", &sample_graph())
+            .expect("mode")
+            .mode,
         TurnMode::ModifyWorkflow
     );
     assert_eq!(
-        classify_turn_mode("把工作流时长改短", &sample_graph()).expect("mode"),
+        classify_turn_mode("把工作流时长改短", &sample_graph())
+            .expect("mode")
+            .mode,
         TurnMode::ModifyWorkflow
     );
     assert_eq!(
-        classify_turn_mode("创建一个 workflow", &sample_graph()).expect("mode"),
+        classify_turn_mode("创建一个 workflow", &sample_graph())
+            .expect("mode")
+            .mode,
         TurnMode::CreateWorkflow
     );
-    assert!(classify_turn_mode("workflow", &sample_graph()).is_err());
+    let fallback = classify_turn_mode("workflow", &sample_graph()).expect("mode");
+    assert_eq!(fallback.mode, TurnMode::Chat);
+    assert_eq!(fallback.source, TurnModeSource::AmbiguousFallback);
     let empty_graph = WorkflowGraph {
         schema_version: 1,
         nodes: BTreeMap::new(),
         edges: Vec::new(),
     };
     assert_eq!(
-        classify_turn_mode("workflow", &empty_graph).expect("mode"),
+        classify_turn_mode("workflow", &empty_graph)
+            .expect("mode")
+            .mode,
         TurnMode::CreateWorkflow
     );
 }

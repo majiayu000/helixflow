@@ -108,26 +108,35 @@ impl AgentSkill {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnRoutingError {
     EmptyMessage,
-    Ambiguous { message: String },
 }
 
 impl fmt::Display for TurnRoutingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyMessage => f.write_str("cannot classify an empty agent turn"),
-            Self::Ambiguous { message } => {
-                write!(f, "ambiguous agent turn, clarification required: {message}")
-            }
         }
     }
 }
 
 impl std::error::Error for TurnRoutingError {}
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnModeSource {
+    Keyword,
+    AmbiguousFallback,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TurnClassification {
+    pub mode: TurnMode,
+    pub source: TurnModeSource,
+}
+
 pub fn classify_turn_mode(
     user_message: &str,
     graph: &WorkflowGraph,
-) -> Result<TurnMode, TurnRoutingError> {
+) -> Result<TurnClassification, TurnRoutingError> {
     let trimmed = user_message.trim();
     if trimmed.is_empty() {
         return Err(TurnRoutingError::EmptyMessage);
@@ -135,27 +144,35 @@ pub fn classify_turn_mode(
 
     let normalized = trimmed.to_lowercase();
     if contains_any(&normalized, RUN_KEYWORDS) {
-        return Ok(TurnMode::RunRequest);
+        return Ok(keyword(TurnMode::RunRequest));
     }
     if contains_any(&normalized, DEBUG_KEYWORDS) {
-        return Ok(TurnMode::DebugWorkflow);
+        return Ok(keyword(TurnMode::DebugWorkflow));
     }
     if contains_any(&normalized, CHAT_KEYWORDS) {
-        return Ok(TurnMode::Chat);
+        return Ok(keyword(TurnMode::Chat));
     }
     if contains_any(&normalized, MODIFY_KEYWORDS) {
-        return Ok(TurnMode::ModifyWorkflow);
+        return Ok(keyword(TurnMode::ModifyWorkflow));
     }
     if contains_any(&normalized, CREATE_KEYWORDS) {
-        return Ok(TurnMode::CreateWorkflow);
+        return Ok(keyword(TurnMode::CreateWorkflow));
     }
     if graph.nodes.is_empty() && contains_any(&normalized, WORKFLOW_NOUNS) {
-        return Ok(TurnMode::CreateWorkflow);
+        return Ok(keyword(TurnMode::CreateWorkflow));
     }
 
-    Err(TurnRoutingError::Ambiguous {
-        message: trimmed.to_owned(),
+    Ok(TurnClassification {
+        mode: TurnMode::Chat,
+        source: TurnModeSource::AmbiguousFallback,
     })
+}
+
+fn keyword(mode: TurnMode) -> TurnClassification {
+    TurnClassification {
+        mode,
+        source: TurnModeSource::Keyword,
+    }
 }
 
 fn contains_any(value: &str, keywords: &[&str]) -> bool {
