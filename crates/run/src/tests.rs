@@ -56,25 +56,16 @@ fn executable_graph() -> WorkflowGraph {
                 },
             ),
             (
-                "writer".to_owned(),
-                GraphNode {
-                    node_type: "llm.prompt_writer".to_owned(),
-                    title: "Prompt Writer".to_owned(),
-                    params: json!({ "style": "cinematic" }),
-                    pos: [240.0, 0.0],
-                },
-            ),
-            (
                 "video".to_owned(),
                 GraphNode {
-                    node_type: "video.mock.text_to_video".to_owned(),
+                    node_type: "video.atlas.text_to_video".to_owned(),
                     title: "Video".to_owned(),
                     params: json!({
                         "prompt": "launch teaser",
                         "duration_sec": 4,
-                        "aspect_ratio": "9:16"
+                        "resolution": "720P"
                     }),
-                    pos: [480.0, 0.0],
+                    pos: [240.0, 0.0],
                 },
             ),
             (
@@ -83,27 +74,15 @@ fn executable_graph() -> WorkflowGraph {
                     node_type: "output.save".to_owned(),
                     title: "Save".to_owned(),
                     params: json!({}),
-                    pos: [720.0, 0.0],
+                    pos: [480.0, 0.0],
                 },
             ),
         ]),
-        edges: vec![
-            GraphEdge {
-                from: ["text".to_owned(), "text".to_owned()],
-                to: ["writer".to_owned(), "text".to_owned()],
-                edge_type: "text".to_owned(),
-            },
-            GraphEdge {
-                from: ["writer".to_owned(), "prompt".to_owned()],
-                to: ["video".to_owned(), "prompt".to_owned()],
-                edge_type: "text".to_owned(),
-            },
-            GraphEdge {
-                from: ["video".to_owned(), "video".to_owned()],
-                to: ["save".to_owned(), "artifact".to_owned()],
-                edge_type: "artifact".to_owned(),
-            },
-        ],
+        edges: vec![GraphEdge {
+            from: ["video".to_owned(), "video".to_owned()],
+            to: ["save".to_owned(), "artifact".to_owned()],
+            edge_type: "artifact".to_owned(),
+        }],
     }
 }
 
@@ -124,7 +103,8 @@ async fn run_service_can_share_an_injected_event_bus() {
     let (store, _dir) = open_temp_store().await;
     let (workspace_id, version_id) = workspace_version(&store).await;
     let events = EventBus::new(16);
-    let service = RunService::with_provider_and_events(store, MockProvider::new(), events.clone());
+    let service =
+        RunService::with_provider_and_events(store, AtlasLikeProvider::default(), events.clone());
     let mut receiver = events.subscribe();
 
     let outcome = service
@@ -155,7 +135,7 @@ async fn run_service_can_share_an_injected_event_bus() {
 async fn manual_run_persists_steps_events_and_artifacts() {
     let (store, _dir) = open_temp_store().await;
     let (workspace_id, version_id) = workspace_version(&store).await;
-    let service = RunService::new(store.clone());
+    let service = RunService::with_provider(store.clone(), AtlasLikeProvider::default());
     let mut receiver = service.events().subscribe();
 
     let outcome = service
@@ -170,7 +150,7 @@ async fn manual_run_persists_steps_events_and_artifacts() {
         .expect("execute run");
 
     assert_eq!(outcome.run.status, "succeeded");
-    assert_eq!(outcome.steps.len(), 4);
+    assert_eq!(outcome.steps.len(), 3);
     assert!(outcome.steps.iter().all(|step| step.state == "succeeded"));
     assert!(
         outcome
@@ -220,7 +200,7 @@ async fn interrupt_skips_remaining_steps() {
         loop {
             let event = receiver.recv().await.expect("receive event");
             if event.ev == "node.state"
-                && event.data["node_id"] == "writer"
+                && event.data["node_id"] == "video"
                 && event.data["state"] == "running"
             {
                 break event.run_id;
@@ -228,7 +208,7 @@ async fn interrupt_skips_remaining_steps() {
         }
     })
     .await
-    .expect("writer running event");
+    .expect("video running event");
 
     service.interrupt_run(&run_id).await.expect("interrupt run");
     let outcome = tokio::time::timeout(Duration::from_secs(2), handle)
@@ -238,15 +218,6 @@ async fn interrupt_skips_remaining_steps() {
         .expect("run outcome");
 
     assert_eq!(outcome.run.status, "interrupted");
-    assert_eq!(
-        outcome
-            .steps
-            .iter()
-            .find(|step| step.node_id == "writer")
-            .expect("writer step")
-            .state,
-        "skipped"
-    );
     assert_eq!(
         outcome
             .steps
@@ -297,16 +268,16 @@ async fn failed_step_skips_downstream_steps() {
     assert_eq!(
         steps
             .iter()
-            .find(|step| step.node_id == "writer")
-            .expect("writer step")
+            .find(|step| step.node_id == "video")
+            .expect("video step")
             .state,
         "failed"
     );
     assert_eq!(
         steps
             .iter()
-            .find(|step| step.node_id == "video")
-            .expect("video step")
+            .find(|step| step.node_id == "save")
+            .expect("save step")
             .state,
         "skipped"
     );
@@ -406,7 +377,7 @@ async fn concurrent_confirm_does_not_double_invoke_provider() {
 }
 
 #[tokio::test]
-async fn failed_partial_run_still_records_actual_costs() {
+async fn failed_provider_run_keeps_estimated_costs() {
     let (store, _dir) = open_temp_store().await;
     let (workspace_id, version_id) = workspace_version(&store).await;
     let service = RunService::with_provider(store.clone(), FailsOnVideoProvider::default());
@@ -432,14 +403,14 @@ async fn failed_partial_run_still_records_actual_costs() {
         .await
         .expect("cost ledger");
     assert!(ledger.iter().any(|entry| entry.estimated));
-    assert!(ledger.iter().any(|entry| !entry.estimated));
+    assert!(!ledger.iter().any(|entry| !entry.estimated));
 }
 
 #[tokio::test]
 async fn sweep_plan_produces_multiple_outputs_and_selected_recommendation() {
     let (store, _dir) = open_temp_store().await;
     let (workspace_id, version_id) = workspace_version(&store).await;
-    let service = RunService::new(store);
+    let service = RunService::with_provider(store, AtlasLikeProvider::default());
 
     let pending = service
         .request_sweep_plan(SweepPlan {
@@ -527,7 +498,7 @@ async fn invalid_sweep_confirmation_does_not_invoke_provider() {
 
 #[derive(Clone, Default)]
 struct BlockingProvider {
-    inner: MockProvider,
+    inner: AtlasLikeProvider,
     blocked: Arc<Notify>,
     release: Arc<Notify>,
 }
@@ -546,13 +517,18 @@ impl BlockingProvider {
 struct FailingProvider;
 
 #[derive(Clone, Default)]
-struct FailsOnVideoProvider {
+struct AtlasLikeProvider {
     inner: MockProvider,
 }
 
 #[derive(Clone, Default)]
+struct FailsOnVideoProvider {
+    inner: AtlasLikeProvider,
+}
+
+#[derive(Clone, Default)]
 struct CountingProvider {
-    inner: MockProvider,
+    inner: AtlasLikeProvider,
     invokes: Arc<AtomicUsize>,
 }
 
@@ -563,9 +539,36 @@ impl CountingProvider {
 }
 
 #[async_trait]
+impl Provider for AtlasLikeProvider {
+    fn id(&self) -> &'static str {
+        "atlas"
+    }
+
+    async fn health(&self) -> ProviderHealth {
+        self.inner.health().await
+    }
+
+    async fn catalog(&self) -> ProviderResultValue<ProviderCatalog> {
+        self.inner.catalog().await
+    }
+
+    async fn estimate(&self, req: ProviderRequest) -> ProviderResultValue<CostEstimate> {
+        self.inner.estimate(mock_request(req)).await
+    }
+
+    async fn invoke(&self, req: ProviderRequest) -> ProviderResultValue<ProviderResult> {
+        self.inner.invoke(mock_request(req)).await
+    }
+
+    async fn cancel(&self, handle: ProviderTaskHandle) -> ProviderResultValue<()> {
+        self.inner.cancel(handle).await
+    }
+}
+
+#[async_trait]
 impl Provider for FailingProvider {
     fn id(&self) -> &'static str {
-        "mock"
+        "atlas"
     }
 
     async fn health(&self) -> ProviderHealth {
@@ -576,7 +579,7 @@ impl Provider for FailingProvider {
     }
 
     async fn catalog(&self) -> ProviderResultValue<ProviderCatalog> {
-        MockProvider::new().catalog().await
+        AtlasLikeProvider::default().catalog().await
     }
 
     async fn estimate(&self, _req: ProviderRequest) -> ProviderResultValue<CostEstimate> {
@@ -592,7 +595,7 @@ impl Provider for FailingProvider {
     }
 
     async fn cancel(&self, handle: ProviderTaskHandle) -> ProviderResultValue<()> {
-        MockProvider::new().cancel(handle).await
+        AtlasLikeProvider::default().cancel(handle).await
     }
 }
 
@@ -615,7 +618,7 @@ impl Provider for BlockingProvider {
     }
 
     async fn invoke(&self, req: ProviderRequest) -> ProviderResultValue<ProviderResult> {
-        if req.capability == "prompt_writer" {
+        if req.capability == "text_to_video" {
             self.blocked.notify_waiters();
             self.release.notified().await;
         }
@@ -683,4 +686,12 @@ impl Provider for CountingProvider {
     async fn cancel(&self, handle: ProviderTaskHandle) -> ProviderResultValue<()> {
         self.inner.cancel(handle).await
     }
+}
+
+fn mock_request(mut req: ProviderRequest) -> ProviderRequest {
+    req.provider = "mock".to_owned();
+    if req.capability == "chat_completion" {
+        req.capability = "prompt_writer".to_owned();
+    }
+    req
 }

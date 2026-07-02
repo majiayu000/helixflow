@@ -1,20 +1,37 @@
+mod agent_transcript;
+mod chat_intent;
+mod design_artifact;
+mod provider;
+mod workbench;
+mod workbench_canvas;
+mod workbench_helpers;
+mod workbench_view;
+
 use axum::{
     Json, Router,
     extract::{
         Path, Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
+    http::StatusCode,
     response::IntoResponse,
-    routing::get,
+    routing::{get, post},
 };
-use helixflow_run::{EventBus, RunEventEnvelope};
+use helixflow_run::RunEventEnvelope;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
+use workbench::{Workbench, WorkbenchError};
+use workbench_canvas::{CanvasEventsQuery, CanvasOpsRequest, CanvasPresenceRequest};
 
 #[tokio::main]
 async fn main() {
-    let app = app(AppState::new(EventBus::default()));
+    let workbench = Workbench::open().await.expect("open workbench");
+    let (canvas_events, _) = broadcast::channel(128);
+    let app = app(AppState {
+        workbench,
+        canvas_events,
+    });
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:8787")
         .await
@@ -23,22 +40,51 @@ async fn main() {
     axum::serve(listener, app).await.expect("serve local app");
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct AppState {
-    events: EventBus,
-}
-
-impl AppState {
-    fn new(events: EventBus) -> Self {
-        Self { events }
-    }
+    workbench: Workbench,
+    canvas_events: broadcast::Sender<Value>,
 }
 
 fn app(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(health))
         .route("/api/system", get(system))
+        .route("/api/providers", get(providers))
+        .route("/api/workspaces", get(workspaces))
         .route("/api/workspaces/{workspace_id}/state", get(workspace_state))
+        .route(
+            "/api/workspaces/{workspace_id}/canvas",
+            get(workspace_canvas),
+        )
+        .route("/api/canvases/{canvas_id}/ops", post(post_canvas_ops))
+        .route("/api/canvases/{canvas_id}/events", get(canvas_events))
+        .route(
+            "/api/canvases/{canvas_id}/presence",
+            post(post_canvas_presence),
+        )
+        .route("/api/canvases/{canvas_id}/ws", get(canvas_ws_handler))
+        .route(
+            "/api/workspaces/{workspace_id}/messages",
+            post(post_message),
+        )
+        .route("/api/workspaces/{workspace_id}/runs", post(request_run))
+        .route(
+            "/api/workspaces/{workspace_id}/proposals/{proposal_id}/apply",
+            post(apply_proposal),
+        )
+        .route(
+            "/api/workspaces/{workspace_id}/proposals/{proposal_id}/dismiss",
+            post(dismiss_proposal),
+        )
+        .route(
+            "/api/workspaces/{workspace_id}/confirmations/{run_id}/hold",
+            post(hold_run),
+        )
+        .route(
+            "/api/workspaces/{workspace_id}/confirmations/{run_id}/approve",
+            post(approve_run),
+        )
         .route("/ws", get(ws_handler))
         .with_state(state)
 }
@@ -58,152 +104,232 @@ async fn system() -> Json<Value> {
     }))
 }
 
-async fn workspace_state(Path(workspace_id): Path<String>) -> Json<Value> {
-    Json(workspace_state_payload(&workspace_id))
+async fn providers(State(state): State<AppState>) -> Json<Value> {
+    Json(state.workbench.provider_status().await)
 }
 
-fn workspace_state_payload(workspace_id: &str) -> Value {
-    json!({
-        "eventSeq": 0,
-        "workspace": {
-            "id": workspace_id,
-            "name": "Helixflow Demo",
-            "versionId": "ver_demo_1",
-            "updatedAt": "2026-06-12T00:00:00Z"
-        },
-        "chat": {
-            "messages": [
-                {
-                    "id": "msg_1",
-                    "role": "user",
-                    "text": "Create a vertical product teaser from the launch note.",
-                    "time": "09:10"
-                },
-                {
-                    "id": "msg_2",
-                    "role": "agent",
-                    "text": "Graph proposal is ready for review.",
-                    "time": "09:11"
-                }
-            ]
-        },
-        "graph": {
-            "nodes": [
-                {
-                    "id": "text",
-                    "nodeType": "input.text",
-                    "title": "Launch note",
-                    "category": "Input",
-                    "status": "succeeded",
-                    "position": { "x": 48, "y": 158 },
-                    "provider": null,
-                    "summary": "Source copy"
-                },
-                {
-                    "id": "writer",
-                    "nodeType": "llm.prompt_writer",
-                    "title": "Prompt writer",
-                    "category": "Text",
-                    "status": "succeeded",
-                    "position": { "x": 235, "y": 96 },
-                    "provider": "mock",
-                    "summary": "Cinematic prompt"
-                },
-                {
-                    "id": "video",
-                    "nodeType": "video.mock.text_to_video",
-                    "title": "Video render",
-                    "category": "Video",
-                    "status": "queued",
-                    "position": { "x": 405, "y": 156 },
-                    "provider": "mock",
-                    "summary": "9:16, 4 seconds"
-                },
-                {
-                    "id": "save",
-                    "nodeType": "output.save",
-                    "title": "Save output",
-                    "category": "Output",
-                    "status": "queued",
-                    "position": { "x": 565, "y": 226 },
-                    "provider": null,
-                    "summary": "Selected artifact"
-                }
-            ],
-            "edges": [
-                {
-                    "id": "edge_text_writer",
-                    "from": { "nodeId": "text", "port": "text" },
-                    "to": { "nodeId": "writer", "port": "text" },
-                    "kind": "text"
-                },
-                {
-                    "id": "edge_writer_video",
-                    "from": { "nodeId": "writer", "port": "prompt" },
-                    "to": { "nodeId": "video", "port": "prompt" },
-                    "kind": "text"
-                },
-                {
-                    "id": "edge_video_save",
-                    "from": { "nodeId": "video", "port": "video" },
-                    "to": { "nodeId": "save", "port": "artifact" },
-                    "kind": "artifact"
-                }
-            ]
-        },
-        "run": {
-            "id": "run_demo_1",
-            "label": "Manual preview",
-            "status": "running",
-            "steps": [
-                { "nodeId": "text", "title": "Launch note", "state": "succeeded", "provider": null },
-                { "nodeId": "writer", "title": "Prompt writer", "state": "succeeded", "provider": "mock" },
-                { "nodeId": "video", "title": "Video render", "state": "queued", "provider": "mock" },
-                { "nodeId": "save", "title": "Save output", "state": "queued", "provider": null }
-            ],
-            "cost": { "estimate": 0, "actual": 0, "currency": "USD" }
-        },
-        "outputs": [
-            {
-                "id": "art_prompt_1",
-                "kind": "text",
-                "title": "Prompt draft",
-                "storageUri": "workspace://outputs/run_demo_1/writer/prompt_writer.txt",
-                "selected": false,
-                "meta": "Generated prompt"
-            },
-            {
-                "id": "art_video_1",
-                "kind": "video",
-                "title": "Vertical teaser",
-                "storageUri": "workspace://outputs/run_demo_1/video/text_to_video.mp4",
-                "selected": true,
-                "meta": "1080 x 1920"
-            }
-        ],
-        "history": [
-            {
-                "id": "hist_1",
-                "kind": "version",
-                "label": "Initial graph",
-                "time": "09:05",
-                "summary": "Version ver_demo_1"
-            },
-            {
-                "id": "hist_2",
-                "kind": "run",
-                "label": "Manual preview",
-                "time": "09:12",
-                "summary": "Run run_demo_1"
-            }
-        ],
-        "pendingConfirmation": {
-            "id": "confirm_1",
-            "title": "Agent requested run",
-            "summary": "Run the current graph through the mock provider.",
-            "cost": { "amount": 0, "currency": "USD" }
+type ApiResult = Result<Json<Value>, (StatusCode, Json<Value>)>;
+
+async fn workspaces(State(state): State<AppState>) -> ApiResult {
+    let workspaces = state
+        .workbench
+        .store
+        .workspaces()
+        .await
+        .map_err(WorkbenchError::from)
+        .map_err(api_error)?;
+    Ok(Json(json!({
+        "workspaces": workspaces.iter().map(|workspace| json!({
+            "id": workspace.id,
+            "name": workspace.name,
+            "versionId": workspace.cur_version_id,
+            "createdAt": workspace.created_at,
+            "updatedAt": workspace.updated_at,
+            "firstMessage": workspace.first_message,
+            "messageCount": workspace.message_count
+        })).collect::<Vec<_>>()
+    })))
+}
+
+async fn workspace_state(
+    State(state): State<AppState>,
+    Path(workspace_id): Path<String>,
+) -> ApiResult {
+    state
+        .workbench
+        .state(&workspace_id)
+        .await
+        .map(Json)
+        .map_err(api_error)
+}
+
+async fn workspace_canvas(
+    State(state): State<AppState>,
+    Path(workspace_id): Path<String>,
+) -> ApiResult {
+    state
+        .workbench
+        .canvas_for_workspace(&workspace_id)
+        .await
+        .map(Json)
+        .map_err(api_error)
+}
+
+async fn post_canvas_ops(
+    State(state): State<AppState>,
+    Path(canvas_id): Path<String>,
+    Json(request): Json<CanvasOpsRequest>,
+) -> ApiResult {
+    let response = state
+        .workbench
+        .append_canvas_ops(&canvas_id, request)
+        .await
+        .map_err(api_error)?;
+    if let Some(ops) = response.get("ops").and_then(Value::as_array) {
+        for op in ops {
+            publish_canvas_event(
+                &state.canvas_events,
+                json!({
+                    "type": "op",
+                    "canvas_id": canvas_id,
+                    "op": op
+                }),
+            );
         }
+    }
+    Ok(Json(response))
+}
+
+async fn canvas_events(
+    State(state): State<AppState>,
+    Path(canvas_id): Path<String>,
+    Query(query): Query<CanvasEventsQuery>,
+) -> ApiResult {
+    state
+        .workbench
+        .canvas_events_after(&canvas_id, query.after_seq.unwrap_or(0))
+        .await
+        .map(Json)
+        .map_err(api_error)
+}
+
+async fn post_canvas_presence(
+    State(state): State<AppState>,
+    Path(canvas_id): Path<String>,
+    Json(request): Json<CanvasPresenceRequest>,
+) -> ApiResult {
+    let response = state
+        .workbench
+        .upsert_canvas_presence(&canvas_id, request)
+        .await
+        .map_err(api_error)?;
+    publish_canvas_event(
+        &state.canvas_events,
+        json!({
+            "type": "presence",
+            "canvas_id": canvas_id,
+            "presence": response.get("presence").cloned().unwrap_or(Value::Null)
+        }),
+    );
+    Ok(Json(response))
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatRequest {
+    text: String,
+}
+
+async fn post_message(
+    State(state): State<AppState>,
+    Path(workspace_id): Path<String>,
+    Json(request): Json<ChatRequest>,
+) -> ApiResult {
+    state
+        .workbench
+        .send_message(&workspace_id, &request.text)
+        .await
+        .map(Json)
+        .map_err(api_error)
+}
+
+async fn request_run(State(state): State<AppState>, Path(workspace_id): Path<String>) -> ApiResult {
+    state
+        .workbench
+        .request_run(&workspace_id)
+        .await
+        .map(Json)
+        .map_err(api_error)
+}
+
+async fn apply_proposal(
+    State(state): State<AppState>,
+    Path((workspace_id, proposal_id)): Path<(String, String)>,
+) -> ApiResult {
+    state
+        .workbench
+        .apply_proposal(&workspace_id, &proposal_id)
+        .await
+        .map(Json)
+        .map_err(api_error)
+}
+
+async fn dismiss_proposal(
+    State(state): State<AppState>,
+    Path((workspace_id, proposal_id)): Path<(String, String)>,
+) -> ApiResult {
+    state
+        .workbench
+        .dismiss_proposal(&workspace_id, &proposal_id)
+        .await
+        .map(Json)
+        .map_err(api_error)
+}
+
+async fn approve_run(
+    State(state): State<AppState>,
+    Path((workspace_id, run_id)): Path<(String, String)>,
+) -> ApiResult {
+    state
+        .workbench
+        .approve_run(&workspace_id, &run_id)
+        .await
+        .map(Json)
+        .map_err(api_error)
+}
+
+async fn hold_run(
+    State(state): State<AppState>,
+    Path((workspace_id, run_id)): Path<(String, String)>,
+) -> ApiResult {
+    state
+        .workbench
+        .hold_run(&workspace_id, &run_id)
+        .await
+        .map(Json)
+        .map_err(api_error)
+}
+
+async fn canvas_ws_handler(
+    ws: WebSocketUpgrade,
+    Path(canvas_id): Path<String>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| {
+        stream_canvas_events(socket, state.canvas_events.subscribe(), canvas_id)
     })
+}
+
+async fn stream_canvas_events(
+    mut socket: WebSocket,
+    mut receiver: broadcast::Receiver<Value>,
+    canvas_id: String,
+) {
+    while let Ok(event) = receiver.recv().await {
+        if event
+            .get("canvas_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id != canvas_id)
+        {
+            continue;
+        }
+        let Ok(text) = serde_json::to_string(&event) else {
+            break;
+        };
+        if socket.send(Message::Text(text.into())).await.is_err() {
+            break;
+        }
+    }
+}
+
+fn publish_canvas_event(sender: &broadcast::Sender<Value>, event: Value) {
+    if let Err(broadcast::error::SendError(_event)) = sender.send(event) {
+        // No active canvas websocket subscribers is a normal local state.
+    }
+}
+
+fn api_error(err: WorkbenchError) -> (StatusCode, Json<Value>) {
+    let status = err.status_code();
+    (status, Json(json!({ "error": err.to_string() })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -216,7 +342,13 @@ async fn ws_handler(
     Query(query): Query<WorkspaceEventQuery>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| stream_events(socket, state.events.subscribe(), query.workspace_id))
+    ws.on_upgrade(move |socket| {
+        stream_events(
+            socket,
+            state.workbench.events().subscribe(),
+            query.workspace_id,
+        )
+    })
 }
 
 async fn stream_events(
@@ -264,19 +396,8 @@ mod tests {
         assert_eq!(body["store"], "store");
     }
 
-    #[tokio::test]
-    async fn workspace_state_hydrates_workbench_shell() {
-        let body = workspace_state(Path("demo".to_owned())).await.0;
-
-        assert_eq!(body["workspace"]["id"], "demo");
-        assert_eq!(body["graph"]["nodes"].as_array().expect("nodes").len(), 4);
-        assert_eq!(body["run"]["steps"].as_array().expect("steps").len(), 4);
-        assert!(body["pendingConfirmation"].is_object());
-    }
-
     #[test]
     fn app_exposes_websocket_event_payload_shape() {
-        let _app = app(AppState::default());
         let event = RunEventEnvelope {
             workspace_id: "ws_1".to_owned(),
             run_id: "run_1".to_owned(),
@@ -292,60 +413,5 @@ mod tests {
         assert_eq!(encoded["workspace_id"], "ws_1");
         assert_eq!(encoded["ev"], "node.state");
         assert_eq!(encoded["data"]["state"], "running");
-    }
-
-    #[tokio::test]
-    async fn websocket_streams_injected_event_bus() {
-        use futures_util::StreamExt;
-        use tokio::net::TcpListener;
-        use tokio::time::{Duration, timeout};
-
-        let events = EventBus::new(16);
-        let app = app(AppState::new(events.clone()));
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind test listener");
-        let addr = listener.local_addr().expect("listener addr");
-        tokio::spawn(async move {
-            axum::serve(listener, app).await.expect("serve test app");
-        });
-
-        let (mut socket, _) =
-            tokio_tungstenite::connect_async(format!("ws://{addr}/ws?workspace_id=ws_1"))
-                .await
-                .expect("connect websocket");
-        events
-            .publish(RunEventEnvelope {
-                workspace_id: "ws_other".to_owned(),
-                run_id: "run_other".to_owned(),
-                seq: 1,
-                server_time: "2026-06-12T00:00:00Z".to_owned(),
-                ev: "node.state".to_owned(),
-                data: json!({ "node_id": "n1", "state": "failed" }),
-            })
-            .expect("publish other event");
-        events
-            .publish(RunEventEnvelope {
-                workspace_id: "ws_1".to_owned(),
-                run_id: "run_1".to_owned(),
-                seq: 1,
-                server_time: "2026-06-12T00:00:00Z".to_owned(),
-                ev: "node.state".to_owned(),
-                data: json!({ "node_id": "n1", "state": "running" }),
-            })
-            .expect("publish event");
-
-        let message = timeout(Duration::from_secs(2), socket.next())
-            .await
-            .expect("websocket message")
-            .expect("websocket stream item")
-            .expect("websocket frame");
-        let text = message.into_text().expect("text frame");
-        let body: Value = serde_json::from_str(&text).expect("event json");
-
-        assert_eq!(body["workspace_id"], "ws_1");
-        assert_eq!(body["run_id"], "run_1");
-        assert_eq!(body["ev"], "node.state");
-        assert_eq!(body["data"]["state"], "running");
     }
 }

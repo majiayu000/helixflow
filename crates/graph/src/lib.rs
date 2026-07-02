@@ -6,6 +6,14 @@ use helixflow_store::{NewVersion, Store, VersionRecord, VersionSource};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod canvas;
+mod canvas_ops;
+
+pub use canvas::*;
+
+#[cfg(test)]
+mod canvas_tests;
+
 pub fn module_name() -> &'static str {
     "graph"
 }

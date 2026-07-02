@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+async-trait.workspace = true
 axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -17,6 +18,7 @@ helixflow-graph = { path = "../graph" }
 helixflow-registry = { path = "../registry" }
 helixflow-run = { path = "../run" }
 helixflow-store = { path = "../store" }
+reqwest.workspace = true
 
 [dev-dependencies]
 futures-util.workspace = true

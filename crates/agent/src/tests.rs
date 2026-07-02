@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use helixflow_graph::{GraphEdge, GraphNode};
+use helixflow_graph::{GraphNode, ProposalKind};
 use helixflow_run::EventBus;
 use serde_json::{Value, json};
 
@@ -26,22 +26,18 @@ fn sample_graph() -> WorkflowGraph {
             (
                 "video".to_owned(),
                 GraphNode {
-                    node_type: "video.mock.text_to_video".to_owned(),
+                    node_type: "video.atlas.text_to_video".to_owned(),
                     title: "Video".to_owned(),
                     params: json!({
                         "prompt": "clean product shot",
                         "duration_sec": 5,
-                        "aspect_ratio": "9:16"
+                        "resolution": "720P"
                     }),
                     pos: [220.0, 0.0],
                 },
             ),
         ]),
-        edges: vec![GraphEdge {
-            from: ["input".to_owned(), "text".to_owned()],
-            to: ["video".to_owned(), "prompt".to_owned()],
-            edge_type: "text".to_owned(),
-        }],
+        edges: Vec::new(),
     }
 }
 
@@ -73,7 +69,47 @@ fn creates_ctx_out_contract_without_provider_secret_values() {
 
     let ctx = fs::read_to_string(session.ctx_dir.join("instructions.md")).expect("ctx");
     assert!(ctx.contains("Write exactly one result file under `out/`"));
+    assert!(ctx.contains(r#""op":"add_node","id":"new_node_id","node""#));
+    assert!(ctx.contains("put node_type, title, params, and pos inside the nested `node` object"));
     assert!(!ctx.contains("PROVIDER_API_KEY"));
+}
+
+#[test]
+fn create_workflow_contract_uses_create_proposal_kind() {
+    let dir = match tempfile::tempdir() {
+        Ok(dir) => dir,
+        Err(err) => panic!("temp dir failed: {err}"),
+    };
+    let mut request = request(&dir);
+    request.skill = AgentSkill::CreateWorkflow;
+    let session = match create_session_contract(&request) {
+        Ok(session) => session,
+        Err(err) => panic!("session failed: {err}"),
+    };
+    let ctx = match fs::read_to_string(session.ctx_dir.join("instructions.md")) {
+        Ok(ctx) => ctx,
+        Err(err) => panic!("ctx read failed: {err}"),
+    };
+
+    assert!(ctx.contains("kind=create"));
+    assert!(!ctx.contains("kind=modify, title"));
+}
+
+#[test]
+fn design_artifact_contract_requests_manifest_and_files() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut request = request(&dir);
+    request.skill = AgentSkill::DesignArtifact;
+    let session = create_session_contract(&request).expect("session");
+
+    assert!(session.ctx_dir.join("project.md").exists());
+    assert!(session.ctx_dir.join("design_system.md").exists());
+    assert!(session.ctx_dir.join("skills/design_artifact.md").exists());
+    let ctx = fs::read_to_string(session.ctx_dir.join("instructions.md")).expect("ctx");
+    assert!(ctx.contains("Helixflow Design Artifact Turn"));
+    assert!(ctx.contains("out/artifact.json"));
+    assert!(ctx.contains("out/files/"));
+    assert!(!ctx.contains("Required proposal fields"));
 }
 
 #[test]
@@ -101,6 +137,26 @@ fn codex_runtime_uses_array_command_in_session_dir() {
 }
 
 #[test]
+fn codex_chat_prompt_does_not_force_context_file_reads() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let session = create_session_contract(&request(&dir)).expect("session");
+    let runtime = CodexRuntime::new("codex");
+    let command = runtime.command_spec_for_turn(
+        &session.root_dir,
+        AgentTurn {
+            message: "你是谁".to_owned(),
+            skill: AgentSkill::Chat,
+        },
+    );
+    let prompt = command.args.last().expect("prompt");
+
+    assert!(prompt.contains("Do not inspect ctx files"));
+    assert!(!prompt.contains("Read ctx/instructions.md"));
+    assert!(!prompt.contains("Read ctx/graph.json"));
+    assert!(prompt.contains("你是谁"));
+}
+
+#[test]
 fn safe_runtime_env_removes_provider_secret_keys() {
     let dir = tempfile::tempdir().expect("temp dir");
     let env = safe_runtime_env(
@@ -114,7 +170,9 @@ fn safe_runtime_env_removes_provider_secret_keys() {
         dir.path(),
     );
 
-    assert_eq!(env.get("PATH"), Some(&"/bin".to_owned()));
+    let path = env.get("PATH").expect("path");
+    assert!(path.split(':').any(|part| part == "/bin"));
+    assert!(path.split(':').any(|part| part == "/usr/bin"));
     assert_eq!(env.get("CODEX_HOME"), Some(&"/tmp/codex".to_owned()));
     assert_eq!(env.get("HOME"), Some(&dir.path().display().to_string()));
     assert!(!env.contains_key("OPENAI_API_KEY"));
@@ -218,6 +276,50 @@ fn validates_proposal_output_before_returning() {
     );
 }
 
+#[test]
+fn validates_design_artifact_output_before_returning() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut request = request(&dir);
+    request.skill = AgentSkill::DesignArtifact;
+    let session = create_session_contract(&request).expect("session");
+    write_valid_design_artifact(&session);
+
+    let artifact = read_validated_design_artifact(&session).expect("artifact");
+
+    assert_eq!(artifact.session_id, session.id);
+    assert_eq!(artifact.title, "Prototype");
+    assert_eq!(artifact.kind, "html");
+    assert!(artifact.entry_path.ends_with("index.html"));
+    assert!(artifact.files_dir.ends_with("files"));
+}
+
+#[test]
+fn rejects_design_artifact_entry_outside_files_dir() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut request = request(&dir);
+    request.skill = AgentSkill::DesignArtifact;
+    let session = create_session_contract(&request).expect("session");
+    fs::create_dir_all(session.out_dir.join("files")).expect("files");
+    fs::write(session.out_dir.join("index.html"), "<html />").expect("entry");
+    fs::write(
+        session.out_dir.join("artifact.json"),
+        serde_json::to_vec(&json!({
+            "manifest_version": 1,
+            "title": "Bad",
+            "summary": "Bad",
+            "kind": "html",
+            "entry_file": "../index.html",
+            "mime": "text/html",
+            "meta": {}
+        }))
+        .expect("json"),
+    )
+    .expect("manifest");
+
+    let err = read_validated_design_artifact(&session).expect_err("outside entry should fail");
+    assert!(err.to_string().contains("outside session"));
+}
+
 #[tokio::test]
 async fn service_streams_agent_status_and_reads_runtime_proposal() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -240,6 +342,40 @@ async fn service_streams_agent_status_and_reads_runtime_proposal() {
     assert!(event_names.iter().any(|event| event == "agent.status.end"));
 }
 
+#[tokio::test]
+async fn service_creates_design_artifact_from_runtime_manifest() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let service = AgentService::new(FakeRuntime::new(), EventBus::new(16));
+    let artifact = service
+        .create_design_artifact(AgentSessionRequest {
+            skill: AgentSkill::DesignArtifact,
+            user_message: "设计一个 dashboard".to_owned(),
+            ..request(&dir)
+        })
+        .await
+        .expect("design artifact");
+
+    assert_eq!(artifact.title, "Prototype");
+    assert_eq!(artifact.kind, "html");
+    assert!(artifact.entry_path.exists());
+}
+
+#[tokio::test]
+async fn service_answers_chat_from_runtime_reply_file() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let service = AgentService::new(FakeRuntime::new(), EventBus::new(16));
+    let reply = service
+        .answer_chat(AgentSessionRequest {
+            skill: AgentSkill::Chat,
+            user_message: "你是谁".to_owned(),
+            ..request(&dir)
+        })
+        .await
+        .expect("chat reply");
+
+    assert_eq!(reply.message, "我是 Codex runtime 生成的真实聊天回复。");
+}
+
 fn write_valid_proposal(session: &AgentSession) {
     write_proposal(
         session,
@@ -257,6 +393,29 @@ fn write_valid_proposal(session: &AgentSession) {
             }]
         }),
     );
+}
+
+fn write_valid_design_artifact(session: &AgentSession) {
+    fs::create_dir_all(session.out_dir.join("files")).expect("files");
+    fs::write(
+        session.out_dir.join("files/index.html"),
+        "<!doctype html><html><body><main>Prototype</main></body></html>",
+    )
+    .expect("entry");
+    fs::write(
+        session.out_dir.join("artifact.json"),
+        serde_json::to_vec(&json!({
+            "manifest_version": 1,
+            "title": "Prototype",
+            "summary": "Self-contained HTML prototype.",
+            "kind": "html",
+            "entry_file": "files/index.html",
+            "mime": "text/html",
+            "meta": { "surface": "ui" }
+        }))
+        .expect("artifact json"),
+    )
+    .expect("manifest");
 }
 
 fn write_proposal(session: &AgentSession, value: Value) {
@@ -300,8 +459,12 @@ impl AgentRuntime for FakeRuntime {
         ))
     }
 
-    async fn send(&self, handle: &RuntimeHandle, _turn: AgentTurn) -> RuntimeResult<()> {
-        write_valid_proposal_to_path(&handle.out_dir)
+    async fn send(&self, handle: &RuntimeHandle, turn: AgentTurn) -> RuntimeResult<()> {
+        match turn.skill {
+            AgentSkill::Chat => write_valid_reply_to_path(&handle.out_dir),
+            AgentSkill::DesignArtifact => write_valid_design_artifact_to_path(&handle.out_dir),
+            _ => write_valid_proposal_to_path(&handle.out_dir),
+        }
     }
 
     async fn next_event(&self, _handle: &RuntimeHandle) -> Option<RuntimeEvent> {
@@ -311,6 +474,41 @@ impl AgentRuntime for FakeRuntime {
     async fn cancel(&self, _handle: &RuntimeHandle) -> RuntimeResult<()> {
         Ok(())
     }
+}
+
+fn write_valid_reply_to_path(out_dir: &Path) -> RuntimeResult<()> {
+    fs::write(
+        out_dir.join("reply.json"),
+        serde_json::to_vec(&json!({
+            "message": "我是 Codex runtime 生成的真实聊天回复。"
+        }))
+        .map_err(|err| RuntimeError::Failed(err.to_string()))?,
+    )
+    .map_err(|err| RuntimeError::Failed(err.to_string()))
+}
+
+fn write_valid_design_artifact_to_path(out_dir: &Path) -> RuntimeResult<()> {
+    fs::create_dir_all(out_dir.join("files"))
+        .map_err(|err| RuntimeError::Failed(err.to_string()))?;
+    fs::write(
+        out_dir.join("files/index.html"),
+        "<!doctype html><html><body><main>Prototype</main></body></html>",
+    )
+    .map_err(|err| RuntimeError::Failed(err.to_string()))?;
+    fs::write(
+        out_dir.join("artifact.json"),
+        serde_json::to_vec(&json!({
+            "manifest_version": 1,
+            "title": "Prototype",
+            "summary": "Self-contained HTML prototype.",
+            "kind": "html",
+            "entry_file": "files/index.html",
+            "mime": "text/html",
+            "meta": { "surface": "ui" }
+        }))
+        .map_err(|err| RuntimeError::Failed(err.to_string()))?,
+    )
+    .map_err(|err| RuntimeError::Failed(err.to_string()))
 }
 
 fn write_valid_proposal_to_path(out_dir: &Path) -> RuntimeResult<()> {

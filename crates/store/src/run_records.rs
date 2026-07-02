@@ -186,6 +186,21 @@ impl Store {
         .await?)
     }
 
+    pub async fn workspace_runs(&self, workspace_id: &str) -> StoreResult<Vec<RunRecord>> {
+        Ok(sqlx::query_as::<_, RunRecord>(
+            r#"
+            SELECT id, workspace_id, version_id, group_id, label, trigger, plan_json,
+                   estimate_json, status, error_json, started_at, ended_at, created_at
+            FROM runs
+            WHERE workspace_id = ?
+            ORDER BY created_at, id
+            "#,
+        )
+        .bind(workspace_id)
+        .fetch_all(self.pool())
+        .await?)
+    }
+
     pub async fn update_run_status(
         &self,
         run_id: &str,
@@ -517,6 +532,26 @@ impl Store {
             "#,
         )
         .bind(run_id)
+        .fetch_all(self.pool())
+        .await?;
+
+        rows.into_iter().map(artifact_from_row).collect()
+    }
+
+    pub async fn workspace_artifacts(
+        &self,
+        workspace_id: &str,
+    ) -> StoreResult<Vec<ArtifactRecord>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, workspace_id, run_id, run_step_id, node_id, kind, storage_uri, sha256,
+                   mime, width, height, duration_ms, selected, meta_json, created_at
+            FROM artifacts
+            WHERE workspace_id = ?
+            ORDER BY created_at, id
+            "#,
+        )
+        .bind(workspace_id)
         .fetch_all(self.pool())
         .await?;
 

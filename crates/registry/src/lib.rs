@@ -349,27 +349,31 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
             "llm.prompt_writer",
             "Prompt Writer",
             "text",
-            Some("mock"),
-            Some("prompt_writer"),
-            "Drafts a generation prompt from source text.",
-            vec![port("text", PortType::Text, true)],
+            Some("atlas"),
+            Some("chat_completion"),
+            "Drafts text through the configured Atlas chat API provider.",
+            vec![],
             vec![port("prompt", PortType::Text, true)],
             schema(
-                &["style"],
-                [(
-                    "style",
-                    ParamSpec::string_enum(&["cinematic", "product", "plain"]),
-                )],
+                &["prompt"],
+                [
+                    ("prompt", ParamSpec::string()),
+                    (
+                        "style",
+                        ParamSpec::string_enum(&["cinematic", "product", "plain"]),
+                    ),
+                    ("model", ParamSpec::string()),
+                ],
             ),
         ),
         node(
-            "image.mock.generate",
-            "Mock Image",
+            "image.atlas.generate",
+            "Atlas Image",
             "image",
-            Some("mock"),
+            Some("atlas"),
             Some("image_generate"),
-            "Generates a deterministic placeholder image artifact.",
-            vec![port("prompt", PortType::Text, true)],
+            "Generates an image through the configured Atlas API provider.",
+            vec![],
             vec![port("image", PortType::Image, true)],
             schema(
                 &["prompt", "aspect_ratio"],
@@ -384,23 +388,47 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
             ),
         ),
         node(
-            "video.mock.text_to_video",
-            "Mock Text To Video",
+            "video.atlas.text_to_video",
+            "Atlas Text To Video",
             "video",
-            Some("mock"),
+            Some("atlas"),
             Some("text_to_video"),
-            "Generates a deterministic placeholder video artifact.",
-            vec![port("prompt", PortType::Text, true)],
+            "Generates a video from prompt text through the configured Atlas API provider.",
+            vec![],
             vec![port("video", PortType::Video, true)],
             schema(
-                &["prompt", "duration_sec", "aspect_ratio"],
+                &["prompt", "duration_sec", "resolution"],
                 [
                     ("prompt", ParamSpec::string()),
-                    ("duration_sec", ParamSpec::integer_range(1, 10)),
+                    ("duration_sec", ParamSpec::integer_range(1, 15)),
                     (
-                        "aspect_ratio",
-                        ParamSpec::string_enum(&["1:1", "9:16", "16:9"]),
+                        "resolution",
+                        ParamSpec::string_enum(&["480P", "720P", "1080P"]),
                     ),
+                    ("model", ParamSpec::string()),
+                ],
+            ),
+        ),
+        node(
+            "video.atlas.image_to_video",
+            "Atlas Image To Video",
+            "video",
+            Some("atlas"),
+            Some("image_to_video"),
+            "Generates a video from an image URL or data URI through the configured Atlas API provider.",
+            vec![port("image", PortType::Image, true)],
+            vec![port("video", PortType::Video, true)],
+            schema(
+                &["prompt", "duration_sec", "resolution"],
+                [
+                    ("prompt", ParamSpec::string()),
+                    ("duration_sec", ParamSpec::integer_range(1, 15)),
+                    (
+                        "resolution",
+                        ParamSpec::string_enum(&["480P", "720P", "1080P"]),
+                    ),
+                    ("model", ParamSpec::string()),
+                    ("image", ParamSpec::string()),
                 ],
             ),
         ),
@@ -480,17 +508,13 @@ mod tests {
     #[test]
     fn serializes_node_definition_boundary() {
         let definition = NodeDefinition {
-            node_type: "mock.image".to_string(),
-            title: "Mock Image".to_string(),
-            category: "mock".to_string(),
-            provider: Some("mock".to_string()),
+            node_type: "image.atlas.generate".to_string(),
+            title: "Atlas Image".to_string(),
+            category: "image".to_string(),
+            provider: Some("atlas".to_string()),
             capability: Some("image_generate".to_string()),
-            description: "A mock image node.".to_string(),
-            inputs: vec![PortDefinition {
-                name: "prompt".to_string(),
-                port_type: PortType::Text,
-                required: true,
-            }],
+            description: "An Atlas image node.".to_string(),
+            inputs: Vec::new(),
             outputs: vec![PortDefinition {
                 name: "image".to_string(),
                 port_type: PortType::Image,
@@ -505,10 +529,10 @@ mod tests {
 
         let encoded = serde_json::to_value(&definition).expect("serialize node definition");
 
-        assert_eq!(encoded["type"], "mock.image");
-        assert_eq!(encoded["title"], "Mock Image");
-        assert_eq!(encoded["category"], "mock");
-        assert_eq!(encoded["provider"], "mock");
+        assert_eq!(encoded["type"], "image.atlas.generate");
+        assert_eq!(encoded["title"], "Atlas Image");
+        assert_eq!(encoded["category"], "image");
+        assert_eq!(encoded["provider"], "atlas");
     }
 
     #[test]
@@ -531,29 +555,29 @@ mod tests {
 
         registry
             .validate_node_params(
-                "video.mock.text_to_video",
+                "video.atlas.text_to_video",
                 &json!({
                     "prompt": "A clean product ad",
                     "duration_sec": 5,
-                    "aspect_ratio": "9:16"
+                    "resolution": "720P"
                 }),
             )
             .expect("valid params");
 
         assert!(matches!(
             registry.validate_node_params(
-                "video.mock.text_to_video",
-                &json!({ "prompt": "missing duration", "aspect_ratio": "9:16" })
+                "video.atlas.text_to_video",
+                &json!({ "prompt": "missing duration", "resolution": "720P" })
             ),
             Err(RegistryError::MissingRequiredParam { .. })
         ));
         assert!(matches!(
             registry.validate_node_params(
-                "video.mock.text_to_video",
+                "video.atlas.text_to_video",
                 &json!({
                     "prompt": "bad duration",
                     "duration_sec": 30,
-                    "aspect_ratio": "9:16"
+                    "resolution": "720P"
                 })
             ),
             Err(RegistryError::ParamOutOfRange { .. })
@@ -570,7 +594,7 @@ mod tests {
             catalog
                 .nodes
                 .iter()
-                .any(|node| node.node_type == "video.mock.text_to_video")
+                .any(|node| node.node_type == "video.atlas.text_to_video")
         );
     }
 }

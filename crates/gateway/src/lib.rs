@@ -99,6 +99,10 @@ pub struct ProviderTaskHandle {
 pub enum ProviderError {
     WrongProvider { expected: String, actual: String },
     UnsupportedCapability(String),
+    InvalidRequest(String),
+    ProviderUnavailable(String),
+    RequestFailed(String),
+    InvalidResponse(String),
     CancelUnsupported(String),
 }
 
@@ -111,6 +115,10 @@ impl fmt::Display for ProviderError {
             Self::UnsupportedCapability(capability) => {
                 write!(f, "unsupported provider capability: {capability}")
             }
+            Self::InvalidRequest(message) => write!(f, "invalid provider request: {message}"),
+            Self::ProviderUnavailable(message) => write!(f, "provider unavailable: {message}"),
+            Self::RequestFailed(message) => write!(f, "provider request failed: {message}"),
+            Self::InvalidResponse(message) => write!(f, "invalid provider response: {message}"),
             Self::CancelUnsupported(provider_task_id) => {
                 write!(f, "cancel is unsupported for mock task: {provider_task_id}")
             }

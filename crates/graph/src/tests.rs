@@ -21,25 +21,16 @@ fn sample_graph() -> WorkflowGraph {
                 },
             ),
             (
-                "writer".to_string(),
-                GraphNode {
-                    node_type: "llm.prompt_writer".to_string(),
-                    title: "Prompt".to_string(),
-                    params: json!({ "style": "product" }),
-                    pos: [220.0, 0.0],
-                },
-            ),
-            (
                 "video".to_string(),
                 GraphNode {
-                    node_type: "video.mock.text_to_video".to_string(),
+                    node_type: "video.atlas.text_to_video".to_string(),
                     title: "Video".to_string(),
                     params: json!({
                         "prompt": "clean product shot",
                         "duration_sec": 5,
-                        "aspect_ratio": "9:16"
+                        "resolution": "720P"
                     }),
-                    pos: [440.0, 0.0],
+                    pos: [220.0, 0.0],
                 },
             ),
             (
@@ -48,27 +39,15 @@ fn sample_graph() -> WorkflowGraph {
                     node_type: "output.save".to_string(),
                     title: "Save".to_string(),
                     params: json!({}),
-                    pos: [660.0, 0.0],
+                    pos: [440.0, 0.0],
                 },
             ),
         ]),
-        edges: vec![
-            GraphEdge {
-                from: ["input".to_string(), "text".to_string()],
-                to: ["writer".to_string(), "text".to_string()],
-                edge_type: "text".to_string(),
-            },
-            GraphEdge {
-                from: ["writer".to_string(), "prompt".to_string()],
-                to: ["video".to_string(), "prompt".to_string()],
-                edge_type: "text".to_string(),
-            },
-            GraphEdge {
-                from: ["video".to_string(), "video".to_string()],
-                to: ["output".to_string(), "artifact".to_string()],
-                edge_type: "artifact".to_string(),
-            },
-        ],
+        edges: vec![GraphEdge {
+            from: ["video".to_string(), "video".to_string()],
+            to: ["output".to_string(), "artifact".to_string()],
+            edge_type: "artifact".to_string(),
+        }],
     }
 }
 
@@ -84,7 +63,7 @@ fn serializes_workflow_graph_boundary() {
 
     assert_eq!(encoded["schema_version"], 1);
     assert_eq!(encoded["nodes"]["input"]["node_type"], "input.text");
-    assert_eq!(encoded["edges"][0]["edge_type"], "text");
+    assert_eq!(encoded["edges"][0]["edge_type"], "artifact");
 }
 
 #[test]
@@ -97,7 +76,7 @@ fn validates_node_schema_and_edges() {
     invalid.nodes.get_mut("video").unwrap().params = json!({
         "prompt": "too long",
         "duration_sec": 30,
-        "aspect_ratio": "9:16"
+        "resolution": "720P"
     });
 
     assert!(matches!(
@@ -165,9 +144,9 @@ fn apply_rechecks_superseded_base_version() {
 fn rejects_duplicate_input_edges_before_plan_compilation() {
     let mut graph = sample_graph();
     graph.edges.push(GraphEdge {
-        from: ["input".to_string(), "text".to_string()],
-        to: ["writer".to_string(), "text".to_string()],
-        edge_type: "text".to_string(),
+        from: ["video".to_string(), "video".to_string()],
+        to: ["output".to_string(), "artifact".to_string()],
+        edge_type: "artifact".to_string(),
     });
 
     assert!(matches!(
@@ -190,13 +169,17 @@ fn rejects_invalid_edge_type_label() {
 #[test]
 fn required_inputs_can_be_provided_by_params() {
     let mut graph = sample_graph();
-    graph
-        .edges
-        .retain(|edge| edge.to != ["video".to_string(), "prompt".to_string()]);
+    graph.nodes.get_mut("video").unwrap().node_type = "video.atlas.image_to_video".to_string();
+    graph.nodes.get_mut("video").unwrap().params = json!({
+        "prompt": "clean product shot",
+        "duration_sec": 5,
+        "resolution": "720P",
+        "image": "https://cdn.example/input.png"
+    });
 
     service()
         .validate_graph(&graph)
-        .expect("video prompt param satisfies required input");
+        .expect("video image param satisfies required input");
 }
 
 #[test]
@@ -233,8 +216,23 @@ fn compiles_execution_plan_in_topological_order() {
     assert_eq!(plan.schema_version, 1);
     assert_eq!(plan.version_id, "ver_1");
     assert_eq!(plan.steps[0].node_id, "input");
-    assert_eq!(plan.steps[2].provider.as_deref(), Some("mock"));
-    assert_eq!(plan.steps[2].capability.as_deref(), Some("text_to_video"));
+    assert_eq!(plan.steps[1].provider.as_deref(), Some("atlas"));
+    assert_eq!(plan.steps[1].capability.as_deref(), Some("text_to_video"));
+}
+
+#[test]
+fn compiles_empty_workflow_as_blank_plan() {
+    let graph = WorkflowGraph {
+        schema_version: 1,
+        nodes: BTreeMap::new(),
+        edges: Vec::new(),
+    };
+    let Ok(plan) = service().compile_plan(&graph, "ver_empty") else {
+        panic!("empty graph should compile");
+    };
+
+    assert_eq!(plan.version_id, "ver_empty");
+    assert!(plan.steps.is_empty());
 }
 
 #[tokio::test]

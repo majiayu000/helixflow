@@ -6,8 +6,12 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Executor, Row, SqlitePool};
 use uuid::Uuid;
 
+mod canvas_records;
+mod proposal_records;
 mod run_records;
 
+pub use canvas_records::*;
+pub use proposal_records::*;
 pub use run_records::*;
 
 pub fn module_name() -> &'static str {
@@ -29,6 +33,11 @@ pub enum StoreError {
         workspace_id: String,
         version_id: String,
         actual_workspace_id: Option<String>,
+    },
+    CanvasBaseSeqConflict {
+        canvas_id: String,
+        base_seq: i64,
+        current_seq: i64,
     },
 }
 
@@ -52,6 +61,14 @@ impl fmt::Display for StoreError {
             } => write!(
                 f,
                 "run workspace `{workspace_id}` cannot use version `{version_id}` from workspace `{actual_workspace_id:?}`"
+            ),
+            Self::CanvasBaseSeqConflict {
+                canvas_id,
+                base_seq,
+                current_seq,
+            } => write!(
+                f,
+                "canvas `{canvas_id}` op base_seq `{base_seq}` is ahead of current seq `{current_seq}`"
             ),
         }
     }
@@ -110,6 +127,26 @@ impl Store {
         self.workspace(&id).await
     }
 
+    pub async fn ensure_workspace(
+        &self,
+        workspace_id: &str,
+        name: &str,
+    ) -> StoreResult<WorkspaceRecord> {
+        sqlx::query(
+            r#"
+            INSERT INTO workspaces (id, name, created_at, updated_at)
+            VALUES (?, ?, current_timestamp, current_timestamp)
+            ON CONFLICT(id) DO NOTHING
+            "#,
+        )
+        .bind(workspace_id)
+        .bind(name)
+        .execute(&self.pool)
+        .await?;
+
+        self.workspace(workspace_id).await
+    }
+
     pub async fn workspace(&self, workspace_id: &str) -> StoreResult<WorkspaceRecord> {
         let workspace = sqlx::query_as::<_, WorkspaceRecord>(
             r#"
@@ -123,6 +160,36 @@ impl Store {
         .await?;
 
         Ok(workspace)
+    }
+
+    pub async fn workspaces(&self) -> StoreResult<Vec<WorkspaceSummaryRecord>> {
+        Ok(sqlx::query_as::<_, WorkspaceSummaryRecord>(
+            r#"
+            SELECT
+                w.id,
+                w.name,
+                w.cur_version_id,
+                w.created_at,
+                w.updated_at,
+                (
+                    SELECT m.text
+                    FROM messages m
+                    WHERE m.workspace_id = w.id AND m.role = 'user'
+                    ORDER BY m.created_at, m.id
+                    LIMIT 1
+                ) AS first_message,
+                (
+                    SELECT COUNT(*)
+                    FROM messages m
+                    WHERE m.workspace_id = w.id
+                ) AS message_count
+            FROM workspaces w
+            ORDER BY w.updated_at DESC, w.created_at DESC
+            LIMIT 80
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?)
     }
 
     pub async fn create_version(&self, input: NewVersion<'_>) -> StoreResult<VersionRecord> {
@@ -229,6 +296,81 @@ impl Store {
         Ok(version)
     }
 
+    pub async fn workspace_versions(&self, workspace_id: &str) -> StoreResult<Vec<VersionRecord>> {
+        Ok(sqlx::query_as::<_, VersionRecord>(
+            r#"
+            SELECT id, workspace_id, idx, label, source, graph_path, graph_hash, parent_id, created_at
+            FROM versions
+            WHERE workspace_id = ?
+            ORDER BY idx
+            "#,
+        )
+        .bind(workspace_id)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn create_message(&self, input: NewMessage<'_>) -> StoreResult<MessageRecord> {
+        let id = new_id("msg");
+        sqlx::query(
+            r#"
+            INSERT INTO messages (
+                id, workspace_id, role, text, kind, ref_id, attachment_ids_json, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, current_timestamp)
+            "#,
+        )
+        .bind(&id)
+        .bind(input.workspace_id)
+        .bind(input.role)
+        .bind(input.text)
+        .bind(input.kind)
+        .bind(input.ref_id)
+        .bind(input.attachment_ids_json)
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            UPDATE workspaces
+            SET updated_at = current_timestamp
+            WHERE id = ?
+            "#,
+        )
+        .bind(input.workspace_id)
+        .execute(&self.pool)
+        .await?;
+
+        self.message(&id).await
+    }
+
+    pub async fn message(&self, message_id: &str) -> StoreResult<MessageRecord> {
+        Ok(sqlx::query_as::<_, MessageRecord>(
+            r#"
+            SELECT id, workspace_id, role, text, kind, ref_id, attachment_ids_json, created_at
+            FROM messages
+            WHERE id = ?
+            "#,
+        )
+        .bind(message_id)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    pub async fn workspace_messages(&self, workspace_id: &str) -> StoreResult<Vec<MessageRecord>> {
+        Ok(sqlx::query_as::<_, MessageRecord>(
+            r#"
+            SELECT id, workspace_id, role, text, kind, ref_id, attachment_ids_json, created_at
+            FROM messages
+            WHERE workspace_id = ?
+            ORDER BY created_at, id
+            "#,
+        )
+        .bind(workspace_id)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     pub async fn upsert_provider_status(
         &self,
         provider_id: &str,
@@ -297,7 +439,7 @@ async fn connect_pool(database_url: &str) -> StoreResult<SqlitePool> {
     Ok(pool)
 }
 
-fn new_id(prefix: &str) -> String {
+pub(crate) fn new_id(prefix: &str) -> String {
     format!("{prefix}_{}", Uuid::now_v7().simple())
 }
 
@@ -308,6 +450,17 @@ pub struct WorkspaceRecord {
     pub cur_version_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, sqlx::FromRow)]
+pub struct WorkspaceSummaryRecord {
+    pub id: String,
+    pub name: String,
+    pub cur_version_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub first_message: Option<String>,
+    pub message_count: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -358,6 +511,28 @@ pub struct ProviderRecord {
     pub catalog_hash: Option<String>,
     pub catalog_path: Option<String>,
     pub last_checked_at: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewMessage<'a> {
+    pub workspace_id: &'a str,
+    pub role: &'a str,
+    pub text: Option<&'a str>,
+    pub kind: &'a str,
+    pub ref_id: Option<&'a str>,
+    pub attachment_ids_json: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, sqlx::FromRow)]
+pub struct MessageRecord {
+    pub id: String,
+    pub workspace_id: String,
+    pub role: String,
+    pub text: Option<String>,
+    pub kind: String,
+    pub ref_id: Option<String>,
+    pub attachment_ids_json: Option<String>,
+    pub created_at: String,
 }
 
 #[cfg(test)]
@@ -435,6 +610,32 @@ mod tests {
             updated_workspace.cur_version_id.as_deref(),
             Some(version.id.as_str())
         );
+    }
+
+    #[tokio::test]
+    async fn lists_workspace_summaries_with_first_message() {
+        let (store, _dir) = open_temp_store().await;
+        let workspace = store
+            .create_workspace("Chat one")
+            .await
+            .expect("create workspace");
+        store
+            .create_message(NewMessage {
+                workspace_id: &workspace.id,
+                role: "user",
+                text: Some("第一条需求"),
+                kind: "text",
+                ref_id: None,
+                attachment_ids_json: None,
+            })
+            .await
+            .expect("create message");
+
+        let summaries = store.workspaces().await.expect("workspace summaries");
+
+        assert_eq!(summaries[0].id, workspace.id);
+        assert_eq!(summaries[0].first_message.as_deref(), Some("第一条需求"));
+        assert_eq!(summaries[0].message_count, 1);
     }
 
     #[tokio::test]

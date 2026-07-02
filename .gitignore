@@ -11,3 +11,4 @@ target/
 .vscode/
 .design-canvas.state.json
 .thumbnail
+.helixflow/

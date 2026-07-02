@@ -1,23 +1,30 @@
 use std::collections::BTreeMap;
 use std::fmt;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use helixflow_graph::{
-    GraphService, PreparedProposal, ProposalDraft, ProposalKind, ProposalOp, WorkflowGraph,
-};
-use helixflow_registry::NodeRegistry;
+use helixflow_graph::{PreparedProposal, WorkflowGraph};
 use helixflow_run::{EventBus, RunEventEnvelope};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot};
-use uuid::Uuid;
+
+mod chat;
+mod contract;
+mod design_artifact;
+mod runtime_log;
+pub use chat::{ValidatedAgentChat, read_validated_chat_reply};
+pub(crate) use contract::read_output_file;
+pub use contract::{
+    create_session_contract, read_validated_design_artifact, read_validated_proposal,
+};
+pub use design_artifact::ValidatedDesignArtifact;
+use runtime_log::{read_runtime_stdout, truncate_status};
 
 pub fn module_name() -> &'static str {
     "agent"
@@ -100,6 +107,8 @@ pub struct AgentTurn {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentSkill {
+    Chat,
+    DesignArtifact,
     CreateWorkflow,
     ModifyWorkflow,
     FixError,
@@ -109,6 +118,8 @@ pub enum AgentSkill {
 impl AgentSkill {
     pub fn file_name(self) -> &'static str {
         match self {
+            Self::Chat => "chat.md",
+            Self::DesignArtifact => "design_artifact.md",
             Self::CreateWorkflow => "create_workflow.md",
             Self::ModifyWorkflow => "modify_workflow.md",
             Self::FixError => "fix_error.md",
@@ -120,8 +131,18 @@ impl AgentSkill {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RuntimeEvent {
-    Status { message: String },
-    Failed { message: String },
+    Status {
+        message: String,
+    },
+    Log {
+        kind: String,
+        label: String,
+        text: String,
+        raw_json: String,
+    },
+    Failed {
+        message: String,
+    },
     Finished,
 }
 
@@ -158,16 +179,46 @@ impl CodexRuntime {
     }
 
     fn command_spec_for_turn(&self, root_dir: &Path, turn: AgentTurn) -> CommandSpec {
-        let prompt = format!(
-            "\
+        let prompt = match turn.skill {
+            AgentSkill::Chat => format!(
+                "\
+You are the Helixflow chat agent inside a ComfyUI workflow builder.
+This is a plain chat turn, and the complete user request is included below.
+
+Do not inspect ctx files, read the filesystem, or run shell commands for greetings, identity
+questions, or other general conversation. Answer directly from the user request.
+If the user asks to create or modify a workflow, ask for the missing concrete details instead of
+changing the graph in this chat turn.
+
+Write a concise assistant reply to out/reply.json as JSON: {{\"message\":\"...\"}}.
+Do not write proposal.json, change the graph, or write outside out/.
+
+User request:
+{}",
+                turn.message
+            ),
+            AgentSkill::DesignArtifact => format!(
+                "\
+Read ctx/instructions.md, ctx/project.md, ctx/design_system.md, and ctx/graph.json.
+Use the selected design skill from ctx/skills/.
+User turn:
+{}
+
+Create a real, self-contained artifact under out/files/ and write out/artifact.json.
+Do not write proposal.json, mock provider outputs, credentials, or files outside out/.",
+                turn.message
+            ),
+            _ => format!(
+                "\
 Read ctx/instructions.md, ctx/graph.json, and ctx/node_defs/catalog.json.
 Use the selected skill from ctx/skills/.
 User turn:
 {}
 
 Write the graph proposal to out/proposal.json. Do not print secrets or write outside out/.",
-            turn.message
-        );
+                turn.message
+            ),
+        };
 
         CommandSpec {
             program: self.program.clone(),
@@ -318,6 +369,26 @@ where
                     );
                     seq += 1;
                 }
+                RuntimeEvent::Log {
+                    kind,
+                    label,
+                    text,
+                    raw_json,
+                } => {
+                    self.emit_status(
+                        &session.workspace_id,
+                        &session.id,
+                        seq,
+                        "runtime.log",
+                        json!({
+                            "kind": kind,
+                            "label": label,
+                            "text": text,
+                            "raw": raw_json
+                        }),
+                    );
+                    seq += 1;
+                }
                 RuntimeEvent::Failed { message } => {
                     return Err(AgentError::Runtime(message));
                 }
@@ -336,7 +407,7 @@ where
         Ok(proposal)
     }
 
-    fn emit_status(
+    pub(crate) fn emit_status(
         &self,
         workspace_id: &str,
         session_id: &str,
@@ -369,106 +440,6 @@ pub struct ValidatedAgentProposal {
     pub proposal: PreparedProposal,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProposalOutput {
-    base_version_id: String,
-    kind: ProposalKind,
-    title: String,
-    summary: String,
-    ops: Vec<ProposalOp>,
-    #[serde(default)]
-    message_id: Option<String>,
-}
-
-impl From<ProposalOutput> for ProposalDraft {
-    fn from(value: ProposalOutput) -> Self {
-        Self {
-            base_version_id: value.base_version_id,
-            kind: value.kind,
-            title: value.title,
-            summary: value.summary,
-            ops: value.ops,
-            message_id: value.message_id,
-        }
-    }
-}
-
-pub fn create_session_contract(request: &AgentSessionRequest) -> AgentResult<AgentSession> {
-    let session_id = format!("agent_{}", Uuid::now_v7().simple());
-    let root_dir = request.sessions_dir.join(&session_id);
-    let ctx_dir = root_dir.join("ctx");
-    let out_dir = root_dir.join("out");
-    let tmp_dir = root_dir.join("tmp");
-    let skills_dir = ctx_dir.join("skills");
-    let node_defs_dir = ctx_dir.join("node_defs");
-
-    fs::create_dir_all(&skills_dir)?;
-    fs::create_dir_all(&node_defs_dir)?;
-    fs::create_dir_all(&out_dir)?;
-    fs::create_dir_all(&tmp_dir)?;
-
-    write_json(ctx_dir.join("graph.json"), &request.graph)?;
-    write_json(
-        node_defs_dir.join("catalog.json"),
-        &NodeRegistry::builtin().export_catalog(),
-    )?;
-    fs::write(
-        ctx_dir.join("instructions.md"),
-        instructions_markdown(request),
-    )?;
-    fs::write(skills_dir.join("node_library.md"), node_library_skill())?;
-    fs::write(
-        skills_dir.join(request.skill.file_name()),
-        selected_skill(request.skill),
-    )?;
-    fs::write(
-        root_dir.join("transcript.jsonl"),
-        format!(
-            "{}\n",
-            json!({
-                "role": "user",
-                "message": request.user_message,
-                "skill": request.skill
-            })
-        ),
-    )?;
-
-    Ok(AgentSession {
-        id: session_id,
-        workspace_id: request.workspace_id.clone(),
-        root_dir,
-        ctx_dir,
-        out_dir,
-        base_version_id: request.base_version_id.clone(),
-    })
-}
-
-pub fn read_validated_proposal(
-    session: &AgentSession,
-    base_graph: &WorkflowGraph,
-    current_version_id: &str,
-) -> AgentResult<ValidatedAgentProposal> {
-    let output_path = session.out_dir.join("proposal.json");
-    let output: ProposalOutput =
-        serde_json::from_slice(&read_output_file(&session.out_dir, &output_path)?)?;
-    let proposal = GraphService::new(NodeRegistry::builtin()).preview_proposal(
-        base_graph,
-        current_version_id,
-        output.into(),
-    )?;
-
-    Ok(ValidatedAgentProposal {
-        session_id: session.id.clone(),
-        proposal,
-    })
-}
-
-fn write_json(path: impl AsRef<Path>, value: &impl Serialize) -> AgentResult<()> {
-    fs::write(path, serde_json::to_vec_pretty(value)?)?;
-    Ok(())
-}
-
 fn safe_runtime_env(
     source: impl IntoIterator<Item = (String, String)>,
     root_dir: &Path,
@@ -477,7 +448,15 @@ fn safe_runtime_env(
     let mut env = BTreeMap::new();
 
     if let Some(path) = source.get("PATH") {
-        env.insert("PATH".to_owned(), path.clone());
+        env.insert(
+            "PATH".to_owned(),
+            format!("{path}:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"),
+        );
+    } else {
+        env.insert(
+            "PATH".to_owned(),
+            "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin".to_owned(),
+        );
     }
     let codex_home = source
         .get("CODEX_HOME")
@@ -518,7 +497,7 @@ async fn run_codex_process(
         .current_dir(&spec.cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     if spec.env_clear {
         command.env_clear();
     }
@@ -529,8 +508,19 @@ async fn run_codex_process(
         .map_err(|err| RuntimeError::Failed(err.to_string()))?;
     if let Some(stdout) = child.stdout.take() {
         let stdout_sender = sender.clone();
+        let transcript_path = spec.cwd.join("transcript.jsonl");
         tokio::spawn(async move {
-            read_runtime_stdout(stdout, stdout_sender).await;
+            read_runtime_stdout(stdout, stdout_sender, transcript_path).await;
+        });
+    }
+    let stderr_text = Arc::new(AsyncMutex::new(String::new()));
+    if let Some(mut stderr) = child.stderr.take() {
+        let stderr_text = stderr_text.clone();
+        tokio::spawn(async move {
+            let mut output = String::new();
+            if stderr.read_to_string(&mut output).await.is_ok() {
+                *stderr_text.lock().await = output;
+            }
         });
     }
 
@@ -544,7 +534,13 @@ async fn run_codex_process(
                     .map_err(|err| RuntimeError::Failed(err.to_string()))?;
                 Ok(())
             } else {
-                Err(RuntimeError::Failed(format!("codex exited with status {status}")))
+                let stderr = truncate_status(stderr_text.lock().await.trim());
+                let detail = if stderr.is_empty() {
+                    format!("codex exited with status {status}")
+                } else {
+                    format!("codex exited with status {status}: {stderr}")
+                };
+                Err(RuntimeError::Failed(detail))
             }
         }
         _ = &mut cancel_rx => {
@@ -557,128 +553,12 @@ async fn run_codex_process(
     }
 }
 
-async fn read_runtime_stdout<R>(stdout: R, sender: mpsc::Sender<RuntimeEvent>)
-where
-    R: AsyncRead + Unpin,
-{
-    let mut lines = BufReader::new(stdout).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        if let Some(message) = runtime_status_from_line(&line) {
-            if sender.send(RuntimeEvent::Status { message }).await.is_err() {
-                break;
-            }
-        }
-    }
-}
-
-fn runtime_status_from_line(line: &str) -> Option<String> {
-    let line = line.trim();
-    if line.is_empty() {
-        return None;
-    }
-
-    let Ok(value) = serde_json::from_str::<Value>(line) else {
-        return Some(truncate_status(line));
-    };
-    let event_type = value
-        .get("type")
-        .or_else(|| value.get("event"))
-        .and_then(Value::as_str)
-        .unwrap_or("codex.event");
-    let message = value
-        .get("message")
-        .or_else(|| value.get("text"))
-        .or_else(|| value.pointer("/item/text"))
-        .and_then(Value::as_str)
-        .map(truncate_status);
-
-    Some(match message {
-        Some(message) if !message.is_empty() => format!("{event_type}: {message}"),
-        _ => event_type.to_owned(),
-    })
-}
-
-fn truncate_status(value: &str) -> String {
-    value.chars().take(180).collect()
-}
-
 fn event_server_time() -> String {
     let epoch_seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or_default();
     format!("unix:{epoch_seconds}")
-}
-
-fn instructions_markdown(request: &AgentSessionRequest) -> String {
-    format!(
-        "\
-# Helixflow Agent Turn
-
-Workspace: {workspace_id}
-Base version: {base_version_id}
-
-Read `ctx/graph.json` and `ctx/node_defs/catalog.json`.
-Write exactly one result file under `out/`.
-For graph changes, write `out/proposal.json` matching the proposal schema.
-Do not write credentials or local filesystem paths.
-
-User request:
-{user_message}
-",
-        workspace_id = request.workspace_id,
-        base_version_id = request.base_version_id,
-        user_message = request.user_message
-    )
-}
-
-fn node_library_skill() -> &'static str {
-    "# Node Library\nUse built-in node definitions from ctx/node_defs/catalog.json.\n"
-}
-
-fn selected_skill(skill: AgentSkill) -> &'static str {
-    match skill {
-        AgentSkill::CreateWorkflow => "# Create Workflow\nCreate a valid graph proposal.\n",
-        AgentSkill::ModifyWorkflow => "# Modify Workflow\nMake the smallest valid proposal.\n",
-        AgentSkill::FixError => "# Fix Error\nPropose the smallest graph fix.\n",
-        AgentSkill::Sweep => "# Sweep\nWrite a sweep run plan when requested.\n",
-    }
-}
-
-fn ensure_direct_child(parent: &Path, candidate: &Path) -> AgentResult<()> {
-    if candidate.parent() == Some(parent) {
-        Ok(())
-    } else {
-        Err(AgentError::PathOutsideSession(candidate.to_path_buf()))
-    }
-}
-
-fn read_output_file(out_dir: &Path, output_path: &Path) -> AgentResult<Vec<u8>> {
-    ensure_direct_child(out_dir, output_path)?;
-
-    let out_type = fs::symlink_metadata(out_dir)?.file_type();
-    if out_type.is_symlink() || !out_type.is_dir() {
-        return Err(AgentError::InvalidOutputFile {
-            path: out_dir.to_path_buf(),
-            reason: "out directory is not a real directory".to_owned(),
-        });
-    }
-
-    let output_type = fs::symlink_metadata(output_path)?.file_type();
-    if output_type.is_symlink() || !output_type.is_file() {
-        return Err(AgentError::InvalidOutputFile {
-            path: output_path.to_path_buf(),
-            reason: "proposal output is not a regular file".to_owned(),
-        });
-    }
-
-    let canonical_out = fs::canonicalize(out_dir)?;
-    let canonical_output = fs::canonicalize(output_path)?;
-    if canonical_output.parent() != Some(canonical_out.as_path()) {
-        return Err(AgentError::PathOutsideSession(output_path.to_path_buf()));
-    }
-
-    Ok(fs::read(canonical_output)?)
 }
 
 pub type AgentResult<T> = Result<T, AgentError>;
