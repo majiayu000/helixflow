@@ -1,0 +1,71 @@
+.inspector-field em {
+  margin-left: 6px;
+  color: var(--amber);
+  font-size: 10px;
+  font-style: normal;
+  text-transform: uppercase;
+}
+
+.inspector-control-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.inspector-control {
+  width: 100%;
+  min-width: 0;
+  font-family: var(--font-mono);
+}
+
+.inspector-checkbox {
+  width: 18px;
+  height: 18px;
+}
+
+.inspector-save,
+.inspector-icon-btn {
+  min-height: 30px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 11px;
+}
+
+.inspector-save {
+  padding: 0 9px;
+}
+
+.inspector-icon-btn {
+  width: 30px;
+  font-family: var(--font-mono);
+}
+
+.inspector-save:disabled,
+.inspector-icon-btn:disabled,
+.inspector-control:disabled,
+.inspector-checkbox:disabled {
+  opacity: 0.55;
+}
+
+.field-error,
+.field-hint,
+.inspector-error {
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.field-error,
+.inspector-error {
+  color: var(--red);
+}
+
+.inspector-error {
+  border: 1px solid var(--red-line);
+  border-radius: var(--r-sm);
+  background: var(--red-soft);
+  padding: 7px 8px;
+}

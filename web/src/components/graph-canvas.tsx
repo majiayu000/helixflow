@@ -8,8 +8,9 @@ import {
   type PointerEvent,
   type WheelEvent,
 } from 'react';
+import { fetchNodeCatalog } from '../api';
 import { Icon } from '../icons';
-import type { GraphNodeState, LayoutPositionUpdate, WorkbenchState } from '../types';
+import type { GraphNodeState, LayoutPositionUpdate, NodeCatalog, WorkbenchState } from '../types';
 import { GraphEdges } from './graph-canvas-edges';
 import { GraphInspector, GraphSelectionInspector } from './graph-canvas-inspector';
 import {
@@ -76,8 +77,10 @@ type GraphCanvasProps = {
   graph: WorkbenchState['graph'];
   pendingProposal: WorkbenchState['pendingProposal'];
   run: NonNullable<WorkbenchState['run']>;
+  workflowGraph?: WorkbenchState['workflowGraph'];
   onSaveLayout?: (positions: LayoutPositionUpdate[]) => Promise<void>;
   onSelectionChange?: (nodeIds: string[]) => void;
+  onSetParam?: (nodeId: string, key: string, value: unknown) => Promise<void>;
 };
 
 type DragState = {
@@ -109,8 +112,10 @@ export function GraphCanvas({
   graph,
   pendingProposal,
   run,
+  workflowGraph,
   onSaveLayout,
   onSelectionChange,
+  onSetParam,
 }: GraphCanvasProps) {
   const canvasRef = useRef<HTMLElement | null>(null);
   const [view, setView] = useState<ViewState>(DEFAULT_GRAPH_VIEW);
@@ -119,6 +124,8 @@ export function GraphCanvas({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [draftPositions, setDraftPositions] = useState<PositionDrafts>({});
   const [layoutSaving, setLayoutSaving] = useState(false);
+  const [catalog, setCatalog] = useState<NodeCatalog | null>(null);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
   const [selectionDrag, setSelectionDrag] = useState<SelectionDragState | null>(null);
   const [clipboardStatus, setClipboardStatus] = useState<string | null>(null);
   const drag = useRef<DragState | null>(null);
@@ -134,8 +141,13 @@ export function GraphCanvas({
   const nodeById = useMemo(() => buildNodeMap(displayNodes), [displayNodes]);
   const baseEdgeIds = useMemo(() => buildEdgeSignatureSet(graph.edges), [graph.edges]);
   const stepStateByNodeId = useMemo(() => buildRunStepStateMap(run.steps), [run.steps]);
+  const definitionByType = useMemo(
+    () => new Map((catalog?.nodes ?? []).map((definition) => [definition.type, definition] as const)),
+    [catalog],
+  );
   const selectedNodeId = selectedIds.values().next().value as string | undefined;
   const selectedNode = selectedNodeId ? nodeById.get(selectedNodeId) : null;
+  const selectedWorkflowNode = selectedNodeId ? workflowGraph?.nodes[selectedNodeId] : undefined;
   const selectedNodes = useMemo(
     () => displayNodes.filter((node) => selectedIds.has(node.id)),
     [displayNodes, selectedIds],
@@ -155,15 +167,18 @@ export function GraphCanvas({
   useEffect(() => {
     setView(loadGraphCanvasView(workspaceId));
     setSelectedIds(new Set());
+    setDraftPositions({});
+    setSelectionDrag(null);
+    setClipboardStatus(null);
+    nodeDrag.current = null;
   }, [workspaceId]);
 
   useEffect(() => {
     setDraftPositions({});
-    setSelectedIds(new Set());
     setSelectionDrag(null);
     setClipboardStatus(null);
     nodeDrag.current = null;
-  }, [workspaceId, versionId, pendingProposal?.id]);
+  }, [versionId, pendingProposal?.id]);
 
   useEffect(() => {
     onSelectionChange?.(selectedIdList);
@@ -190,6 +205,25 @@ export function GraphCanvas({
     const timer = setTimeout(() => saveGraphCanvasView(workspaceId, view), 180);
     return () => clearTimeout(timer);
   }, [view, workspaceId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchNodeCatalog()
+      .then((nextCatalog) => {
+        if (!cancelled) {
+          setCatalog(nextCatalog);
+          setCatalogError(null);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setCatalogError(error instanceof Error ? error.message : 'node catalog request failed');
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const updateView = useCallback((next: ViewState | ((current: ViewState) => ViewState)) => {
     setView((current) => normalizeView(typeof next === 'function' ? next(current) : next));
@@ -513,7 +547,14 @@ export function GraphCanvas({
         <GraphSelectionInspector nodes={selectedNodes} onClose={() => setSelectedIds(new Set())} />
       )}
       {selectedNodes.length === 1 && selectedNode && (
-        <GraphInspector node={selectedNode} onClose={() => setSelectedIds(new Set())} />
+        <GraphInspector
+          catalogError={catalogError}
+          definition={definitionByType.get(selectedNode.nodeType)}
+          node={selectedNode}
+          onClose={() => setSelectedIds(new Set())}
+          onSetParam={pendingProposal ? undefined : onSetParam}
+          workflowNode={selectedWorkflowNode}
+        />
       )}
     </section>
   );

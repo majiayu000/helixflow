@@ -212,9 +212,19 @@ export function App({ initialState, workspaceId }: AppProps) {
                 graph={activeState.graph}
                 onSelectionChange={setSelectedCanvasNodeIds}
                 onSaveLayout={(positions) => runAction(() => saveLayout(positions))}
+                onSetParam={(nodeId, key, value) =>
+                  runAction(() =>
+                    createManualProposal({
+                      baseVersionId: activeState.workspace.versionId,
+                      label: `Inspector set ${key}`,
+                      ops: [{ op: 'set_param', id: nodeId, key, value }],
+                    }),
+                  )
+                }
                 pendingProposal={activeState.pendingProposal}
                 run={uiState.run}
                 versionId={activeState.workspace.versionId}
+                workflowGraph={activeState.workflowGraph}
                 workspaceId={activeState.workspace.id}
               />
               <ManualProposalPanel
