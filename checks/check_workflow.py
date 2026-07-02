@@ -315,8 +315,11 @@ def validate_checklist_tasks(path: Path, text: str, issue_number: str | None) ->
     errors: list[str] = []
     ids: list[str] = []
     for line_number, line in enumerate(text.splitlines(), start=1):
+        if "- [" not in line:
+            continue
         match = re.match(r"\s*-\s*\[[ xX]\]\s*`([^`]+)`", line)
         if not match:
+            errors.append(f"{path}:{line_number}: task is missing stable ID")
             continue
         task_id = match.group(1)
         ids.append(task_id)
