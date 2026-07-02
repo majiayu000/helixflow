@@ -14,8 +14,10 @@ use serde_json::{Value, json};
 use tokio::sync::{Mutex, Notify, broadcast};
 
 mod artifacts;
+mod background;
 mod cost_gate;
 mod error;
+mod sweep_background;
 
 use artifacts::{default_artifact_root, persist_provider_artifact};
 pub use cost_gate::{
@@ -145,11 +147,11 @@ impl RunInterrupt {
         }
     }
 
-    fn is_requested(&self) -> bool {
+    pub(crate) fn is_requested(&self) -> bool {
         self.requested.load(Ordering::SeqCst)
     }
 
-    async fn cancelled(&self) {
+    pub(crate) async fn cancelled(&self) {
         if self.is_requested() {
             return;
         }
@@ -623,7 +625,7 @@ where
             .await?)
     }
 
-    async fn skip_steps(
+    pub(crate) async fn skip_steps(
         &self,
         workspace_id: &str,
         run_id: &str,
@@ -732,5 +734,7 @@ fn artifact_kind_label(kind: ArtifactKind) -> &'static str {
     }
 }
 
+#[cfg(test)]
+mod background_tests;
 #[cfg(test)]
 mod tests;

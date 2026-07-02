@@ -62,7 +62,33 @@ type WorkbenchStore = {
   dismissProposal: (proposalId: string) => Promise<void>;
 };
 
-export const useWorkbenchStore = create<WorkbenchStore>((set, get) => ({
+export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
+  let snapshotRefresh: Promise<void> | null = null;
+  const refreshSnapshot = (workspaceId: string) => {
+    if (snapshotRefresh) {
+      return;
+    }
+    snapshotRefresh = fetchWorkspaceState(workspaceId)
+      .then((state) =>
+        set((current) =>
+          current.state?.workspace.id === workspaceId
+            ? { status: 'ready', state, error: null }
+            : {},
+        ),
+      )
+      .catch((error) => {
+        const message =
+          error instanceof Error ? error.message : 'workspace state request failed';
+        set((current) =>
+          current.state?.workspace.id === workspaceId ? { error: message } : {},
+        );
+      })
+      .finally(() => {
+        snapshotRefresh = null;
+      });
+  };
+
+  return {
   status: 'idle',
   error: null,
   connection: 'offline',
@@ -112,7 +138,13 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => ({
     }
   },
   setInitialState: (state) => set({ status: 'ready', state, error: null }),
-  setConnection: (connection) => set({ connection }),
+  setConnection: (connection) => {
+    set({ connection });
+    const state = get().state;
+    if (connection === 'live' && state) {
+      refreshSnapshot(state.workspace.id);
+    }
+  },
   sendMessage: async (text, canvasContext) => {
     const trimmed = text.trim();
     if (!trimmed) {
@@ -168,10 +200,17 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => ({
       }));
     }
   },
-  applyEvent: (event) =>
-    set((current) => ({
-      state: current.state ? applyRunEvent(current.state, event) : current.state,
-    })),
+  applyEvent: (event) => {
+    const state = get().state;
+    if (!state) {
+      return;
+    }
+    const needsSnapshot = shouldRefetchWorkspaceState(state, event);
+    set({ state: applyRunEvent(state, event) });
+    if (needsSnapshot) {
+      refreshSnapshot(state.workspace.id);
+    }
+  },
   queueRun: async () => {
     const state = get().state;
     if (!state) {
@@ -431,7 +470,8 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => ({
       }));
     }
   },
-}));
+  };
+});
 
 function appendChatMessages(
   state: WorkbenchState,
@@ -611,6 +651,18 @@ export function applyRunEvent(state: WorkbenchState, event: RunEventEnvelope): W
   }
 
   return { ...state, eventSeq: event.seq };
+}
+
+function shouldRefetchWorkspaceState(state: WorkbenchState, event: RunEventEnvelope): boolean {
+  return (
+    event.workspace_id === state.workspace.id &&
+    !isAgentStatusEvent(event.ev) &&
+    (!state.run ||
+      event.run_id !== state.run.id ||
+      event.ev === 'run.succeeded' ||
+      event.ev === 'run.failed' ||
+      event.ev === 'run.interrupted')
+  );
 }
 
 function applyAgentStatusEvent(state: WorkbenchState, event: RunEventEnvelope): WorkbenchState {

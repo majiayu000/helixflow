@@ -11,8 +11,9 @@ use helixflow_agent::{
 #[cfg(test)]
 use helixflow_gateway::RuntimeProvider;
 use helixflow_gateway::{ProviderCatalogSnapshot, ProviderRegistry};
-use helixflow_run::{EventBus, RunService};
+use helixflow_run::{EventBus, RunEventEnvelope, RunService};
 use helixflow_store::{Store, StoreError, WorkspaceRecord};
+use serde_json::json;
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
@@ -33,6 +34,7 @@ impl AppState {
         tokio::fs::create_dir_all(&data_dir).await?;
         let database_url = default_database_url(&data_dir);
         let store = Store::open(&database_url).await?;
+        interrupt_stale_active_runs(&store, &events).await?;
         let registry = default_provider_registry();
         persist_runtime_provider_status(&store, &registry).await?;
         Ok(Self::with_store_provider(events, store, data_dir, registry))
@@ -138,6 +140,28 @@ impl AppState {
         self.provider_registry
             .catalog_snapshot_for_selected(Some(&selected_provider))
     }
+}
+
+async fn interrupt_stale_active_runs(
+    store: &Store,
+    events: &EventBus,
+) -> Result<(), AppStateError> {
+    let runs = store.interrupt_stale_active_runs().await?;
+    for run in runs {
+        let data = json!({ "reason": "server_restart" });
+        let event = store
+            .append_run_event(&run.id, "run.interrupted", &data.to_string())
+            .await?;
+        drop(events.publish(RunEventEnvelope {
+            workspace_id: run.workspace_id,
+            run_id: event.run_id,
+            seq: event.seq,
+            server_time: event.created_at,
+            ev: event.ev,
+            data,
+        }));
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -254,7 +278,7 @@ fn default_database_url(data_dir: &std::path::Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use helixflow_store::Store;
+    use helixflow_store::{NewRun, NewRunStep, NewVersion, Store, VersionSource};
 
     #[test]
     fn provider_registry_keeps_mock_default() {
@@ -324,5 +348,63 @@ mod tests {
         assert_eq!(record.id, "invalid");
         assert!(!record.enabled);
         assert_eq!(record.status, "unavailable");
+    }
+
+    #[tokio::test]
+    async fn startup_cleanup_interrupts_active_runs_and_records_events() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let database_url = format!("sqlite://{}", dir.path().join("helixflow.sqlite").display());
+        let store = Store::open(&database_url).await.expect("open store");
+        let workspace = store
+            .create_workspace("Restart cleanup")
+            .await
+            .expect("create workspace");
+        let version = store
+            .create_version(NewVersion {
+                workspace_id: &workspace.id,
+                label: "Graph",
+                source: VersionSource::Manual,
+                graph_path: "graphs/current.json",
+                graph_hash: "sha256:graph",
+                parent_id: None,
+            })
+            .await
+            .expect("create version");
+        let run = store
+            .create_run(NewRun {
+                workspace_id: &workspace.id,
+                version_id: &version.id,
+                group_id: None,
+                label: "Stale run",
+                trigger: "manual",
+                plan_json: None,
+                estimate_json: None,
+                status: "running",
+            })
+            .await
+            .expect("create run");
+        store
+            .create_run_step(NewRunStep {
+                run_id: &run.id,
+                node_id: "node",
+                node_type: "input.text",
+                provider: None,
+                state: "running",
+            })
+            .await
+            .expect("create step");
+        let events = EventBus::new(16);
+
+        interrupt_stale_active_runs(&store, &events)
+            .await
+            .expect("cleanup active runs");
+
+        let run = store.run(&run.id).await.expect("run");
+        let steps = store.run_steps(&run.id).await.expect("steps");
+        let stored_events = store.run_events(&run.id).await.expect("events");
+        assert_eq!(run.status, "interrupted");
+        assert_eq!(steps[0].state, "skipped");
+        assert_eq!(stored_events[0].ev, "run.interrupted");
+        assert!(stored_events[0].data_json.contains("server_restart"));
     }
 }

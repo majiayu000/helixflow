@@ -68,7 +68,9 @@ impl ApiError {
                 status: StatusCode::UNPROCESSABLE_ENTITY,
                 message: err.to_string(),
             },
-            RunError::InvalidRunStatus { .. } | RunError::RunNotActive(_) => Self {
+            RunError::InvalidRunStatus { .. }
+            | RunError::RunNotActive(_)
+            | RunError::Interrupted(_) => Self {
                 status: StatusCode::CONFLICT,
                 message: err.to_string(),
             },

@@ -22,12 +22,15 @@ mod run_routes_unavailable_tests;
 mod sweep_support;
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+mod test_wait;
 mod version_routes;
 mod workbench_message;
 mod workbench_message_canvas;
 mod workbench_payload;
 mod workspace_routes;
 mod workspace_state;
+mod workspace_state_run;
 mod ws;
 
 use app_state::AppState;
