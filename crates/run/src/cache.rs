@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::{RunError, RunResult, RunService, RunStepState};
+use crate::{RunError, RunResult, RunService, RunStepState, StepOutput};
 
 #[derive(Debug, Clone)]
 pub(crate) struct StepCacheKey {
@@ -34,8 +34,7 @@ where
         step: &ExecutionStep,
         record: &RunStepRecord,
         cache_key: &StepCacheKey,
-        outputs: &mut BTreeMap<[String; 2], ArtifactRef>,
-    ) -> RunResult<bool> {
+    ) -> RunResult<Option<Vec<StepOutput>>> {
         let Some(entry) = self
             .store
             .node_cache_entry(
@@ -47,40 +46,41 @@ where
             )
             .await?
         else {
-            return Ok(false);
+            return Ok(None);
         };
         let links: Vec<CachedArtifactLink> = serde_json::from_str(&entry.artifact_ids_json)?;
         if links.is_empty() {
-            return Ok(false);
+            return Ok(None);
         }
 
         let mut sources = Vec::new();
         for link in &links {
             let source = match self.store.artifact(&link.artifact_id).await {
                 Ok(source) => source,
-                Err(err) if err.is_not_found() => return Ok(false),
+                Err(err) if err.is_not_found() => return Ok(None),
                 Err(err) => return Err(err.into()),
             };
             if source.workspace_id != workspace_id
                 || !self.cached_artifact_available(&source).await?
             {
-                return Ok(false);
+                return Ok(None);
             }
             sources.push((link.port.clone(), source));
         }
 
+        let mut outputs = Vec::new();
         for (port, source) in sources {
             let artifact = self
                 .copy_cached_artifact(workspace_id, run_id, &record.id, &step.node_id, &source)
                 .await?;
             if let Some(port) = port {
-                outputs.insert(
-                    [step.node_id.clone(), port],
-                    ArtifactRef {
+                outputs.push(StepOutput {
+                    port,
+                    artifact: ArtifactRef {
                         artifact_id: artifact.id,
                         storage_uri: artifact.storage_uri,
                     },
-                );
+                });
             }
         }
 
@@ -94,7 +94,7 @@ where
             .await?;
         self.emit_node_state_cached(workspace_id, run_id, step, true)
             .await?;
-        Ok(true)
+        Ok(Some(outputs))
     }
 
     pub(crate) async fn refresh_step_cache(

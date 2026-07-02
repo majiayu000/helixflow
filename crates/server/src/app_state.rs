@@ -11,7 +11,10 @@ use helixflow_agent::{
 #[cfg(test)]
 use helixflow_gateway::RuntimeProvider;
 use helixflow_gateway::{ProviderCatalogSnapshot, ProviderRegistry};
-use helixflow_run::{EventBus, RunEventEnvelope, RunService};
+use helixflow_run::{
+    DEFAULT_MAX_PARALLEL_STEPS, EventBus, RunEventEnvelope, RunService,
+    normalize_max_parallel_steps,
+};
 use helixflow_store::{Store, StoreError, WorkspaceRecord};
 use serde_json::json;
 use tokio::sync::Mutex;
@@ -56,7 +59,8 @@ impl AppState {
             provider_registry.clone(),
             events.clone(),
             data_dir.clone(),
-        );
+        )
+        .with_max_parallel_steps(default_max_parallel_steps());
         let run_queue_locks = Arc::new(Mutex::new(BTreeMap::new()));
         Self {
             events,
@@ -84,7 +88,8 @@ impl AppState {
             provider_registry.clone(),
             events.clone(),
             data_dir.clone(),
-        );
+        )
+        .with_max_parallel_steps(default_max_parallel_steps());
         let run_queue_locks = Arc::new(Mutex::new(BTreeMap::new()));
         Self {
             events,
@@ -113,7 +118,8 @@ impl AppState {
             provider_registry.clone(),
             events.clone(),
             data_dir.clone(),
-        );
+        )
+        .with_max_parallel_steps(default_max_parallel_steps());
         let run_queue_locks = Arc::new(Mutex::new(BTreeMap::new()));
         Self {
             events,
@@ -248,6 +254,20 @@ fn default_provider_registry() -> ProviderRegistry {
     ProviderRegistry::from_env()
 }
 
+fn default_max_parallel_steps() -> usize {
+    parse_max_parallel_steps(
+        std::env::var("HELIXFLOW_MAX_PARALLEL_STEPS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn parse_max_parallel_steps(raw: Option<&str>) -> usize {
+    raw.and_then(|value| value.parse::<usize>().ok())
+        .map(normalize_max_parallel_steps)
+        .unwrap_or(DEFAULT_MAX_PARALLEL_STEPS)
+}
+
 async fn persist_runtime_provider_status(
     store: &Store,
     registry: &ProviderRegistry,
@@ -334,6 +354,17 @@ mod tests {
                 .api_connectors
                 .iter()
                 .any(|item| item.provider == "mock")
+        );
+    }
+
+    #[test]
+    fn max_parallel_steps_config_uses_safe_default_and_normalization() {
+        assert_eq!(parse_max_parallel_steps(None), DEFAULT_MAX_PARALLEL_STEPS);
+        assert_eq!(parse_max_parallel_steps(Some("4")), 4);
+        assert_eq!(parse_max_parallel_steps(Some("0")), 1);
+        assert_eq!(
+            parse_max_parallel_steps(Some("not-a-number")),
+            DEFAULT_MAX_PARALLEL_STEPS
         );
     }
 

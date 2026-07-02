@@ -35,6 +35,7 @@ pub enum RunError {
     },
     RunNotActive(String),
     UnsupportedBuiltin(String),
+    TaskJoin(String),
 }
 
 impl fmt::Display for RunError {
@@ -76,6 +77,7 @@ impl fmt::Display for RunError {
             Self::UnsupportedBuiltin(node_type) => {
                 write!(f, "unsupported builtin node type: {node_type}")
             }
+            Self::TaskJoin(message) => write!(f, "run step task failed to join: {message}"),
         }
     }
 }
