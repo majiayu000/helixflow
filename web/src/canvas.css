@@ -471,6 +471,10 @@
   background: var(--amber);
 }
 
+.node-flag.cache {
+  background: var(--accent);
+}
+
 .node-flag.err {
   background: var(--red);
 }

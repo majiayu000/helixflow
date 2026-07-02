@@ -10,6 +10,7 @@ type TopBarProps = {
   exportDisabled: boolean;
   undoDisabled: boolean;
   runDisabled: boolean;
+  forceRerun: boolean;
   running: boolean;
   busy: boolean;
   onHistory: () => void;
@@ -18,6 +19,7 @@ type TopBarProps = {
   onExport: () => void;
   onUndo: () => void;
   onProviderSelect: (providerId: string) => void;
+  onForceRerunChange: (enabled: boolean) => void;
   onQueue: () => void;
 };
 
@@ -29,6 +31,7 @@ export function TopBar({
   exportDisabled,
   undoDisabled,
   runDisabled,
+  forceRerun,
   running,
   busy,
   onHistory,
@@ -37,6 +40,7 @@ export function TopBar({
   onExport,
   onUndo,
   onProviderSelect,
+  onForceRerunChange,
   onQueue,
 }: TopBarProps) {
   const nodeCount = state.graph.nodes.length;
@@ -125,6 +129,15 @@ export function TopBar({
           <Icon n="spark" s={13} fill />
           Agent 运行
         </button>
+        <label className="force-rerun-toggle" title="本次运行绕过节点缓存">
+          <input
+            checked={forceRerun}
+            disabled={busy || running}
+            onChange={(event) => onForceRerunChange(event.target.checked)}
+            type="checkbox"
+          />
+          强制重跑
+        </label>
         <button
           className={running ? 'btn btn--danger btn--sm' : 'btn btn--primary btn--sm'}
           disabled={runDisabled || (!running && busy)}

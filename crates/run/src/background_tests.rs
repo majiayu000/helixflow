@@ -103,6 +103,7 @@ async fn start_manual_run_returns_before_provider_finishes() {
             label: "Background manual".to_owned(),
             provider: "mock".to_owned(),
             graph: background_graph(),
+            force_rerun: false,
         })
         .await
         .expect("start manual run");

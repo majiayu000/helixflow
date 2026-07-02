@@ -53,6 +53,7 @@ export function RunDock({ run }: RunDockProps) {
             {step.state === 'running' && <span className="spin p-rotating" />}
             {step.state === 'failed' && <Icon n="alert" s={11} />}
             {step.title}
+            {step.cached && <span className="run-step-cache">缓存</span>}
           </span>
         ))}
       </div>

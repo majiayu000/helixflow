@@ -42,10 +42,11 @@ where
         };
         let runner = self.clone();
         let workspace_id = request.workspace_id;
+        let force_rerun = request.force_rerun;
         tokio::spawn(async move {
             let run_id = run.id.clone();
             if let Err(err) = runner
-                .execute_created_run(&run, &workspace_id, &plan, interrupt)
+                .execute_created_run(&run, &workspace_id, &plan, interrupt, force_rerun)
                 .await
             {
                 eprintln!("background run `{run_id}` failed: {err}");

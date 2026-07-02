@@ -37,6 +37,7 @@ export function WorkflowNode({
   const active = stepState === 'running';
   const done = stepState === 'succeeded';
   const failed = stepState === 'failed';
+  const cached = done && node.cached;
   const classes = [
     'node',
     diffState === 'add' ? 'node--add' : '',
@@ -73,6 +74,7 @@ export function WorkflowNode({
       {active && <span className="p-spin" />}
       {diffState === 'add' && <span className="node-flag add">+ 新增</span>}
       {diffState === 'upd' && <span className="node-flag upd">~ 修改</span>}
+      {cached && <span className="node-flag cache">缓存</span>}
       {failed && <span className="node-flag err">失败</span>}
       <div className="node-title">
         <span className="swatch" />

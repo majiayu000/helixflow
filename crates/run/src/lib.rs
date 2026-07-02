@@ -15,11 +15,13 @@ use tokio::sync::{Mutex, Notify, broadcast};
 
 mod artifacts;
 mod background;
+mod cache;
 mod cost_gate;
 mod error;
 mod sweep_background;
 
 use artifacts::{default_artifact_root, persist_provider_artifact};
+use cache::{CachedArtifactLink, file_sha256_hex, is_local_artifact_path};
 pub use cost_gate::{
     AgentRunRequest, CostSummary, PendingRun, PendingSweep, SweepOutcome, SweepPlan, SweepVariant,
 };
@@ -85,6 +87,7 @@ pub struct ManualRunRequest {
     pub label: String,
     pub provider: String,
     pub graph: WorkflowGraph,
+    pub force_rerun: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -255,7 +258,13 @@ where
             .insert(run.id.clone(), interrupt.clone());
 
         let result = self
-            .execute_created_run(&run, &request.workspace_id, &plan, interrupt)
+            .execute_created_run(
+                &run,
+                &request.workspace_id,
+                &plan,
+                interrupt,
+                request.force_rerun,
+            )
             .await;
         self.interrupts.lock().await.remove(&run.id);
         result
@@ -267,6 +276,7 @@ where
         workspace_id: &str,
         plan: &ExecutionPlan,
         interrupt: RunInterrupt,
+        force_rerun: bool,
     ) -> RunResult<RunOutcome> {
         let steps = self.ensure_run_steps(&run.id, plan).await?;
 
@@ -307,6 +317,7 @@ where
                     record,
                     &mut outputs,
                     &interrupt,
+                    force_rerun,
                 )
                 .await
             {
@@ -414,7 +425,18 @@ where
         record: &RunStepRecord,
         outputs: &mut BTreeMap<[String; 2], ArtifactRef>,
         interrupt: &RunInterrupt,
+        force_rerun: bool,
     ) -> RunResult<StepExecution> {
+        let inputs = resolve_inputs(&step.inputs, outputs)?;
+        let cache_key = self.step_cache_key(step, &inputs).await?;
+        if !force_rerun
+            && self
+                .try_cache_hit(workspace_id, run_id, step, record, &cache_key, outputs)
+                .await?
+        {
+            return Ok(StepExecution::Succeeded);
+        }
+
         self.store
             .update_run_step_state(
                 &record.id,
@@ -427,13 +449,14 @@ where
         self.emit_node_state(workspace_id, run_id, step, RunStepState::Running, None)
             .await?;
 
+        let mut cache_links = Vec::new();
         let cost = if let (Some(provider), Some(capability)) = (&step.provider, &step.capability) {
             let request = ProviderRequest {
                 provider: provider.clone(),
                 capability: capability.clone(),
                 node_id: step.node_id.clone(),
                 run_id: run_id.to_owned(),
-                inputs: resolve_inputs(&step.inputs, outputs)?,
+                inputs: inputs.clone(),
                 params: step.params.clone(),
             };
             let result = tokio::select! {
@@ -444,6 +467,10 @@ where
                 let artifact = self
                     .persist_artifact(workspace_id, run_id, &record.id, &step.node_id, payload)
                     .await?;
+                cache_links.push(CachedArtifactLink {
+                    port: Some(port.clone()),
+                    artifact_id: artifact.id.clone(),
+                });
                 outputs.insert(
                     [step.node_id.clone(), port],
                     ArtifactRef {
@@ -454,7 +481,8 @@ where
             }
             Some(result.cost)
         } else {
-            self.execute_builtin(workspace_id, run_id, step, record, outputs)
+            cache_links = self
+                .execute_builtin(workspace_id, run_id, step, record, &inputs, outputs)
                 .await?;
             None
         };
@@ -473,6 +501,8 @@ where
                 None,
             )
             .await?;
+        self.refresh_step_cache(workspace_id, step, &cache_key, &cache_links)
+            .await?;
         self.emit_node_state(workspace_id, run_id, step, RunStepState::Succeeded, None)
             .await?;
         Ok(StepExecution::Succeeded)
@@ -484,8 +514,10 @@ where
         run_id: &str,
         step: &ExecutionStep,
         record: &RunStepRecord,
+        inputs: &BTreeMap<String, ArtifactRef>,
         outputs: &mut BTreeMap<[String; 2], ArtifactRef>,
-    ) -> RunResult<()> {
+    ) -> RunResult<Vec<CachedArtifactLink>> {
+        let mut cache_links = Vec::new();
         match step.node_type.as_str() {
             "input.text" => {
                 let text = step
@@ -517,6 +549,10 @@ where
                         meta_json: Some(&serde_json::to_string(&json!({ "text": text }))?),
                     })
                     .await?;
+                cache_links.push(CachedArtifactLink {
+                    port: Some("text".to_owned()),
+                    artifact_id: artifact.id.clone(),
+                });
                 outputs.insert(
                     [step.node_id.clone(), "text".to_owned()],
                     ArtifactRef {
@@ -552,6 +588,10 @@ where
                         meta_json: None,
                     })
                     .await?;
+                cache_links.push(CachedArtifactLink {
+                    port: Some("image".to_owned()),
+                    artifact_id: artifact.id.clone(),
+                });
                 outputs.insert(
                     [step.node_id.clone(), "image".to_owned()],
                     ArtifactRef {
@@ -561,7 +601,6 @@ where
                 );
             }
             "output.save" => {
-                let inputs = resolve_inputs(&step.inputs, outputs)?;
                 let artifact_ref =
                     inputs
                         .get("artifact")
@@ -570,7 +609,8 @@ where
                             port: "artifact".to_owned(),
                         })?;
                 let source = self.store.artifact(&artifact_ref.artifact_id).await?;
-                self.store
+                let artifact = self
+                    .store
                     .create_artifact(NewArtifact {
                         workspace_id,
                         run_id: Some(run_id),
@@ -587,11 +627,15 @@ where
                         meta_json: source.meta_json.as_deref(),
                     })
                     .await?;
+                cache_links.push(CachedArtifactLink {
+                    port: None,
+                    artifact_id: artifact.id,
+                });
             }
             other => return Err(RunError::UnsupportedBuiltin(other.to_owned())),
         }
 
-        Ok(())
+        Ok(cache_links)
     }
 
     async fn persist_artifact(
@@ -605,6 +649,14 @@ where
         let storage_uri =
             persist_provider_artifact(&self.artifact_root, run_id, step_id, node_id, &payload)
                 .await?;
+        let sha256 = if is_local_artifact_path(&storage_uri) {
+            Some(format!(
+                "sha256:{}",
+                file_sha256_hex(&self.artifact_root.join(&storage_uri)).await?
+            ))
+        } else {
+            None
+        };
         Ok(self
             .store
             .create_artifact(NewArtifact {
@@ -614,7 +666,7 @@ where
                 node_id: Some(node_id),
                 kind: artifact_kind_label(payload.kind),
                 storage_uri: &storage_uri,
-                sha256: None,
+                sha256: sha256.as_deref(),
                 mime: Some(&payload.mime),
                 width: payload.width.map(i64::from),
                 height: payload.height.map(i64::from),
@@ -736,5 +788,9 @@ fn artifact_kind_label(kind: ArtifactKind) -> &'static str {
 
 #[cfg(test)]
 mod background_tests;
+#[cfg(test)]
+mod cache_tests;
+#[cfg(test)]
+mod sweep_tests;
 #[cfg(test)]
 mod tests;

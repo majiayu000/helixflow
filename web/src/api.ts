@@ -139,9 +139,14 @@ export async function confirmWorkspaceRun(
   return RunConfirmationResponseSchema.parse(body);
 }
 
-export async function queueWorkspaceRun(workspaceId: string): Promise<RunConfirmationResponse> {
+export async function queueWorkspaceRun(
+  workspaceId: string,
+  options: { forceRerun?: boolean } = {},
+): Promise<RunConfirmationResponse> {
   const response = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/runs`, {
     method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ forceRerun: Boolean(options.forceRerun) }),
   });
   const body = await response.json();
   if (!response.ok) {
