@@ -121,7 +121,7 @@ export function ManualProposalPanel({
         }),
       );
     } catch (error) {
-      setLocalError(error instanceof Error ? error.message : 'manual proposal request failed');
+      setLocalError(error instanceof Error ? error.message : 'manual edit request failed');
     }
   };
 
@@ -130,9 +130,9 @@ export function ManualProposalPanel({
       <div className="manual-proposal-head">
         <span>
           <Icon n="layers" s={13} />
-          Manual proposal
+          Manual edit
         </span>
-        {state.pendingProposal && <em>pending</em>}
+        {state.pendingProposal && <em>agent pending</em>}
       </div>
       <div className="manual-grid">
         <label>
@@ -265,7 +265,7 @@ export function ManualProposalPanel({
       )}
       <button className="btn btn--soft btn--sm manual-submit" disabled={disabled} onClick={() => void submit()}>
         <Icon n="spark" s={13} fill />
-        Create proposal
+        Apply edit
       </button>
     </section>
   );

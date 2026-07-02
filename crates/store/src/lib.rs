@@ -32,6 +32,9 @@ pub enum StoreError {
         expected_version_id: String,
         actual_version_id: Option<String>,
     },
+    PendingProposalConflict {
+        workspace_id: String,
+    },
     RunVersionMismatch {
         workspace_id: String,
         version_id: String,
@@ -61,6 +64,9 @@ impl fmt::Display for StoreError {
                 f,
                 "workspace `{workspace_id}` expected current version `{expected_version_id}` but found `{actual_version_id:?}`"
             ),
+            Self::PendingProposalConflict { workspace_id } => {
+                write!(f, "workspace `{workspace_id}` has a pending proposal")
+            }
             Self::RunVersionMismatch {
                 workspace_id,
                 version_id,
@@ -183,7 +189,7 @@ impl Store {
     }
 
     pub async fn create_version(&self, input: NewVersion<'_>) -> StoreResult<VersionRecord> {
-        self.insert_version(input, None).await
+        self.insert_version(input, None, false).await
     }
 
     pub async fn create_version_after(
@@ -191,7 +197,16 @@ impl Store {
         input: NewVersion<'_>,
         expected_current_version_id: &str,
     ) -> StoreResult<VersionRecord> {
-        self.insert_version(input, Some(expected_current_version_id))
+        self.insert_version(input, Some(expected_current_version_id), false)
+            .await
+    }
+
+    pub async fn create_version_after_without_pending_proposal(
+        &self,
+        input: NewVersion<'_>,
+        expected_current_version_id: &str,
+    ) -> StoreResult<VersionRecord> {
+        self.insert_version(input, Some(expected_current_version_id), true)
             .await
     }
 
@@ -199,6 +214,7 @@ impl Store {
         &self,
         input: NewVersion<'_>,
         expected_current_version_id: Option<&str>,
+        reject_pending_proposal: bool,
     ) -> StoreResult<VersionRecord> {
         let version_id = new_id("ver");
         let mut tx = self.pool.begin().await?;
@@ -220,6 +236,25 @@ impl Store {
                     workspace_id: input.workspace_id.to_owned(),
                     expected_version_id: expected_version_id.to_owned(),
                     actual_version_id,
+                });
+            }
+        }
+        if reject_pending_proposal {
+            let pending_proposal_id: Option<String> = sqlx::query_scalar(
+                r#"
+                SELECT id
+                FROM proposals
+                WHERE workspace_id = ? AND state = 'pending'
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                "#,
+            )
+            .bind(input.workspace_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            if pending_proposal_id.is_some() {
+                return Err(StoreError::PendingProposalConflict {
+                    workspace_id: input.workspace_id.to_owned(),
                 });
             }
         }

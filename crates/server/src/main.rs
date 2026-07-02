@@ -11,9 +11,9 @@ mod app_state;
 mod artifact_routes;
 mod graph_files;
 mod layout_routes;
-mod manual_proposal_routes;
+mod ops_routes;
 #[cfg(test)]
-mod manual_proposal_routes_tests;
+mod ops_routes_tests;
 mod proposal_routes;
 mod registry_routes;
 mod run_routes;
@@ -36,7 +36,7 @@ mod ws;
 use app_state::AppState;
 use artifact_routes::{artifact_content, download_output, preview_output, select_output};
 use layout_routes::save_workspace_layout;
-use manual_proposal_routes::create_manual_workspace_proposal;
+use ops_routes::apply_workspace_ops;
 use proposal_routes::{apply_workspace_proposal, dismiss_workspace_proposal};
 use registry_routes::node_registry_catalog;
 use run_routes::{confirm_run, hold_run, interrupt_active_run, queue_workspace_run};
@@ -89,8 +89,8 @@ fn app(state: AppState) -> Router {
             post(dismiss_workspace_proposal),
         )
         .route(
-            "/api/workspaces/{workspace_id}/proposals/manual",
-            post(create_manual_workspace_proposal),
+            "/api/workspaces/{workspace_id}/versions/ops",
+            post(apply_workspace_ops),
         )
         .route(
             "/api/workspaces/{workspace_id}/runs/{run_id}/confirm",

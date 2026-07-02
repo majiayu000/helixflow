@@ -16,10 +16,7 @@ mod runtime;
 mod service;
 mod turn_mode;
 
-pub use canvas_ops::{
-    CanvasGateState, CanvasOp, CanvasOpsContext, CanvasOpsContract, CanvasOpsRequest,
-    CanvasSelection,
-};
+pub use canvas_ops::{CanvasGateState, CanvasOpsContext, CanvasOpsContract, CanvasSelection};
 pub use contract::{
     AgentLogEntry, RunRequestAction, RunRequestOutput, ValidatedAgentProposal, ValidatedAgentReply,
     ValidatedRunRequest, read_validated_proposal, read_validated_reply, read_validated_run_request,

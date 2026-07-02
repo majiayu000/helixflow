@@ -376,9 +376,8 @@ export type NodeDefinition = z.infer<typeof NodeDefinitionSchema>;
 export type CanvasMessageContext = z.infer<typeof CanvasMessageContextSchema>;
 export type ManualProposalInput = {
   baseVersionId: string;
-  title?: string;
-  summary?: string;
-  op:
+  label?: string;
+  ops: Array<
     | {
         op: 'add_node';
         id: string;
@@ -390,7 +389,9 @@ export type ManualProposalInput = {
     | { op: 'remove_node'; id: string }
     | { op: 'set_param'; id: string; key: string; value: unknown }
     | { op: 'add_edge'; from: [string, string]; to: [string, string]; edge_type: string }
-    | { op: 'remove_edge'; from: [string, string]; to: [string, string]; edge_type: string };
+    | { op: 'remove_edge'; from: [string, string]; to: [string, string]; edge_type: string }
+    | { op: 'move_node'; id: string; pos: [number, number] }
+  >;
 };
 
 function workflowGraphToGraphState(

@@ -194,22 +194,6 @@ fn writes_compact_canvas_state_with_filtered_selection() {
 }
 
 #[test]
-fn rejects_unknown_fields_in_canvas_ops_contract_input() {
-    let value = json!({
-        "schema_version": 1,
-        "ops": [{
-            "op": "propose_layout",
-            "moves": [{ "id": "video", "pos": [10.0, 12.0], "secret": "nope" }]
-        }]
-    });
-
-    let err = serde_json::from_value::<CanvasOpsRequest>(value)
-        .expect_err("nested unknown canvas op field should fail");
-
-    assert!(err.to_string().contains("unknown field"));
-}
-
-#[test]
 fn chat_contract_skips_graph_context_and_records_prompt_metadata() {
     let dir = tempfile::tempdir().expect("temp dir");
     let session = create_session_contract(&chat_request(&dir)).expect("session");

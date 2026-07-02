@@ -315,7 +315,7 @@ export async function createManualWorkspaceProposal(
   input: ManualProposalInput,
 ): Promise<WorkbenchState> {
   const response = await fetch(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/proposals/manual`,
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/versions/ops`,
     {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -327,8 +327,10 @@ export async function createManualWorkspaceProposal(
     const message =
       body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
         ? body.error
-        : `manual proposal request failed: ${response.status}`;
-    throw new Error(message);
+        : `manual edit request failed: ${response.status}`;
+    const opIndex =
+      body && typeof body === 'object' && 'opIndex' in body ? ` (op ${body.opIndex})` : '';
+    throw new Error(`${message}${opIndex}`);
   }
 
   return WorkbenchStateSchema.parse(body);

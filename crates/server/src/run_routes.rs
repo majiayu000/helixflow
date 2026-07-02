@@ -3,7 +3,6 @@ use std::sync::Arc;
 use axum::{
     Json,
     extract::{Path, State},
-    http::StatusCode,
 };
 use helixflow_run::{ManualRunRequest, RunOutcome};
 use helixflow_store::RunRecord;
@@ -44,10 +43,9 @@ pub(crate) async fn queue_workspace_run(
             "runtime provider `{provider}` is unavailable"
         )));
     }
-    let version_id = workspace.cur_version_id.ok_or_else(|| ApiError {
-        status: StatusCode::CONFLICT,
-        message: "workspace has no current version to run".to_owned(),
-    })?;
+    let version_id = workspace
+        .cur_version_id
+        .ok_or_else(|| ApiError::conflict("workspace has no current version to run"))?;
     let version = state
         .store
         .version(&version_id)
@@ -152,10 +150,10 @@ pub(crate) async fn interrupt_active_run(
     let run = state.store.run(&run_id).await.map_err(ApiError::store)?;
     let target_run = interrupt_target_run(&state, &run).await?;
     if !is_interruptible_status(&target_run.status) {
-        return Err(ApiError {
-            status: StatusCode::CONFLICT,
-            message: format!("run `{}` is not active", target_run.id),
-        });
+        return Err(ApiError::conflict(format!(
+            "run `{}` is not active",
+            target_run.id
+        )));
     }
 
     state
@@ -303,10 +301,10 @@ async fn reject_active_workspace_run(state: &AppState, workspace_id: &str) -> Re
     if let Some(run) = latest
         && is_active_status(&run.status)
     {
-        return Err(ApiError {
-            status: StatusCode::CONFLICT,
-            message: format!("workspace already has active run `{}`", run.id),
-        });
+        return Err(ApiError::conflict(format!(
+            "workspace already has active run `{}`",
+            run.id
+        )));
     }
     Ok(())
 }
@@ -322,9 +320,10 @@ async fn claim_workspace_run_queue(
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
     };
-    lock.try_lock_owned().map_err(|_| ApiError {
-        status: StatusCode::CONFLICT,
-        message: format!("workspace already has a queue request in flight: {workspace_id}"),
+    lock.try_lock_owned().map_err(|_| {
+        ApiError::conflict(format!(
+            "workspace already has a queue request in flight: {workspace_id}"
+        ))
     })
 }
 
@@ -349,6 +348,7 @@ mod tests {
     use std::sync::Arc;
 
     use axum::extract::{Path, State};
+    use axum::http::StatusCode;
     use helixflow_graph::{GraphEdge, GraphNode, WorkflowGraph};
     use helixflow_run::{AgentRunRequest, EventBus, SweepPlan, SweepVariant};
     use helixflow_store::{NewVersion, Store, VersionSource};
