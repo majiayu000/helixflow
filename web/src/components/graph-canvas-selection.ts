@@ -11,7 +11,13 @@ import {
 
 export type Point = { x: number; y: number };
 export type Rect = { x: number; y: number; width: number; height: number };
-export type GraphShortcut = 'clear_selection' | 'select_all' | 'fit_view' | 'copy_selection';
+export type GraphShortcut =
+  | 'clear_selection'
+  | 'select_all'
+  | 'fit_view'
+  | 'copy_selection'
+  | 'paste_selection'
+  | 'delete_selection';
 
 export function selectionRectFromPoints(start: Point, current: Point): Rect {
   return {
@@ -99,10 +105,12 @@ export function graphShortcutFromEvent(event: {
   const key = event.key.toLowerCase();
   const command = Boolean(event.metaKey || event.ctrlKey);
   if (key === 'escape') return 'clear_selection';
+  if (!command && (key === 'delete' || key === 'backspace')) return 'delete_selection';
   if (!command) return null;
   if (key === 'a') return 'select_all';
   if (key === '0') return 'fit_view';
   if (key === 'c') return 'copy_selection';
+  if (key === 'v') return 'paste_selection';
   return null;
 }
 

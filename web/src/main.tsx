@@ -4,6 +4,7 @@ import { App } from './app';
 import './styles.css';
 import './inspector.css';
 import './connections.css';
+import './node-library.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
