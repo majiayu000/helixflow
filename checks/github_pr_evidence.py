@@ -15,6 +15,8 @@ PR_VIEW_FIELDS = [
     "number",
     "state",
     "isDraft",
+    "title",
+    "body",
     "headRefOid",
     "mergeStateStatus",
     "closingIssuesReferences",
@@ -283,12 +285,29 @@ def normalize_review_threads(graphql_payload: dict[str, Any]) -> list[dict[str, 
     return normalized
 
 
-def normalize_linked_issue(value: Any) -> int | None:
+def linked_issue_from_text(value: str) -> int | None:
+    patterns = [
+        r"(?:Refs|Fixes|Closes|Issue)\s*:?\s*#([0-9]+)",
+        r"\bGH-?([0-9]+)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, value, flags=re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def normalize_linked_issue(value: Any, *text_values: Any) -> int | None:
     if not isinstance(value, list):
         raise EvidenceError("closingIssuesReferences must be a list")
     for item in value:
         if isinstance(item, dict):
             number = _coerce_optional_positive_int(item.get("number"))
+            if number is not None:
+                return number
+    for text in text_values:
+        if isinstance(text, str):
+            number = linked_issue_from_text(text)
             if number is not None:
                 return number
     return None
@@ -326,7 +345,11 @@ def build_evidence(
         "is_draft": _require_bool(pr_payload, "isDraft"),
         "head_sha": _require_string(pr_payload, "headRefOid"),
         "merge_state": _require_string(pr_payload, "mergeStateStatus").upper(),
-        "linked_issue": normalize_linked_issue(pr_payload.get("closingIssuesReferences")),
+        "linked_issue": normalize_linked_issue(
+            pr_payload.get("closingIssuesReferences"),
+            pr_payload.get("title"),
+            pr_payload.get("body"),
+        ),
         "checks": normalize_checks(pr_payload.get("statusCheckRollup")),
         "reviews": normalize_reviews(pr_payload.get("reviews")),
         "review_threads": normalize_review_threads(threads_payload),

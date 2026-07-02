@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -131,6 +132,20 @@ REQUIRED_TOKENS = {
 }
 
 
+def issue_token_display(issue_number: str) -> str:
+    return f"GH-{issue_number} or GH{issue_number} or #{issue_number} or issues/{issue_number}"
+
+
+def has_linked_issue_token(text: str, issue_number: str) -> bool:
+    patterns = [
+        rf"(?<![A-Za-z0-9_-])GH-{re.escape(issue_number)}(?![A-Za-z0-9_-])",
+        rf"(?<![A-Za-z0-9_-])GH{re.escape(issue_number)}(?![A-Za-z0-9_-])",
+        rf"(?<![A-Za-z0-9_-])#{re.escape(issue_number)}(?![0-9])",
+        rf"(?<![A-Za-z0-9_-])issues/{re.escape(issue_number)}(?![A-Za-z0-9_-])",
+    ]
+    return any(re.search(pattern, text) for pattern in patterns)
+
+
 def validate_required_files(repo: Path) -> list[str]:
     errors: list[str] = []
     for rel in REQUIRED_FILES:
@@ -167,10 +182,6 @@ def validate_spec_packet(spec_dir: Path) -> list[str]:
     else:
         issue_number = match.group(1)
 
-    issue_tokens = []
-    if issue_number:
-        issue_tokens = [f"GH-{issue_number}", f"GH{issue_number}", f"#{issue_number}"]
-
     for name in ["product.md", "tech.md"]:
         path = spec_dir / name
         if not path.is_file():
@@ -179,8 +190,8 @@ def validate_spec_packet(spec_dir: Path) -> list[str]:
         text = read_text(path)
         if not text.strip():
             errors.append(f"{path}: must not be empty")
-        if issue_tokens and not any(token in text for token in issue_tokens):
-            errors.append(f"{path}: missing linked issue token {' or '.join(issue_tokens)}")
+        if issue_number and not has_linked_issue_token(text, issue_number):
+            errors.append(f"{path}: missing linked issue token {issue_token_display(issue_number)}")
 
     task_path = spec_dir / "tasks.md"
     if not task_path.is_file():
@@ -211,28 +222,147 @@ def discover_spec_packet_dirs(repo: Path) -> list[Path]:
     )
 
 
-def select_spec_packet_dirs(
+def discover_changed_spec_packet_dirs(repo: Path, base_ref: str | None) -> list[Path]:
+    if not base_ref:
+        return []
+    base_ref = base_ref.strip()
+    if not base_ref or re.fullmatch(r"0+", base_ref):
+        return []
+    if base_ref.startswith("-") or not re.fullmatch(r"[A-Za-z0-9_./-]+", base_ref):
+        raise SpecRailError(f"invalid changed spec base ref: {base_ref}")
+
+    result = subprocess.run(
+        ["git", "-C", str(repo), "diff", "--name-only", base_ref, "HEAD", "--", "specs/"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        stderr = result.stderr.strip() or result.stdout.strip()
+        raise SpecRailError(f"failed to discover changed spec packets from {base_ref}: {stderr}")
+
+    spec_dirs: set[Path] = set()
+    for rel_path in result.stdout.splitlines():
+        parts = Path(rel_path).parts
+        if len(parts) >= 2 and parts[0] == "specs" and re.fullmatch(r"GH[0-9]+", parts[1]):
+            spec_dirs.add((repo / parts[0] / parts[1]).resolve())
+    return sorted(spec_dirs, key=spec_packet_sort_key)
+
+
+def is_new_format_spec_packet(spec_dir: Path) -> bool:
+    marker_files = ["product.md", "tech.md", "tasks.md"]
+    markers = [
+        "## Linked Issue",
+        "## Implementation Tasks",
+        "## 实现任务",
+    ]
+    for name in marker_files:
+        path = spec_dir / name
+        if not path.is_file():
+            continue
+        text = read_text(path)
+        if any(marker in text for marker in markers):
+            return True
+    return False
+
+
+def select_spec_packet_dirs_for_validation(
     repo: Path,
     raw_spec_dirs: list[str],
     *,
     all_specs: bool,
-) -> list[Path]:
+) -> list[tuple[Path, bool]]:
     spec_dirs: list[Path] = []
     if all_specs:
         spec_dirs.extend(discover_spec_packet_dirs(repo))
-    spec_dirs.extend((repo / raw_spec_dir).resolve() for raw_spec_dir in raw_spec_dirs)
+    explicit_spec_dirs = [(repo / raw_spec_dir).resolve() for raw_spec_dir in raw_spec_dirs]
+    spec_dirs.extend(explicit_spec_dirs)
 
-    unique_spec_dirs: list[Path] = []
+    unique_spec_dirs: list[tuple[Path, bool]] = []
+    explicit_set = set(explicit_spec_dirs)
     seen: set[Path] = set()
     for spec_dir in spec_dirs:
         if spec_dir in seen:
             continue
         seen.add(spec_dir)
-        unique_spec_dirs.append(spec_dir)
+        strict = spec_dir in explicit_set or (all_specs and is_new_format_spec_packet(spec_dir))
+        unique_spec_dirs.append((spec_dir, strict))
 
     if all_specs:
-        return sorted(unique_spec_dirs, key=spec_packet_sort_key)
+        return sorted(unique_spec_dirs, key=lambda item: spec_packet_sort_key(item[0]))
     return unique_spec_dirs
+
+
+def merge_selected_spec_dirs(
+    selected: list[tuple[Path, bool]],
+    changed_spec_dirs: list[Path],
+) -> list[tuple[Path, bool]]:
+    merged: dict[Path, bool] = {spec_dir: strict for spec_dir, strict in selected}
+    for spec_dir in changed_spec_dirs:
+        merged[spec_dir] = True
+    return sorted(merged.items(), key=lambda item: spec_packet_sort_key(item[0]))
+
+
+def validate_task_id(path: Path, line_number: int, task_id: str, issue_number: str | None) -> list[str]:
+    errors: list[str] = []
+    prefix = f"SP{issue_number}-T" if issue_number else "SP"
+    if issue_number and not task_id.startswith(prefix):
+        errors.append(f"{path}:{line_number}: task ID {task_id} must start with {prefix}")
+    return errors
+
+
+def validate_checklist_tasks(path: Path, text: str, issue_number: str | None) -> tuple[list[str], list[str]]:
+    errors: list[str] = []
+    ids: list[str] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        match = re.match(r"\s*-\s*\[[ xX]\]\s*`([^`]+)`", line)
+        if not match:
+            continue
+        task_id = match.group(1)
+        ids.append(task_id)
+        errors.extend(validate_task_id(path, line_number, task_id, issue_number))
+        for token in ["Owner:", "Done when:", "Verify:"]:
+            if token not in line:
+                errors.append(f"{path}:{line_number}: task {task_id} missing {token}")
+    return ids, errors
+
+
+def parse_markdown_table_row(line: str) -> list[str] | None:
+    stripped = line.strip()
+    if not stripped.startswith("|") or not stripped.endswith("|"):
+        return None
+    cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+    if not cells:
+        return None
+    if cells[0].lower() == "id":
+        return None
+    if all(re.fullmatch(r":?-{3,}:?", cell.replace(" ", "")) for cell in cells):
+        return None
+    return cells
+
+
+def validate_table_tasks(path: Path, text: str, issue_number: str | None) -> tuple[list[str], list[str]]:
+    errors: list[str] = []
+    ids: list[str] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        cells = parse_markdown_table_row(line)
+        if not cells:
+            continue
+        task_id = cells[0].strip("`")
+        if not re.fullmatch(r"SP[0-9]+-T[0-9A-Za-z_-]+", task_id):
+            continue
+        ids.append(task_id)
+        errors.extend(validate_task_id(path, line_number, task_id, issue_number))
+        if len(cells) < 6:
+            errors.append(
+                f"{path}:{line_number}: task {task_id} table row must have ID, Owner, "
+                "Dependencies, Task, Done When, and Verify columns"
+            )
+            continue
+        for index, name in [(1, "Owner"), (4, "Done when"), (5, "Verify")]:
+            if not cells[index].strip():
+                errors.append(f"{path}:{line_number}: task {task_id} missing {name}")
+    return ids, errors
 
 
 def validate_task_plan(path: Path, issue_number: str | None) -> list[str]:
@@ -240,24 +370,15 @@ def validate_task_plan(path: Path, issue_number: str | None) -> list[str]:
     text = read_text(path)
     if not text.strip():
         return [f"{path}: must not be empty"]
-    prefix = f"SP{issue_number}-T" if issue_number else "SP"
-    ids: list[str] = []
-    for line_number, line in enumerate(text.splitlines(), start=1):
-        if "- [" not in line:
-            continue
-        match = re.search(r"`([^`]+)`", line)
-        if not match:
-            errors.append(f"{path}:{line_number}: task is missing stable ID")
-            continue
-        task_id = match.group(1)
-        ids.append(task_id)
-        if issue_number and not task_id.startswith(prefix):
-            errors.append(f"{path}:{line_number}: task ID {task_id} must start with {prefix}")
-        for token in ["Owner:", "Done when:", "Verify:"]:
-            if token not in line:
-                errors.append(f"{path}:{line_number}: task {task_id} missing {token}")
+
+    checklist_ids, checklist_errors = validate_checklist_tasks(path, text, issue_number)
+    table_ids, table_errors = validate_table_tasks(path, text, issue_number)
+    ids = checklist_ids + table_ids
+    errors.extend(checklist_errors)
+    errors.extend(table_errors)
+
     if not ids:
-        errors.append(f"{path}: no task checklist items found")
+        errors.append(f"{path}: no task checklist or table items found")
     duplicates = sorted({task_id for task_id in ids if ids.count(task_id) > 1})
     for duplicate in duplicates:
         errors.append(f"{path}: duplicate task ID {duplicate}")
@@ -280,6 +401,11 @@ def main() -> int:
         action="store_true",
         help="Validate every specs/GH<number> directory under the repo",
     )
+    parser.add_argument(
+        "--changed-specs-from",
+        default=None,
+        help="Git ref/SHA used to discover changed specs/GH<number> packets for strict validation",
+    )
     args = parser.parse_args()
 
     repo = Path(args.repo).resolve()
@@ -294,11 +420,16 @@ def main() -> int:
         errors.extend(validate_action_policy(config))
         errors.extend(validate_skills_lock(repo))
         errors.extend(validate_template_parity(repo))
-        for spec_dir in select_spec_packet_dirs(
-            repo,
-            args.spec_dir,
-            all_specs=args.all_specs,
-        ):
+        selected_spec_dirs = select_spec_packet_dirs_for_validation(
+            repo, args.spec_dir, all_specs=args.all_specs
+        )
+        selected_spec_dirs = merge_selected_spec_dirs(
+            selected_spec_dirs,
+            discover_changed_spec_packet_dirs(repo, args.changed_specs_from),
+        )
+        for spec_dir, strict in selected_spec_dirs:
+            if not strict:
+                continue
             errors.extend(validate_spec_packet(spec_dir))
     except SpecRailError as exc:
         errors.append(str(exc))
