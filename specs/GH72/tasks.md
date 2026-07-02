@@ -25,19 +25,6 @@ GH72。
 | SP72-T8 | frontend/backend | SP72-T3 | Template empty state | 空 workspace 显示模板/一句话入口；不会创建 fake demo graph | `cd web && npm test -- app.test.tsx`; workspace bootstrap tests |
 | SP72-T9 | qa | SP72-T1-T8 | 完整 Workbench QA | open -> edit -> commit -> Agent proposal -> cost gate -> run -> output select -> failure repair 路径被人工验证 | browser screenshots + command output attached to PR |
 
-### Checklist Mirror
-
-- [ ] `SP72-T0` Owner: maintainer. Done when: `GH72` 的 product/tech/tasks 被维护者接受，并推进到 `ready_to_implement`. Verify: `python3 checks/route_gate.py --repo . --route implement --issue 72 --state ready_to_implement --json`.
-- [ ] `SP72-T1` Owner: frontend. Done when: `TopBar`/canvas/chat 使用统一 tokens，品牌为 `helixflow`，不改变行为. Verify: `cd web && npm test -- app.test.tsx`; `cd web && npm run build`.
-- [ ] `SP72-T2` Owner: frontend. Done when: dirty/pending/provider/run/empty 等状态有单一 reason，button title/copy 一致. Verify: `cd web && npm test -- app.test.tsx`.
-- [ ] `SP72-T3` Owner: frontend/backend. Done when: move/set_param/add_edge/add_node/remove_node 可累积为 dirty ops；commit 创建新 version；discard 不写版本. Verify: `cargo test -p helixflow-server`; `cd web && npm test -- app.test.tsx`.
-- [ ] `SP72-T4` Owner: frontend. Done when: 拖动节点显示 `EDITING · N CHANGES`；Queue 锁住；commit 后保存位置. Verify: `cd web && npm test -- app.test.tsx`.
-- [ ] `SP72-T5` Owner: frontend. Done when: select/pan/connect/add/import/library 工具显示；unsupported 工具有 disabled reason. Verify: `cd web && npm test -- app.test.tsx`; manual browser QA.
-- [ ] `SP72-T6` Owner: frontend/backend. Done when: direct edit 产生 `set_param` dirty op；Agent rewrite 走 proposal；unknown context fields 被拒绝. Verify: `cd web && npm test -- app.test.tsx`; relevant server schema tests.
-- [ ] `SP72-T7` Owner: frontend. Done when: `2b`/`2c`/`2d` 状态从真实 run/output/error 数据渲染. Verify: `cd web && npm test -- app.test.tsx`.
-- [ ] `SP72-T8` Owner: frontend/backend. Done when: 空 workspace 显示模板/一句话入口；不会创建 fake demo graph. Verify: `cd web && npm test -- app.test.tsx`; workspace bootstrap tests.
-- [ ] `SP72-T9` Owner: qa. Done when: open -> edit -> commit -> Agent proposal -> cost gate -> run -> output select -> failure repair 路径被人工验证. Verify: browser screenshots + command output attached to PR.
-
 ## 并行拆分
 
 可以并行，但必须保持文件所有权不重叠：

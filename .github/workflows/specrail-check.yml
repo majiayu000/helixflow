@@ -53,11 +53,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
       - name: Check SpecRail workflow pack
-        run: python3 checks/check_workflow.py --repo . --all-specs
+        env:
+          SPEC_CHANGED_FROM: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: python3 checks/check_workflow.py --repo . --all-specs --changed-specs-from "$SPEC_CHANGED_FROM"
       - name: Preview local skill install
         run: python3 tools/install_codex_skills.py --repo .
       - name: Check whitespace
