@@ -1,16 +1,17 @@
 use async_trait::async_trait;
 
 use crate::{
-    ApiConnectorSummary, AtlasProvider, CostEstimate, MockProvider, Provider, ProviderCatalog,
-    ProviderCatalogSnapshot, ProviderError, ProviderHealth, ProviderRequest, ProviderResult,
-    ProviderResultValue, ProviderTaskHandle, RuntimeProviderSummary, WorkflowBackendSummary,
-    is_safe_provider_message, safe_provider_message, sanitize_provider_id,
+    ApiConnectorSummary, AtlasProvider, CostEstimate, FalProvider, MockProvider, Provider,
+    ProviderCatalog, ProviderCatalogSnapshot, ProviderError, ProviderHealth, ProviderRequest,
+    ProviderResult, ProviderResultValue, ProviderTaskHandle, RuntimeProviderSummary,
+    WorkflowBackendSummary, is_safe_provider_message, safe_provider_message, sanitize_provider_id,
 };
 
 #[derive(Debug, Clone)]
 pub enum RuntimeProvider {
     Mock(MockProvider),
     Atlas(AtlasProvider),
+    Fal(FalProvider),
     Unavailable(UnavailableProvider),
 }
 
@@ -29,10 +30,17 @@ impl RuntimeProvider {
             .unwrap_or_else(|| Self::unavailable("atlas", "Atlas provider is not configured"))
     }
 
+    pub fn fal_from_env() -> Self {
+        FalProvider::from_env()
+            .map(Self::Fal)
+            .unwrap_or_else(|| Self::unavailable("fal", "FAL_KEY is not configured"))
+    }
+
     pub fn safe_id(&self) -> String {
         match self {
             Self::Mock(provider) => provider.id().to_owned(),
             Self::Atlas(provider) => provider.id().to_owned(),
+            Self::Fal(provider) => provider.id().to_owned(),
             Self::Unavailable(provider) => provider.safe_id(),
         }
     }
@@ -52,6 +60,15 @@ impl RuntimeProvider {
                 "healthy",
                 Some("Atlas API provider configured".to_owned()),
                 AtlasProvider::catalog_value(),
+            ),
+            Self::Fal(provider) => provider_catalog_snapshot(
+                provider.id(),
+                "fal.ai",
+                "external_api",
+                true,
+                "healthy",
+                Some("fal.ai provider configured".to_owned()),
+                FalProvider::catalog_value(),
             ),
             Self::Unavailable(provider) => ProviderCatalogSnapshot {
                 default_provider: provider.safe_id(),
@@ -132,6 +149,7 @@ impl Provider for RuntimeProvider {
         match self {
             Self::Mock(provider) => provider.id(),
             Self::Atlas(provider) => provider.id(),
+            Self::Fal(provider) => provider.id(),
             Self::Unavailable(provider) => provider.id(),
         }
     }
@@ -140,6 +158,7 @@ impl Provider for RuntimeProvider {
         match self {
             Self::Mock(provider) => provider.health().await,
             Self::Atlas(provider) => provider.health().await,
+            Self::Fal(provider) => provider.health().await,
             Self::Unavailable(provider) => provider.health().await,
         }
     }
@@ -148,6 +167,7 @@ impl Provider for RuntimeProvider {
         match self {
             Self::Mock(provider) => provider.catalog().await,
             Self::Atlas(provider) => provider.catalog().await,
+            Self::Fal(provider) => provider.catalog().await,
             Self::Unavailable(provider) => provider.catalog().await,
         }
     }
@@ -156,6 +176,7 @@ impl Provider for RuntimeProvider {
         match self {
             Self::Mock(provider) => provider.estimate(req).await,
             Self::Atlas(provider) => provider.estimate(req).await,
+            Self::Fal(provider) => provider.estimate(req).await,
             Self::Unavailable(provider) => provider.estimate(req).await,
         }
     }
@@ -164,6 +185,7 @@ impl Provider for RuntimeProvider {
         match self {
             Self::Mock(provider) => provider.invoke(req).await,
             Self::Atlas(provider) => provider.invoke(req).await,
+            Self::Fal(provider) => provider.invoke(req).await,
             Self::Unavailable(provider) => provider.invoke(req).await,
         }
     }
@@ -172,6 +194,7 @@ impl Provider for RuntimeProvider {
         match self {
             Self::Mock(provider) => provider.cancel(handle).await,
             Self::Atlas(provider) => provider.cancel(handle).await,
+            Self::Fal(provider) => provider.cancel(handle).await,
             Self::Unavailable(provider) => provider.cancel(handle).await,
         }
     }

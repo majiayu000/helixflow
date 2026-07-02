@@ -296,6 +296,47 @@ mod tests {
         assert!(!registry.provider_enabled("openai"));
     }
 
+    #[test]
+    fn provider_catalog_can_include_unavailable_fal_with_mock() {
+        let registry = ProviderRegistry::new(
+            "mock",
+            vec![
+                RuntimeProvider::mock(),
+                RuntimeProvider::unavailable("fal", "FAL_KEY is not configured"),
+            ],
+        );
+
+        let snapshot = registry.catalog_snapshot_for_selected(Some("fal"));
+        let fal = snapshot
+            .runtime_providers
+            .iter()
+            .find(|provider| provider.id == "fal")
+            .map(|provider| {
+                (
+                    provider.enabled,
+                    provider.status.as_str(),
+                    provider.message.as_deref(),
+                )
+            });
+        let mock_enabled = snapshot
+            .runtime_providers
+            .iter()
+            .find(|provider| provider.id == "mock")
+            .map(|provider| provider.enabled);
+
+        assert_eq!(mock_enabled, Some(true));
+        assert_eq!(
+            fal,
+            Some((false, "unavailable", Some("FAL_KEY is not configured")))
+        );
+        assert!(
+            snapshot
+                .api_connectors
+                .iter()
+                .any(|item| item.provider == "mock")
+        );
+    }
+
     #[tokio::test]
     async fn persist_runtime_provider_status_marks_unavailable_provider() {
         let dir = tempfile::tempdir().expect("temp dir");
