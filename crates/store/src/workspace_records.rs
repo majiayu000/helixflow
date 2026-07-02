@@ -29,7 +29,7 @@ impl Store {
     pub async fn workspaces(&self) -> StoreResult<Vec<WorkspaceRecord>> {
         Ok(sqlx::query_as::<_, WorkspaceRecord>(
             r#"
-            SELECT id, name, cur_version_id, created_at, updated_at
+            SELECT id, name, cur_version_id, runtime_provider_id, created_at, updated_at
             FROM workspaces
             ORDER BY updated_at DESC, id DESC
             "#,

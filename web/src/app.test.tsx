@@ -62,6 +62,7 @@ const state: WorkbenchState = {
   },
   providers: {
     defaultProvider: 'mock',
+    selectedProvider: 'mock',
     runtimeProviders: [
       {
         id: 'mock',
@@ -104,7 +105,7 @@ const state: WorkbenchState = {
       },
       {
         id: 'video',
-        nodeType: 'video.mock.text_to_video',
+        nodeType: 'video.text_to_video',
         title: 'Video render',
         category: 'Video',
         status: 'queued',
@@ -168,7 +169,7 @@ const state: WorkbenchState = {
         pos: [48, 158],
       },
       video: {
-        node_type: 'video.mock.text_to_video',
+        node_type: 'video.text_to_video',
         title: 'Video render',
         params: {
           prompt: 'clean product shot',
@@ -254,6 +255,7 @@ describe('App', () => {
         onExport={() => {}}
         onHistory={() => {}}
         onNewWorkspace={() => {}}
+        onProviderSelect={() => {}}
         onQueue={() => {}}
         onUndo={() => {}}
         runDisabled={false}
@@ -280,6 +282,7 @@ describe('App', () => {
         onExport={() => {}}
         onHistory={() => {}}
         onNewWorkspace={() => {}}
+        onProviderSelect={() => {}}
         onQueue={() => {}}
         onUndo={() => {}}
         runDisabled={true}
@@ -288,6 +291,7 @@ describe('App', () => {
           ...state,
           providers: {
             defaultProvider: 'openai',
+            selectedProvider: 'openai',
             runtimeProviders: [
               {
                 id: 'openai',
@@ -314,6 +318,51 @@ describe('App', () => {
     expect(markup).not.toContain(['Atlas', '未配置'].join(' '));
   });
 
+  it('renders the selected provider and unavailable alternatives in the TopBar selector', () => {
+    const markup = renderToStaticMarkup(
+      <TopBar
+        agentRunDisabled={false}
+        busy={false}
+        connection="live"
+        exportDisabled={true}
+        historyOpen={false}
+        onAgentRun={() => {}}
+        onExport={() => {}}
+        onHistory={() => {}}
+        onNewWorkspace={() => {}}
+        onProviderSelect={() => {}}
+        onQueue={() => {}}
+        onUndo={() => {}}
+        runDisabled={false}
+        running={false}
+        state={{
+          ...state,
+          providers: {
+            ...state.providers,
+            selectedProvider: 'atlas',
+            runtimeProviders: [
+              ...state.providers.runtimeProviders,
+              {
+                id: 'atlas',
+                label: 'Atlas',
+                kind: 'unavailable',
+                enabled: false,
+                status: 'unavailable',
+                message: 'Atlas credentials are not configured',
+                capabilities: ['image_generate'],
+              },
+            ],
+          },
+        }}
+        undoDisabled={true}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Runtime provider"');
+    expect(markup).toContain('<option value="atlas" selected="">Atlas · 不可用</option>');
+    expect(markup).toContain('Atlas credentials are not configured');
+  });
+
   it('disables queue when provider-backed nodes use an unavailable provider', () => {
     const markup = renderToStaticMarkup(
       <App
@@ -323,6 +372,7 @@ describe('App', () => {
           run: null,
           providers: {
             defaultProvider: 'openai',
+            selectedProvider: 'openai',
             runtimeProviders: [
               {
                 id: 'openai',
@@ -756,6 +806,44 @@ describe('App', () => {
     expect(updated?.outputs[1]?.preview?.content).toContain('Alternate teaser');
   });
 
+  it('persists provider selection through the workspace provider API', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          ...state,
+          providers: {
+            ...state.providers,
+            selectedProvider: 'atlas',
+            runtimeProviders: [
+              ...state.providers.runtimeProviders,
+              {
+                id: 'atlas',
+                label: 'Atlas',
+                kind: 'external_api',
+                enabled: true,
+                status: 'healthy',
+                message: null,
+                capabilities: ['prompt_writer', 'image_generate', 'text_to_video'],
+              },
+            ],
+          },
+        }),
+      ),
+    );
+    useWorkbenchStore.getState().setInitialState(state);
+
+    await useWorkbenchStore.getState().selectProvider('atlas');
+
+    const fetchMock = vi.mocked(fetch);
+    expect(fetchMock).toHaveBeenCalledWith('/api/workspaces/ws_test/provider', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ providerId: 'atlas' }),
+    });
+    expect(useWorkbenchStore.getState().state?.providers.selectedProvider).toBe('atlas');
+  });
+
   it('renders the selected artifact preview instead of guessing from graph state', () => {
     const markup = renderToStaticMarkup(
       <App
@@ -844,6 +932,55 @@ describe('App', () => {
     expect(markup).not.toContain('allow-scripts');
   });
 
+  it('renders image and video artifact previews from content URLs', () => {
+    const imageMarkup = renderToStaticMarkup(
+      <ArtifactStage
+        outputs={[
+          {
+            id: 'art_image_1',
+            kind: 'image',
+            title: 'Atlas image',
+            storageUri: '/api/artifacts/art_image_1/content',
+            selected: true,
+            meta: '{}',
+            mime: 'image/png',
+            preview: {
+              kind: 'image',
+              content: '/api/artifacts/art_image_1/content',
+              mime: 'image/png',
+            },
+          },
+        ]}
+      />,
+    );
+    const videoMarkup = renderToStaticMarkup(
+      <ArtifactStage
+        outputs={[
+          {
+            id: 'art_video_1',
+            kind: 'video',
+            title: 'Atlas video',
+            storageUri: '/api/artifacts/art_video_1/content',
+            selected: true,
+            meta: '{}',
+            mime: 'video/mp4',
+            preview: {
+              kind: 'video',
+              content: '/api/artifacts/art_video_1/content',
+              mime: 'video/mp4',
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(imageMarkup).toContain('<img');
+    expect(imageMarkup).toContain('src="/api/artifacts/art_image_1/content"');
+    expect(videoMarkup).toContain('<video');
+    expect(videoMarkup).toContain('controls=""');
+    expect(videoMarkup).toContain('src="/api/artifacts/art_video_1/content"');
+  });
+
   it('interrupts an active run through the direct interrupt API', async () => {
     vi.stubGlobal(
       'fetch',
@@ -891,7 +1028,7 @@ describe('App', () => {
               pos: [48, 158],
             },
             video: {
-              node_type: 'video.mock.text_to_video',
+              node_type: 'video.text_to_video',
               title: 'Video render',
               params: {
                 prompt: 'clean product shot',
@@ -1640,7 +1777,7 @@ describe('ManualProposalPanel', () => {
   });
 
   it('derives valid default params from required catalog schema values', () => {
-    const definition = nodeCatalog().nodes.find((item) => item.type === 'video.mock.text_to_video')!;
+    const definition = nodeCatalog().nodes.find((item) => item.type === 'video.text_to_video')!;
 
     expect(defaultParamsForDefinition(definition)).toEqual({
       prompt: '',
@@ -1733,8 +1870,8 @@ function nodeCatalog(): NodeCatalog {
         estimated_cost: null,
       },
       {
-        type: 'video.mock.text_to_video',
-        title: 'Mock Text To Video',
+        type: 'video.text_to_video',
+        title: 'Text To Video',
         category: 'video',
         provider: 'mock',
         capability: 'text_to_video',
@@ -1774,7 +1911,7 @@ function pendingProposal(): NonNullable<WorkbenchState['pendingProposal']> {
       nodes: [
         {
           id: 'video',
-          nodeType: 'video.mock.text_to_video',
+          nodeType: 'video.text_to_video',
           title: 'Video render',
           category: 'Video',
           status: 'queued',
@@ -1817,7 +1954,7 @@ function restoredState(versionId: string, durationSec: number): WorkbenchState {
           pos: [48, 158],
         },
         video: {
-          node_type: 'video.mock.text_to_video',
+          node_type: 'video.text_to_video',
           title: 'Video render',
           params: {
             prompt: 'clean product shot',

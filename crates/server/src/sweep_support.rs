@@ -27,6 +27,7 @@ pub(crate) async fn handle_run_request(
     if is_seed_sweep_request(&request.user_message) {
         return request_seed_sweep(state, request, label).await;
     }
+    let provider = selected_provider_for_workspace(state, &request.workspace_id).await?;
 
     let pending = state
         .runner
@@ -35,6 +36,7 @@ pub(crate) async fn handle_run_request(
             version_id: request.base_version_id,
             group_id: None,
             label,
+            provider,
             graph: request.graph,
         })
         .await
@@ -76,10 +78,12 @@ async fn request_seed_sweep(
     label: String,
 ) -> Result<RunRequestResult, ApiError> {
     let count = seed_sweep_run_count(&request.user_message);
+    let provider = selected_provider_for_workspace(state, &request.workspace_id).await?;
     let seed_plan = build_seed_sweep_plan(
         request.workspace_id,
         request.base_version_id,
         label,
+        provider,
         request.graph,
         count,
     )?;
@@ -117,6 +121,7 @@ fn build_seed_sweep_plan(
     workspace_id: String,
     version_id: String,
     label: String,
+    provider: String,
     graph: WorkflowGraph,
     count: usize,
 ) -> Result<SeedSweepPlan, ApiError> {
@@ -154,6 +159,7 @@ fn build_seed_sweep_plan(
             workspace_id,
             version_id,
             label,
+            provider,
             variants,
         },
         pending_changes,
@@ -167,12 +173,31 @@ fn seed_capable_node_ids(graph: &WorkflowGraph) -> Result<Vec<String>, ApiError>
         let definition = registry
             .definition(&node.node_type)
             .map_err(|err| ApiError::bad_request(err.to_string()))?;
-        if definition.params_schema.properties.contains_key("seed") && definition.provider.is_some()
+        if definition.params_schema.properties.contains_key("seed")
+            && definition.capability.is_some()
         {
             node_ids.push(node_id.clone());
         }
     }
     Ok(node_ids)
+}
+
+async fn selected_provider_for_workspace(
+    state: &AppState,
+    workspace_id: &str,
+) -> Result<String, ApiError> {
+    let workspace = state
+        .store
+        .workspace(workspace_id)
+        .await
+        .map_err(ApiError::store)?;
+    let provider = state.selected_provider_for_workspace(&workspace);
+    if !state.provider_registry.provider_enabled(&provider) {
+        return Err(ApiError::conflict(format!(
+            "runtime provider `{provider}` is unavailable"
+        )));
+    }
+    Ok(provider)
 }
 
 fn is_seed_sweep_request(user_message: &str) -> bool {
@@ -323,7 +348,7 @@ mod tests {
                 (
                     "video".to_owned(),
                     GraphNode {
-                        node_type: "video.mock.text_to_video".to_owned(),
+                        node_type: "video.text_to_video".to_owned(),
                         title: "Video render".to_owned(),
                         params: json!({
                             "prompt": "clean product shot",

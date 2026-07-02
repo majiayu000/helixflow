@@ -1,10 +1,13 @@
 use axum::{
     Json,
+    body::Body,
     extract::{Path, State},
+    http::{HeaderValue, Response, header},
 };
 use helixflow_store::{ArtifactRecord, RunRecord};
 use serde::Serialize;
 use serde_json::Value;
+use std::path::{Component, Path as FsPath, PathBuf};
 
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
@@ -67,12 +70,51 @@ pub(crate) async fn download_output(
     }))
 }
 
+pub(crate) async fn artifact_content(
+    Path(output_id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Response<Body>, ApiError> {
+    let artifact = artifact_by_id(&state, &output_id).await?;
+    let path = artifact_content_path(&state.data_dir, &artifact.storage_uri)?;
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(ApiError::not_found("artifact content was not found"));
+        }
+        Err(err) => return Err(ApiError::io("read artifact content", err)),
+    };
+    let mut response = Response::new(Body::from(bytes));
+    if let Some(mime) = artifact.mime.as_deref()
+        && let Ok(value) = HeaderValue::from_str(mime)
+    {
+        response.headers_mut().insert(header::CONTENT_TYPE, value);
+    }
+    Ok(response)
+}
+
 async fn artifact_by_id(state: &AppState, output_id: &str) -> Result<ArtifactRecord, ApiError> {
     match state.store.artifact(output_id).await {
         Ok(artifact) => Ok(artifact),
         Err(err) if err.is_not_found() => Err(ApiError::not_found("output was not found")),
         Err(err) => Err(ApiError::store(err)),
     }
+}
+
+fn artifact_content_path(data_dir: &FsPath, storage_uri: &str) -> Result<PathBuf, ApiError> {
+    let relative = FsPath::new(storage_uri);
+    let mut components = relative.components();
+    match components.next() {
+        Some(Component::Normal(prefix)) if prefix == "artifacts" => {}
+        _ => return Err(ApiError::not_found("artifact content was not found")),
+    }
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(ApiError::bad_request("artifact storage path is invalid"));
+    }
+    Ok(data_dir.join(relative))
 }
 
 enum OutputSelectionScope {
@@ -181,7 +223,7 @@ mod tests {
             output["storageUri"]
                 .as_str()
                 .expect("storage uri")
-                .starts_with("/api/outputs/")
+                .starts_with("/api/artifacts/")
         }));
         assert_eq!(
             state
@@ -205,7 +247,7 @@ mod tests {
             outputs[1]["preview"]["content"]
                 .as_str()
                 .expect("preview")
-                .contains("Artifact")
+                .starts_with("/api/artifacts/")
         );
         let state_json = serde_json::to_string(&body).expect("state json");
         assert!(!state_json.contains("/Users/"));
@@ -267,10 +309,10 @@ mod tests {
             .0;
         let download_json = serde_json::to_value(download).expect("download json");
 
-        assert!(preview.content.contains("/api/outputs/"));
+        assert!(preview.content.contains("/api/artifacts/"));
         assert_eq!(
             download_json["storageUri"],
-            format!("/api/outputs/{second_id}/download")
+            format!("/api/artifacts/{second_id}/content")
         );
         assert!(!download_json.to_string().contains("/Users/"));
     }

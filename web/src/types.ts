@@ -134,12 +134,14 @@ const ApiConnectorStatusSchema = z.object({
 const ProvidersSchema = z
   .object({
     defaultProvider: z.string(),
+    selectedProvider: z.string().optional(),
     runtimeProviders: z.array(RuntimeProviderStatusSchema),
     workflowBackends: z.array(WorkflowBackendStatusSchema),
     apiConnectors: z.array(ApiConnectorStatusSchema),
   })
   .default({
     defaultProvider: 'missing',
+    selectedProvider: 'missing',
     runtimeProviders: [
       {
         id: 'missing',
@@ -153,7 +155,11 @@ const ProvidersSchema = z
     ],
     workflowBackends: [],
     apiConnectors: [],
-  });
+  })
+  .transform((providers) => ({
+    ...providers,
+    selectedProvider: providers.selectedProvider ?? providers.defaultProvider,
+  }));
 
 const RunStepSchema = z.object({
   nodeId: z.string(),
@@ -188,6 +194,27 @@ const RunSchema = z.object({
   }),
 });
 
+const OutputPreviewSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('html'),
+    content: z.string(),
+  }),
+  z.object({
+    kind: z.literal('text'),
+    content: z.string(),
+  }),
+  z.object({
+    kind: z.literal('image'),
+    content: z.string(),
+    mime: z.string().nullable().optional(),
+  }),
+  z.object({
+    kind: z.literal('video'),
+    content: z.string(),
+    mime: z.string().nullable().optional(),
+  }),
+]);
+
 const OutputSchema = z.object({
   id: z.string(),
   kind: z.string(),
@@ -196,12 +223,7 @@ const OutputSchema = z.object({
   selected: z.boolean(),
   meta: z.string(),
   mime: z.string().nullable().optional(),
-  preview: z
-    .object({
-      kind: z.enum(['html', 'text']),
-      content: z.string(),
-    })
-    .optional(),
+  preview: OutputPreviewSchema.optional(),
 });
 
 const PendingConfirmationSchema = z.object({

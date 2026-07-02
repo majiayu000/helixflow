@@ -48,12 +48,16 @@ pub(crate) struct OutputPayload {
 pub(crate) struct OutputPreviewPayload {
     pub(crate) kind: OutputPreviewKind,
     pub(crate) content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) mime: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum OutputPreviewKind {
     Html,
     Text,
+    Image,
+    Video,
 }
 
 impl Serialize for OutputPreviewKind {
@@ -64,6 +68,8 @@ impl Serialize for OutputPreviewKind {
         serializer.serialize_str(match self {
             Self::Html => "html",
             Self::Text => "text",
+            Self::Image => "image",
+            Self::Video => "video",
         })
     }
 }
@@ -214,7 +220,7 @@ pub(crate) fn output_payload_from_artifact(artifact: &ArtifactRecord) -> OutputP
 }
 
 pub(crate) fn safe_download_uri(artifact_id: &str) -> String {
-    format!("/api/outputs/{artifact_id}/download")
+    format!("/api/artifacts/{artifact_id}/content")
 }
 
 pub(crate) fn output_preview_from_artifact(
@@ -254,10 +260,22 @@ pub(crate) fn output_preview_from_artifact(
                 "<!doctype html><meta charset=\"utf-8\"><pre>{}</pre>",
                 html_escape(&lines.join("\n"))
             ),
+            mime: artifact.mime.clone(),
         }),
-        "text" | "json" | "markdown" | "image" | "video" => Some(OutputPreviewPayload {
+        "image" => Some(OutputPreviewPayload {
+            kind: OutputPreviewKind::Image,
+            content: safe_download_uri(&artifact.id),
+            mime: artifact.mime.clone(),
+        }),
+        "video" => Some(OutputPreviewPayload {
+            kind: OutputPreviewKind::Video,
+            content: safe_download_uri(&artifact.id),
+            mime: artifact.mime.clone(),
+        }),
+        "text" | "json" | "markdown" => Some(OutputPreviewPayload {
             kind: OutputPreviewKind::Text,
             content: lines.join("\n"),
+            mime: artifact.mime.clone(),
         }),
         _ => None,
     }

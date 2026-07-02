@@ -27,7 +27,7 @@ fn sample_graph() -> WorkflowGraph {
             (
                 "video".to_owned(),
                 GraphNode {
-                    node_type: "video.mock.text_to_video".to_owned(),
+                    node_type: "video.text_to_video".to_owned(),
                     title: "Video".to_owned(),
                     params: json!({
                         "prompt": "clean product shot",
@@ -189,7 +189,7 @@ fn writes_compact_canvas_state_with_filtered_selection() {
     assert_eq!(canvas["graph"]["node_count"], 2);
     assert_eq!(canvas["selection"]["node_ids"], json!(["video", "input"]));
     assert_eq!(canvas["gates"]["pending_proposal"], true);
-    assert!(canvas.to_string().contains("video.mock.text_to_video"));
+    assert!(canvas.to_string().contains("video.text_to_video"));
     assert!(!canvas.to_string().contains("OPENAI_API_KEY"));
 }
 

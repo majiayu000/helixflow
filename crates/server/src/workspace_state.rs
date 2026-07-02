@@ -92,6 +92,8 @@ pub(crate) async fn workspace_state_value(
         None => (Vec::new(), Vec::new(), Vec::new(), 0),
     };
 
+    let providers = provider_state_value(state, &workspace)?;
+
     Ok(workspace_state_payload(
         &workspace,
         &graph,
@@ -104,8 +106,7 @@ pub(crate) async fn workspace_state_value(
         &artifacts,
         &costs,
         event_seq,
-        serde_json::to_value(&state.provider_catalog)
-            .map_err(|err| ApiError::server_error(err.to_string()))?,
+        providers,
     ))
 }
 
@@ -160,6 +161,10 @@ fn workspace_state_payload(
     providers: Value,
 ) -> Value {
     let registry = NodeRegistry::builtin();
+    let selected_provider = providers
+        .get("selectedProvider")
+        .and_then(Value::as_str)
+        .unwrap_or("missing");
     let step_by_node = steps
         .iter()
         .map(|step| (step.node_id.as_str(), step))
@@ -177,7 +182,7 @@ fn workspace_state_payload(
         "chat": {
             "messages": messages.iter().map(chat_message_payload).collect::<Vec<_>>(),
         },
-        "graph": graph_payload(graph, &step_by_node, &registry),
+        "graph": graph_payload(graph, &step_by_node, &registry, selected_provider),
         "run": latest_run.map(|run| run_payload(run, steps, &run_cost)),
         "outputs": artifacts.iter().map(output_payload_from_artifact).collect::<Vec<_>>(),
         "history": history_payload(versions, latest_run, proposals),
@@ -185,6 +190,14 @@ fn workspace_state_payload(
         "pendingProposal": pending_proposal,
         "workflowGraph": graph,
     })
+}
+
+fn provider_state_value(state: &AppState, workspace: &WorkspaceRecord) -> Result<Value, ApiError> {
+    let selected_provider = state.selected_provider_for_workspace(workspace);
+    let mut providers = serde_json::to_value(state.provider_catalog_for_workspace(workspace))
+        .map_err(|err| ApiError::server_error(err.to_string()))?;
+    providers["selectedProvider"] = json!(selected_provider);
+    Ok(providers)
 }
 
 async fn pending_proposal_payload(
@@ -240,6 +253,7 @@ fn graph_payload(
     graph: &WorkflowGraph,
     step_by_node: &BTreeMap<&str, &RunStepRecord>,
     registry: &NodeRegistry,
+    selected_provider: &str,
 ) -> Value {
     json!({
         "nodes": graph.nodes.iter().map(|(id, node)| {
@@ -251,7 +265,7 @@ fn graph_payload(
                 "category": node_category(&node.node_type),
                 "status": step.map(|item| item.state.as_str()).unwrap_or("queued"),
                 "position": { "x": node.pos[0], "y": node.pos[1] },
-                "provider": step.and_then(|item| item.provider.clone()).or_else(|| node_provider(&node.node_type, registry)),
+                "provider": step.and_then(|item| item.provider.clone()).or_else(|| node_provider(&node.node_type, registry, selected_provider)),
                 "summary": node_summary(&node.node_type, &node.params),
             })
         }).collect::<Vec<_>>(),
@@ -269,11 +283,16 @@ fn graph_payload(
     })
 }
 
-fn node_provider(node_type: &str, registry: &NodeRegistry) -> Option<String> {
-    registry
-        .definition(node_type)
-        .ok()
-        .and_then(|definition| definition.provider.clone())
+fn node_provider(
+    node_type: &str,
+    registry: &NodeRegistry,
+    selected_provider: &str,
+) -> Option<String> {
+    let definition = registry.definition(node_type).ok()?;
+    if definition.capability.is_some() {
+        return Some(selected_provider.to_owned());
+    }
+    definition.provider.clone()
 }
 
 fn run_payload(run: &RunRecord, steps: &[RunStepRecord], cost: &CostSummary) -> Value {
@@ -485,7 +504,7 @@ mod tests {
             nodes: BTreeMap::from([(
                 "video".to_owned(),
                 GraphNode {
-                    node_type: "video.mock.text_to_video".to_owned(),
+                    node_type: "video.text_to_video".to_owned(),
                     title: "Video".to_owned(),
                     params: json!({
                         "prompt": "clean product shot",
@@ -498,7 +517,7 @@ mod tests {
             edges: Vec::new(),
         };
 
-        let body = graph_payload(&graph, &BTreeMap::new(), &NodeRegistry::builtin());
+        let body = graph_payload(&graph, &BTreeMap::new(), &NodeRegistry::builtin(), "mock");
 
         assert_eq!(body["nodes"][0]["provider"], "mock");
         assert_eq!(body["nodes"][0]["status"], "queued");

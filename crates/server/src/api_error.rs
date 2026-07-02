@@ -75,6 +75,7 @@ impl ApiError {
             RunError::Store(err) => Self::store(err),
             RunError::Json(err) => Self::server_error(err.to_string()),
             RunError::Provider(_)
+            | RunError::ArtifactPersistence(_)
             | RunError::InvalidSweepPlan(_)
             | RunError::MixedCostCurrency { .. } => Self {
                 status: StatusCode::BAD_GATEWAY,

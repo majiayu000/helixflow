@@ -17,6 +17,7 @@ type TopBarProps = {
   onAgentRun: () => void;
   onExport: () => void;
   onUndo: () => void;
+  onProviderSelect: (providerId: string) => void;
   onQueue: () => void;
 };
 
@@ -35,18 +36,20 @@ export function TopBar({
   onAgentRun,
   onExport,
   onUndo,
+  onProviderSelect,
   onQueue,
 }: TopBarProps) {
   const nodeCount = state.graph.nodes.length;
-  const defaultProvider =
+  const selectedProviderId = state.providers.selectedProvider ?? state.providers.defaultProvider;
+  const selectedProvider =
     state.providers.runtimeProviders.find(
-      (provider) => provider.id === state.providers.defaultProvider,
+      (provider) => provider.id === selectedProviderId,
     ) ??
     state.providers.runtimeProviders[0] ??
     null;
-  const providerOk = Boolean(defaultProvider?.enabled && defaultProvider.status === 'healthy');
-  const providerLabel = defaultProvider?.label ?? 'Provider state missing';
-  const providerMessage = defaultProvider?.message ?? providerStatusLabel(defaultProvider);
+  const providerOk = Boolean(selectedProvider?.enabled && selectedProvider.status === 'healthy');
+  const providerLabel = selectedProvider?.label ?? selectedProviderId;
+  const providerMessage = selectedProvider?.message ?? providerStatusLabel(selectedProvider);
 
   return (
     <div className="wb-top">
@@ -65,8 +68,22 @@ export function TopBar({
         <div className="endpoint-box">
           <span className="endpoint">
             <Icon n="lock" s={11} />
-            {providerLabel}
+            <select
+              aria-label="Runtime provider"
+              className="provider-select"
+              disabled={busy || state.providers.runtimeProviders.length === 0}
+              onChange={(event) => onProviderSelect(event.target.value)}
+              title={providerMessage}
+              value={selectedProviderId}
+            >
+              {state.providers.runtimeProviders.map((provider) => (
+                <option key={provider.id} value={provider.id}>
+                  {provider.label} · {providerStatusLabel(provider)}
+                </option>
+              ))}
+            </select>
           </span>
+          <span className="endpoint endpoint--provider">{providerLabel}</span>
           <span className="pill pill--ok">
             <span className="led" />
             {nodeCount} 节点
@@ -77,7 +94,7 @@ export function TopBar({
           </span>
           <span className={providerOk ? 'pill pill--live' : 'pill pill--off'}>
             <span className="led" />
-            {providerStatusLabel(defaultProvider)}
+            {providerStatusLabel(selectedProvider)}
           </span>
         </div>
         <button
@@ -114,7 +131,7 @@ export function TopBar({
           title={
             running
               ? '中断当前运行'
-              : runDisabled && !providerOk
+            : runDisabled && !providerOk
               ? providerMessage
               : runDisabled
                 ? '等待当前请求完成'

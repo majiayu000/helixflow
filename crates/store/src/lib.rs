@@ -149,7 +149,7 @@ impl Store {
     pub async fn workspace(&self, workspace_id: &str) -> StoreResult<WorkspaceRecord> {
         let workspace = sqlx::query_as::<_, WorkspaceRecord>(
             r#"
-            SELECT id, name, cur_version_id, created_at, updated_at
+            SELECT id, name, cur_version_id, runtime_provider_id, created_at, updated_at
             FROM workspaces
             WHERE id = ?
             "#,
@@ -159,6 +159,26 @@ impl Store {
         .await?;
 
         Ok(workspace)
+    }
+
+    pub async fn set_workspace_runtime_provider(
+        &self,
+        workspace_id: &str,
+        provider_id: Option<&str>,
+    ) -> StoreResult<WorkspaceRecord> {
+        sqlx::query(
+            r#"
+            UPDATE workspaces
+            SET runtime_provider_id = ?, updated_at = current_timestamp
+            WHERE id = ?
+            "#,
+        )
+        .bind(provider_id)
+        .bind(workspace_id)
+        .execute(&self.pool)
+        .await?;
+
+        self.workspace(workspace_id).await
     }
 
     pub async fn create_version(&self, input: NewVersion<'_>) -> StoreResult<VersionRecord> {
@@ -346,6 +366,7 @@ pub struct WorkspaceRecord {
     pub id: String,
     pub name: String,
     pub cur_version_id: Option<String>,
+    pub runtime_provider_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -423,6 +444,7 @@ mod tests {
             id: "workspace-1".to_string(),
             name: "Demo workspace".to_string(),
             cur_version_id: Some("version-1".to_string()),
+            runtime_provider_id: Some("atlas".to_string()),
             created_at: "2026-06-12T00:00:00Z".to_string(),
             updated_at: "2026-06-12T00:00:01Z".to_string(),
         };
@@ -432,6 +454,7 @@ mod tests {
         assert_eq!(encoded["id"], "workspace-1");
         assert_eq!(encoded["name"], "Demo workspace");
         assert_eq!(encoded["cur_version_id"], "version-1");
+        assert_eq!(encoded["runtime_provider_id"], "atlas");
     }
 
     #[tokio::test]
@@ -475,6 +498,31 @@ mod tests {
             updated_workspace.cur_version_id.as_deref(),
             Some(version.id.as_str())
         );
+        assert_eq!(updated_workspace.runtime_provider_id, None);
+    }
+
+    #[tokio::test]
+    async fn persists_workspace_runtime_provider_choice() {
+        let (store, dir) = open_temp_store().await;
+        let workspace = store
+            .create_workspace("Provider choice")
+            .await
+            .expect("create workspace");
+
+        let updated = store
+            .set_workspace_runtime_provider(&workspace.id, Some("atlas"))
+            .await
+            .expect("set provider");
+        assert_eq!(updated.runtime_provider_id.as_deref(), Some("atlas"));
+        drop(store);
+
+        let db_path = dir.path().join("helixflow.sqlite");
+        let reopened = Store::open(&format!("sqlite://{}", db_path.display()))
+            .await
+            .expect("reopen store");
+        let persisted = reopened.workspace(&workspace.id).await.expect("workspace");
+
+        assert_eq!(persisted.runtime_provider_id.as_deref(), Some("atlas"));
     }
 
     #[tokio::test]

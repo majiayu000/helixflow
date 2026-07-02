@@ -1,17 +1,28 @@
 use std::path::PathBuf;
 
-use axum::{Json, extract::State};
+use axum::{
+    Json,
+    extract::{Path, State},
+};
 use helixflow_store::{NewVersion, VersionSource, WorkspaceRecord};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
 use crate::graph_files::{blank_graph, write_json_file};
+use crate::workspace_state::workspace_state_value;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateWorkspaceRequest {
     name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SetWorkspaceProviderRequest {
+    provider_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -73,6 +84,28 @@ pub(crate) async fn create_workspace(
         .map_err(ApiError::store)?;
 
     Ok(Json(workspace_summary(&workspace)))
+}
+
+pub(crate) async fn set_workspace_provider(
+    Path(workspace_id): Path<String>,
+    State(state): State<AppState>,
+    Json(input): Json<SetWorkspaceProviderRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let provider_id = input.provider_id.trim();
+    if provider_id.is_empty() {
+        return Err(ApiError::bad_request("providerId must not be empty"));
+    }
+    if !state.provider_registry.contains_provider(provider_id) {
+        return Err(ApiError::bad_request(format!(
+            "runtime provider `{provider_id}` is not registered"
+        )));
+    }
+    state
+        .store
+        .set_workspace_runtime_provider(&workspace_id, Some(provider_id))
+        .await
+        .map_err(ApiError::store)?;
+    workspace_state_value(&state, &workspace_id).await.map(Json)
 }
 
 fn initial_graph_path(workspace_id: &str) -> PathBuf {

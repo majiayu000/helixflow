@@ -17,6 +17,7 @@ pub struct AgentRunRequest {
     pub version_id: String,
     pub group_id: Option<String>,
     pub label: String,
+    pub provider: String,
     pub graph: WorkflowGraph,
 }
 
@@ -25,6 +26,7 @@ pub struct SweepPlan {
     pub workspace_id: String,
     pub version_id: String,
     pub label: String,
+    pub provider: String,
     pub variants: Vec<SweepVariant>,
 }
 
@@ -186,6 +188,7 @@ where
                         version_id: plan.version_id.clone(),
                         group_id: Some(group_id.clone()),
                         label: format!("{} · {}", plan.label, variant.label),
+                        provider: plan.provider.clone(),
                         graph: variant.graph,
                     },
                 )
@@ -377,9 +380,9 @@ where
         trigger: &str,
         request: AgentRunRequest,
     ) -> RunResult<PendingRun> {
-        let plan = self
-            .graph
-            .compile_plan(&request.graph, &request.version_id)?;
+        let plan =
+            self.graph
+                .compile_plan(&request.graph, &request.version_id, &request.provider)?;
         let plan_json = serde_json::to_string(&plan)?;
         let run = self
             .store

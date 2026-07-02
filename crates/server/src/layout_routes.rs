@@ -511,7 +511,7 @@ mod tests {
                 (
                     "video".to_owned(),
                     GraphNode {
-                        node_type: "video.mock.text_to_video".to_owned(),
+                        node_type: "video.text_to_video".to_owned(),
                         title: "Video".to_owned(),
                         params: json!({
                             "prompt": "clean product shot",

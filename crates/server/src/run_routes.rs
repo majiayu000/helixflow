@@ -38,6 +38,12 @@ pub(crate) async fn queue_workspace_run(
         .workspace(&workspace_id)
         .await
         .map_err(ApiError::store)?;
+    let provider = state.selected_provider_for_workspace(&workspace);
+    if !state.provider_registry.provider_enabled(&provider) {
+        return Err(ApiError::conflict(format!(
+            "runtime provider `{provider}` is unavailable"
+        )));
+    }
     let version_id = workspace.cur_version_id.ok_or_else(|| ApiError {
         status: StatusCode::CONFLICT,
         message: "workspace has no current version to run".to_owned(),
@@ -56,6 +62,7 @@ pub(crate) async fn queue_workspace_run(
             version_id,
             group_id: None,
             label: "Manual workbench run".to_owned(),
+            provider,
             graph,
         })
         .await
@@ -361,6 +368,7 @@ mod tests {
                 version_id,
                 group_id: None,
                 label: "Confirm run".to_owned(),
+                provider: "mock".to_owned(),
                 graph: sample_graph(),
             })
             .await
@@ -395,6 +403,7 @@ mod tests {
                 version_id,
                 group_id: None,
                 label: "Confirm run".to_owned(),
+                provider: "mock".to_owned(),
                 graph: sample_graph(),
             })
             .await
@@ -417,6 +426,7 @@ mod tests {
                 version_id,
                 group_id: None,
                 label: "Hold run".to_owned(),
+                provider: "mock".to_owned(),
                 graph: sample_graph(),
             })
             .await
@@ -445,6 +455,7 @@ mod tests {
                 workspace_id: workspace_id.clone(),
                 version_id,
                 label: "Seed sweep".to_owned(),
+                provider: "mock".to_owned(),
                 variants: vec![
                     SweepVariant {
                         label: "seed 101".to_owned(),
@@ -505,6 +516,7 @@ mod tests {
                 workspace_id: workspace_id.clone(),
                 version_id,
                 label: "Seed sweep".to_owned(),
+                provider: "mock".to_owned(),
                 variants: vec![
                     SweepVariant {
                         label: "seed 101".to_owned(),
@@ -604,6 +616,7 @@ mod tests {
                 version_id,
                 group_id: None,
                 label: "Pending run".to_owned(),
+                provider: "mock".to_owned(),
                 graph: sample_graph(),
             })
             .await
@@ -627,6 +640,7 @@ mod tests {
                 version_id,
                 group_id: None,
                 label: "Pending run".to_owned(),
+                provider: "mock".to_owned(),
                 graph: sample_graph(),
             })
             .await
@@ -700,7 +714,7 @@ mod tests {
                 (
                     "video".to_owned(),
                     GraphNode {
-                        node_type: "video.mock.text_to_video".to_owned(),
+                        node_type: "video.text_to_video".to_owned(),
                         title: "Video render".to_owned(),
                         params: json!({
                             "prompt": "clean product shot",

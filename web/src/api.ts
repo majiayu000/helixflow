@@ -70,6 +70,27 @@ export async function createWorkspace(name?: string): Promise<WorkspaceSummary> 
   return WorkspaceSummarySchema.parse(body);
 }
 
+export async function selectWorkspaceProvider(
+  workspaceId: string,
+  providerId: string,
+): Promise<WorkbenchState> {
+  const response = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/provider`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ providerId }),
+  });
+  const body = await response.json();
+  if (!response.ok) {
+    const message =
+      body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+        ? body.error
+        : `workspace provider request failed: ${response.status}`;
+    throw new Error(message);
+  }
+
+  return WorkbenchStateSchema.parse(body);
+}
+
 export async function sendWorkspaceMessage(
   workspaceId: string,
   input: {

@@ -5,8 +5,12 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+mod atlas;
+mod registry;
 mod runtime_provider;
 
+pub use atlas::{ApiProviderConfig, AtlasProvider};
+pub use registry::ProviderRegistry;
 pub use runtime_provider::{RuntimeProvider, UnavailableProvider};
 
 pub fn module_name() -> &'static str {
@@ -109,10 +113,26 @@ pub struct ArtifactPayload {
     pub kind: ArtifactKind,
     pub mime: String,
     pub storage_uri: String,
+    #[serde(default)]
+    pub content: ArtifactContent,
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub duration_ms: Option<u32>,
     pub meta: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ArtifactContent {
+    InlineBytes {
+        bytes: Vec<u8>,
+        ext_hint: Option<String>,
+    },
+    RemoteUrl {
+        url: String,
+    },
+    #[default]
+    None,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -143,6 +163,9 @@ pub enum ProviderError {
     UnsupportedCapability(String),
     CancelUnsupported(String),
     Unavailable { provider: String, reason: String },
+    InvalidRequest(String),
+    InvalidResponse(String),
+    RequestFailed(String),
 }
 
 impl fmt::Display for ProviderError {
@@ -159,6 +182,27 @@ impl fmt::Display for ProviderError {
             }
             Self::Unavailable { provider, reason } => {
                 write!(f, "runtime provider `{provider}` is unavailable: {reason}")
+            }
+            Self::InvalidRequest(message) => {
+                write!(
+                    f,
+                    "invalid provider request: {}",
+                    safe_provider_message(message)
+                )
+            }
+            Self::InvalidResponse(message) => {
+                write!(
+                    f,
+                    "invalid provider response: {}",
+                    safe_provider_message(message)
+                )
+            }
+            Self::RequestFailed(message) => {
+                write!(
+                    f,
+                    "provider request failed: {}",
+                    safe_provider_message(message)
+                )
             }
         }
     }
@@ -301,6 +345,7 @@ fn deterministic_artifact(
         kind: capability.artifact_kind,
         mime: capability.mime.clone(),
         storage_uri,
+        content: mock_content(&req, capability),
         width,
         height,
         duration_ms,
@@ -312,12 +357,88 @@ fn deterministic_artifact(
     }
 }
 
+fn mock_content(req: &ProviderRequest, capability: &ProviderCapability) -> ArtifactContent {
+    match capability.artifact_kind {
+        ArtifactKind::Text => ArtifactContent::InlineBytes {
+            bytes: format!(
+                "provider=mock\ncapability={}\nnode={}\n",
+                req.capability, req.node_id
+            )
+            .into_bytes(),
+            ext_hint: Some("txt".to_owned()),
+        },
+        ArtifactKind::Image => ArtifactContent::InlineBytes {
+            bytes: vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a],
+            ext_hint: Some("png".to_owned()),
+        },
+        ArtifactKind::Video => ArtifactContent::InlineBytes {
+            bytes: b"helixflow mock video artifact\n".to_vec(),
+            ext_hint: Some("mp4".to_owned()),
+        },
+        ArtifactKind::Json => ArtifactContent::InlineBytes {
+            bytes: serde_json::to_vec(&json!({
+                "provider": "mock",
+                "capability": req.capability,
+            }))
+            .unwrap_or_default(),
+            ext_hint: Some("json".to_owned()),
+        },
+    }
+}
+
 fn duration_ms(params: &Value) -> u32 {
     params
         .get("duration_sec")
         .and_then(Value::as_u64)
         .map(|seconds| seconds.saturating_mul(1000).min(u32::MAX as u64) as u32)
         .unwrap_or(1000)
+}
+
+pub fn sanitize_provider_id(id: &str) -> String {
+    let trimmed = id.trim();
+    if is_safe_provider_id(trimmed) && is_safe_provider_message(trimmed) {
+        trimmed.to_owned()
+    } else {
+        "invalid".to_owned()
+    }
+}
+
+pub fn safe_provider_message(value: &str) -> String {
+    if is_safe_provider_message(value) {
+        value.to_owned()
+    } else {
+        "provider message was redacted".to_owned()
+    }
+}
+
+pub fn is_safe_provider_message(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    !value.contains("://")
+        && !value.contains("/Users/")
+        && !value.contains("\\Users\\")
+        && !value.contains("file://")
+        && !lower.contains("bearer ")
+        && !lower.contains("authorization")
+        && !lower.contains("api_key")
+        && !lower.contains("apikey")
+        && !lower.contains("token")
+        && !lower.contains("secret")
+        && !lower.contains("password")
+        && !lower.contains("signed_url")
+        && !lower.contains("signedurl")
+        && !lower.contains("sk-")
+}
+
+fn is_safe_provider_id(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    value.len() <= 64
+        && first.is_ascii_alphanumeric()
+        && value.chars().all(|ch| {
+            ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '-' | '_' | '.')
+        })
 }
 
 #[cfg(test)]
@@ -420,7 +541,7 @@ mod tests {
 
         assert_eq!(snapshot.default_provider, "mock");
         assert_eq!(snapshot.runtime_providers[0].id, "mock");
-        assert_eq!(snapshot.runtime_providers[0].label, "Mock Provider");
+        assert_eq!(snapshot.runtime_providers[0].label, "Mock (local test)");
         assert_eq!(snapshot.runtime_providers[0].kind, "local_test");
         assert!(snapshot.runtime_providers[0].enabled);
         assert_eq!(snapshot.runtime_providers[0].status, "healthy");

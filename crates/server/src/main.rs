@@ -1,5 +1,6 @@
 use axum::{
     Json, Router,
+    routing::put,
     routing::{get, post},
 };
 use helixflow_run::EventBus;
@@ -30,7 +31,7 @@ mod workspace_state;
 mod ws;
 
 use app_state::AppState;
-use artifact_routes::{download_output, preview_output, select_output};
+use artifact_routes::{artifact_content, download_output, preview_output, select_output};
 use layout_routes::save_workspace_layout;
 use manual_proposal_routes::create_manual_workspace_proposal;
 use proposal_routes::{apply_workspace_proposal, dismiss_workspace_proposal};
@@ -38,7 +39,7 @@ use registry_routes::node_registry_catalog;
 use run_routes::{confirm_run, hold_run, interrupt_active_run, queue_workspace_run};
 use version_routes::{export_workflow_version, restore_workspace_version, undo_workspace_version};
 use workbench_message::post_workspace_message;
-use workspace_routes::{create_workspace, list_workspaces};
+use workspace_routes::{create_workspace, list_workspaces, set_workspace_provider};
 use workspace_state::workspace_state;
 use ws::ws_handler;
 
@@ -68,6 +69,10 @@ fn app(state: AppState) -> Router {
             get(list_workspaces).post(create_workspace),
         )
         .route("/api/workspaces/{workspace_id}/state", get(workspace_state))
+        .route(
+            "/api/workspaces/{workspace_id}/provider",
+            put(set_workspace_provider),
+        )
         .route(
             "/api/workspaces/{workspace_id}/messages",
             post(post_workspace_message),
@@ -100,6 +105,7 @@ fn app(state: AppState) -> Router {
         .route("/api/outputs/{output_id}/select", post(select_output))
         .route("/api/outputs/{output_id}/preview", get(preview_output))
         .route("/api/outputs/{output_id}/download", get(download_output))
+        .route("/api/artifacts/{output_id}/content", get(artifact_content))
         .route(
             "/api/versions/{version_id}/export",
             get(export_workflow_version),

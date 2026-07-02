@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -12,9 +13,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, Notify, broadcast};
 
+mod artifacts;
 mod cost_gate;
 mod error;
 
+use artifacts::{default_artifact_root, persist_provider_artifact};
 pub use cost_gate::{
     AgentRunRequest, CostSummary, PendingRun, PendingSweep, SweepOutcome, SweepPlan, SweepVariant,
 };
@@ -78,6 +81,7 @@ pub struct ManualRunRequest {
     pub version_id: String,
     pub group_id: Option<String>,
     pub label: String,
+    pub provider: String,
     pub graph: WorkflowGraph,
 }
 
@@ -164,6 +168,7 @@ pub struct RunService<P = MockProvider> {
     store: Store,
     graph: GraphService,
     provider: P,
+    artifact_root: PathBuf,
     events: EventBus,
     interrupts: Arc<Mutex<BTreeMap<String, RunInterrupt>>>,
 }
@@ -183,10 +188,25 @@ where
     }
 
     pub fn with_provider_and_events(store: Store, provider: P, events: EventBus) -> Self {
+        Self::with_provider_events_and_artifact_root(
+            store,
+            provider,
+            events,
+            default_artifact_root(),
+        )
+    }
+
+    pub fn with_provider_events_and_artifact_root(
+        store: Store,
+        provider: P,
+        events: EventBus,
+        artifact_root: impl Into<PathBuf>,
+    ) -> Self {
         Self {
             store,
             graph: GraphService::new(NodeRegistry::builtin()),
             provider,
+            artifact_root: artifact_root.into(),
             events,
             interrupts: Arc::new(Mutex::new(BTreeMap::new())),
         }
@@ -206,9 +226,9 @@ where
     }
 
     pub async fn execute_manual_run(&self, request: ManualRunRequest) -> RunResult<RunOutcome> {
-        let plan = self
-            .graph
-            .compile_plan(&request.graph, &request.version_id)?;
+        let plan =
+            self.graph
+                .compile_plan(&request.graph, &request.version_id, &request.provider)?;
         if plan.steps.is_empty() {
             return Err(RunError::NoExecutableSteps);
         }
@@ -580,6 +600,9 @@ where
         node_id: &str,
         payload: helixflow_gateway::ArtifactPayload,
     ) -> RunResult<ArtifactRecord> {
+        let storage_uri =
+            persist_provider_artifact(&self.artifact_root, run_id, step_id, node_id, &payload)
+                .await?;
         Ok(self
             .store
             .create_artifact(NewArtifact {
@@ -588,7 +611,7 @@ where
                 run_step_id: Some(step_id),
                 node_id: Some(node_id),
                 kind: artifact_kind_label(payload.kind),
-                storage_uri: &payload.storage_uri,
+                storage_uri: &storage_uri,
                 sha256: None,
                 mime: Some(&payload.mime),
                 width: payload.width.map(i64::from),
