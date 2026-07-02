@@ -7,6 +7,11 @@ type PendingProposal = NonNullable<WorkbenchState['pendingProposal']>;
 type ChatEntry =
   | { type: 'message'; message: ChatMessage }
   | { type: 'assistantTurn'; id: string; message?: ChatMessage; logs: ChatMessage[] };
+type EditSessionSummary = {
+  baseVersionId: string;
+  count: number;
+  items: string[];
+};
 type ComposerKeyEvent = {
   key: string;
   shiftKey: boolean;
@@ -45,7 +50,10 @@ type ChatPaneProps = {
   pendingProposal: WorkbenchState['pendingProposal'];
   run: WorkbenchState['run'];
   busy: boolean;
+  editSessionSummary: EditSessionSummary | null;
   onSend: (text: string) => Promise<void>;
+  onCommitEdits: () => Promise<void>;
+  onDiscardEdits: () => void;
   onApplyProposal: (proposalId: string) => Promise<void>;
   onDismissProposal: (proposalId: string) => Promise<void>;
 };
@@ -55,7 +63,10 @@ export function ChatPane({
   pendingProposal,
   run,
   busy,
+  editSessionSummary,
   onSend,
+  onCommitEdits,
+  onDiscardEdits,
   onApplyProposal,
   onDismissProposal,
 }: ChatPaneProps) {
@@ -98,6 +109,14 @@ export function ChatPane({
           </button>
         ))}
       </div>
+      {editSessionSummary && (
+        <EditSessionCard
+          busy={busy}
+          summary={editSessionSummary}
+          onCommit={onCommitEdits}
+          onDiscard={onDiscardEdits}
+        />
+      )}
       <div className="chat-msgs" ref={scrollRef}>
         {messages.length === 0 ? (
           <div className="empty-chat">
@@ -160,6 +179,41 @@ export function ChatPane({
         </div>
       </div>
     </aside>
+  );
+}
+
+function EditSessionCard({
+  summary,
+  busy,
+  onCommit,
+  onDiscard,
+}: {
+  summary: EditSessionSummary;
+  busy: boolean;
+  onCommit: () => Promise<void>;
+  onDiscard: () => void;
+}) {
+  return (
+    <div className="edit-session-card">
+      <div className="edit-session-head">
+        <span>EDITING · {summary.count} CHANGES</span>
+        <em>{summary.baseVersionId}</em>
+      </div>
+      <div className="edit-session-list">
+        {summary.items.map((item, index) => (
+          <span key={`${index}-${item}`}>{item}</span>
+        ))}
+      </div>
+      <div className="edit-session-actions">
+        <button className="btn btn--ghost btn--sm" disabled={busy} onClick={onDiscard}>
+          Discard
+        </button>
+        <button className="btn btn--primary btn--sm" disabled={busy} onClick={() => void onCommit()}>
+          <Icon n="check" s={13} />
+          Commit
+        </button>
+      </div>
+    </div>
   );
 }
 

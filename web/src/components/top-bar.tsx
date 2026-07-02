@@ -1,6 +1,11 @@
 import { HistoryIcon, Icon } from '../icons';
 import type { ConnectionStatus } from '../api';
 import type { WorkbenchState } from '../types';
+import {
+  queueLockReasonLabel,
+  queueLockReasonTitle,
+  type QueueLockReason,
+} from '../workbench-edit-session';
 
 type TopBarProps = {
   state: WorkbenchState;
@@ -10,6 +15,7 @@ type TopBarProps = {
   exportDisabled: boolean;
   undoDisabled: boolean;
   runDisabled: boolean;
+  queueLockReason: QueueLockReason;
   forceRerun: boolean;
   running: boolean;
   busy: boolean;
@@ -31,6 +37,7 @@ export function TopBar({
   exportDisabled,
   undoDisabled,
   runDisabled,
+  queueLockReason,
   forceRerun,
   running,
   busy,
@@ -58,8 +65,8 @@ export function TopBar({
   return (
     <div className="wb-top">
       <div className="brand">
-        <span className="brand-mark">C</span>
-        ComfyUI Agent
+        <span className="brand-mark">h</span>
+        helixflow
       </div>
       <span className="divider-v" />
       <div className="workflow-tabs">
@@ -92,6 +99,22 @@ export function TopBar({
             <span className="led" />
             {nodeCount} 节点
           </span>
+          <span className="pill pill--off">
+            <span className="led" />
+            {state.workspace.versionId}
+          </span>
+          {queueLockReason.kind === 'dirty_edits' && (
+            <span className="pill pill--warn">
+              <span className="led" />
+              {queueLockReasonLabel(queueLockReason)}
+            </span>
+          )}
+          {queueLockReason.kind !== 'none' && queueLockReason.kind !== 'dirty_edits' && !running && (
+            <span className="pill pill--warn">
+              <span className="led" />
+              {queueLockReasonLabel(queueLockReason)}
+            </span>
+          )}
           <span className={connection === 'live' ? 'pill pill--live' : 'pill pill--off'}>
             <span className="led" />
             Codex {connectionLabel(connection)}
@@ -144,11 +167,7 @@ export function TopBar({
           title={
             running
               ? '中断当前运行'
-            : runDisabled && !providerOk
-              ? providerMessage
-              : runDisabled
-                ? '等待当前请求完成'
-                : '提交当前工作流运行'
+              : queueLockReasonTitle(queueLockReason)
           }
           onClick={onQueue}
         >

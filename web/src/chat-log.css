@@ -109,3 +109,49 @@
   color: var(--text-3);
   padding: 8px;
 }
+
+.edit-session-card {
+  margin: 10px 10px 0;
+  border: 1px solid var(--amber-line);
+  border-radius: var(--r-md);
+  background: var(--amber-soft);
+  padding: 10px;
+}
+
+.edit-session-head,
+.edit-session-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.edit-session-head {
+  justify-content: space-between;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.edit-session-head em {
+  color: var(--amber);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-style: normal;
+  font-weight: 600;
+}
+
+.edit-session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 8px;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.edit-session-actions {
+  justify-content: flex-end;
+  margin-top: 10px;
+}
