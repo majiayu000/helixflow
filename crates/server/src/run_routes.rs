@@ -57,7 +57,7 @@ pub(crate) async fn queue_workspace_run(
 
     let outcome = state
         .runner
-        .execute_manual_run(ManualRunRequest {
+        .start_manual_run(ManualRunRequest {
             workspace_id,
             version_id,
             group_id: None,
@@ -88,7 +88,7 @@ pub(crate) async fn confirm_run(
 
     let outcome = state
         .runner
-        .confirm_run(&run_id)
+        .start_confirmed_run(&run_id)
         .await
         .map_err(ApiError::run)?;
     let costs = state
@@ -215,7 +215,7 @@ async fn confirm_sweep_group(
     let run_ids = sweep_group_run_ids(state, workspace_id, run).await?;
     let outcome = state
         .runner
-        .confirm_sweep_runs(&run_ids, &run.id)
+        .start_confirmed_sweep(&run_ids, &run.id)
         .await
         .map_err(ApiError::run)?;
     let recommended = outcome
@@ -357,6 +357,7 @@ mod tests {
     use super::*;
     use crate::app_state::AppState;
     use crate::test_support::FailingWorkbenchAgent;
+    use crate::test_wait::{wait_for_actual_cost, wait_for_run_status};
 
     #[tokio::test]
     async fn confirm_route_executes_waiting_run() {
@@ -382,10 +383,9 @@ mod tests {
         .expect("confirm response")
         .0;
 
-        assert_eq!(response.run.status, "succeeded");
+        assert_eq!(response.run.status, "running");
         assert_eq!(response.pending_confirmation, None);
-        let run = state.store.run(&pending.run.id).await.expect("run");
-        assert_eq!(run.status, "succeeded");
+        wait_for_run_status(&state.store, &pending.run.id, "succeeded").await;
     }
 
     #[tokio::test]
@@ -480,23 +480,11 @@ mod tests {
         .0;
 
         assert_eq!(response.run.id, recommended_run_id);
-        assert_eq!(response.run.status, "succeeded");
-        assert_eq!(response.outputs.len(), 4);
-        assert_eq!(
-            response
-                .outputs
-                .iter()
-                .filter(|output| output.selected)
-                .count(),
-            1
-        );
+        assert_eq!(response.run.status, "queued");
+        assert!(response.outputs.is_empty());
         for pending_run in pending.runs {
-            let run = state
-                .store
-                .run(&pending_run.run.id)
-                .await
-                .expect("sweep run");
-            assert_eq!(run.status, "succeeded");
+            let run = wait_for_run_status(&state.store, &pending_run.run.id, "succeeded").await;
+            wait_for_actual_cost(&state.store, &run.id).await;
             let ledger = state
                 .store
                 .cost_ledger_for_run(&run.id)
@@ -563,17 +551,11 @@ mod tests {
             .expect("queue response")
             .0;
 
-        assert_eq!(response.run.status, "succeeded");
+        assert_eq!(response.run.status, "queued");
         assert_eq!(response.pending_confirmation, None);
         assert_eq!(response.run.steps.len(), 1);
-        let run = state
-            .store
-            .latest_workspace_run(&workspace_id)
-            .await
-            .expect("latest run")
-            .expect("run");
+        let run = wait_for_run_status(&state.store, &response.run.id, "succeeded").await;
         assert_eq!(run.trigger, "manual");
-        assert_eq!(run.status, "succeeded");
     }
 
     #[tokio::test]

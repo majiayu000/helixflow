@@ -19,6 +19,7 @@ use crate::workbench_payload::{
     ProposalPayload, output_payload_from_artifact, pending_confirmation_from_run,
     pending_proposal_payload_from_record,
 };
+use crate::workspace_state_run::visible_workspace_run;
 
 pub(crate) async fn workspace_state(
     AxumPath(workspace_id): AxumPath<String>,
@@ -66,6 +67,7 @@ pub(crate) async fn workspace_state_value(
         .latest_workspace_run(workspace_id)
         .await
         .map_err(ApiError::store)?;
+    let latest_run = visible_workspace_run(state, latest_run).await?;
     let (steps, artifacts, costs, event_seq) = match &latest_run {
         Some(run) => {
             let steps = state

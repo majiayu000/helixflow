@@ -65,11 +65,19 @@ pub(crate) async fn interrupt_target_run(
         .runs_for_group(group_id)
         .await
         .map_err(ApiError::store)?;
-    Ok(runs
+    if let Some(running) = runs
         .iter()
         .find(|candidate| candidate.status == "running")
         .cloned()
-        .unwrap_or_else(|| run.clone()))
+    {
+        return Ok(running);
+    }
+    for candidate in runs.iter().filter(|candidate| candidate.status == "queued") {
+        if state.runner.has_interrupt(&candidate.id).await {
+            return Ok(candidate.clone());
+        }
+    }
+    Ok(run.clone())
 }
 
 async fn request_seed_sweep(

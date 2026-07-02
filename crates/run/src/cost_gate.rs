@@ -79,6 +79,54 @@ where
         self.execute_confirmed_run(run, plan).await
     }
 
+    pub async fn start_confirmed_run(&self, run_id: &str) -> RunResult<RunOutcome> {
+        let (run, plan, interrupt) = self.claim_run_for_background(run_id).await?;
+        let steps = match self.ensure_run_steps(&run.id, &plan).await {
+            Ok(steps) => steps,
+            Err(err) => {
+                self.interrupts.lock().await.remove(&run.id);
+                let error_json = serde_json::to_string(&json!({ "error": err.to_string() }))?;
+                self.store
+                    .update_run_status(&run.id, RunStatus::Failed.as_str(), Some(&error_json))
+                    .await?;
+                self.emit(
+                    &run.workspace_id,
+                    &run.id,
+                    "run.failed",
+                    json!({ "error": err.to_string() }),
+                )
+                .await?;
+                return Err(err);
+            }
+        };
+        let outcome = RunOutcome {
+            run: run.clone(),
+            steps,
+            artifacts: Vec::new(),
+        };
+        let runner = self.clone();
+        tokio::spawn(async move {
+            let run_id = run.id.clone();
+            let result = runner
+                .execute_created_run(&run, &run.workspace_id, &plan, interrupt)
+                .await;
+            match runner.outcome(&run_id).await {
+                Ok(outcome) => {
+                    if let Err(err) = runner.record_actual_costs(&outcome).await {
+                        eprintln!("background run `{run_id}` failed to record costs: {err}");
+                    }
+                }
+                Err(err) => eprintln!("background run `{run_id}` failed to load outcome: {err}"),
+            }
+            if let Err(err) = result {
+                eprintln!("background run `{run_id}` failed: {err}");
+            }
+            runner.interrupts.lock().await.remove(&run_id);
+        });
+
+        Ok(outcome)
+    }
+
     pub async fn hold_run(&self, run_id: &str) -> RunResult<RunOutcome> {
         let run = self.store.run(run_id).await?;
         if run.status != RunStatus::WaitingConfirmation.as_str() {
@@ -147,6 +195,50 @@ where
         };
 
         Ok((run, plan))
+    }
+
+    async fn claim_run_for_background(
+        &self,
+        run_id: &str,
+    ) -> RunResult<(RunRecord, helixflow_graph::ExecutionPlan, RunInterrupt)> {
+        let run = self.store.run(run_id).await?;
+        if run.status != RunStatus::WaitingConfirmation.as_str() {
+            return Err(RunError::InvalidRunStatus {
+                run_id: run.id,
+                expected: RunStatus::WaitingConfirmation.as_str(),
+                actual: run.status,
+            });
+        }
+        let plan_json = run
+            .plan_json
+            .as_deref()
+            .ok_or_else(|| RunError::InvalidSweepPlan("run has no execution plan".to_owned()))?;
+        let plan = serde_json::from_str(plan_json)?;
+        let interrupt = RunInterrupt::default();
+        self.interrupts
+            .lock()
+            .await
+            .insert(run.id.clone(), interrupt.clone());
+        let Some(run) = self
+            .store
+            .update_run_status_if_current(
+                run_id,
+                RunStatus::WaitingConfirmation.as_str(),
+                RunStatus::Running.as_str(),
+                None,
+            )
+            .await?
+        else {
+            self.interrupts.lock().await.remove(run_id);
+            let current = self.store.run(run_id).await?;
+            return Err(RunError::InvalidRunStatus {
+                run_id: current.id,
+                expected: RunStatus::WaitingConfirmation.as_str(),
+                actual: current.status,
+            });
+        };
+
+        Ok((run, plan, interrupt))
     }
 
     async fn execute_confirmed_run(
@@ -314,7 +406,7 @@ where
         })
     }
 
-    async fn validate_sweep_confirmation(
+    pub(crate) async fn validate_sweep_confirmation(
         &self,
         run_ids: &[String],
         recommended_run_id: &str,
@@ -398,11 +490,38 @@ where
             })
             .await?;
         let steps = self.ensure_run_steps(&run.id, &plan).await?;
+        let interrupt = RunInterrupt::default();
+        self.interrupts
+            .lock()
+            .await
+            .insert(run.id.clone(), interrupt.clone());
         let estimate = match self
-            .estimate_created_run(&request.workspace_id, &run.id, &plan.steps, &steps)
+            .estimate_created_run(
+                &request.workspace_id,
+                &run.id,
+                &plan.steps,
+                &steps,
+                &interrupt,
+            )
             .await
         {
             Ok(estimate) => estimate,
+            Err(RunError::Interrupted(_)) => {
+                self.skip_steps(&request.workspace_id, &run.id, &steps)
+                    .await?;
+                self.store
+                    .update_run_status(&run.id, RunStatus::Interrupted.as_str(), None)
+                    .await?;
+                self.emit(
+                    &request.workspace_id,
+                    &run.id,
+                    "run.interrupted",
+                    json!({ "phase": "estimate" }),
+                )
+                .await?;
+                self.interrupts.lock().await.remove(&run.id);
+                return Err(RunError::Interrupted(run.id));
+            }
             Err(err) => {
                 let error_json = serde_json::to_string(&json!({ "error": err.to_string() }))?;
                 self.store
@@ -415,6 +534,7 @@ where
                     json!({ "error": err.to_string(), "phase": "estimate" }),
                 )
                 .await?;
+                self.interrupts.lock().await.remove(&run.id);
                 return Err(err);
             }
         };
@@ -446,6 +566,7 @@ where
             }),
         )
         .await?;
+        self.interrupts.lock().await.remove(&run.id);
 
         let steps = self.store.run_steps(&run.id).await?;
         let ledger = self.store.cost_ledger_for_run(&run.id).await?;
@@ -463,23 +584,28 @@ where
         run_id: &str,
         plan_steps: &[helixflow_graph::ExecutionStep],
         records: &[RunStepRecord],
+        interrupt: &RunInterrupt,
     ) -> RunResult<CostSummary> {
         let mut total = CostSummary::zero();
         for (step, record) in plan_steps.iter().zip(records.iter()) {
+            if interrupt.is_requested() {
+                return Err(RunError::Interrupted(run_id.to_owned()));
+            }
             let (Some(provider), Some(capability)) = (&step.provider, &step.capability) else {
                 continue;
             };
-            let estimate = self
-                .provider
-                .estimate(ProviderRequest {
-                    provider: provider.clone(),
-                    capability: capability.clone(),
-                    node_id: step.node_id.clone(),
-                    run_id: run_id.to_owned(),
-                    inputs: BTreeMap::<String, ArtifactRef>::new(),
-                    params: step.params.clone(),
-                })
-                .await?;
+            let request = ProviderRequest {
+                provider: provider.clone(),
+                capability: capability.clone(),
+                node_id: step.node_id.clone(),
+                run_id: run_id.to_owned(),
+                inputs: BTreeMap::<String, ArtifactRef>::new(),
+                params: step.params.clone(),
+            };
+            let estimate = tokio::select! {
+                estimate = self.provider.estimate(request) => estimate?,
+                _ = interrupt.cancelled() => return Err(RunError::Interrupted(run_id.to_owned())),
+            };
             let estimate_json = serde_json::to_string(&estimate)?;
             self.store
                 .update_run_step_cost_estimate(&record.id, Some(&estimate_json))
@@ -500,7 +626,7 @@ where
         Ok(total)
     }
 
-    async fn record_actual_costs(&self, outcome: &RunOutcome) -> RunResult<()> {
+    pub(crate) async fn record_actual_costs(&self, outcome: &RunOutcome) -> RunResult<()> {
         for step in &outcome.steps {
             let (Some(provider), Some(cost_json)) = (&step.provider, &step.cost_actual_json) else {
                 continue;
