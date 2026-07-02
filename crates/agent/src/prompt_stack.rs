@@ -313,7 +313,7 @@ fn runtime_tool_policy(mode: TurnMode) -> &'static str {
 fn system_behavior(mode: TurnMode) -> &'static str {
     match mode {
         TurnMode::Chat => {
-            "Keep the reply concise, product-aware, and free of internal lifecycle logs."
+            "Keep the reply concise, product-aware, and free of internal lifecycle logs. If the user's intent is unclear, ask whether they want to create, modify, run, or debug a workflow."
         }
         TurnMode::CreateWorkflow => {
             "Create a coherent Helixflow graph using only catalog-defined node types, ports, and params."

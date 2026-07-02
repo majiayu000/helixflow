@@ -8,13 +8,14 @@ use helixflow_agent::{AgentLogEntry, AgentSessionRequest, TurnMode, classify_tur
 use helixflow_graph::{ProposalKind, WorkflowGraph};
 use helixflow_store::{MessageRecord, NewMessage, NewProposal, RunRecord, RunStepRecord};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
 use crate::graph_files::write_json_file;
 use crate::sweep_support::handle_run_request;
 use crate::workbench_message_canvas::{WorkspaceCanvasContext, prepare_agent_canvas_context};
+use crate::workbench_message_metadata::turn_metadata_json;
 use crate::workbench_payload::{
     PendingConfirmationPayload, ProposalPayload, RunPayload, proposal_payload_from_prepared,
 };
@@ -56,18 +57,18 @@ pub(crate) async fn post_workspace_message(
     State(state): State<AppState>,
     Json(input): Json<WorkspaceMessageRequest>,
 ) -> Result<Json<WorkspaceMessageResponse>, ApiError> {
-    let turn_mode = classify_turn_mode(&input.user_message, &input.graph)
+    let classification = classify_turn_mode(&input.user_message, &input.graph)
         .map_err(|err| ApiError::bad_request(err.to_string()))?;
     let canvas_context = prepare_agent_canvas_context(
         &state,
         &workspace_id,
-        turn_mode,
+        classification.mode,
         &input.base_version_id,
         &input.graph,
         input.canvas_context.clone(),
     )
     .await?;
-    let turn_metadata = turn_metadata_json(turn_mode);
+    let turn_metadata = turn_metadata_json(classification);
     state
         .store
         .create_message(NewMessage {
@@ -86,7 +87,7 @@ pub(crate) async fn post_workspace_message(
         .await
         .map_err(ApiError::store)?;
     let provider_catalog = state.provider_catalog_for_workspace(&workspace);
-    let run_context = debug_run_context(&state, &workspace_id, turn_mode).await?;
+    let run_context = debug_run_context(&state, &workspace_id, classification.mode).await?;
     let request = AgentSessionRequest {
         workspace_id: workspace_id.clone(),
         base_version_id: input.base_version_id,
@@ -95,12 +96,12 @@ pub(crate) async fn post_workspace_message(
         provider_catalog,
         run_context,
         sessions_dir: state.agent_sessions_dir.clone(),
-        mode: turn_mode,
-        skill: turn_mode.agent_skill(),
+        mode: classification.mode,
+        skill: classification.mode.agent_skill(),
         canvas_context,
     };
 
-    match turn_mode {
+    match classification.mode {
         TurnMode::Chat => {
             let reply = state
                 .agent
@@ -121,7 +122,7 @@ pub(crate) async fn post_workspace_message(
                 .map_err(ApiError::store)?;
             persist_agent_logs(&state, &workspace_id, &reply.session_id, &reply.agent_logs).await?;
             Ok(Json(WorkspaceMessageResponse {
-                turn_mode,
+                turn_mode: classification.mode,
                 messages: vec![ChatMessagePayload::from_record(message)],
                 proposal: None,
                 run: None,
@@ -192,7 +193,7 @@ pub(crate) async fn post_workspace_message(
             )
             .await?;
             Ok(Json(WorkspaceMessageResponse {
-                turn_mode,
+                turn_mode: classification.mode,
                 messages: vec![ChatMessagePayload::from_record(message)],
                 proposal: Some(proposal_payload_from_prepared(
                     proposal_record.id,
@@ -217,7 +218,7 @@ pub(crate) async fn post_workspace_message(
                 .await
                 .map_err(ApiError::store)?;
             Ok(Json(WorkspaceMessageResponse {
-                turn_mode,
+                turn_mode: classification.mode,
                 messages: vec![ChatMessagePayload::from_record(message)],
                 proposal: None,
                 run: Some(run_request.run),
@@ -268,10 +269,6 @@ impl ChatMessagePayload {
 #[serde(rename_all = "camelCase")]
 struct MessageMetadata {
     turn_mode: Option<TurnMode>,
-}
-
-fn turn_metadata_json(turn_mode: TurnMode) -> String {
-    json!({ "turnMode": turn_mode }).to_string()
 }
 
 fn message_turn_mode(record: &MessageRecord) -> Option<TurnMode> {
@@ -431,6 +428,9 @@ fn proposal_kind_as_str(kind: ProposalKind) -> &'static str {
         ProposalKind::Sweep => "sweep",
     }
 }
+
+#[cfg(test)]
+mod gh60_tests;
 
 #[cfg(test)]
 mod tests {
@@ -688,7 +688,7 @@ mod tests {
         );
     }
 
-    async fn state_with_workspace() -> (AppState, String, String, tempfile::TempDir) {
+    pub(super) async fn state_with_workspace() -> (AppState, String, String, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
         let data_dir = dir.path().to_path_buf();
         let database_url = format!("sqlite://{}", data_dir.join("helixflow.sqlite").display());
@@ -718,7 +718,7 @@ mod tests {
         (state, workspace.id, version.id, dir)
     }
 
-    fn sample_graph() -> WorkflowGraph {
+    pub(super) fn sample_graph() -> WorkflowGraph {
         WorkflowGraph {
             schema_version: 1,
             nodes: BTreeMap::new(),
