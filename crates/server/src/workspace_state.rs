@@ -266,6 +266,7 @@ fn graph_payload(
                 "title": node.title,
                 "category": node_category(&node.node_type),
                 "status": step.map(|item| item.state.as_str()).unwrap_or("queued"),
+                "cached": step.is_some_and(step_cached),
                 "position": { "x": node.pos[0], "y": node.pos[1] },
                 "provider": step.and_then(|item| item.provider.clone()).or_else(|| node_provider(&node.node_type, registry, selected_provider)),
                 "summary": node_summary(&node.node_type, &node.params),
@@ -308,6 +309,7 @@ fn run_payload(run: &RunRecord, steps: &[RunStepRecord], cost: &CostSummary) -> 
             "title": step.node_id,
             "state": step.state,
             "provider": step.provider,
+            "cached": step_cached(step),
             "error": error_payload(step.error_json.as_deref()),
         })).collect::<Vec<_>>(),
         "cost": {
@@ -316,6 +318,14 @@ fn run_payload(run: &RunRecord, steps: &[RunStepRecord], cost: &CostSummary) -> 
             "currency": cost.currency,
         },
     })
+}
+
+fn step_cached(step: &RunStepRecord) -> bool {
+    step.metadata_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .and_then(|value| value.get("cached").and_then(Value::as_bool))
+        .unwrap_or(false)
 }
 
 fn error_payload(error_json: Option<&str>) -> Value {
@@ -673,6 +683,56 @@ mod tests {
             "provider rejected duration"
         );
         assert_eq!(body["graph"]["nodes"][0]["status"], "failed");
+    }
+
+    #[tokio::test]
+    async fn workspace_state_marks_cached_run_steps_and_graph_nodes() {
+        let (state, workspace_id, _dir) = state_with_workspace().await;
+        let version_id = state
+            .store
+            .workspace(&workspace_id)
+            .await
+            .expect("workspace")
+            .cur_version_id
+            .expect("current version");
+        let run = state
+            .store
+            .create_run(NewRun {
+                workspace_id: &workspace_id,
+                version_id: &version_id,
+                group_id: None,
+                label: "Cached render",
+                trigger: "manual",
+                plan_json: None,
+                estimate_json: None,
+                status: "succeeded",
+            })
+            .await
+            .expect("create run");
+        let step = state
+            .store
+            .create_run_step(NewRunStep {
+                run_id: &run.id,
+                node_id: "input",
+                node_type: "input.text",
+                provider: None,
+                state: "queued",
+            })
+            .await
+            .expect("create step");
+        state
+            .store
+            .mark_run_step_cached_succeeded(&step.id, r#"{"cached":true}"#)
+            .await
+            .expect("mark cached");
+
+        let body = workspace_state(AxumPath(workspace_id), State(state))
+            .await
+            .expect("workspace state")
+            .0;
+
+        assert_eq!(body["run"]["steps"][0]["cached"], true);
+        assert_eq!(body["graph"]["nodes"][0]["cached"], true);
     }
 
     #[tokio::test]

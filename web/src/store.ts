@@ -34,6 +34,7 @@ import type {
 } from './types';
 
 type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
+type QueueRunOptions = { forceRerun?: boolean };
 
 type WorkbenchStore = {
   status: LoadStatus;
@@ -47,7 +48,7 @@ type WorkbenchStore = {
   setConnection: (status: ConnectionStatus) => void;
   applyEvent: (event: RunEventEnvelope) => void;
   sendMessage: (text: string, canvasContext?: CanvasMessageContext) => Promise<void>;
-  queueRun: () => Promise<void>;
+  queueRun: (options?: QueueRunOptions) => Promise<void>;
   interruptRun: (runId?: string) => Promise<void>;
   exportWorkflow: () => Promise<WorkflowGraph | null>;
   undoVersion: () => Promise<void>;
@@ -211,14 +212,14 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       refreshSnapshot(state.workspace.id);
     }
   },
-  queueRun: async () => {
+  queueRun: async (options = {}) => {
     const state = get().state;
     if (!state) {
       return;
     }
 
     try {
-      const response = await queueWorkspaceRun(state.workspace.id);
+      const response = await queueWorkspaceRun(state.workspace.id, options);
       set((current) => ({
         state: current.state ? applyRunConfirmation(current.state, response) : current.state,
       }));
@@ -563,7 +564,9 @@ function applyRunSnapshot(
       ...state.graph,
       nodes: state.graph.nodes.map((node) => {
         const step = run.steps.find((candidate) => candidate.nodeId === node.id);
-        return step ? { ...node, status: step.state, provider: step.provider } : node;
+        return step
+          ? { ...node, status: step.state, provider: step.provider, cached: step.cached }
+          : node;
       }),
     },
   };
@@ -615,6 +618,7 @@ export function applyRunEvent(state: WorkbenchState, event: RunEventEnvelope): W
   if (event.ev === 'node.state') {
     const nodeId = stringData(event, 'node_id');
     const nodeState = stepStateData(event, 'state');
+    const cached = booleanData(event, 'cached');
     if (!nodeId || !nodeState) {
       return { ...state, eventSeq: event.seq };
     }
@@ -625,13 +629,15 @@ export function applyRunEvent(state: WorkbenchState, event: RunEventEnvelope): W
       graph: {
         ...state.graph,
         nodes: state.graph.nodes.map((node) =>
-          node.id === nodeId ? { ...node, status: nodeState } : node,
+          node.id === nodeId ? { ...node, status: nodeState, cached } : node,
         ),
       },
       run: {
         ...state.run,
         steps: state.run.steps.map((step) =>
-          step.nodeId === nodeId ? { ...step, state: nodeState, error: eventError(event) } : step,
+          step.nodeId === nodeId
+            ? { ...step, state: nodeState, cached, error: eventError(event) }
+            : step,
         ),
       },
     };
@@ -742,6 +748,11 @@ function isChatMessageKind(value: string | null): value is ChatMessageKind {
 function stringData(event: RunEventEnvelope, key: string): string | null {
   const value = event.data[key];
   return typeof value === 'string' ? value : null;
+}
+
+function booleanData(event: RunEventEnvelope, key: string): boolean {
+  const value = event.data[key];
+  return typeof value === 'boolean' ? value : false;
 }
 
 function stepStateData(event: RunEventEnvelope, key: string): RunStepState | null {

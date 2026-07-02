@@ -76,6 +76,14 @@
   border-color: var(--red-line);
 }
 
+.run-step-cache {
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-3);
+  padding: 1px 5px;
+  font-size: 10px;
+}
+
 .outputs {
   display: flex;
   align-items: center;

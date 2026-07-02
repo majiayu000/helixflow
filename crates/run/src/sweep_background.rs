@@ -109,7 +109,7 @@ where
             let plan = execution_plan_for_run(&run)?;
             let interrupt = self.interrupt_for_background_run(&run.id).await?;
             let result = self
-                .execute_created_run(&run, &run.workspace_id, &plan, interrupt)
+                .execute_created_run(&run, &run.workspace_id, &plan, interrupt, false)
                 .await;
             self.interrupts.lock().await.remove(&run.id);
             let outcome = self.outcome(&run.id).await?;

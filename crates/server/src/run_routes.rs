@@ -6,7 +6,7 @@ use axum::{
 };
 use helixflow_run::{ManualRunRequest, RunOutcome};
 use helixflow_store::RunRecord;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
@@ -26,9 +26,16 @@ pub(crate) struct RunConfirmationResponse {
     pending_confirmation: Option<PendingConfirmationPayload>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct QueueRunRequest {
+    force_rerun: bool,
+}
+
 pub(crate) async fn queue_workspace_run(
     Path(workspace_id): Path<String>,
     State(state): State<AppState>,
+    body: Option<Json<QueueRunRequest>>,
 ) -> Result<Json<RunConfirmationResponse>, ApiError> {
     let _queue_claim = claim_workspace_run_queue(&state, &workspace_id).await?;
     reject_active_workspace_run(&state, &workspace_id).await?;
@@ -52,6 +59,7 @@ pub(crate) async fn queue_workspace_run(
         .await
         .map_err(ApiError::store)?;
     let graph = read_graph_file(&state.data_dir, &version.graph_path).await?;
+    let force_rerun = body.map(|Json(body)| body.force_rerun).unwrap_or(false);
 
     let outcome = state
         .runner
@@ -62,6 +70,7 @@ pub(crate) async fn queue_workspace_run(
             label: "Manual workbench run".to_owned(),
             provider,
             graph,
+            force_rerun,
         })
         .await
         .map_err(ApiError::run)?;
@@ -459,11 +468,11 @@ mod tests {
                 variants: vec![
                     SweepVariant {
                         label: "seed 101".to_owned(),
-                        graph: executable_graph(),
+                        graph: executable_graph_with_duration(4),
                     },
                     SweepVariant {
                         label: "seed 202".to_owned(),
-                        graph: executable_graph(),
+                        graph: executable_graph_with_duration(5),
                     },
                 ],
             })
@@ -546,7 +555,7 @@ mod tests {
         let (state, workspace_id, _version_id, _dir) = state_with_workspace().await;
         write_current_graph(&state).await;
 
-        let response = queue_workspace_run(Path(workspace_id.clone()), State(state.clone()))
+        let response = queue_workspace_run(Path(workspace_id.clone()), State(state.clone()), None)
             .await
             .expect("queue response")
             .0;
@@ -563,7 +572,7 @@ mod tests {
         let (state, workspace_id, _version_id, _dir) = state_with_workspace().await;
         write_graph(&state, &empty_graph()).await;
 
-        let err = queue_workspace_run(Path(workspace_id), State(state))
+        let err = queue_workspace_run(Path(workspace_id), State(state), None)
             .await
             .expect_err("empty graph should not be queued");
 
@@ -579,7 +588,7 @@ mod tests {
             .await
             .expect("claim queue");
 
-        let err = queue_workspace_run(Path(workspace_id), State(state))
+        let err = queue_workspace_run(Path(workspace_id), State(state), None)
             .await
             .expect_err("second queue should fail while first is in flight");
 
@@ -604,7 +613,7 @@ mod tests {
             .await
             .expect("request run");
 
-        let err = queue_workspace_run(Path(workspace_id), State(state))
+        let err = queue_workspace_run(Path(workspace_id), State(state), None)
             .await
             .expect_err("active run should block queue");
 
@@ -690,6 +699,10 @@ mod tests {
     }
 
     fn executable_graph() -> WorkflowGraph {
+        executable_graph_with_duration(4)
+    }
+
+    fn executable_graph_with_duration(duration_sec: u64) -> WorkflowGraph {
         WorkflowGraph {
             schema_version: 1,
             nodes: BTreeMap::from([
@@ -700,7 +713,7 @@ mod tests {
                         title: "Video render".to_owned(),
                         params: json!({
                             "prompt": "clean product shot",
-                            "duration_sec": 4,
+                            "duration_sec": duration_sec,
                             "aspect_ratio": "9:16"
                         }),
                         pos: [0.0, 0.0],

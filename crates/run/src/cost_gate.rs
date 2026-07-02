@@ -108,7 +108,7 @@ where
         tokio::spawn(async move {
             let run_id = run.id.clone();
             let result = runner
-                .execute_created_run(&run, &run.workspace_id, &plan, interrupt)
+                .execute_created_run(&run, &run.workspace_id, &plan, interrupt, false)
                 .await;
             match runner.outcome(&run_id).await {
                 Ok(outcome) => {
@@ -253,7 +253,7 @@ where
             .insert(run.id.clone(), interrupt.clone());
 
         let result = self
-            .execute_created_run(&run, &run.workspace_id, &plan, interrupt)
+            .execute_created_run(&run, &run.workspace_id, &plan, interrupt, false)
             .await;
         self.interrupts.lock().await.remove(&run.id);
 

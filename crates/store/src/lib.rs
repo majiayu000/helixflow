@@ -7,12 +7,16 @@ use sqlx::{Executor, Row, SqlitePool};
 use uuid::Uuid;
 
 mod failed_run_records;
+mod node_cache_records;
 mod proposal_records;
 mod run_cleanup;
 mod run_records;
+#[cfg(test)]
+mod run_records_tests;
 mod sweep_records;
 mod workspace_records;
 
+pub use node_cache_records::*;
 pub use proposal_records::*;
 pub use run_records::*;
 pub use workspace_records::*;

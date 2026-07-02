@@ -90,6 +90,7 @@ const GraphStateSchema = z.object({
       }),
       provider: z.string().nullable(),
       summary: z.string(),
+      cached: z.boolean().optional(),
     }),
   ),
   edges: z.array(
@@ -166,6 +167,7 @@ const RunStepSchema = z.object({
   title: z.string(),
   state: RunStepStateSchema,
   provider: z.string().nullable(),
+  cached: z.boolean().optional(),
   error: z
     .object({
       summary: z.string(),

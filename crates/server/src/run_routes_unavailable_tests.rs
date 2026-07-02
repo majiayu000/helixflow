@@ -21,7 +21,7 @@ async fn queue_route_with_unavailable_fal_provider_fails_without_mock_outputs() 
     .await;
     write_graph(&state, &executable_graph()).await;
 
-    let err = queue_workspace_run(Path(workspace_id.clone()), State(state.clone()))
+    let err = queue_workspace_run(Path(workspace_id.clone()), State(state.clone()), None)
         .await
         .expect_err("unavailable provider should reject route run");
 

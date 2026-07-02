@@ -21,6 +21,7 @@ pub(crate) struct RunStepPayload {
     pub(crate) title: String,
     pub(crate) state: String,
     pub(crate) provider: Option<String>,
+    pub(crate) cached: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -386,8 +387,17 @@ fn run_step_payloads(steps: &[RunStepRecord]) -> Vec<RunStepPayload> {
             title: step.node_id.clone(),
             state: step.state.clone(),
             provider: step.provider.clone(),
+            cached: step_cached(step),
         })
         .collect()
+}
+
+fn step_cached(step: &RunStepRecord) -> bool {
+    step.metadata_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .and_then(|value| value.get("cached").and_then(Value::as_bool))
+        .unwrap_or(false)
 }
 
 fn run_cost_from_ledger(costs: &[CostLedgerRecord]) -> RunCostPayload {

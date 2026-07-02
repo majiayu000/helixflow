@@ -250,12 +250,14 @@ describe('App', () => {
         busy={true}
         connection="live"
         exportDisabled={true}
+        forceRerun={false}
         historyOpen={false}
         onAgentRun={() => {}}
         onExport={() => {}}
         onHistory={() => {}}
         onNewWorkspace={() => {}}
         onProviderSelect={() => {}}
+        onForceRerunChange={() => {}}
         onQueue={() => {}}
         onUndo={() => {}}
         runDisabled={false}
@@ -277,12 +279,14 @@ describe('App', () => {
         busy={false}
         connection="live"
         exportDisabled={true}
+        forceRerun={false}
         historyOpen={false}
         onAgentRun={() => {}}
         onExport={() => {}}
         onHistory={() => {}}
         onNewWorkspace={() => {}}
         onProviderSelect={() => {}}
+        onForceRerunChange={() => {}}
         onQueue={() => {}}
         onUndo={() => {}}
         runDisabled={true}
@@ -325,12 +329,14 @@ describe('App', () => {
         busy={false}
         connection="live"
         exportDisabled={true}
+        forceRerun={false}
         historyOpen={false}
         onAgentRun={() => {}}
         onExport={() => {}}
         onHistory={() => {}}
         onNewWorkspace={() => {}}
         onProviderSelect={() => {}}
+        onForceRerunChange={() => {}}
         onQueue={() => {}}
         onUndo={() => {}}
         runDisabled={false}
@@ -752,6 +758,8 @@ describe('App', () => {
 
     const fetchMock = vi.mocked(fetch);
     expect(fetchMock).toHaveBeenCalledWith('/api/workspaces/ws_test/runs', {
+      body: JSON.stringify({ forceRerun: false }),
+      headers: { 'content-type': 'application/json' },
       method: 'POST',
     });
     expect(fetchMock.mock.calls[0][0]).not.toBe('/api/workspaces/ws_test/messages');
@@ -760,6 +768,34 @@ describe('App', () => {
     expect(updated?.run?.status).toBe('succeeded');
     expect(updated?.outputs).toHaveLength(1);
     expect(updated?.pendingConfirmation).toBeNull();
+  });
+
+  it('passes force rerun through the direct workbench run API', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        return jsonResponse({
+          run: {
+            id: 'run_force_1',
+            label: 'Manual workbench run',
+            status: 'queued',
+            steps: [],
+            cost: { estimate: 0, actual: 0, currency: 'USD' },
+          },
+          outputs: [],
+          pendingConfirmation: null,
+        });
+      }),
+    );
+    useWorkbenchStore.getState().setInitialState(state);
+
+    await useWorkbenchStore.getState().queueRun({ forceRerun: true });
+
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith('/api/workspaces/ws_test/runs', {
+      body: JSON.stringify({ forceRerun: true }),
+      headers: { 'content-type': 'application/json' },
+      method: 'POST',
+    });
   });
 
   it('selects an output through the server-owned selection API', async () => {

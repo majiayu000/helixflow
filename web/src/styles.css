@@ -233,6 +233,24 @@ textarea:disabled {
   text-overflow: ellipsis;
 }
 
+.force-rerun-toggle {
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border-2);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text-2);
+  padding: 0 9px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.force-rerun-toggle input {
+  margin: 0;
+}
+
 .provider-select {
   max-width: 190px;
   min-width: 112px;

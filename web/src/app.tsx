@@ -24,6 +24,7 @@ export function App({ initialState, workspaceId }: AppProps) {
   );
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(initialWorkspaceId);
   const [busy, setBusy] = useState(false);
+  const [forceRerun, setForceRerun] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [selectedCanvasNodeIds, setSelectedCanvasNodeIds] = useState<string[]>([]);
   const [workspaceList, setWorkspaceList] = useState<WorkspaceSummary[]>([]);
@@ -172,11 +173,13 @@ export function App({ initialState, workspaceId }: AppProps) {
           if (activeRun) {
             void interruptRun();
           } else {
-            void runAction(() => queueRun());
+            void runAction(() => queueRun({ forceRerun }));
           }
         }}
         onUndo={() => void runAction(() => undoVersion())}
         runDisabled={activeRun ? false : queueDisabled}
+        forceRerun={forceRerun}
+        onForceRerunChange={setForceRerun}
         running={activeRun}
         state={uiState}
         undoDisabled={undoDisabled}
