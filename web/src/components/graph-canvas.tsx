@@ -10,6 +10,7 @@ import {
 } from 'react';
 import { fetchNodeCatalog } from '../api';
 import { Icon, portColor } from '../icons';
+import { buildMoveNodeEditInput } from '../workbench-edit-session';
 import type {
   GraphNodeState,
   LayoutPositionUpdate,
@@ -103,6 +104,7 @@ type GraphCanvasProps = {
   workflowGraph?: WorkbenchState['workflowGraph'];
   onSaveLayout?: (positions: LayoutPositionUpdate[]) => Promise<void>;
   onCreateProposal?: (input: ManualProposalInput) => Promise<void>;
+  onRequestNodeProposal?: (nodeId: string) => Promise<void>;
   onSelectionChange?: (nodeIds: string[]) => void;
   onSetParam?: (nodeId: string, key: string, value: unknown) => Promise<void>;
 };
@@ -146,6 +148,7 @@ export function GraphCanvas({
   workflowGraph,
   onSaveLayout,
   onCreateProposal,
+  onRequestNodeProposal,
   onSelectionChange,
   onSetParam,
 }: GraphCanvasProps) {
@@ -398,7 +401,9 @@ export function GraphCanvas({
     }
 
     void onCreateProposal?.(proposal)
-      .then(() => setConnectionStatus(existingEdge ? '已替换输入连线' : '已连接端口'))
+      .then(() =>
+        setConnectionStatus(existingEdge ? '已加入编辑会话：替换连线' : '已加入编辑会话：连接端口'),
+      )
       .catch((error) => {
         setConnectionStatus(error instanceof Error ? error.message : '连线提交失败');
       });
@@ -412,7 +417,7 @@ export function GraphCanvas({
       label: `断开 ${edge.from.nodeId}.${edge.from.port} -> ${edge.to.nodeId}.${edge.to.port}`,
       ops: [edgeToRemoveOp(edge)],
     })
-      .then(() => setConnectionStatus('已断开连线'))
+      .then(() => setConnectionStatus('已加入编辑会话：断开连线'))
       .catch((error) => {
         setConnectionStatus(error instanceof Error ? error.message : '断线提交失败');
       });
@@ -461,6 +466,22 @@ export function GraphCanvas({
     event.stopPropagation();
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const moved = moveNodeDrafts(currentDrag.starts, {
+      x: (event.clientX - currentDrag.sx) / view.z,
+      y: (event.clientY - currentDrag.sy) / view.z,
+    });
+    const updates = positionUpdatesFromDrafts(graph.nodes, moved);
+    const editInput = buildMoveNodeEditInput(versionId, updates);
+    if (editInput && onCreateProposal && !pendingProposal) {
+      void onCreateProposal(editInput)
+        .then(() => {
+          setDraftPositions({});
+          setConnectionStatus(`已加入编辑会话 · ${updates.length} 个移动`);
+        })
+        .catch((error) => {
+          setConnectionStatus(error instanceof Error ? error.message : '移动节点失败');
+        });
     }
     nodeDrag.current = null;
   };
@@ -744,6 +765,7 @@ export function GraphCanvas({
           definition={definitionByType.get(selectedNode.nodeType)}
           node={selectedNode}
           onClose={() => setSelectedIds(new Set())}
+          onRequestProposal={pendingProposal ? undefined : onRequestNodeProposal}
           onSetParam={pendingProposal ? undefined : onSetParam}
           workflowNode={selectedWorkflowNode}
         />

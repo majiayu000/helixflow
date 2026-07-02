@@ -14,6 +14,7 @@ type GraphInspectorProps = {
   node: GraphNodeState;
   workflowNode?: WorkflowNode;
   onClose: () => void;
+  onRequestProposal?: (nodeId: string) => Promise<void>;
   onSetParam?: (nodeId: string, key: string, value: unknown) => Promise<void>;
 };
 
@@ -23,6 +24,7 @@ export function GraphInspector({
   node,
   workflowNode,
   onClose,
+  onRequestProposal,
   onSetParam,
 }: GraphInspectorProps) {
   const paramObject = useMemo(() => paramsObject(workflowNode), [workflowNode]);
@@ -97,6 +99,11 @@ export function GraphInspector({
           <span className="field-label">provider</span>
           <span className="field-input">{node.provider ?? 'local/builtin'}</span>
         </div>
+        {onRequestProposal && (
+          <button className="inspector-agent-request" onClick={() => void onRequestProposal(node.id)}>
+            Ask Agent for node proposal
+          </button>
+        )}
         {fields.length === 0 && (
           <div className="field">
             <span className="field-label">params</span>

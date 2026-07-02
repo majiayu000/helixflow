@@ -130,7 +130,7 @@ export function ManualProposalPanel({
       <div className="manual-proposal-head">
         <span>
           <Icon n="layers" s={13} />
-          Manual edit
+          Advanced edit
         </span>
         {state.pendingProposal && <em>agent pending</em>}
       </div>
@@ -265,7 +265,7 @@ export function ManualProposalPanel({
       )}
       <button className="btn btn--soft btn--sm manual-submit" disabled={disabled} onClick={() => void submit()}>
         <Icon n="spark" s={13} fill />
-        Apply edit
+        Add to edit session
       </button>
     </section>
   );

@@ -48,7 +48,7 @@ export function createCanvasEditActions(input: CanvasEditActionsInput) {
         existingNodeIds: input.drawGraph.nodes.map((node) => node.id),
         position,
       }),
-      `已添加 ${definition.title}`,
+      `已加入编辑会话：添加 ${definition.title}`,
       '添加节点失败',
     );
   };
@@ -88,7 +88,7 @@ export function createCanvasEditActions(input: CanvasEditActionsInput) {
         input.setClipboardStatus('粘贴失败：无效选区');
         return;
       }
-      submit(proposal, '已粘贴子图', '粘贴失败');
+      submit(proposal, '已加入编辑会话：粘贴子图', '粘贴失败');
     } catch (error) {
       input.setClipboardStatus(error instanceof Error ? `粘贴失败：${error.message}` : '粘贴失败');
     }
@@ -98,7 +98,7 @@ export function createCanvasEditActions(input: CanvasEditActionsInput) {
     const ids = [...selectedNodeIds];
     submit(
       buildDeleteNodesProposalInput({ baseVersionId: input.versionId, selectedNodeIds: ids }),
-      `已删除 ${ids.length} 个节点`,
+      `已加入编辑会话：删除 ${ids.length} 个节点`,
       '删除节点失败',
     );
   };

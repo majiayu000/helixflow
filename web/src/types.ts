@@ -395,6 +395,13 @@ export type ManualProposalInput = {
     | { op: 'move_node'; id: string; pos: [number, number] }
   >;
 };
+export type ManualEditOp = ManualProposalInput['ops'][number];
+export type ManualEditSession = {
+  baseVersionId: string;
+  source: 'user';
+  ops: ManualEditOp[];
+  startedAt: string;
+};
 
 function workflowGraphToGraphState(
   graph: z.infer<typeof WorkflowGraphSchema>,

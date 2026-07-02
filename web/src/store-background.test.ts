@@ -9,6 +9,7 @@ describe('background run state reconciliation', () => {
       error: null,
       connection: 'offline',
       state: null,
+      editSession: null,
     });
   });
 

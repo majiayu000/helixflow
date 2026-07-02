@@ -7,17 +7,23 @@ import { ManualProposalPanel } from './components/manual-proposal-panel';
 import { ConfirmModal, HistoryPanel, OutputsStrip, RunDock } from './components/run-panels';
 import { TopBar } from './components/top-bar';
 import { useWorkbenchStore } from './store';
-import type { WorkbenchState, WorkspaceSummary } from './types';
+import type { ManualEditSession, WorkbenchState, WorkspaceSummary } from './types';
+import {
+  deriveQueueLockReason,
+  manualEditSummary,
+  previewWorkbenchStateWithManualEdits,
+} from './workbench-edit-session';
 
 type AppProps = {
   initialState?: WorkbenchState;
+  initialEditSession?: ManualEditSession | null;
   workspaceId?: string;
 };
 
 type RunSnapshot = NonNullable<WorkbenchState['run']>;
 type UiWorkbenchState = WorkbenchState & { run: RunSnapshot };
 
-export function App({ initialState, workspaceId }: AppProps) {
+export function App({ initialState, initialEditSession, workspaceId }: AppProps) {
   const initialWorkspaceId = useMemo(
     () => workspaceId ?? workspaceIdFromUrl(),
     [workspaceId],
@@ -33,6 +39,8 @@ export function App({ initialState, workspaceId }: AppProps) {
   const error = useWorkbenchStore((store) => store.error);
   const connection = useWorkbenchStore((store) => store.connection);
   const state = useWorkbenchStore((store) => store.state);
+  const storeEditSession = useWorkbenchStore((store) => store.editSession);
+  const editSession = initialEditSession ?? storeEditSession;
   const bootstrap = useWorkbenchStore((store) => store.bootstrap);
   const createWorkspaceAction = useWorkbenchStore((store) => store.createWorkspace);
   const setInitialState = useWorkbenchStore((store) => store.setInitialState);
@@ -43,13 +51,14 @@ export function App({ initialState, workspaceId }: AppProps) {
   const dismissProposal = useWorkbenchStore((store) => store.dismissProposal);
   const confirmRun = useWorkbenchStore((store) => store.confirmRun);
   const holdRun = useWorkbenchStore((store) => store.holdRun);
-  const createManualProposal = useWorkbenchStore((store) => store.createManualProposal);
+  const appendManualEdit = useWorkbenchStore((store) => store.appendManualEdit);
+  const commitManualEdits = useWorkbenchStore((store) => store.commitManualEdits);
+  const discardManualEdits = useWorkbenchStore((store) => store.discardManualEdits);
   const queueRun = useWorkbenchStore((store) => store.queueRun);
   const interruptRun = useWorkbenchStore((store) => store.interruptRun);
   const exportWorkflow = useWorkbenchStore((store) => store.exportWorkflow);
   const undoVersion = useWorkbenchStore((store) => store.undoVersion);
   const restoreVersion = useWorkbenchStore((store) => store.restoreVersion);
-  const saveLayout = useWorkbenchStore((store) => store.saveLayout);
   const selectOutput = useWorkbenchStore((store) => store.selectOutput);
   const selectProvider = useWorkbenchStore((store) => store.selectProvider);
   const activeState = initialState ?? state;
@@ -89,27 +98,45 @@ export function App({ initialState, workspaceId }: AppProps) {
     return <LoadingShell status={status} error={error} />;
   }
 
-  const uiState = stateForUi(activeState);
+  const previewState = previewWorkbenchStateWithManualEdits(activeState, editSession);
+  const uiState = stateForUi(previewState);
+  const dirtyEditCount = editSession?.ops.length ?? 0;
+  const editSummary =
+    editSession && editSession.baseVersionId === activeState.workspace.versionId
+      ? manualEditSummary(editSession)
+      : [];
   const activeRun = Boolean(
     activeState.run &&
       (activeState.run.status === 'queued' ||
         activeState.run.status === 'running' ||
         activeState.run.status === 'estimating'),
   );
-  const hasProviderNodes = activeState.graph.nodes.some((node) => Boolean(node.provider));
+  const hasProviderNodes = previewState.graph.nodes.some((node) => Boolean(node.provider));
   const providerReady = activeState.providers.runtimeProviders.some(
     (provider) =>
       provider.id === activeState.providers.selectedProvider &&
       provider.enabled &&
       provider.status === 'healthy',
   );
-  const queueDisabled =
-    busy ||
-    activeRun ||
-    activeState.graph.nodes.length === 0 ||
-    (hasProviderNodes && !providerReady) ||
-    Boolean(activeState.pendingConfirmation) ||
-    Boolean(activeState.pendingProposal);
+  const selectedProvider = activeState.providers.runtimeProviders.find(
+    (provider) =>
+      provider.id ===
+      (activeState.providers.selectedProvider ?? activeState.providers.defaultProvider),
+  );
+  const providerMessage =
+    selectedProvider?.message ?? (providerReady ? 'Provider ready' : 'Provider unavailable');
+  const queueLockReason = deriveQueueLockReason({
+    activeRun,
+    busy,
+    dirtyEditCount,
+    graphNodeCount: previewState.graph.nodes.length,
+    hasProviderNodes,
+    pendingConfirmation: Boolean(activeState.pendingConfirmation),
+    pendingProposal: Boolean(activeState.pendingProposal),
+    providerMessage,
+    providerReady,
+  });
+  const queueDisabled = queueLockReason.kind !== 'none';
   const versionHistoryCount = activeState.history.filter((item) => item.kind === 'version').length;
   const undoDisabled = busy || versionHistoryCount < 2;
 
@@ -180,6 +207,7 @@ export function App({ initialState, workspaceId }: AppProps) {
         runDisabled={activeRun ? false : queueDisabled}
         forceRerun={forceRerun}
         onForceRerunChange={setForceRerun}
+        queueLockReason={queueLockReason}
         running={activeRun}
         state={uiState}
         undoDisabled={undoDisabled}
@@ -192,6 +220,17 @@ export function App({ initialState, workspaceId }: AppProps) {
             messages={activeState.chat.messages}
             onApplyProposal={(id) => runAction(() => applyProposal(id))}
             onDismissProposal={(id) => runAction(() => dismissProposal(id))}
+            editSessionSummary={
+              dirtyEditCount > 0
+                ? {
+                    baseVersionId: editSession?.baseVersionId ?? activeState.workspace.versionId,
+                    count: dirtyEditCount,
+                    items: editSummary,
+                  }
+                : null
+            }
+            onCommitEdits={() => runAction(() => commitManualEdits())}
+            onDiscardEdits={discardManualEdits}
             onSend={(text) =>
               runAction(() =>
                 sendMessage(text, {
@@ -204,18 +243,24 @@ export function App({ initialState, workspaceId }: AppProps) {
           />
         </div>
         <section className="wb-canvas">
-          {hasPreviewArtifact(activeState.outputs) ? (
+          {hasPreviewArtifact(activeState.outputs) && dirtyEditCount === 0 ? (
             <ArtifactStage outputs={activeState.outputs} />
           ) : (
             <>
               <GraphCanvas
-                graph={activeState.graph}
-                onCreateProposal={(input) => runAction(() => createManualProposal(input))}
+                graph={previewState.graph}
+                onCreateProposal={(input) => runAction(() => appendManualEdit(input))}
+                onRequestNodeProposal={(nodeId) =>
+                  runAction(() =>
+                    sendMessage(`围绕选中节点 ${nodeId} 生成最小修改 proposal。`, {
+                      selection: { nodeIds: [nodeId] },
+                    }),
+                  )
+                }
                 onSelectionChange={setSelectedCanvasNodeIds}
-                onSaveLayout={(positions) => runAction(() => saveLayout(positions))}
                 onSetParam={(nodeId, key, value) =>
                   runAction(() =>
-                    createManualProposal({
+                    appendManualEdit({
                       baseVersionId: activeState.workspace.versionId,
                       label: `Inspector set ${key}`,
                       ops: [{ op: 'set_param', id: nodeId, key, value }],
@@ -225,13 +270,13 @@ export function App({ initialState, workspaceId }: AppProps) {
                 pendingProposal={activeState.pendingProposal}
                 run={uiState.run}
                 versionId={activeState.workspace.versionId}
-                workflowGraph={activeState.workflowGraph}
+                workflowGraph={previewState.workflowGraph}
                 workspaceId={activeState.workspace.id}
               />
               <ManualProposalPanel
                 busy={busy}
-                state={activeState}
-                onCreateProposal={(input) => runAction(() => createManualProposal(input))}
+                state={previewState}
+                onCreateProposal={(input) => runAction(() => appendManualEdit(input))}
               />
             </>
           )}
@@ -269,7 +314,7 @@ function LoadingShell({ status, error }: { status: string; error: string | null 
   return (
     <main className="wb wb-loading">
       <div className="loading-panel">
-        <p>COMFYUI AGENT</p>
+        <p>HELIXFLOW</p>
         <h1>{status === 'error' ? '工作区加载失败' : '正在连接真实工作区'}</h1>
         <span>{error ?? '读取本地 workspace state...'}</span>
       </div>

@@ -196,6 +196,7 @@ describe('App', () => {
       error: null,
       connection: 'offline',
       state: null,
+      editSession: null,
     });
   });
 
@@ -207,7 +208,7 @@ describe('App', () => {
   it('renders the primary workbench layout from backend state', () => {
     const markup = renderToStaticMarkup(<App initialState={state} />);
 
-    expect(markup).toContain('ComfyUI Agent');
+    expect(markup).toContain('helixflow');
     expect(markup).toContain('Test Workspace');
     expect(markup).toContain('对话');
     expect(markup).toContain('2 节点');
@@ -260,6 +261,7 @@ describe('App', () => {
         onForceRerunChange={() => {}}
         onQueue={() => {}}
         onUndo={() => {}}
+        queueLockReason={{ kind: 'active_run' }}
         runDisabled={false}
         running={true}
         state={state}
@@ -289,6 +291,7 @@ describe('App', () => {
         onForceRerunChange={() => {}}
         onQueue={() => {}}
         onUndo={() => {}}
+        queueLockReason={{ kind: 'provider_unavailable', message: 'runtime provider `openai` is not configured by this build' }}
         runDisabled={true}
         running={false}
         state={{
@@ -339,6 +342,7 @@ describe('App', () => {
         onForceRerunChange={() => {}}
         onQueue={() => {}}
         onUndo={() => {}}
+        queueLockReason={{ kind: 'none' }}
         runDisabled={false}
         running={false}
         state={{
@@ -541,6 +545,7 @@ describe('App', () => {
     expect(markup).toContain('运行失败');
     expect(markup).toContain('provider rejected duration');
     expect(markup).toContain('查看 raw error');
+    expect(markup).toContain('Create minimal fix proposal');
     expect(markup).toContain('node--err');
     expect(markup).not.toContain('stack line 1');
   });
@@ -1537,12 +1542,13 @@ describe('App', () => {
     await expect(
       useWorkbenchStore.getState().createManualProposal({
         baseVersionId: 'ver_test_1',
-      ops: [{ op: 'set_param', id: 'video', key: 'duration_sec', value: 'slow' }],
+        ops: [{ op: 'set_param', id: 'video', key: 'duration_sec', value: 'slow' }],
       }),
     ).rejects.toThrow('invalid param');
 
     expect(useWorkbenchStore.getState().state?.chat.messages.at(-1)?.text).toBe('invalid param');
   });
+
 });
 
 describe('GraphCanvas navigation', () => {
@@ -1805,11 +1811,11 @@ describe('ManualProposalPanel', () => {
       />,
     );
 
-    expect(markup).toContain('Manual edit');
+    expect(markup).toContain('Advanced edit');
     expect(markup).toContain('agent pending');
     expect(markup).toContain('edit param');
     expect(markup).toContain('text · Launch note');
-    expect(markup).toContain('Apply edit');
+    expect(markup).toContain('Add to edit session');
   });
 
   it('derives valid default params from required catalog schema values', () => {
