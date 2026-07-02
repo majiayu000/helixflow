@@ -13,7 +13,7 @@ Ambiguous,接口直接返回 HTTP 400(`crates/server/src/workbench_message.rs:60
 
 ## 目标
 
-- 不含关键词的非空消息不再返回 400,兜底路由到 Chat skill,由 agent 在回复中主动澄清意图。
+- 不含关键词的非空消息不再返回 400,兜底路由到 Chat 模式,由 agent 在回复中主动澄清意图。
 - 分类结果(含"是否走了兜底")记入 message 元数据,便于后续观察误分类率。
 
 ## 非目标
