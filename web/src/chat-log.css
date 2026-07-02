@@ -87,6 +87,17 @@
   font-size: 11.5px;
 }
 
+.run-error-fix {
+  margin-top: 10px;
+  border: 1px solid var(--red-line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--red);
+  padding: 7px 9px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .agent-log-body,
 .agent-log-raw {
   margin: 0;

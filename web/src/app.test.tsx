@@ -545,6 +545,7 @@ describe('App', () => {
     expect(markup).toContain('运行失败');
     expect(markup).toContain('provider rejected duration');
     expect(markup).toContain('查看 raw error');
+    expect(markup).toContain('Create minimal fix proposal');
     expect(markup).toContain('node--err');
     expect(markup).not.toContain('stack line 1');
   });

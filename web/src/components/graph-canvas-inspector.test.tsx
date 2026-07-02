@@ -48,6 +48,7 @@ describe('GraphInspector', () => {
         definition={videoDefinition()}
         node={videoNode()}
         onClose={() => {}}
+        onRequestProposal={async () => undefined}
         onSetParam={async () => undefined}
         workflowNode={workflowNode()}
       />,
@@ -58,6 +59,7 @@ describe('GraphInspector', () => {
     expect(markup).toContain('<select');
     expect(markup).toContain('9:16');
     expect(markup).toContain('title="随机 seed"');
+    expect(markup).toContain('Ask Agent for node proposal');
     expect(markup).toContain('保存');
   });
 

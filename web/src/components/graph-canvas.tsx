@@ -104,6 +104,7 @@ type GraphCanvasProps = {
   workflowGraph?: WorkbenchState['workflowGraph'];
   onSaveLayout?: (positions: LayoutPositionUpdate[]) => Promise<void>;
   onCreateProposal?: (input: ManualProposalInput) => Promise<void>;
+  onRequestNodeProposal?: (nodeId: string) => Promise<void>;
   onSelectionChange?: (nodeIds: string[]) => void;
   onSetParam?: (nodeId: string, key: string, value: unknown) => Promise<void>;
 };
@@ -147,6 +148,7 @@ export function GraphCanvas({
   workflowGraph,
   onSaveLayout,
   onCreateProposal,
+  onRequestNodeProposal,
   onSelectionChange,
   onSetParam,
 }: GraphCanvasProps) {
@@ -763,6 +765,7 @@ export function GraphCanvas({
           definition={definitionByType.get(selectedNode.nodeType)}
           node={selectedNode}
           onClose={() => setSelectedIds(new Set())}
+          onRequestProposal={pendingProposal ? undefined : onRequestNodeProposal}
           onSetParam={pendingProposal ? undefined : onSetParam}
           workflowNode={selectedWorkflowNode}
         />

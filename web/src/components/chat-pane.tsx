@@ -133,7 +133,7 @@ export function ChatPane({
             ),
           )
         )}
-        <RunErrorCard run={run} />
+        <RunErrorCard busy={busy} run={run} onRequestFix={onSend} />
         {pendingProposal && <ProposalMessage
           busy={busy}
           onApply={() => onApplyProposal(pendingProposal.id)}
@@ -217,12 +217,21 @@ function EditSessionCard({
   );
 }
 
-function RunErrorCard({ run }: { run: WorkbenchState['run'] }) {
+function RunErrorCard({
+  run,
+  busy,
+  onRequestFix,
+}: {
+  run: WorkbenchState['run'];
+  busy: boolean;
+  onRequestFix: (text: string) => Promise<void>;
+}) {
   const [rawOpen, setRawOpen] = useState(false);
   if (!run || run.status !== 'failed') return null;
   const failedSteps = run.steps.filter((step) => step.state === 'failed');
   const error = run.error ?? failedSteps.find((step) => step.error)?.error ?? null;
   const raw = error?.raw?.trim();
+  const failedNodeText = failedSteps.map((step) => step.nodeId).join(', ') || 'unknown';
 
   return (
     <div className="run-error-card">
@@ -239,6 +248,17 @@ function RunErrorCard({ run }: { run: WorkbenchState['run'] }) {
         </div>
       </div>
       <div className="run-error-summary">{error?.summary ?? '最近一次运行失败，暂无结构化错误摘要。'}</div>
+      <button
+        className="run-error-fix"
+        disabled={busy}
+        onClick={() =>
+          void onRequestFix(
+            `读取当前失败节点 ${failedNodeText} 和运行错误，生成最小修复 proposal。`,
+          )
+        }
+      >
+        Create minimal fix proposal
+      </button>
       {raw && (
         <>
           <button className="run-error-toggle" onClick={() => setRawOpen((open) => !open)}>

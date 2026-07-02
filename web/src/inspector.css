@@ -38,6 +38,17 @@
   padding: 0 9px;
 }
 
+.inspector-agent-request {
+  width: 100%;
+  min-height: 32px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .inspector-icon-btn {
   width: 30px;
   font-family: var(--font-mono);

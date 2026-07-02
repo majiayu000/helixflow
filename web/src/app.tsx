@@ -250,6 +250,13 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
               <GraphCanvas
                 graph={previewState.graph}
                 onCreateProposal={(input) => runAction(() => appendManualEdit(input))}
+                onRequestNodeProposal={(nodeId) =>
+                  runAction(() =>
+                    sendMessage(`围绕选中节点 ${nodeId} 生成最小修改 proposal。`, {
+                      selection: { nodeIds: [nodeId] },
+                    }),
+                  )
+                }
                 onSelectionChange={setSelectedCanvasNodeIds}
                 onSetParam={(nodeId, key, value) =>
                   runAction(() =>
