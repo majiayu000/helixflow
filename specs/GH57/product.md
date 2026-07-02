@@ -35,7 +35,7 @@ origin/main 上唯一可运行的执行 provider 是 MockProvider:未设置 `HEL
 3. 用户为 workspace 选择了不可用的 provider 后发起运行,请求被明确拒绝并返回可读错误;不产生任何 mock 或占位产物,run 不进入执行状态。
 4. 为 workspace 选择 provider 后,该选择持久化:服务重启、页面刷新后 workspace state 仍返回同一选择;未做过选择的 workspace 使用服务器默认 provider。
 5. 选择一个未注册的 provider id 时请求被拒绝(4xx),workspace 原有选择不变。
-6. 设置了有效 `ATLAS_API_KEY` 且 workspace 选择 `atlas` 时,文生图工作流端到端完成,产出真实图片 artifact(非确定性 mock 产物);产物字节由服务端持久化,页面刷新与服务重启后仍可预览/下载。
+6. 设置了有效 `ATLAS_API_KEY` 且 workspace 选择 `atlas` 时,文生图工作流端到端完成,产出真实图片 artifact(非确定性 mock 产物);产物字节由服务端持久化,页面刷新与服务重启后仍可用图片/视频预览控件预览并可下载。
 7. `ATLAS_API_KEY` 无效(上游返回 401/403)时,run 以明确的失败状态结束,错误消息说明 provider 鉴权失败;消息与日志中不出现 key、bearer token 或原始响应中的敏感头。
 8. 运行进行中切换 workspace 的 provider 选择,不影响 in-flight run(该 run 继续用发起时的 provider);切换仅对后续 run 生效。
 9. mock 与真实 provider 并存:mock 始终注册、可被选择、可正常运行,provider label 明确标识其为本地测试 provider;画布上的可执行节点(文生图/文生视频)是 provider 中立的,节点名称与 label 不含任何 provider 名(包括 Mock),同一个图无需修改即可在 mock 与 atlas 下运行;选择 atlas 的 workspace 与选择 mock 的 workspace 互不影响。
@@ -46,7 +46,7 @@ origin/main 上唯一可运行的执行 provider 是 MockProvider:未设置 `HEL
 
 - [ ] 多 provider 注册生效:catalog 同时包含 mock 与 atlas,各自独立健康状态。
 - [ ] 用户在前端选择 workspace 的执行 provider,选择持久化并在重启后保留。
-- [ ] 设置 `ATLAS_API_KEY` 后,文生图工作流端到端产出真实图片产物。
+- [ ] 设置 `ATLAS_API_KEY` 后,文生图工作流端到端产出真实图片产物,刷新后仍以图片 preview 渲染并可下载。
 - [ ] 无 key 时 atlas 在 catalog 中标记不可用,运行被明确拒绝,不静默降级到 mock。
 - [ ] 密钥脱敏测试覆盖(沿用 GH-55 的 redaction 逻辑,含 lowercase bearer 用例)。
 
