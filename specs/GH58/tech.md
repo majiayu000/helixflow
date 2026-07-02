@@ -18,6 +18,7 @@ GH-58
 | 确认流 | `crates/run/src/cost_gate.rs` | `confirm_run`(:75)认领(`waiting_confirmation`→`running`)后同步执行;`confirm_sweep_runs`(:204)顺序同步执行整组;`hold_run`(:80)将等待确认的 run 置为 `interrupted` | confirm 路径同样需要后台化 |
 | Run 状态持久化 | `crates/store/src/run_records.rs` | 有 `update_run_status_if_current`(:232,CAS 语义)、`latest_workspace_run`(:189);无"列出所有活跃 run"查询 | 启动清扫需要新查询;CAS 用于终态竞争收敛 |
 | 事件通道 | `crates/run/src/lib.rs`(`EventBus`,:102)、`crates/server/src/ws.rs`、`crates/store/src/run_records.rs`(`append_run_event`,:394) | 事件先落 `run_events` 表再 broadcast 到 `/ws`;WS 无历史回放 | 后台化后前端进度通道现成,无需新增协议 |
+| Workspace 全量状态 | `crates/server/src/workspace_state.rs`(`workspace_state_value`)、`crates/store/src/run_records.rs` | `workspace_state_value` 通过 `latest_workspace_run` 组装当前 run;sweep seed 会把后创建的 recommended run 作为 UI 推荐/当前 run,早期成员开始执行时全量 refetch 仍可能读到后创建的 queued recommended run | 后台 sweep 的 WS 事件必须能通过全量状态接口收敛;state 端点需要显式暴露当前 running sweep member 或 aggregate,不能只按 latest/recommended 选择 |
 | 前端事件消费 | `web/src/api.ts`(`connectWorkspaceEvents`,:338)、`web/src/` workbench 组件 | WS 订阅 workspace 事件;断连仅置 offline 状态;reducer 丢弃 run_id 与当前 run 不匹配的事件;全量 state 当前偏向 latest/recommended run | 需要处理"立即返回的进行中响应"、终态产物加载、sweep 当前执行成员展示与重连对账;丢弃不匹配事件或 refetch 后仍返回 stale recommended run 都会造成状态丢失 |
 | 服务启动 | `crates/server/src/main.rs`(`main`)、`crates/server/src/app_state.rs`(`AppState::open`) | 启动仅初始化 store 与路由,无 run 状态检查 | 僵尸 run 清扫的挂载点 |
 
@@ -59,7 +60,7 @@ spawn 放在 `crates/run`,不放 server 层。理由:中断句柄注册(`interru
 
 - queue/confirm 响应到达后,前端把 run 视为进行中,进度由 WS 事件驱动更新。
 - **终态产物加载**:前端收到终态事件(`run.succeeded` / `run.failed` / `run.interrupted`)时,触发一次 `GET /api/workspaces/{id}/state` 全量快照重取(复用既有对账机制),以快照中的 outputs / artifacts / sweep 推荐结果覆盖本地状态。不新增产物专用 WS 事件;终态事件只做状态信号,产物内容一律来自全量状态接口。保持连接的客户端由此在 run 完成时自动拿到产物,无需手动刷新或重连。sweep 后台任务必须在发出 UI 依赖的最终终态信号前先完成推荐 artifact selection 持久化;若现有成员终态事件早于 group finalization,实现必须额外在 group finalization 后触发一次现有事件类型或 state invalidation,但不能让唯一 refetch 信号早于 selection 写入。
-- **sweep 当前成员对账**:`GET /api/workspaces/{id}/state` 不能只返回 latest/recommended run。后台 sweep 执行中,快照必须包含当前 `running` 成员或一个可渲染的 sweep aggregate/current member 字段,使早期成员的 `run.started` / `node.state` 事件触发 refetch 后能展示真实进度,而不是继续显示后创建的推荐 run 为 `queued`。
+- **sweep 当前成员对账**:`GET /api/workspaces/{id}/state` 不能只返回 latest/recommended run。`workspace_state_value` 在发现 latest/recommended run 属于未终态 sweep group 时,必须按 group 查询成员并优先投影当前 `running` 成员;若当前没有 `running` 但后台已认领 group,则投影第一个仍 `queued` 且可中断的成员或返回显式 `sweep` aggregate(`groupId`、`recommendedRunId`、`currentRunId`、`members` 状态、completed/total)。保持推荐 run id 作为推荐选择元数据,但执行中快照的主进度不能继续显示后创建的 recommended run 为 stale `queued`。这样早期成员的 `run.started` / `node.state` 事件触发 refetch 后,state 端点返回的 run/aggregate 会变化并展示真实进度;最终推荐产物持久化后再切回 recommended 结果。
 - **响应前事件丢失竞态(两层防御,前端层)**:reducer 收到 `run_id` 与当前 run 不匹配的事件时,不再丢弃,而是调度一次 `GET /api/workspaces/{id}/state` 全量快照重取(与终态重取共用同一去重/节流入口,避免事件风暴触发重复请求)。这样即使后台任务在响应体到达前就发出了 `run.started` 乃至终态事件,前端也会经快照收敛到服务端真实状态,不会停留在过期的 queued 快照上。
 - WS `close`/`error` 后重连成功时,重新调用 `GET /api/workspaces/{id}/state`(已含 latest run + steps + outputs)做全量对账,以快照覆盖本地状态;不实现事件 seq 回放。
 
@@ -81,7 +82,7 @@ spawn 放在 `crates/run`,不放 server 层。理由:中断句柄注册(`interru
 | P3 边界(sweep 组内至多一个 running,中断路由命中当前成员) | `crates/run/src/cost_gate.rs`(sweep 后台顺序执行)、`crates/server/src/run_routes.rs`(既有路由) | 单元/集成测试:sweep confirm 后成员全为 `queued`;执行推进时任意时刻至多一个 `running`;执行中 interrupt 命中当前成员,未执行成员收敛 `interrupted` |
 | P4、P5(waiting_confirmation/终态中断语义) | `crates/server/src/run_routes.rs`(既有行为保留) | 既有测试 `interrupt_route_rejects_waiting_confirmation_run` 继续通过 + 终态中断 409 测试 |
 | P6(事件先落库再广播) | `crates/run/src/lib.rs` `emit`(既有) | 既有单元测试 + 后台路径事件断言 |
-| P7(重连对账 + 终态产物快照重取) | `web/src/api.ts`、workbench 状态组件、state endpoint 的 sweep 当前成员投影 | `cd web && npm test`:模拟 WS 断连重连后以快照覆盖本地 run 状态;收到终态事件后发起一次 state 重取并渲染 outputs;后台 sweep 早期成员事件触发 refetch 后展示当前 running 成员 |
+| P7(重连对账 + 终态产物快照重取) | `web/src/api.ts`、workbench 状态组件、`workspace_state_value` 的 sweep 当前成员/aggregate 投影 | `cd web && npm test`:模拟 WS 断连重连后以快照覆盖本地 run 状态;收到终态事件后发起一次 state 重取并渲染 outputs;后台 sweep 早期成员事件触发 refetch 后,state payload 不再返回 stale recommended queued run,而是展示当前 running 成员或 aggregate |
 | P7 边界(响应前事件竞态两层防御) | `crates/run/src/lib.rs`(同步阶段持久化+构造响应后才 spawn)、`web/src/` reducer | run crate 单测:断言 spawn 前 queued 快照已落库且 `RunOutcome` 已构造;前端测试:注入 run_id 不匹配事件,断言不丢弃并触发一次 state 快照重取 |
 | P8(sweep selection 先于 UI 终态 refetch 可见) | `crates/run/src/cost_gate.rs`、workspace state 输出 | 集成测试:sweep 最后成员完成时先持久化推荐 selection,再触发 UI 依赖的终态/refetch 信号;保持连接客户端 refetch 后能看到推荐产物 |
 | P9(重启清扫) | `crates/store/src/run_records.rs`、`crates/server/src/app_state.rs` | 单元测试:预置 `running`/`waiting_confirmation` 记录,启动后前者 `interrupted`、后者不变 |
@@ -94,7 +95,7 @@ spawn 放在 `crates/run`,不放 server 层。理由:中断句柄注册(`interru
 - 同步路径:compile plan → 写 `runs`/`run_steps`(SQLite,经 `Store`)→ 注册 interrupt(建档同刻;confirm 路径先注册再 CAS 到 `running`,失败则回滚移除)→ 构造完整响应对象 → spawn → 返回 `RunConfirmationResponse`。
 - 后台路径:逐步执行(sweep 组内成员轮到时才置 `running`)→ provider 调用(估算与执行均在 `tokio::select!` 中断分支下)→ 写 `run_steps`/`artifacts`/`cost_ledger` → sweep 推荐 selection 持久化早于 UI 依赖的最终 refetch 信号 → 每次迁移 `append_run_event`(`run_events` 表)→ `EventBus` broadcast → `/ws` 推送前端。
 - 启动路径:`AppState::open` → `interrupt_stale_active_runs()` 事务更新 `runs`/`run_steps` → 追加 `run.interrupted` 事件。
-- 前端:响应 run_id → WS 事件增量更新 → 终态事件或 run_id 不匹配事件触发 `GET /api/workspaces/{id}/state` 全量快照重取 → 后台 sweep 事件触发的快照显示当前 running 成员/aggregate → 重连时同接口全量对账。
+- 前端:响应 run_id → WS 事件增量更新 → 终态事件或 run_id 不匹配事件触发 `GET /api/workspaces/{id}/state` 全量快照重取 → `workspace_state_value` 对未终态 sweep group 按 running member/aggregate 选择主进度,避免 refetch 仍停在 recommended queued run → 后台 sweep 事件触发的快照显示当前 running 成员/aggregate → 重连时同接口全量对账。
 
 ## 备选方案
 
@@ -115,7 +116,7 @@ spawn 放在 `crates/run`,不放 server 层。理由:中断句柄注册(`interru
 ## 测试计划
 
 - [ ] Unit tests: run crate 两阶段拆分(queued 阶段中断、estimating 阶段中断——慢 mock 估算 provider 下估算调用被 `tokio::select!` 取消、执行中中断、confirm 路径先注册 interrupt 再 CAS `running` 且失败回滚、后台失败收敛、interrupt 条目"建档即注册、终态即移除"生命周期、spawn 前 queued 快照已持久化且响应对象已构造);sweep 后台顺序执行(confirm 后成员全 `queued`、任意时刻至多一个 `running`、中断命中当前或首个 queued 成员且未执行成员收敛 `interrupted`、推荐 selection 先于最终 UI refetch 信号持久化);store 清扫方法(活跃 run 转 `interrupted`、步骤转 `skipped`、`waiting_confirmation` 不动)。
-- [ ] Integration tests: server 路由层——queue/confirm 立即返回、estimating 阶段 interrupt 经路由收敛 `interrupted`、confirm 刚置 `running` 的竞态窗口 interrupt 可命中、终态中断 409、重启清扫(重开 AppState)、同 workspace 二次 queue 409、sweep confirm 后台化 + 中断路由命中当前 `running` 或首个 `queued` 成员、workspace state refetch 能展示当前 sweep running 成员且最终推荐产物已持久化。
+- [ ] Integration tests: server 路由层——queue/confirm 立即返回、estimating 阶段 interrupt 经路由收敛 `interrupted`、confirm 刚置 `running` 的竞态窗口 interrupt 可命中、终态中断 409、重启清扫(重开 AppState)、同 workspace 二次 queue 409、sweep confirm 后台化 + 中断路由命中当前 `running` 或首个 `queued` 成员、早期 sweep member 的 `run.started` / `node.state` 后 refetch 不再返回 stale recommended queued run,而是展示当前 running 成员或 aggregate,且最终推荐产物已持久化。
 - [ ] Frontend tests: `cd web && npm test`——终态事件(`run.succeeded`/`run.failed`/`run.interrupted`)触发一次 state 快照重取并渲染 outputs;run_id 不匹配事件不丢弃、调度快照重取;后台 sweep 早期成员事件触发 refetch 后展示当前 running 成员/aggregate,最终 refetch 展示推荐产物;WS 断连重连后全量对账覆盖本地状态;重取请求去重(同一终态不重复拉取)。
 - [ ] Manual verification: 本地起服务,跑含 mock 延迟节点的 graph,验证请求即刻返回、前端进度实时更新、run 完成后保持连接即看到产物、执行中刷新页面/断 WS 后状态一致、执行中重启服务后 run 显示 `interrupted`。
 
