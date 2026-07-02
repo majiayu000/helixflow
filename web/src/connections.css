@@ -1,0 +1,89 @@
+.port-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.port-stack--output {
+  align-items: flex-end;
+  margin-left: auto;
+}
+
+.port-empty {
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.port-target {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 78px;
+  border: 1px solid transparent;
+  border-radius: var(--r-xs);
+  padding: 2px 4px;
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.port-target span:last-child,
+.port-target span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.port-target--output {
+  cursor: crosshair;
+}
+
+.port-target--disabled {
+  cursor: default;
+  opacity: 0.68;
+}
+
+.port-target--source {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.port-target--compatible {
+  border-color: var(--green);
+  background: color-mix(in srgb, var(--green) 14%, transparent);
+  color: var(--text);
+}
+
+.port-target--occupied {
+  border-color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 15%, transparent);
+  color: var(--text);
+}
+
+.port-target--incompatible {
+  border-color: var(--red);
+  opacity: 0.55;
+}
+
+.edge-svg--interactive {
+  pointer-events: auto;
+}
+
+.edge-path--interactive {
+  cursor: context-menu;
+  pointer-events: stroke;
+}
+
+.edge-path--interactive:hover {
+  stroke-width: 5;
+}
+
+.connection-drag-svg {
+  pointer-events: none;
+}
+
+.connection-drag-path {
+  stroke-dasharray: 7 7;
+  filter: drop-shadow(0 0 5px rgba(15, 23, 42, 0.22));
+}

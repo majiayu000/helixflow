@@ -119,8 +119,13 @@ export function HistoryIcon() {
   );
 }
 
-export function Port({ type = 'artifact' }: { type?: string }) {
-  return <span className="port" style={{ color: portColor(type) }} />;
+export function Port({ className, type = 'artifact' }: { className?: string; type?: string }) {
+  return (
+    <span
+      className={['port', className].filter(Boolean).join(' ')}
+      style={{ color: portColor(type) }}
+    />
+  );
 }
 
 export function portColor(type: string): string {

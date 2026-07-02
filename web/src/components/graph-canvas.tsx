@@ -9,8 +9,26 @@ import {
   type WheelEvent,
 } from 'react';
 import { fetchNodeCatalog } from '../api';
-import { Icon } from '../icons';
-import type { GraphNodeState, LayoutPositionUpdate, NodeCatalog, WorkbenchState } from '../types';
+import { Icon, portColor } from '../icons';
+import type {
+  GraphNodeState,
+  LayoutPositionUpdate,
+  ManualProposalInput,
+  NodeCatalog,
+  WorkbenchState,
+} from '../types';
+import {
+  buildConnectionProposalInput,
+  buildPortHighlights,
+  connectionPath,
+  edgeToRemoveOp,
+  findInputConnection,
+  portAnchorPoint,
+  portTypeMatches,
+  type ConnectionPort,
+  type PortDirection,
+  type PortHighlight,
+} from './graph-canvas-connections';
 import { GraphEdges } from './graph-canvas-edges';
 import { GraphInspector, GraphSelectionInspector } from './graph-canvas-inspector';
 import {
@@ -79,6 +97,7 @@ type GraphCanvasProps = {
   run: NonNullable<WorkbenchState['run']>;
   workflowGraph?: WorkbenchState['workflowGraph'];
   onSaveLayout?: (positions: LayoutPositionUpdate[]) => Promise<void>;
+  onCreateProposal?: (input: ManualProposalInput) => Promise<void>;
   onSelectionChange?: (nodeIds: string[]) => void;
   onSetParam?: (nodeId: string, key: string, value: unknown) => Promise<void>;
 };
@@ -106,6 +125,18 @@ type SelectionDragState = {
   baseIds: Set<string>;
 };
 
+type ConnectionDragState = {
+  pointerId: number;
+  source: ConnectionPort;
+  sourcePoint: Point;
+  currentPoint: Point;
+};
+
+type PortDropTarget = ConnectionPort & {
+  direction: PortDirection;
+  index: number;
+};
+
 export function GraphCanvas({
   workspaceId,
   versionId,
@@ -114,6 +145,7 @@ export function GraphCanvas({
   run,
   workflowGraph,
   onSaveLayout,
+  onCreateProposal,
   onSelectionChange,
   onSetParam,
 }: GraphCanvasProps) {
@@ -127,12 +159,15 @@ export function GraphCanvas({
   const [catalog, setCatalog] = useState<NodeCatalog | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [selectionDrag, setSelectionDrag] = useState<SelectionDragState | null>(null);
+  const [connectionDrag, setConnectionDrag] = useState<ConnectionDragState | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<string | null>(null);
   const [clipboardStatus, setClipboardStatus] = useState<string | null>(null);
   const drag = useRef<DragState | null>(null);
   const nodeDrag = useRef<NodeDragState | null>(null);
   const suppressNextClick = useRef(false);
   const drawGraph = pendingProposal?.previewGraph ?? graph;
   const activeMode = pendingProposal ? 'review' : mode;
+  const connectionDisabled = !onCreateProposal || activeMode === 'review';
   const displayNodes = useMemo(
     () => applyPositionDrafts(drawGraph.nodes, draftPositions),
     [drawGraph.nodes, draftPositions],
@@ -144,6 +179,13 @@ export function GraphCanvas({
   const definitionByType = useMemo(
     () => new Map((catalog?.nodes ?? []).map((definition) => [definition.type, definition] as const)),
     [catalog],
+  );
+  const portHighlights = useMemo(
+    () =>
+      connectionDrag
+        ? buildPortHighlights(displayNodes, definitionByType, connectionDrag.source, drawGraph.edges)
+        : new Map<string, PortHighlight>(),
+    [connectionDrag, definitionByType, displayNodes, drawGraph.edges],
   );
   const selectedNodeId = selectedIds.values().next().value as string | undefined;
   const selectedNode = selectedNodeId ? nodeById.get(selectedNodeId) : null;
@@ -169,6 +211,8 @@ export function GraphCanvas({
     setSelectedIds(new Set());
     setDraftPositions({});
     setSelectionDrag(null);
+    setConnectionDrag(null);
+    setConnectionStatus(null);
     setClipboardStatus(null);
     nodeDrag.current = null;
   }, [workspaceId]);
@@ -176,6 +220,8 @@ export function GraphCanvas({
   useEffect(() => {
     setDraftPositions({});
     setSelectionDrag(null);
+    setConnectionDrag(null);
+    setConnectionStatus(null);
     setClipboardStatus(null);
     nodeDrag.current = null;
   }, [versionId, pendingProposal?.id]);
@@ -267,8 +313,100 @@ export function GraphCanvas({
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
   };
 
+  const worldPointFromClient = (clientX: number, clientY: number): Point => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
+    return {
+      x: (clientX - rect.left - view.x) / view.z,
+      y: (clientY - rect.top - view.y) / view.z,
+    };
+  };
+
   const shouldStartSelectionDrag = (event: PointerEvent<HTMLElement>) =>
     activeMode === 'edit' || event.shiftKey || event.metaKey || event.ctrlKey;
+
+  const startConnectionDrag = (
+    node: GraphNodeState,
+    port: { name: string; type: string },
+    index: number,
+    event: PointerEvent<HTMLSpanElement>,
+  ) => {
+    if (connectionDisabled || event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setConnectionStatus(null);
+    setConnectionDrag({
+      pointerId: event.pointerId,
+      source: { nodeId: node.id, port: port.name, type: port.type },
+      sourcePoint: portAnchorPoint(node, 'output', index),
+      currentPoint: worldPointFromClient(event.clientX, event.clientY),
+    });
+  };
+
+  const cancelConnectionDrag = (event: PointerEvent<HTMLElement>) => {
+    const current = connectionDrag;
+    if (!current || current.pointerId !== event.pointerId) return false;
+    releaseConnectionCapture(event);
+    setConnectionDrag(null);
+    setConnectionStatus('连线已取消');
+    return true;
+  };
+
+  const completeConnectionDrag = (event: PointerEvent<HTMLElement>) => {
+    const current = connectionDrag;
+    if (!current || current.pointerId !== event.pointerId) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    releaseConnectionCapture(event);
+    setConnectionDrag(null);
+
+    const target = portDropTargetFromPoint(event.clientX, event.clientY);
+    if (!target || target.direction !== 'input') {
+      setConnectionStatus('未连接：请选择输入端口');
+      return true;
+    }
+    if (!portTypeMatches(current.source.type, target.type)) {
+      setConnectionStatus('端口类型不兼容');
+      return true;
+    }
+
+    const existingEdge = findInputConnection(drawGraph.edges, target);
+    const proposal = buildConnectionProposalInput({
+      baseVersionId: versionId,
+      source: current.source,
+      target,
+      existingEdge,
+    });
+    if (!proposal) {
+      setConnectionStatus('连线未变化');
+      return true;
+    }
+    if (existingEdge && proposal.ops.length > 1 && !confirmReplace(target)) {
+      setConnectionStatus('已取消替换');
+      return true;
+    }
+
+    void onCreateProposal?.(proposal)
+      .then(() => setConnectionStatus(existingEdge ? '已替换输入连线' : '已连接端口'))
+      .catch((error) => {
+        setConnectionStatus(error instanceof Error ? error.message : '连线提交失败');
+      });
+    return true;
+  };
+
+  const disconnectEdge = (edge: WorkbenchState['graph']['edges'][number]) => {
+    if (!onCreateProposal || connectionDisabled) return;
+    void onCreateProposal({
+      baseVersionId: versionId,
+      label: `断开 ${edge.from.nodeId}.${edge.from.port} -> ${edge.to.nodeId}.${edge.to.port}`,
+      ops: [edgeToRemoveOp(edge)],
+    })
+      .then(() => setConnectionStatus('已断开连线'))
+      .catch((error) => {
+        setConnectionStatus(error instanceof Error ? error.message : '断线提交失败');
+      });
+  };
 
   const handleNodePointerDown = (node: GraphNodeState, event: PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
@@ -389,6 +527,7 @@ export function GraphCanvas({
           return;
         }
         setSelectedIds(new Set());
+        setConnectionStatus(null);
         setClipboardStatus(null);
       }}
       onKeyDown={handleKeyDown}
@@ -417,6 +556,19 @@ export function GraphCanvas({
         };
       }}
       onPointerMove={(event) => {
+        if (connectionDrag?.pointerId === event.pointerId) {
+          event.preventDefault();
+          event.stopPropagation();
+          setConnectionDrag((current) =>
+            current
+              ? {
+                  ...current,
+                  currentPoint: worldPointFromClient(event.clientX, event.clientY),
+                }
+              : current,
+          );
+          return;
+        }
         if (selectionDrag?.pointerId === event.pointerId) {
           setSelectionDrag((current) =>
             current ? { ...current, current: canvasLocalPoint(event) } : current,
@@ -434,10 +586,12 @@ export function GraphCanvas({
         }));
       }}
       onPointerCancel={(event) => {
+        if (cancelConnectionDrag(event)) return;
         if (completeSelectionDrag(event)) return;
         stopDrag(event);
       }}
       onPointerUp={(event) => {
+        if (completeConnectionDrag(event)) return;
         if (completeSelectionDrag(event)) return;
         stopDrag(event);
       }}
@@ -464,6 +618,7 @@ export function GraphCanvas({
           <span className="led" />
           {pendingProposal ? '待确认的图变更 — 预览中' : runStatusLabel(run.status)}
         </span>
+        {connectionStatus && <span className="canvas-pill">{connectionStatus}</span>}
         {!pendingProposal && hasDirtyLayout && (
           <button
             className="layout-save"
@@ -488,10 +643,25 @@ export function GraphCanvas({
           edges={drawGraph.edges}
           hasProposal={Boolean(pendingProposal)}
           nodeById={nodeById}
+          onDisconnectEdge={connectionDisabled ? undefined : disconnectEdge}
         />
+        {connectionDrag && (
+          <svg className="edge-svg connection-drag-svg">
+            <path
+              className="connection-drag-path"
+              d={connectionPath(connectionDrag.sourcePoint, connectionDrag.currentPoint)}
+              fill="none"
+              stroke={portColor(connectionDrag.source.type)}
+              strokeLinecap="round"
+              strokeWidth="3"
+            />
+          </svg>
+        )}
         {displayNodes.map((node) => (
           <WorkflowNode
             key={node.id}
+            connectionDisabled={connectionDisabled}
+            definition={definitionByType.get(node.nodeType)}
             diffState={nodeDiffState(
               node,
               baseComparableById.get(node.id),
@@ -500,8 +670,10 @@ export function GraphCanvas({
             dirty={Boolean(draftPositions[node.id]) && !pendingProposal}
             locked={Boolean(pendingProposal)}
             node={node}
+            portHighlights={portHighlights}
             selected={selectedIds.has(node.id)}
             stepState={stepStateByNodeId.get(node.id) ?? node.status}
+            onOutputPortPointerDown={startConnectionDrag}
             onPointerCancel={stopNodeDrag}
             onPointerDown={(event) => handleNodePointerDown(node, event)}
             onPointerMove={handleNodePointerMove}
@@ -558,4 +730,36 @@ export function GraphCanvas({
       )}
     </section>
   );
+}
+
+function releaseConnectionCapture(event: PointerEvent<HTMLElement>) {
+  const target = event.target instanceof HTMLElement ? event.target : null;
+  if (target?.hasPointerCapture(event.pointerId)) {
+    target.releasePointerCapture(event.pointerId);
+  }
+}
+
+function portDropTargetFromPoint(clientX: number, clientY: number): PortDropTarget | null {
+  if (typeof document === 'undefined') return null;
+  const element = document.elementFromPoint(clientX, clientY);
+  const port = element?.closest<HTMLElement>('[data-port-node-id]');
+  if (!port) return null;
+  const direction = port.dataset.portDirection;
+  if (direction !== 'input' && direction !== 'output') return null;
+  const nodeId = port.dataset.portNodeId;
+  const name = port.dataset.portName;
+  const type = port.dataset.portType;
+  if (!nodeId || !name || !type) return null;
+  return {
+    nodeId,
+    port: name,
+    type,
+    direction,
+    index: Number.parseInt(port.dataset.portIndex ?? '0', 10) || 0,
+  };
+}
+
+function confirmReplace(target: ConnectionPort): boolean {
+  if (typeof window === 'undefined' || typeof window.confirm !== 'function') return false;
+  return window.confirm(`输入端口 ${target.nodeId}.${target.port} 已有连线，是否替换？`);
 }

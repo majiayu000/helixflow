@@ -210,6 +210,7 @@ export function App({ initialState, workspaceId }: AppProps) {
             <>
               <GraphCanvas
                 graph={activeState.graph}
+                onCreateProposal={(input) => runAction(() => createManualProposal(input))}
                 onSelectionChange={setSelectedCanvasNodeIds}
                 onSaveLayout={(positions) => runAction(() => saveLayout(positions))}
                 onSetParam={(nodeId, key, value) =>
