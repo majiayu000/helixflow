@@ -1463,7 +1463,7 @@ describe('App', () => {
     ]);
   });
 
-  it('creates manual proposals through the bounded manual proposal API', async () => {
+  it('applies manual edits through the bounded manual ops API', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
@@ -1477,31 +1477,31 @@ describe('App', () => {
 
     await useWorkbenchStore.getState().createManualProposal({
       baseVersionId: 'ver_test_1',
-      op: { op: 'set_param', id: 'video', key: 'duration_sec', value: 4 },
+      ops: [{ op: 'set_param', id: 'video', key: 'duration_sec', value: 4 }],
     });
 
     const fetchMock = vi.mocked(fetch);
     const [, init] = fetchMock.mock.calls[0]!;
-    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/workspaces/ws_test/proposals/manual');
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/workspaces/ws_test/versions/ops');
     expect(init).toMatchObject({
       method: 'POST',
       headers: { 'content-type': 'application/json' },
     });
     expect(JSON.parse(String((init as RequestInit).body))).toEqual({
       baseVersionId: 'ver_test_1',
-      op: { op: 'set_param', id: 'video', key: 'duration_sec', value: 4 },
+      ops: [{ op: 'set_param', id: 'video', key: 'duration_sec', value: 4 }],
     });
     expect(useWorkbenchStore.getState().state?.pendingProposal?.id).toBe('proposal_1');
   });
 
-  it('surfaces manual proposal API errors in state and to the caller', async () => {
+  it('surfaces manual edit API errors in state and to the caller', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ error: 'invalid param' }, 400)));
     useWorkbenchStore.getState().setInitialState(state);
 
     await expect(
       useWorkbenchStore.getState().createManualProposal({
         baseVersionId: 'ver_test_1',
-        op: { op: 'set_param', id: 'video', key: 'duration_sec', value: 'slow' },
+      ops: [{ op: 'set_param', id: 'video', key: 'duration_sec', value: 'slow' }],
       }),
     ).rejects.toThrow('invalid param');
 
@@ -1729,7 +1729,7 @@ describe('GraphCanvas selection and clipboard helpers', () => {
 });
 
 describe('ManualProposalPanel', () => {
-  it('builds bounded manual proposal inputs and validates JSON locally', () => {
+  it('builds bounded manual edit inputs and validates JSON locally', () => {
     const input = buildManualProposalInput({
       baseVersionId: 'ver_test_1',
       edgeIndex: '0',
@@ -1753,8 +1753,8 @@ describe('ManualProposalPanel', () => {
 
     expect(input).toEqual({
       baseVersionId: 'ver_test_1',
-      title: 'Manual set param',
-      op: { op: 'set_param', id: 'video', key: 'duration_sec', value: 4 },
+      label: 'Manual set param',
+      ops: [{ op: 'set_param', id: 'video', key: 'duration_sec', value: 4 }],
     });
     expect(() => parseManualJson('{bad')).toThrow('Invalid JSON');
   });
@@ -1769,11 +1769,11 @@ describe('ManualProposalPanel', () => {
       />,
     );
 
-    expect(markup).toContain('Manual proposal');
-    expect(markup).toContain('pending');
+    expect(markup).toContain('Manual edit');
+    expect(markup).toContain('agent pending');
     expect(markup).toContain('edit param');
     expect(markup).toContain('text · Launch note');
-    expect(markup).toContain('Create proposal');
+    expect(markup).toContain('Apply edit');
   });
 
   it('derives valid default params from required catalog schema values', () => {

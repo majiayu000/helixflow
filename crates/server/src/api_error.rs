@@ -8,6 +8,7 @@ use serde_json::json;
 pub(crate) struct ApiError {
     pub(crate) status: StatusCode,
     pub(crate) message: String,
+    details: Option<serde_json::Value>,
 }
 
 impl ApiError {
@@ -15,6 +16,7 @@ impl ApiError {
         Self {
             status: StatusCode::BAD_REQUEST,
             message: message.into(),
+            details: None,
         }
     }
 
@@ -22,6 +24,7 @@ impl ApiError {
         Self {
             status: StatusCode::NOT_FOUND,
             message: message.into(),
+            details: None,
         }
     }
 
@@ -29,6 +32,18 @@ impl ApiError {
         Self {
             status: StatusCode::CONFLICT,
             message: message.into(),
+            details: None,
+        }
+    }
+
+    pub(crate) fn bad_request_with_details(
+        message: impl Into<String>,
+        details: serde_json::Value,
+    ) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+            details: Some(details),
         }
     }
 
@@ -48,6 +63,7 @@ impl ApiError {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: err.to_string(),
+            details: None,
         }
     }
 
@@ -55,6 +71,7 @@ impl ApiError {
         Self {
             status: StatusCode::BAD_GATEWAY,
             message: err.to_string(),
+            details: None,
         }
     }
 
@@ -67,12 +84,14 @@ impl ApiError {
             | RunError::UnsupportedBuiltin(_) => Self {
                 status: StatusCode::UNPROCESSABLE_ENTITY,
                 message: err.to_string(),
+                details: None,
             },
             RunError::InvalidRunStatus { .. }
             | RunError::RunNotActive(_)
             | RunError::Interrupted(_) => Self {
                 status: StatusCode::CONFLICT,
                 message: err.to_string(),
+                details: None,
             },
             RunError::Store(err) => Self::store(err),
             RunError::Json(err) => Self::server_error(err.to_string()),
@@ -82,6 +101,7 @@ impl ApiError {
             | RunError::MixedCostCurrency { .. } => Self {
                 status: StatusCode::BAD_GATEWAY,
                 message: err.to_string(),
+                details: None,
             },
         }
     }
@@ -90,6 +110,7 @@ impl ApiError {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: format!("{}: {err}", context.into()),
+            details: None,
         }
     }
 
@@ -97,18 +118,21 @@ impl ApiError {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: message.into(),
+            details: None,
         }
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
-        (
-            self.status,
-            Json(json!({
-                "error": self.message
-            })),
-        )
-            .into_response()
+        let mut body = json!({
+            "error": self.message
+        });
+        if let Some(details) = self.details
+            && let (Some(body), Some(details)) = (body.as_object_mut(), details.as_object())
+        {
+            body.extend(details.clone());
+        }
+        (self.status, Json(body)).into_response()
     }
 }

@@ -410,7 +410,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       set({ state: next, status: 'ready', error: null });
     } catch (error) {
       const normalized =
-        error instanceof Error ? error : new Error('manual proposal request failed');
+        error instanceof Error ? error : new Error('manual edit request failed');
       const message = normalized.message;
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,

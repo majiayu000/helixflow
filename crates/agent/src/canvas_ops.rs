@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use helixflow_graph::{GraphEdge, ProposalOp, WorkflowGraph};
+use helixflow_graph::{GraphEdge, WorkflowGraph};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -96,30 +96,6 @@ impl CanvasSelection {
 pub struct CanvasGateState {
     pub pending_proposal: bool,
     pub pending_confirmation: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct CanvasOpsRequest {
-    pub schema_version: u32,
-    pub ops: Vec<CanvasOp>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
-pub enum CanvasOp {
-    ReadState,
-    ReadSelection,
-    ProposeLayout { moves: Vec<CanvasLayoutMove> },
-    ProposeGraphOps { ops: Vec<ProposalOp> },
-    RunSelectedWorkflow { node_ids: Vec<String> },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct CanvasLayoutMove {
-    pub id: String,
-    pub pos: [f32; 2],
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
