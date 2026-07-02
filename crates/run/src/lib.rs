@@ -3,14 +3,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use helixflow_gateway::{ArtifactKind, ArtifactRef, MockProvider, Provider, ProviderRequest};
-use helixflow_graph::{ExecutionPlan, ExecutionStep, GraphService, WorkflowGraph};
+use helixflow_gateway::{ArtifactRef, MockProvider, Provider};
+use helixflow_graph::{ExecutionPlan, GraphService, WorkflowGraph};
 use helixflow_registry::NodeRegistry;
-use helixflow_store::{
-    ArtifactRecord, NewArtifact, NewRun, NewRunStep, RunRecord, RunStepRecord, Store,
-};
+use helixflow_store::{ArtifactRecord, NewRun, NewRunStep, RunRecord, RunStepRecord, Store};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio::sync::{Mutex, Notify, broadcast};
 
 mod artifacts;
@@ -18,10 +16,10 @@ mod background;
 mod cache;
 mod cost_gate;
 mod error;
+mod executor;
 mod sweep_background;
 
-use artifacts::{default_artifact_root, persist_provider_artifact};
-use cache::{CachedArtifactLink, file_sha256_hex, is_local_artifact_path};
+use artifacts::default_artifact_root;
 pub use cost_gate::{
     AgentRunRequest, CostSummary, PendingRun, PendingSweep, SweepOutcome, SweepPlan, SweepVariant,
 };
@@ -108,6 +106,12 @@ pub struct RunOutcome {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct StepOutput {
+    pub(crate) port: String,
+    pub(crate) artifact: ArtifactRef,
+}
+
+#[derive(Debug, Clone)]
 pub struct EventBus {
     sender: broadcast::Sender<RunEventEnvelope>,
 }
@@ -176,7 +180,10 @@ pub struct RunService<P = MockProvider> {
     artifact_root: PathBuf,
     events: EventBus,
     interrupts: Arc<Mutex<BTreeMap<String, RunInterrupt>>>,
+    max_parallel_steps: usize,
 }
+
+pub const DEFAULT_MAX_PARALLEL_STEPS: usize = 2;
 
 impl RunService<MockProvider> {
     pub fn new(store: Store) -> Self {
@@ -214,7 +221,17 @@ where
             artifact_root: artifact_root.into(),
             events,
             interrupts: Arc::new(Mutex::new(BTreeMap::new())),
+            max_parallel_steps: DEFAULT_MAX_PARALLEL_STEPS,
         }
+    }
+
+    pub fn with_max_parallel_steps(mut self, max_parallel_steps: usize) -> Self {
+        self.max_parallel_steps = normalize_max_parallel_steps(max_parallel_steps);
+        self
+    }
+
+    pub fn max_parallel_steps(&self) -> usize {
+        self.max_parallel_steps
     }
 
     pub fn events(&self) -> EventBus {
@@ -270,126 +287,6 @@ where
         result
     }
 
-    pub(crate) async fn execute_created_run(
-        &self,
-        run: &RunRecord,
-        workspace_id: &str,
-        plan: &ExecutionPlan,
-        interrupt: RunInterrupt,
-        force_rerun: bool,
-    ) -> RunResult<RunOutcome> {
-        let steps = self.ensure_run_steps(&run.id, plan).await?;
-
-        self.store
-            .update_run_status(&run.id, RunStatus::Running.as_str(), None)
-            .await?;
-        self.emit(
-            workspace_id,
-            &run.id,
-            "run.started",
-            json!({ "version_id": plan.version_id }),
-        )
-        .await?;
-
-        let mut outputs = BTreeMap::new();
-        for (index, (step, record)) in plan.steps.iter().zip(steps.iter()).enumerate() {
-            if interrupt.is_requested() {
-                self.skip_steps(workspace_id, &run.id, &steps[index..])
-                    .await?;
-                self.store
-                    .update_run_status(&run.id, RunStatus::Interrupted.as_str(), None)
-                    .await?;
-                self.emit(
-                    workspace_id,
-                    &run.id,
-                    "run.interrupted",
-                    json!({ "at_node_id": step.node_id }),
-                )
-                .await?;
-                return self.outcome(&run.id).await;
-            }
-
-            match self
-                .execute_step(
-                    workspace_id,
-                    &run.id,
-                    step,
-                    record,
-                    &mut outputs,
-                    &interrupt,
-                    force_rerun,
-                )
-                .await
-            {
-                Ok(StepExecution::Succeeded) => {}
-                Ok(StepExecution::Interrupted) => {
-                    self.skip_steps(workspace_id, &run.id, &steps[index..])
-                        .await?;
-                    self.store
-                        .update_run_status(&run.id, RunStatus::Interrupted.as_str(), None)
-                        .await?;
-                    self.emit(
-                        workspace_id,
-                        &run.id,
-                        "run.interrupted",
-                        json!({ "at_node_id": step.node_id }),
-                    )
-                    .await?;
-                    return self.outcome(&run.id).await;
-                }
-                Err(err) => {
-                    let error_json = serde_json::to_string(&json!({ "error": err.to_string() }))?;
-                    self.store
-                        .update_run_step_state(
-                            &record.id,
-                            RunStepState::Failed.as_str(),
-                            Some(1.0),
-                            None,
-                            Some(&error_json),
-                        )
-                        .await?;
-                    self.emit_node_state(
-                        workspace_id,
-                        &run.id,
-                        step,
-                        RunStepState::Failed,
-                        Some(&err.to_string()),
-                    )
-                    .await?;
-                    self.skip_steps(workspace_id, &run.id, &steps[(index + 1)..])
-                        .await?;
-                    self.store
-                        .update_run_status(&run.id, RunStatus::Failed.as_str(), Some(&error_json))
-                        .await?;
-                    self.emit(
-                        workspace_id,
-                        &run.id,
-                        "run.failed",
-                        json!({ "error": err.to_string() }),
-                    )
-                    .await?;
-                    return Err(err);
-                }
-            }
-        }
-
-        if interrupt.is_requested() {
-            self.store
-                .update_run_status(&run.id, RunStatus::Interrupted.as_str(), None)
-                .await?;
-            self.emit(workspace_id, &run.id, "run.interrupted", json!({}))
-                .await?;
-            return self.outcome(&run.id).await;
-        }
-
-        self.store
-            .update_run_status(&run.id, RunStatus::Succeeded.as_str(), None)
-            .await?;
-        self.emit(workspace_id, &run.id, "run.succeeded", json!({}))
-            .await?;
-        self.outcome(&run.id).await
-    }
-
     pub(crate) async fn ensure_run_steps(
         &self,
         run_id: &str,
@@ -416,380 +313,18 @@ where
         }
         Ok(steps)
     }
-
-    async fn execute_step(
-        &self,
-        workspace_id: &str,
-        run_id: &str,
-        step: &ExecutionStep,
-        record: &RunStepRecord,
-        outputs: &mut BTreeMap<[String; 2], ArtifactRef>,
-        interrupt: &RunInterrupt,
-        force_rerun: bool,
-    ) -> RunResult<StepExecution> {
-        let inputs = resolve_inputs(&step.inputs, outputs)?;
-        let cache_key = self.step_cache_key(step, &inputs).await?;
-        if !force_rerun
-            && self
-                .try_cache_hit(workspace_id, run_id, step, record, &cache_key, outputs)
-                .await?
-        {
-            return Ok(StepExecution::Succeeded);
-        }
-
-        self.store
-            .update_run_step_state(
-                &record.id,
-                RunStepState::Running.as_str(),
-                Some(0.0),
-                None,
-                None,
-            )
-            .await?;
-        self.emit_node_state(workspace_id, run_id, step, RunStepState::Running, None)
-            .await?;
-
-        let mut cache_links = Vec::new();
-        let cost = if let (Some(provider), Some(capability)) = (&step.provider, &step.capability) {
-            let request = ProviderRequest {
-                provider: provider.clone(),
-                capability: capability.clone(),
-                node_id: step.node_id.clone(),
-                run_id: run_id.to_owned(),
-                inputs: inputs.clone(),
-                params: step.params.clone(),
-            };
-            let result = tokio::select! {
-                result = self.provider.invoke(request) => result?,
-                _ = interrupt.cancelled() => return Ok(StepExecution::Interrupted),
-            };
-            for (port, payload) in result.outputs {
-                let artifact = self
-                    .persist_artifact(workspace_id, run_id, &record.id, &step.node_id, payload)
-                    .await?;
-                cache_links.push(CachedArtifactLink {
-                    port: Some(port.clone()),
-                    artifact_id: artifact.id.clone(),
-                });
-                outputs.insert(
-                    [step.node_id.clone(), port],
-                    ArtifactRef {
-                        artifact_id: artifact.id,
-                        storage_uri: artifact.storage_uri,
-                    },
-                );
-            }
-            Some(result.cost)
-        } else {
-            cache_links = self
-                .execute_builtin(workspace_id, run_id, step, record, &inputs, outputs)
-                .await?;
-            None
-        };
-
-        if interrupt.is_requested() {
-            return Ok(StepExecution::Interrupted);
-        }
-
-        let cost_json = cost.as_ref().map(serde_json::to_string).transpose()?;
-        self.store
-            .update_run_step_state(
-                &record.id,
-                RunStepState::Succeeded.as_str(),
-                Some(1.0),
-                cost_json.as_deref(),
-                None,
-            )
-            .await?;
-        self.refresh_step_cache(workspace_id, step, &cache_key, &cache_links)
-            .await?;
-        self.emit_node_state(workspace_id, run_id, step, RunStepState::Succeeded, None)
-            .await?;
-        Ok(StepExecution::Succeeded)
-    }
-
-    async fn execute_builtin(
-        &self,
-        workspace_id: &str,
-        run_id: &str,
-        step: &ExecutionStep,
-        record: &RunStepRecord,
-        inputs: &BTreeMap<String, ArtifactRef>,
-        outputs: &mut BTreeMap<[String; 2], ArtifactRef>,
-    ) -> RunResult<Vec<CachedArtifactLink>> {
-        let mut cache_links = Vec::new();
-        match step.node_type.as_str() {
-            "input.text" => {
-                let text = step
-                    .params
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| RunError::MissingParam {
-                        node_id: step.node_id.clone(),
-                        param: "text".to_owned(),
-                    })?;
-                let artifact = self
-                    .store
-                    .create_artifact(NewArtifact {
-                        workspace_id,
-                        run_id: Some(run_id),
-                        run_step_id: Some(&record.id),
-                        node_id: Some(&step.node_id),
-                        kind: "text",
-                        storage_uri: &format!(
-                            "workspace://inputs/{run_id}/{}/text.txt",
-                            step.node_id
-                        ),
-                        sha256: None,
-                        mime: Some("text/plain"),
-                        width: None,
-                        height: None,
-                        duration_ms: None,
-                        selected: false,
-                        meta_json: Some(&serde_json::to_string(&json!({ "text": text }))?),
-                    })
-                    .await?;
-                cache_links.push(CachedArtifactLink {
-                    port: Some("text".to_owned()),
-                    artifact_id: artifact.id.clone(),
-                });
-                outputs.insert(
-                    [step.node_id.clone(), "text".to_owned()],
-                    ArtifactRef {
-                        artifact_id: artifact.id,
-                        storage_uri: artifact.storage_uri,
-                    },
-                );
-            }
-            "input.image" => {
-                let storage_uri = step
-                    .params
-                    .get("storage_uri")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| RunError::MissingParam {
-                        node_id: step.node_id.clone(),
-                        param: "storage_uri".to_owned(),
-                    })?;
-                let artifact = self
-                    .store
-                    .create_artifact(NewArtifact {
-                        workspace_id,
-                        run_id: Some(run_id),
-                        run_step_id: Some(&record.id),
-                        node_id: Some(&step.node_id),
-                        kind: "image",
-                        storage_uri,
-                        sha256: None,
-                        mime: None,
-                        width: None,
-                        height: None,
-                        duration_ms: None,
-                        selected: false,
-                        meta_json: None,
-                    })
-                    .await?;
-                cache_links.push(CachedArtifactLink {
-                    port: Some("image".to_owned()),
-                    artifact_id: artifact.id.clone(),
-                });
-                outputs.insert(
-                    [step.node_id.clone(), "image".to_owned()],
-                    ArtifactRef {
-                        artifact_id: artifact.id,
-                        storage_uri: artifact.storage_uri,
-                    },
-                );
-            }
-            "output.save" => {
-                let artifact_ref =
-                    inputs
-                        .get("artifact")
-                        .ok_or_else(|| RunError::MissingInput {
-                            node_id: step.node_id.clone(),
-                            port: "artifact".to_owned(),
-                        })?;
-                let source = self.store.artifact(&artifact_ref.artifact_id).await?;
-                let artifact = self
-                    .store
-                    .create_artifact(NewArtifact {
-                        workspace_id,
-                        run_id: Some(run_id),
-                        run_step_id: Some(&record.id),
-                        node_id: Some(&step.node_id),
-                        kind: &source.kind,
-                        storage_uri: &source.storage_uri,
-                        sha256: source.sha256.as_deref(),
-                        mime: source.mime.as_deref(),
-                        width: source.width,
-                        height: source.height,
-                        duration_ms: source.duration_ms,
-                        selected: true,
-                        meta_json: source.meta_json.as_deref(),
-                    })
-                    .await?;
-                cache_links.push(CachedArtifactLink {
-                    port: None,
-                    artifact_id: artifact.id,
-                });
-            }
-            other => return Err(RunError::UnsupportedBuiltin(other.to_owned())),
-        }
-
-        Ok(cache_links)
-    }
-
-    async fn persist_artifact(
-        &self,
-        workspace_id: &str,
-        run_id: &str,
-        step_id: &str,
-        node_id: &str,
-        payload: helixflow_gateway::ArtifactPayload,
-    ) -> RunResult<ArtifactRecord> {
-        let storage_uri =
-            persist_provider_artifact(&self.artifact_root, run_id, step_id, node_id, &payload)
-                .await?;
-        let sha256 = if is_local_artifact_path(&storage_uri) {
-            Some(format!(
-                "sha256:{}",
-                file_sha256_hex(&self.artifact_root.join(&storage_uri)).await?
-            ))
-        } else {
-            None
-        };
-        Ok(self
-            .store
-            .create_artifact(NewArtifact {
-                workspace_id,
-                run_id: Some(run_id),
-                run_step_id: Some(step_id),
-                node_id: Some(node_id),
-                kind: artifact_kind_label(payload.kind),
-                storage_uri: &storage_uri,
-                sha256: sha256.as_deref(),
-                mime: Some(&payload.mime),
-                width: payload.width.map(i64::from),
-                height: payload.height.map(i64::from),
-                duration_ms: payload.duration_ms.map(i64::from),
-                selected: false,
-                meta_json: Some(&serde_json::to_string(&payload.meta)?),
-            })
-            .await?)
-    }
-
-    pub(crate) async fn skip_steps(
-        &self,
-        workspace_id: &str,
-        run_id: &str,
-        steps: &[RunStepRecord],
-    ) -> RunResult<()> {
-        for step in steps {
-            self.store
-                .update_run_step_state(&step.id, RunStepState::Skipped.as_str(), None, None, None)
-                .await?;
-            self.emit(
-                workspace_id,
-                run_id,
-                "node.state",
-                json!({
-                    "node_id": step.node_id,
-                    "node_type": step.node_type,
-                    "state": RunStepState::Skipped.as_str()
-                }),
-            )
-            .await?;
-        }
-        Ok(())
-    }
-
-    async fn emit_node_state(
-        &self,
-        workspace_id: &str,
-        run_id: &str,
-        step: &ExecutionStep,
-        state: RunStepState,
-        error: Option<&str>,
-    ) -> RunResult<()> {
-        let mut data = json!({
-            "node_id": step.node_id,
-            "node_type": step.node_type,
-            "provider": step.provider,
-            "state": state.as_str()
-        });
-        if let Some(error) = error
-            && let Some(map) = data.as_object_mut()
-        {
-            map.insert("error".to_owned(), Value::String(error.to_owned()));
-        }
-        self.emit(workspace_id, run_id, "node.state", data).await
-    }
-
-    pub(crate) async fn emit(
-        &self,
-        workspace_id: &str,
-        run_id: &str,
-        ev: &str,
-        data: Value,
-    ) -> RunResult<()> {
-        let data_json = serde_json::to_string(&data)?;
-        let event = self.store.append_run_event(run_id, ev, &data_json).await?;
-        let _ = self.events.publish(RunEventEnvelope {
-            workspace_id: workspace_id.to_owned(),
-            run_id: event.run_id,
-            seq: event.seq,
-            server_time: event.created_at,
-            ev: event.ev,
-            data,
-        });
-        Ok(())
-    }
-
-    pub(crate) async fn outcome(&self, run_id: &str) -> RunResult<RunOutcome> {
-        Ok(RunOutcome {
-            run: self.store.run(run_id).await?,
-            steps: self.store.run_steps(run_id).await?,
-            artifacts: self.store.run_artifacts(run_id).await?,
-        })
-    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StepExecution {
-    Succeeded,
-    Interrupted,
-}
-
-fn resolve_inputs(
-    input_edges: &BTreeMap<String, [String; 2]>,
-    outputs: &BTreeMap<[String; 2], ArtifactRef>,
-) -> RunResult<BTreeMap<String, ArtifactRef>> {
-    let mut inputs = BTreeMap::new();
-    for (port, source) in input_edges {
-        let artifact = outputs
-            .get(source)
-            .ok_or_else(|| RunError::MissingInput {
-                node_id: source[0].clone(),
-                port: source[1].clone(),
-            })?
-            .clone();
-        inputs.insert(port.clone(), artifact);
-    }
-    Ok(inputs)
-}
-
-fn artifact_kind_label(kind: ArtifactKind) -> &'static str {
-    match kind {
-        ArtifactKind::Text => "text",
-        ArtifactKind::Image => "image",
-        ArtifactKind::Video => "video",
-        ArtifactKind::Json => "json",
-    }
+pub fn normalize_max_parallel_steps(max_parallel_steps: usize) -> usize {
+    max_parallel_steps.max(1)
 }
 
 #[cfg(test)]
 mod background_tests;
 #[cfg(test)]
 mod cache_tests;
+#[cfg(test)]
+mod parallel_tests;
 #[cfg(test)]
 mod sweep_tests;
 #[cfg(test)]

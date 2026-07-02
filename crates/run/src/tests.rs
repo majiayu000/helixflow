@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use crate::artifacts::persist_provider_artifact;
 use async_trait::async_trait;
 use helixflow_gateway::{
     ArtifactContent, ArtifactKind, ArtifactPayload, CostEstimate, MockProvider, Provider,
@@ -10,7 +11,7 @@ use helixflow_gateway::{
     ProviderResultValue, ProviderTaskHandle,
 };
 use helixflow_graph::{GraphEdge, GraphNode, WorkflowGraph};
-use helixflow_store::{NewVersion, RunStepRecord, Store, VersionSource};
+use helixflow_store::{NewVersion, Store, VersionSource};
 use serde_json::json;
 use tokio::sync::Notify;
 

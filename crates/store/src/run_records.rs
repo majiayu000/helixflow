@@ -427,33 +427,21 @@ impl Store {
         data_json: &str,
     ) -> StoreResult<RunEventRecord> {
         let id = new_id("evt");
-        let mut tx = self.pool().begin().await?;
-        let seq: i64 = sqlx::query_scalar(
+        sqlx::query(
             r#"
-            SELECT COALESCE(MAX(seq), 0) + 1
+            INSERT INTO run_events (id, run_id, seq, ev, data_json, created_at)
+            SELECT ?, ?, COALESCE(MAX(seq), 0) + 1, ?, ?, current_timestamp
             FROM run_events
             WHERE run_id = ?
             "#,
         )
-        .bind(run_id)
-        .fetch_one(&mut *tx)
-        .await?;
-
-        sqlx::query(
-            r#"
-            INSERT INTO run_events (id, run_id, seq, ev, data_json, created_at)
-            VALUES (?, ?, ?, ?, ?, current_timestamp)
-            "#,
-        )
         .bind(&id)
         .bind(run_id)
-        .bind(seq)
         .bind(ev)
         .bind(data_json)
-        .execute(&mut *tx)
+        .bind(run_id)
+        .execute(self.pool())
         .await?;
-
-        tx.commit().await?;
         self.run_event(&id).await
     }
 
