@@ -33,7 +33,7 @@ GH-59
 ## Behavior Invariants
 
 1. 手动批量编辑一次请求携带 N(N ≥ 1)个 op,全部合法时恰好生成一个新版本,版本 source=manual、parent 为提交时的 base version;不产生任何 pending proposal,也不产生 proposal 消息。
-2. 批量 op 中任一 op 非法(单 op 转换失败,或应用后整体图校验失败,如缺失节点、端口类型不匹配、成环),整个请求被拒绝:不生成版本、不落图文件、当前版本指针不动;响应为 HTTP 400,JSON 体包含人类可读的 `error` 消息,单 op 级失败时额外包含定位失败 op 的 `opIndex`(0 起),图级校验失败时 `opIndex` 为 null。
+2. 批量 op 中任一 op 非法(单 op 转换失败、应用该 op 失败,或全部应用后整体图校验失败,如缺失节点、端口类型不匹配、成环),整个请求被拒绝:不生成版本、不落图文件、当前版本指针不动;响应为 HTTP 400,JSON 体包含人类可读的 `error` 消息,单 op 级失败(转换或应用失败)时额外包含定位失败 op 的 `opIndex`(0 起),仅全部应用后的图级校验失败时 `opIndex` 为 null。
 3. 并发编辑:请求必须携带 `baseVersionId`;当它不等于工作区当前版本时返回 HTTP 409 且不产生任何写入。两个客户端基于同一版本同时提交时,恰好一个成功,另一个收到 409,刷新后可重试。
 4. 工作区存在 pending agent proposal 时,手动批量编辑返回 HTTP 409,proposal 保持 pending 状态不变。
 5. 手动批量编辑生成的版本可通过既有 undo(`POST /versions/undo`)与 restore(`POST /versions/{version_id}/restore`)恢复到编辑前状态,恢复版本 source=restore。
@@ -47,7 +47,7 @@ GH-59
 - [ ] 一次请求提交多个 op(含 add_node/remove_node/set_param/add_edge/remove_edge/move_node),成功生成单个 source=manual 版本;校验失败整体拒绝并返回含 `opIndex` 的结构化错误。
 - [ ] 手动批量编辑直接产生新版本,无 pending proposal;版本历史可 undo/restore 恢复。
 - [ ] `POST /api/workspaces/{workspace_id}/proposals/manual` 端点及 `manual_proposal_routes.rs` 删除,前端手动编辑面板走新端点且 `web` 测试通过。
-- [ ] `CanvasOpsRequest`/`CanvasOp` 死代码删除,`rg CanvasOpsRequest` 在仓库内无任何引用(含测试)。
+- [ ] `CanvasOpsRequest`/`CanvasOp` 死代码删除,`rg CanvasOpsRequest crates web` 无任何引用(含测试;限定实现路径,specs/ 历史规范文档中的文字提及不计)。
 - [ ] `cargo test --workspace` 与 `cd web && npm test` 全部通过。
 
 ## 边界情况

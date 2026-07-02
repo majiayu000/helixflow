@@ -11,9 +11,9 @@ GH-59
 
 ## 实现任务
 
-- [ ] `SP59-T1` Owner: backend-server. 新增 `crates/server/src/ops_routes.rs` 与 `POST /api/workspaces/{workspace_id}/versions/ops`:批量 `ManualOpRequest`(含 move_node)转 `ProposalOp`、原子校验(全成全败)、直接成版 source=manual;扩展 `api_error.rs` 可选 `details` 输出 `opIndex`;CAS 冲突映射 409。Done when: tech.md 设计方案第 1/2 节全部行为落地且 P1-P5、P7 对应单测通过。Verify: `cargo test -p helixflow-server`
-- [ ] `SP59-T2` Owner: backend-server. 删除 `crates/server/src/manual_proposal_routes.rs`、`manual_proposal_routes_tests.rs` 与 `main.rs` 中 `/proposals/manual` 注册,可复用辅助函数(`manual_op_to_proposal_op`/`ensure_*`/`manual_title`)迁入 `ops_routes.rs`,不留兼容层。Done when: `rg "proposals/manual" crates` 无引用且 workspace 编译通过。Verify: `cargo check --workspace`
-- [ ] `SP59-T3` Owner: backend-agent. 删除 `crates/agent/src/canvas_ops.rs` 中 `CanvasOpsRequest`/`CanvasOp`/`CanvasLayoutMove`、`lib.rs` 对应 re-export、`tests.rs` 的 `rejects_unknown_fields_in_canvas_ops_contract_input`;保留 `CanvasOpsContext` 系列与 `CanvasOpsContract`/`CanvasOpSpec`(已接线到 ctx 文件);`prompt_stack.rs` 契约文案不动。Done when: `rg CanvasOpsRequest` 全仓库零命中且 agent 既有测试(含 ctx/canvas_ops.json 存在性断言)通过。Verify: `cargo test -p helixflow-agent`
+- [ ] `SP59-T1` Owner: backend-server. 新增 `crates/server/src/ops_routes.rs` 与 `POST /api/workspaces/{workspace_id}/versions/ops`:批量 `ManualOpRequest`(含 move_node)转 `ProposalOp`、原子校验(全成全败,逐 op 应用并跟踪 `opIndex`)、直接成版 source=manual;body 解析用自定义 rejection 映射(`WithRejection<Json<T>, ApiError>` 或手动 `from_request`)把 `JsonRejection` 转为结构化 400;扩展 `api_error.rs` 可选 `details` 输出 `opIndex`;CAS 冲突映射 409 且零持久写(先 CAS 后写图文件,或临时文件 + 原子 rename)。Done when: tech.md 设计方案第 1/2 节全部行为落地且 P1-P5、P7 对应单测与 HTTP 层未知字段集成测试通过。Verify: `cargo test -p helixflow-server`
+- [ ] `SP59-T2` Owner: backend-server. 删除 `crates/server/src/manual_proposal_routes.rs`、`manual_proposal_routes_tests.rs` 与 `main.rs` 中 `/proposals/manual` 注册,可复用辅助函数(`manual_op_to_proposal_op`/`ensure_*`/`manual_title`)迁入 `ops_routes.rs`,不留兼容层。Done when: `rg "proposals/manual" crates web` 无引用(限定实现路径,specs/ 不计)且 workspace 编译通过。Verify: `cargo check --workspace`
+- [ ] `SP59-T3` Owner: backend-agent. 删除 `crates/agent/src/canvas_ops.rs` 中 `CanvasOpsRequest`/`CanvasOp`/`CanvasLayoutMove`、`lib.rs` 对应 re-export、`tests.rs` 的 `rejects_unknown_fields_in_canvas_ops_contract_input`;保留 `CanvasOpsContext` 系列与 `CanvasOpsContract`/`CanvasOpSpec`(已接线到 ctx 文件);`prompt_stack.rs` 契约文案不动。Done when: `rg CanvasOpsRequest crates web` 零命中(限定实现路径,specs/ 历史规范文档不计)且 agent 既有测试(含 ctx/canvas_ops.json 存在性断言)通过。Verify: `cargo test -p helixflow-agent`
 - [ ] `SP59-T4` Owner: frontend. `web/src/api.ts`/`store.ts`/`types.ts` 将手动编辑请求切换到 `POST /versions/ops`(批量 op 数组、baseVersionId 乐观锁),`manual-proposal-panel.tsx` 提交后直接刷新工作区状态(无 pendingProposal 等待),`app.test.tsx` 同步更新;面板交互重构不做(留 #64/#65/#66)。Done when: 手动编辑提交即出现新版本、409/400 错误(含 opIndex)可提示,web 测试通过。Verify: `cd web && npm test -- app.test.tsx`
 
 ## 并行拆分
@@ -28,12 +28,12 @@ GH-59
 
 ## 验证
 
-- [ ] `SP59-T5` Owner: coordinator. 全量回归与验收对照:逐项核对 product.md 验收标准与 Behavior Invariants P1-P9。Done when: 以下命令在本会话全部通过且 `rg CanvasOpsRequest`、`rg "proposals/manual"` 零命中。Verify: `cargo fmt --check && cargo check --workspace && cargo test --workspace && (cd web && npm test && npm run build) && python3 checks/check_workflow.py --repo . --spec-dir specs/GH59`
+- [ ] `SP59-T5` Owner: coordinator. 全量回归与验收对照:逐项核对 product.md 验收标准与 Behavior Invariants P1-P9。Done when: 以下命令在本会话全部通过且 `rg CanvasOpsRequest crates web` 与 `rg "proposals/manual" crates web` 零命中(限定实现路径,specs/ 历史文档中的提及不计)。Verify: `cargo fmt --check && cargo check --workspace && cargo test --workspace && (cd web && npm test && npm run build) && python3 checks/check_workflow.py --repo . --spec-dir specs/GH59`
 
 ## Handoff Notes
 
 - 产品决策已由 owner 拍板,实现时不得改动:手动直接编辑跳过二次确认即时成版(source=manual,undo/restore 兜底);agent 提案保持 pending → apply/dismiss 不变。
 - `CanvasOpsContract`/`CanvasOpSpec` 不是死代码(`crates/agent/src/lib.rs:100` 写入 ctx/canvas_ops.json),删除范围严格限于 `CanvasOpsRequest`/`CanvasOp`/`CanvasLayoutMove`,详见 tech.md 设计方案第 4 节。
 - `POST /versions/layout` 本 issue 保留不动;#64/#65/#66 画布交互落地后评估将拖拽保存迁到 `/versions/ops` 并删除 layout 端点。
-- 已知遗留(不在本 issue 处理):`create_version_after` CAS 竞态窗口内可能残留无引用图文件(layout 路径同类问题),留待后续垃圾清理 issue。
-- 结构化错误约定:400 体 `{"error": string, "opIndex": number|null}`,单 op 转换失败给序号,图级校验失败给 null;前端据此高亮失败 op。
+- 已知遗留(不在本 issue 处理):layout 路径 `create_version_after` CAS 竞态窗口内可能残留无引用图文件,留待后续垃圾清理 issue;新 `/versions/ops` 端点按 tech.md 设计方案第 2 节第 7 步保证 409 路径零持久写,不引入同类残留。
+- 结构化错误约定:400 体 `{"error": string, "opIndex": number|null}`,单 op 转换或应用失败给该 op 序号(含 remove_node 后 set_param 同一节点这类序内冲突,应用到该 op 时失败给其索引),全部应用完成后的图级校验失败才给 null;前端据此高亮失败 op。
