@@ -1,3 +1,5 @@
+use std::fs;
+use std::io::ErrorKind;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use helixflow_run::{EventBus, RunEventEnvelope};
@@ -5,14 +7,18 @@ use serde_json::{Value, json};
 
 use crate::{
     AgentError, AgentLogEntry, AgentResult, AgentRuntime, AgentSession, AgentSessionRequest,
-    AgentTurn, OutputContract, PromptStackMetadata, RuntimeEvent, ValidatedAgentProposal,
-    ValidatedAgentReply, create_session_contract, read_validated_proposal, read_validated_reply,
+    AgentTurn, OutputContract, PromptStackMetadata, RuntimeEvent, RuntimeHandle,
+    ValidatedAgentProposal, ValidatedAgentReply, create_session_contract, read_validated_proposal,
+    read_validated_reply,
 };
+
+const DEFAULT_MAX_PROPOSAL_ROUNDS: usize = 3;
 
 #[derive(Debug, Clone)]
 pub struct AgentService<R> {
     runtime: R,
     events: EventBus,
+    max_proposal_rounds: usize,
 }
 
 impl<R> AgentService<R>
@@ -20,7 +26,16 @@ where
     R: AgentRuntime,
 {
     pub fn new(runtime: R, events: EventBus) -> Self {
-        Self { runtime, events }
+        Self {
+            runtime,
+            events,
+            max_proposal_rounds: DEFAULT_MAX_PROPOSAL_ROUNDS,
+        }
+    }
+
+    pub fn with_max_proposal_rounds(mut self, max_proposal_rounds: usize) -> Self {
+        self.max_proposal_rounds = max_proposal_rounds.max(1);
+        self
     }
 
     pub async fn propose_graph_change(
@@ -30,17 +45,114 @@ where
         ensure_output_contract(&request, OutputContract::ProposalJson)?;
         let base_graph = request.graph.clone();
         let current_version_id = request.base_version_id.clone();
-        let (session, seq, agent_logs) = self.run_agent_turn(&request).await?;
-        let mut proposal = read_validated_proposal(&session, &base_graph, &current_version_id)?;
-        proposal.agent_logs = agent_logs;
-        self.emit_status(
-            &session.workspace_id,
-            &session.id,
-            seq,
-            "agent.status.end",
-            json!({ "proposal_title": proposal.proposal.title }),
-        );
-        Ok(proposal)
+        let mut run = self.start_agent_session(&request).await?;
+        let max_rounds = self.max_proposal_rounds.max(1);
+        let mut next_message = request.user_message.clone();
+        let mut last_error = String::new();
+        let mut last_summary: String;
+
+        for round in 1..=max_rounds {
+            self.record_status(
+                &mut run,
+                "proposal.round.started",
+                json!({
+                    "round": round,
+                    "max_rounds": max_rounds,
+                    "message": format!("proposal round {round}/{max_rounds} started")
+                }),
+            );
+
+            let turn = AgentTurn {
+                message: next_message.clone(),
+                mode: request.mode,
+                output_contract: request.mode.output_contract(),
+                skill: request.skill,
+            };
+            let outcome = self.send_agent_turn(&mut run, turn).await?;
+
+            if let TurnRunOutcome::RuntimeFailed(message) = outcome {
+                last_error = sanitize_retry_feedback(&message);
+                last_summary = "runtime failed before producing a valid proposal".to_owned();
+            } else {
+                match read_validated_proposal(&run.session, &base_graph, &current_version_id) {
+                    Ok(mut proposal) => {
+                        self.record_status(
+                            &mut run,
+                            "proposal.ready",
+                            json!({
+                                "round": round,
+                                "proposal_title": proposal.proposal.title,
+                                "message": format!("proposal ready after round {round}")
+                            }),
+                        );
+                        proposal.agent_logs = run.agent_logs;
+                        self.emit_status(
+                            &run.session.workspace_id,
+                            &run.session.id,
+                            run.seq,
+                            "agent.status.end",
+                            json!({ "proposal_title": proposal.proposal.title }),
+                        );
+                        return Ok(proposal);
+                    }
+                    Err(err) => {
+                        last_error = sanitize_retry_feedback(&err.to_string());
+                        last_summary = summarize_last_proposal(&run.session);
+                        self.record_status(
+                            &mut run,
+                            "proposal.validation_failed",
+                            json!({
+                                "round": round,
+                                "max_rounds": max_rounds,
+                                "message": format!("proposal validation failed: {last_error}")
+                            }),
+                        );
+                    }
+                }
+            }
+
+            if round == max_rounds {
+                self.record_status(
+                    &mut run,
+                    "proposal.retry_exhausted",
+                    json!({
+                        "rounds": max_rounds,
+                        "last_error": last_error.clone(),
+                        "last_summary": last_summary.clone(),
+                        "message": format!(
+                            "proposal retry exhausted after {max_rounds} rounds: {last_error}"
+                        )
+                    }),
+                );
+                return Err(AgentError::ProposalRetryExhausted {
+                    rounds: max_rounds,
+                    last_error,
+                });
+            }
+
+            self.record_status(
+                &mut run,
+                "proposal.retrying",
+                json!({
+                    "round": round,
+                    "next_round": round + 1,
+                    "max_rounds": max_rounds,
+                    "last_error": last_error.clone(),
+                    "last_summary": last_summary.clone(),
+                    "message": format!(
+                        "retrying proposal generation (round {}/{max_rounds})",
+                        round + 1
+                    )
+                }),
+            );
+            next_message =
+                build_retry_message(&request, round + 1, max_rounds, &last_error, &last_summary);
+        }
+
+        Err(AgentError::ProposalRetryExhausted {
+            rounds: max_rounds,
+            last_error,
+        })
     }
 
     pub async fn answer_chat(
@@ -48,101 +160,98 @@ where
         request: AgentSessionRequest,
     ) -> AgentResult<ValidatedAgentReply> {
         ensure_output_contract(&request, OutputContract::ReplyJson)?;
-        let (session, seq, agent_logs) = self.run_agent_turn(&request).await?;
-        let mut reply = read_validated_reply(&session)?;
-        reply.agent_logs = agent_logs;
-        self.emit_status(
-            &session.workspace_id,
-            &session.id,
-            seq,
-            "agent.status.end",
-            json!({ "message": reply.message }),
-        );
-        Ok(reply)
-    }
-
-    async fn run_agent_turn(
-        &self,
-        request: &AgentSessionRequest,
-    ) -> AgentResult<(AgentSession, i64, Vec<AgentLogEntry>)> {
+        let mut run = self.start_agent_session(&request).await?;
         let turn = AgentTurn {
             message: request.user_message.clone(),
             mode: request.mode,
             output_contract: request.mode.output_contract(),
             skill: request.skill,
         };
-        let session = create_session_contract(request)?;
-        let mut agent_logs = Vec::new();
-        self.emit_status(
-            &session.workspace_id,
-            &session.id,
-            1,
-            "ctx.created",
-            json!({}),
-        );
-        agent_logs.push(agent_log_entry("ctx.created", &json!({})));
-        agent_logs.push(prompt_metadata_log_entry(&session.prompt_metadata));
-        if request.mode.uses_graph_context() {
-            agent_logs.push(canvas_ops_log_entry(request));
+        if let TurnRunOutcome::RuntimeFailed(message) = self.send_agent_turn(&mut run, turn).await?
+        {
+            return Err(AgentError::Runtime(message));
         }
-
-        let handle = self
-            .runtime
-            .start(session.clone())
-            .await
-            .map_err(|err| AgentError::Runtime(err.to_string()))?;
+        let mut reply = read_validated_reply(&run.session)?;
+        reply.agent_logs = run.agent_logs;
         self.emit_status(
-            &session.workspace_id,
-            &session.id,
-            2,
-            "runtime.started",
-            json!({}),
+            &run.session.workspace_id,
+            &run.session.id,
+            run.seq,
+            "agent.status.end",
+            json!({ "message": reply.message }),
         );
-        agent_logs.push(agent_log_entry("runtime.started", &json!({})));
+        Ok(reply)
+    }
 
+    async fn start_agent_session(
+        &self,
+        request: &AgentSessionRequest,
+    ) -> AgentResult<AgentRunState> {
+        let session = create_session_contract(request)?;
+        let mut run = AgentRunState {
+            handle: self
+                .runtime
+                .start(session.clone())
+                .await
+                .map_err(|err| AgentError::Runtime(err.to_string()))?,
+            session,
+            seq: 1,
+            agent_logs: Vec::new(),
+        };
+
+        self.record_status(&mut run, "ctx.created", json!({}));
+        run.agent_logs
+            .push(prompt_metadata_log_entry(&run.session.prompt_metadata));
+        if request.mode.uses_graph_context() {
+            run.agent_logs.push(canvas_ops_log_entry(request));
+        }
+        self.record_status(&mut run, "runtime.started", json!({}));
+
+        Ok(run)
+    }
+
+    async fn send_agent_turn(
+        &self,
+        run: &mut AgentRunState,
+        turn: AgentTurn,
+    ) -> AgentResult<TurnRunOutcome> {
+        clear_turn_output(&run.session, turn.output_contract)?;
         self.runtime
-            .send(&handle, turn)
+            .send(&run.handle, turn)
             .await
             .map_err(|err| AgentError::Runtime(err.to_string()))?;
-        self.emit_status(
-            &session.workspace_id,
-            &session.id,
-            3,
-            "turn.sent",
-            json!({}),
-        );
-        agent_logs.push(agent_log_entry("turn.sent", &json!({})));
+        self.record_status(run, "turn.sent", json!({}));
 
-        let mut seq = 4;
-        while let Some(event) = self.runtime.next_event(&handle).await {
+        while let Some(event) = self.runtime.next_event(&run.handle).await {
             match event {
                 RuntimeEvent::Status { message } => {
-                    let detail = json!({ "message": message });
-                    self.emit_status(
-                        &session.workspace_id,
-                        &session.id,
-                        seq,
-                        "runtime.status",
-                        detail.clone(),
-                    );
-                    agent_logs.push(agent_log_entry("runtime.status", &detail));
-                    seq += 1;
+                    self.record_status(run, "runtime.status", json!({ "message": message }));
                 }
                 RuntimeEvent::Failed { message } => {
-                    self.emit_status(
-                        &session.workspace_id,
-                        &session.id,
-                        seq,
+                    self.record_status(
+                        run,
                         "runtime.failed",
-                        json!({ "message": message }),
+                        json!({ "message": message.clone() }),
                     );
-                    return Err(AgentError::Runtime(message));
+                    return Ok(TurnRunOutcome::RuntimeFailed(message));
                 }
-                RuntimeEvent::Finished => break,
+                RuntimeEvent::Finished => return Ok(TurnRunOutcome::Finished),
             }
         }
 
-        Ok((session, seq, agent_logs))
+        Ok(TurnRunOutcome::Finished)
+    }
+
+    fn record_status(&self, run: &mut AgentRunState, status: &str, detail: Value) {
+        self.emit_status(
+            &run.session.workspace_id,
+            &run.session.id,
+            run.seq,
+            status,
+            detail.clone(),
+        );
+        run.agent_logs.push(agent_log_entry(status, &detail));
+        run.seq += 1;
     }
 
     fn emit_status(
@@ -174,6 +283,131 @@ where
             eprintln!("failed to publish agent event: {err}");
         }
     }
+}
+
+struct AgentRunState {
+    session: AgentSession,
+    handle: RuntimeHandle,
+    seq: i64,
+    agent_logs: Vec<AgentLogEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TurnRunOutcome {
+    Finished,
+    RuntimeFailed(String),
+}
+
+fn clear_turn_output(session: &AgentSession, output_contract: OutputContract) -> AgentResult<()> {
+    let path = session.out_dir.join(output_contract.file_name());
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(AgentError::Io(err)),
+    }
+}
+
+fn build_retry_message(
+    request: &AgentSessionRequest,
+    round: usize,
+    max_rounds: usize,
+    last_error: &str,
+    last_summary: &str,
+) -> String {
+    let graph_summary = format!(
+        "workspace_id={}, base_version_id={}, node_count={}, edge_count={}",
+        request.workspace_id,
+        request.base_version_id,
+        request.graph.nodes.len(),
+        request.graph.edges.len()
+    );
+
+    format!(
+        "\
+{original_message}
+
+Previous proposal validation failed.
+Retry round: {round}/{max_rounds}
+Current graph context: {graph_summary}. Re-read ctx/graph.json, ctx/canvas_state.json, ctx/node_defs/catalog.json, and ctx/canvas_ops.json.
+Validator error: {last_error}
+Last failed proposal summary: {last_summary}
+Write a fresh out/proposal.json that satisfies the proposal_json contract. Keep the same user intent, correct only the invalid proposal shape or ops, and do not include secrets, local paths, or extra fields.",
+        original_message = request.user_message.as_str(),
+    )
+}
+
+fn summarize_last_proposal(session: &AgentSession) -> String {
+    let path = session
+        .out_dir
+        .join(OutputContract::ProposalJson.file_name());
+    let Ok(bytes) = fs::read(path) else {
+        return "proposal output was not readable".to_owned();
+    };
+    let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+        return "proposal output was not valid JSON".to_owned();
+    };
+
+    let title = value
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("untitled");
+    let summary = value
+        .get("summary")
+        .and_then(Value::as_str)
+        .unwrap_or("missing summary");
+    let op_count = value
+        .get("ops")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    sanitize_retry_feedback(&format!("title={title}; summary={summary}; ops={op_count}"))
+}
+
+fn sanitize_retry_feedback(message: &str) -> String {
+    let mut sanitized = message
+        .split_whitespace()
+        .map(sanitize_feedback_token)
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if sanitized.len() > 1200 {
+        sanitized.truncate(1200);
+        sanitized.push_str("...");
+    }
+
+    sanitized
+}
+
+fn sanitize_feedback_token(token: &str) -> String {
+    let path_trimmed = token.trim_matches(|ch: char| {
+        matches!(
+            ch,
+            '"' | '\'' | '`' | ',' | ':' | ';' | '(' | ')' | '[' | ']'
+        )
+    });
+    if looks_like_local_path(path_trimmed) {
+        return token.replace(path_trimmed, "[redacted-path]");
+    }
+
+    let lower = token.to_ascii_lowercase();
+    if lower.starts_with("bearer ")
+        || lower.starts_with("sk-")
+        || lower.contains("secret=")
+        || lower.contains("token=")
+        || lower.contains("authorization:")
+    {
+        return "[redacted-secret]".to_owned();
+    }
+
+    token.to_owned()
+}
+
+fn looks_like_local_path(value: &str) -> bool {
+    value.starts_with("/Users/")
+        || value.starts_with("/private/")
+        || value.starts_with("/tmp/")
+        || value.starts_with("/var/")
+        || value.starts_with("file://")
 }
 
 fn ensure_output_contract(

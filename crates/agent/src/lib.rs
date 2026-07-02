@@ -245,6 +245,10 @@ pub enum AgentError {
         expected: OutputContract,
         actual: OutputContract,
     },
+    ProposalRetryExhausted {
+        rounds: usize,
+        last_error: String,
+    },
     Runtime(String),
 }
 
@@ -272,6 +276,10 @@ impl fmt::Display for AgentError {
                 f,
                 "agent turn mode `{mode}` uses `{actual}` but this path requires `{expected}`"
             ),
+            Self::ProposalRetryExhausted { rounds, last_error } => write!(
+                f,
+                "proposal retry exhausted after {rounds} rounds: {last_error}"
+            ),
             Self::Runtime(message) => write!(f, "{message}"),
         }
     }
@@ -297,5 +305,7 @@ impl From<helixflow_graph::GraphError> for AgentError {
     }
 }
 
+#[cfg(test)]
+mod retry_tests;
 #[cfg(test)]
 mod tests;
