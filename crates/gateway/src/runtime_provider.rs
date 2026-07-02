@@ -1,14 +1,16 @@
 use async_trait::async_trait;
 
 use crate::{
-    ApiConnectorSummary, CostEstimate, MockProvider, Provider, ProviderCatalog,
+    ApiConnectorSummary, AtlasProvider, CostEstimate, MockProvider, Provider, ProviderCatalog,
     ProviderCatalogSnapshot, ProviderError, ProviderHealth, ProviderRequest, ProviderResult,
     ProviderResultValue, ProviderTaskHandle, RuntimeProviderSummary, WorkflowBackendSummary,
+    is_safe_provider_message, safe_provider_message, sanitize_provider_id,
 };
 
 #[derive(Debug, Clone)]
 pub enum RuntimeProvider {
     Mock(MockProvider),
+    Atlas(AtlasProvider),
     Unavailable(UnavailableProvider),
 }
 
@@ -21,9 +23,36 @@ impl RuntimeProvider {
         Self::Unavailable(UnavailableProvider::new(id, reason))
     }
 
+    pub fn atlas_from_env() -> Self {
+        AtlasProvider::from_env()
+            .map(Self::Atlas)
+            .unwrap_or_else(|| Self::unavailable("atlas", "Atlas provider is not configured"))
+    }
+
+    pub fn safe_id(&self) -> String {
+        match self {
+            Self::Mock(provider) => provider.id().to_owned(),
+            Self::Atlas(provider) => provider.id().to_owned(),
+            Self::Unavailable(provider) => provider.safe_id(),
+        }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        !matches!(self, Self::Unavailable(_))
+    }
+
     pub fn catalog_snapshot(&self) -> ProviderCatalogSnapshot {
         match self {
             Self::Mock(_) => mock_catalog_snapshot(),
+            Self::Atlas(provider) => provider_catalog_snapshot(
+                provider.id(),
+                "Atlas API",
+                "external_api",
+                true,
+                "healthy",
+                Some("Atlas API provider configured".to_owned()),
+                AtlasProvider::catalog_value(),
+            ),
             Self::Unavailable(provider) => ProviderCatalogSnapshot {
                 default_provider: provider.safe_id(),
                 runtime_providers: vec![RuntimeProviderSummary {
@@ -44,30 +73,54 @@ impl RuntimeProvider {
 
 fn mock_catalog_snapshot() -> ProviderCatalogSnapshot {
     let catalog = MockProvider::catalog_value();
+    let provider_id = catalog.provider.clone();
+    provider_catalog_snapshot(
+        &provider_id,
+        "Mock (local test)",
+        "local_test",
+        true,
+        "healthy",
+        Some("mock provider ready".to_owned()),
+        catalog,
+    )
+}
+
+pub(crate) fn provider_catalog_snapshot(
+    provider_id: &str,
+    label: &str,
+    kind: &str,
+    enabled: bool,
+    status: &str,
+    message: Option<String>,
+    catalog: ProviderCatalog,
+) -> ProviderCatalogSnapshot {
     let capabilities = catalog.capabilities.keys().cloned().collect::<Vec<_>>();
     ProviderCatalogSnapshot {
-        default_provider: catalog.provider.clone(),
+        default_provider: provider_id.to_owned(),
         runtime_providers: vec![RuntimeProviderSummary {
-            id: catalog.provider.clone(),
-            label: "Mock Provider".to_owned(),
-            kind: "local_test".to_owned(),
-            enabled: true,
-            status: "healthy".to_owned(),
-            message: Some("mock provider ready".to_owned()),
+            id: provider_id.to_owned(),
+            label: label.to_owned(),
+            kind: kind.to_owned(),
+            enabled,
+            status: status.to_owned(),
+            message,
             capabilities: capabilities.clone(),
         }],
-        workflow_backends: vec![WorkflowBackendSummary {
-            id: "helixflow_graph".to_owned(),
-            label: "Helixflow Graph".to_owned(),
-            status: "healthy".to_owned(),
-        }],
+        workflow_backends: enabled
+            .then(|| WorkflowBackendSummary {
+                id: "helixflow_graph".to_owned(),
+                label: "Helixflow Graph".to_owned(),
+                status: "healthy".to_owned(),
+            })
+            .into_iter()
+            .collect(),
         api_connectors: capabilities
             .into_iter()
             .map(|capability| ApiConnectorSummary {
-                id: format!("{}.{}", catalog.provider, capability),
-                provider: catalog.provider.clone(),
+                id: format!("{}.{}", provider_id, capability),
+                provider: provider_id.to_owned(),
                 capability,
-                status: "healthy".to_owned(),
+                status: status.to_owned(),
             })
             .collect(),
     }
@@ -78,6 +131,7 @@ impl Provider for RuntimeProvider {
     fn id(&self) -> &str {
         match self {
             Self::Mock(provider) => provider.id(),
+            Self::Atlas(provider) => provider.id(),
             Self::Unavailable(provider) => provider.id(),
         }
     }
@@ -85,6 +139,7 @@ impl Provider for RuntimeProvider {
     async fn health(&self) -> ProviderHealth {
         match self {
             Self::Mock(provider) => provider.health().await,
+            Self::Atlas(provider) => provider.health().await,
             Self::Unavailable(provider) => provider.health().await,
         }
     }
@@ -92,6 +147,7 @@ impl Provider for RuntimeProvider {
     async fn catalog(&self) -> ProviderResultValue<ProviderCatalog> {
         match self {
             Self::Mock(provider) => provider.catalog().await,
+            Self::Atlas(provider) => provider.catalog().await,
             Self::Unavailable(provider) => provider.catalog().await,
         }
     }
@@ -99,6 +155,7 @@ impl Provider for RuntimeProvider {
     async fn estimate(&self, req: ProviderRequest) -> ProviderResultValue<CostEstimate> {
         match self {
             Self::Mock(provider) => provider.estimate(req).await,
+            Self::Atlas(provider) => provider.estimate(req).await,
             Self::Unavailable(provider) => provider.estimate(req).await,
         }
     }
@@ -106,6 +163,7 @@ impl Provider for RuntimeProvider {
     async fn invoke(&self, req: ProviderRequest) -> ProviderResultValue<ProviderResult> {
         match self {
             Self::Mock(provider) => provider.invoke(req).await,
+            Self::Atlas(provider) => provider.invoke(req).await,
             Self::Unavailable(provider) => provider.invoke(req).await,
         }
     }
@@ -113,6 +171,7 @@ impl Provider for RuntimeProvider {
     async fn cancel(&self, handle: ProviderTaskHandle) -> ProviderResultValue<()> {
         match self {
             Self::Mock(provider) => provider.cancel(handle).await,
+            Self::Atlas(provider) => provider.cancel(handle).await,
             Self::Unavailable(provider) => provider.cancel(handle).await,
         }
     }
@@ -140,7 +199,10 @@ impl UnavailableProvider {
         if is_safe_provider_message(&self.reason) && self.id == self.safe_id() {
             return self.reason.clone();
         }
-        format!("runtime provider `{}` is unavailable", self.safe_id())
+        safe_provider_message(&format!(
+            "runtime provider `{}` is unavailable",
+            self.safe_id()
+        ))
     }
 
     fn unavailable<T>(&self) -> ProviderResultValue<T> {
@@ -179,43 +241,4 @@ impl Provider for UnavailableProvider {
     async fn cancel(&self, _handle: ProviderTaskHandle) -> ProviderResultValue<()> {
         self.unavailable()
     }
-}
-
-fn sanitize_provider_id(id: &str) -> String {
-    let trimmed = id.trim();
-    if is_safe_provider_id(trimmed) && is_safe_provider_message(trimmed) {
-        trimmed.to_owned()
-    } else {
-        "invalid".to_owned()
-    }
-}
-
-fn is_safe_provider_id(value: &str) -> bool {
-    let mut chars = value.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    value.len() <= 64
-        && first.is_ascii_alphanumeric()
-        && value.chars().all(|ch| {
-            ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '-' | '_' | '.')
-        })
-}
-
-fn is_safe_provider_message(value: &str) -> bool {
-    let lower = value.to_ascii_lowercase();
-    !value.contains("://")
-        && !value.contains("/Users/")
-        && !value.contains("\\Users\\")
-        && !value.contains("file://")
-        && !lower.contains("bearer ")
-        && !lower.contains("authorization")
-        && !lower.contains("api_key")
-        && !lower.contains("apikey")
-        && !lower.contains("token")
-        && !lower.contains("secret")
-        && !lower.contains("password")
-        && !lower.contains("signed_url")
-        && !lower.contains("signedurl")
-        && !lower.contains("sk-")
 }

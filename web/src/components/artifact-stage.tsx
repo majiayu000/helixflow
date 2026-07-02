@@ -31,6 +31,20 @@ export function ArtifactStage({ outputs }: ArtifactStageProps) {
             srcDoc={artifact.preview.content}
             title={artifact.title}
           />
+        ) : artifact.preview.kind === 'image' ? (
+          <img
+            alt={artifact.title}
+            className="artifact-media"
+            src={artifact.preview.content}
+            title={artifact.title}
+          />
+        ) : artifact.preview.kind === 'video' ? (
+          <video
+            className="artifact-media"
+            controls
+            src={artifact.preview.content}
+            title={artifact.title}
+          />
         ) : (
           <pre className="artifact-text-preview">{artifact.preview.content}</pre>
         )}

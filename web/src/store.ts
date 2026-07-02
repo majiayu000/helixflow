@@ -14,6 +14,7 @@ import {
   restoreWorkspaceVersion,
   saveWorkspaceLayout,
   selectOutput as selectOutputRequest,
+  selectWorkspaceProvider,
   sendWorkspaceMessage,
   undoWorkspaceVersion,
   type ConnectionStatus,
@@ -53,6 +54,7 @@ type WorkbenchStore = {
   restoreVersion: (versionId: string) => Promise<void>;
   saveLayout: (positions: LayoutPositionUpdate[]) => Promise<void>;
   selectOutput: (outputId: string) => Promise<void>;
+  selectProvider: (providerId: string) => Promise<void>;
   confirmRun: (runId: string) => Promise<void>;
   holdRun: (runId: string) => Promise<void>;
   createManualProposal: (input: ManualProposalInput) => Promise<void>;
@@ -286,6 +288,22 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => ({
       set({ state: next, status: 'ready', error: null });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'output select request failed';
+      set((current) => ({
+        state: current.state ? appendSystemError(current.state, message) : current.state,
+      }));
+    }
+  },
+  selectProvider: async (providerId) => {
+    const state = get().state;
+    if (!state) {
+      return;
+    }
+
+    try {
+      const next = await selectWorkspaceProvider(state.workspace.id, providerId);
+      set({ state: next, status: 'ready', error: null });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'workspace provider request failed';
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
       }));

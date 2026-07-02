@@ -80,13 +80,19 @@ pub(crate) async fn post_workspace_message(
         })
         .await
         .map_err(ApiError::store)?;
+    let workspace = state
+        .store
+        .workspace(&workspace_id)
+        .await
+        .map_err(ApiError::store)?;
+    let provider_catalog = state.provider_catalog_for_workspace(&workspace);
     let run_context = debug_run_context(&state, &workspace_id, turn_mode).await?;
     let request = AgentSessionRequest {
         workspace_id: workspace_id.clone(),
         base_version_id: input.base_version_id,
         user_message: input.user_message,
         graph: input.graph,
-        provider_catalog: state.provider_catalog.clone(),
+        provider_catalog,
         run_context,
         sessions_dir: state.agent_sessions_dir.clone(),
         mode: turn_mode,
@@ -606,7 +612,7 @@ mod tests {
             .create_run_step(NewRunStep {
                 run_id: &run.id,
                 node_id: "video",
-                node_type: "video.mock.text_to_video",
+                node_type: "video.text_to_video",
                 provider: Some("mock"),
                 state: "running",
             })

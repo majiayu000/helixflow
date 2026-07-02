@@ -349,7 +349,7 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
             "llm.prompt_writer",
             "Prompt Writer",
             "text",
-            Some("mock"),
+            None,
             Some("prompt_writer"),
             "Drafts a generation prompt from source text.",
             vec![port("text", PortType::Text, true)],
@@ -363,12 +363,12 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
             ),
         ),
         node(
-            "image.mock.generate",
-            "Mock Image",
+            "image.generate",
+            "Generate Image",
             "image",
-            Some("mock"),
+            None,
             Some("image_generate"),
-            "Generates a deterministic placeholder image artifact.",
+            "Generates an image artifact from a prompt.",
             vec![port("prompt", PortType::Text, true)],
             vec![port("image", PortType::Image, true)],
             schema(
@@ -384,12 +384,12 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
             ),
         ),
         node(
-            "video.mock.text_to_video",
-            "Mock Text To Video",
+            "video.text_to_video",
+            "Text To Video",
             "video",
-            Some("mock"),
+            None,
             Some("text_to_video"),
-            "Generates a deterministic placeholder video artifact.",
+            "Generates a video artifact from a prompt.",
             vec![port("prompt", PortType::Text, true)],
             vec![port("video", PortType::Video, true)],
             schema(
@@ -440,12 +440,10 @@ fn node(
         inputs,
         outputs,
         params_schema,
-        estimated_cost: provider
-            .zip(capability)
-            .map(|(provider, capability)| EstimatedCostRef {
-                unit: "call".to_owned(),
-                catalog_key: format!("{provider}.{capability}"),
-            }),
+        estimated_cost: capability.map(|capability| EstimatedCostRef {
+            unit: "call".to_owned(),
+            catalog_key: capability.to_owned(),
+        }),
     }
 }
 
@@ -482,7 +480,7 @@ mod tests {
     fn serializes_node_definition_boundary() {
         let definition = NodeDefinition {
             node_type: "mock.image".to_string(),
-            title: "Mock Image".to_string(),
+            title: "Generate Image".to_string(),
             category: "mock".to_string(),
             provider: Some("mock".to_string()),
             capability: Some("image_generate".to_string()),
@@ -507,7 +505,7 @@ mod tests {
         let encoded = serde_json::to_value(&definition).expect("serialize node definition");
 
         assert_eq!(encoded["type"], "mock.image");
-        assert_eq!(encoded["title"], "Mock Image");
+        assert_eq!(encoded["title"], "Generate Image");
         assert_eq!(encoded["category"], "mock");
         assert_eq!(encoded["provider"], "mock");
     }
@@ -532,7 +530,7 @@ mod tests {
 
         registry
             .validate_node_params(
-                "video.mock.text_to_video",
+                "video.text_to_video",
                 &json!({
                     "prompt": "A clean product ad",
                     "duration_sec": 5,
@@ -543,14 +541,14 @@ mod tests {
 
         assert!(matches!(
             registry.validate_node_params(
-                "video.mock.text_to_video",
+                "video.text_to_video",
                 &json!({ "prompt": "missing duration", "aspect_ratio": "9:16" })
             ),
             Err(RegistryError::MissingRequiredParam { .. })
         ));
         assert!(matches!(
             registry.validate_node_params(
-                "video.mock.text_to_video",
+                "video.text_to_video",
                 &json!({
                     "prompt": "bad duration",
                     "duration_sec": 30,
@@ -571,7 +569,25 @@ mod tests {
             catalog
                 .nodes
                 .iter()
-                .any(|node| node.node_type == "video.mock.text_to_video")
+                .any(|node| node.node_type == "video.text_to_video")
         );
+    }
+
+    #[test]
+    fn executable_nodes_are_provider_neutral() {
+        let registry = NodeRegistry::builtin();
+
+        for node_type in ["llm.prompt_writer", "image.generate", "video.text_to_video"] {
+            let definition = registry.definition(node_type).expect("definition");
+            assert_eq!(definition.provider, None);
+            assert!(!definition.title.contains("Mock"));
+            assert_eq!(
+                definition
+                    .estimated_cost
+                    .as_ref()
+                    .map(|cost| cost.catalog_key.as_str()),
+                definition.capability.as_deref()
+            );
+        }
     }
 }

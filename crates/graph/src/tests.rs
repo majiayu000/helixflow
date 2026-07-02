@@ -32,7 +32,7 @@ fn sample_graph() -> WorkflowGraph {
             (
                 "video".to_string(),
                 GraphNode {
-                    node_type: "video.mock.text_to_video".to_string(),
+                    node_type: "video.text_to_video".to_string(),
                     title: "Video".to_string(),
                     params: json!({
                         "prompt": "clean product shot",
@@ -227,13 +227,14 @@ fn superseded_base_versions_return_conflict() {
 #[test]
 fn compiles_execution_plan_in_topological_order() {
     let plan = service()
-        .compile_plan(&sample_graph(), "ver_1")
+        .compile_plan(&sample_graph(), "ver_1", "atlas")
         .expect("compile plan");
 
     assert_eq!(plan.schema_version, 1);
     assert_eq!(plan.version_id, "ver_1");
     assert_eq!(plan.steps[0].node_id, "input");
-    assert_eq!(plan.steps[2].provider.as_deref(), Some("mock"));
+    assert_eq!(plan.steps[1].provider.as_deref(), Some("atlas"));
+    assert_eq!(plan.steps[2].provider.as_deref(), Some("atlas"));
     assert_eq!(plan.steps[2].capability.as_deref(), Some("text_to_video"));
 }
 

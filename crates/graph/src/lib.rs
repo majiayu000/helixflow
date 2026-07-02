@@ -267,6 +267,7 @@ impl GraphService {
         &self,
         graph: &WorkflowGraph,
         version_id: &str,
+        provider_id: &str,
     ) -> GraphResult<ExecutionPlan> {
         self.validate_graph(graph)?;
         let mut steps = Vec::new();
@@ -287,7 +288,10 @@ impl GraphService {
             steps.push(ExecutionStep {
                 node_id,
                 node_type: node.node_type.clone(),
-                provider: definition.provider.clone(),
+                provider: definition
+                    .capability
+                    .as_ref()
+                    .map(|_| provider_id.to_owned()),
                 capability: definition.capability.clone(),
                 inputs,
                 params: node.params.clone(),

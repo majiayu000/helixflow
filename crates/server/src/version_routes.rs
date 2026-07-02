@@ -601,7 +601,7 @@ mod tests {
                 (
                     "video".to_owned(),
                     GraphNode {
-                        node_type: "video.mock.text_to_video".to_owned(),
+                        node_type: "video.text_to_video".to_owned(),
                         title: "Video render".to_owned(),
                         params,
                         pos: [240.0, 0.0],

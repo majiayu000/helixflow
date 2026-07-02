@@ -5,8 +5,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use helixflow_gateway::{
-    CostEstimate, MockProvider, Provider, ProviderCatalog, ProviderError, ProviderHealth,
-    ProviderRequest, ProviderResult, ProviderResultValue, ProviderTaskHandle,
+    ArtifactContent, ArtifactKind, ArtifactPayload, CostEstimate, MockProvider, Provider,
+    ProviderCatalog, ProviderError, ProviderHealth, ProviderRequest, ProviderResult,
+    ProviderResultValue, ProviderTaskHandle,
 };
 use helixflow_graph::{GraphEdge, GraphNode, WorkflowGraph};
 use helixflow_store::{NewVersion, Store, VersionSource};
@@ -67,7 +68,7 @@ fn executable_graph() -> WorkflowGraph {
             (
                 "video".to_owned(),
                 GraphNode {
-                    node_type: "video.mock.text_to_video".to_owned(),
+                    node_type: "video.text_to_video".to_owned(),
                     title: "Video".to_owned(),
                     params: json!({
                         "prompt": "launch teaser",
@@ -133,6 +134,7 @@ async fn run_service_can_share_an_injected_event_bus() {
             version_id,
             group_id: None,
             label: "Shared bus test".to_owned(),
+            provider: "mock".to_owned(),
             graph: executable_graph(),
         })
         .await
@@ -164,6 +166,7 @@ async fn manual_run_persists_steps_events_and_artifacts() {
             version_id,
             group_id: None,
             label: "Manual test".to_owned(),
+            provider: "mock".to_owned(),
             graph: executable_graph(),
         })
         .await
@@ -195,6 +198,63 @@ async fn manual_run_persists_steps_events_and_artifacts() {
 }
 
 #[tokio::test]
+async fn provider_artifact_content_persists_relative_file_path() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let payload = ArtifactPayload {
+        kind: ArtifactKind::Image,
+        mime: "image/png".to_owned(),
+        storage_uri: String::new(),
+        content: ArtifactContent::InlineBytes {
+            bytes: vec![137, 80, 78, 71],
+            ext_hint: Some("png".to_owned()),
+        },
+        width: Some(1),
+        height: Some(1),
+        duration_ms: None,
+        meta: json!({}),
+    };
+
+    let relative = persist_provider_artifact(dir.path(), "run_1", "step_1", "image", &payload)
+        .await
+        .expect("persist artifact");
+
+    assert!(relative.starts_with("artifacts/run_1/"));
+    assert!(!relative.starts_with("http"));
+    assert_eq!(
+        tokio::fs::read(dir.path().join(&relative))
+            .await
+            .expect("read artifact"),
+        vec![137, 80, 78, 71],
+    );
+}
+
+#[tokio::test]
+async fn provider_artifact_remote_url_requires_https() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let payload = ArtifactPayload {
+        kind: ArtifactKind::Image,
+        mime: "image/png".to_owned(),
+        storage_uri: String::new(),
+        content: ArtifactContent::RemoteUrl {
+            url: "http://127.0.0.1/image.png".to_owned(),
+        },
+        width: Some(1),
+        height: Some(1),
+        duration_ms: None,
+        meta: json!({}),
+    };
+
+    let err = persist_provider_artifact(dir.path(), "run_1", "step_1", "image", &payload)
+        .await
+        .expect_err("reject non-https remote artifact");
+
+    assert!(
+        err.to_string()
+            .contains("remote artifact URL must use https")
+    );
+}
+
+#[tokio::test]
 async fn interrupt_skips_remaining_steps() {
     let (store, _dir) = open_temp_store().await;
     let (workspace_id, version_id) = workspace_version(&store).await;
@@ -210,6 +270,7 @@ async fn interrupt_skips_remaining_steps() {
                 version_id,
                 group_id: None,
                 label: "Interrupt test".to_owned(),
+                provider: "mock".to_owned(),
                 graph: executable_graph(),
             })
             .await
@@ -279,6 +340,7 @@ async fn failed_step_skips_downstream_steps() {
             version_id,
             group_id: None,
             label: "Failure test".to_owned(),
+            provider: "mock".to_owned(),
             graph: executable_graph(),
         })
         .await
@@ -326,6 +388,7 @@ async fn agent_requested_run_waits_for_confirmation_and_records_costs() {
             version_id,
             group_id: None,
             label: "Agent requested run".to_owned(),
+            provider: "mock".to_owned(),
             graph: executable_graph(),
         })
         .await
@@ -379,6 +442,7 @@ async fn holding_pending_run_marks_interrupted_without_invoking_provider() {
             version_id,
             group_id: None,
             label: "Hold requested run".to_owned(),
+            provider: "mock".to_owned(),
             graph: executable_graph(),
         })
         .await
@@ -417,6 +481,7 @@ async fn concurrent_confirm_does_not_double_invoke_provider() {
             version_id,
             group_id: None,
             label: "Concurrent confirmation".to_owned(),
+            provider: "mock".to_owned(),
             graph: executable_graph(),
         })
         .await
@@ -455,6 +520,7 @@ async fn failed_partial_run_still_records_actual_costs() {
             version_id,
             group_id: None,
             label: "Partial failure".to_owned(),
+            provider: "mock".to_owned(),
             graph: executable_graph(),
         })
         .await
@@ -485,6 +551,7 @@ async fn sweep_plan_produces_multiple_outputs_and_selected_recommendation() {
             workspace_id,
             version_id,
             label: "Prompt sweep".to_owned(),
+            provider: "mock".to_owned(),
             variants: vec![
                 SweepVariant {
                     label: "cinematic".to_owned(),
@@ -539,6 +606,7 @@ async fn interrupted_sweep_marks_remaining_runs_interrupted_without_recommendati
             workspace_id,
             version_id,
             label: "Prompt sweep".to_owned(),
+            provider: "mock".to_owned(),
             variants: vec![
                 SweepVariant {
                     label: "one".to_owned(),
@@ -592,6 +660,7 @@ async fn invalid_sweep_confirmation_does_not_invoke_provider() {
             workspace_id,
             version_id,
             label: "Prompt sweep".to_owned(),
+            provider: "mock".to_owned(),
             variants: vec![
                 SweepVariant {
                     label: "one".to_owned(),

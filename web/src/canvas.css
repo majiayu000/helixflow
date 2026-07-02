@@ -56,7 +56,8 @@
 }
 
 .artifact-frame,
-.artifact-text-preview {
+.artifact-text-preview,
+.artifact-media {
   width: 100%;
   height: 100%;
   border: 1px solid var(--border-2);
@@ -67,6 +68,11 @@
 
 .artifact-frame {
   display: block;
+}
+
+.artifact-media {
+  display: block;
+  object-fit: contain;
 }
 
 .artifact-text-preview {

@@ -25,22 +25,14 @@ async fn queue_route_with_unavailable_provider_fails_without_mock_outputs() {
         .await
         .expect_err("unavailable provider should reject route run");
 
-    assert_eq!(err.status, StatusCode::BAD_GATEWAY);
+    assert_eq!(err.status, StatusCode::CONFLICT);
     assert!(err.message.contains("openai"));
     let run = state
         .store
         .latest_workspace_run(&workspace_id)
         .await
-        .expect("latest run")
-        .expect("failed run");
-    assert_eq!(run.status, "failed");
-    assert!(
-        run.error_json
-            .as_deref()
-            .is_some_and(|error| error.contains("openai"))
-    );
-    let artifacts = state.store.run_artifacts(&run.id).await.expect("artifacts");
-    assert!(artifacts.is_empty());
+        .expect("workspace run lookup");
+    assert!(run.is_none());
 }
 
 async fn state_with_workspace_provider(
@@ -96,7 +88,7 @@ fn executable_graph() -> WorkflowGraph {
             (
                 "video".to_owned(),
                 GraphNode {
-                    node_type: "video.mock.text_to_video".to_owned(),
+                    node_type: "video.text_to_video".to_owned(),
                     title: "Video render".to_owned(),
                     params: json!({
                         "prompt": "clean product shot",

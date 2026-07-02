@@ -50,6 +50,7 @@ export function App({ initialState, workspaceId }: AppProps) {
   const restoreVersion = useWorkbenchStore((store) => store.restoreVersion);
   const saveLayout = useWorkbenchStore((store) => store.saveLayout);
   const selectOutput = useWorkbenchStore((store) => store.selectOutput);
+  const selectProvider = useWorkbenchStore((store) => store.selectProvider);
   const activeState = initialState ?? state;
 
   const refreshWorkspaces = useCallback(async () => {
@@ -97,7 +98,7 @@ export function App({ initialState, workspaceId }: AppProps) {
   const hasProviderNodes = activeState.graph.nodes.some((node) => Boolean(node.provider));
   const providerReady = activeState.providers.runtimeProviders.some(
     (provider) =>
-      provider.id === activeState.providers.defaultProvider &&
+      provider.id === activeState.providers.selectedProvider &&
       provider.enabled &&
       provider.status === 'healthy',
   );
@@ -166,6 +167,7 @@ export function App({ initialState, workspaceId }: AppProps) {
         onExport={exportCurrentWorkflow}
         onHistory={() => setHistoryOpen((open) => !open)}
         onNewWorkspace={createWorkspace}
+        onProviderSelect={(providerId) => void runAction(() => selectProvider(providerId))}
         onQueue={() => {
           if (activeRun) {
             void interruptRun();
