@@ -14,9 +14,9 @@ use crate::run_routes::queue_workspace_run;
 use crate::test_support::FailingWorkbenchAgent;
 
 #[tokio::test]
-async fn queue_route_with_unavailable_provider_fails_without_mock_outputs() {
+async fn queue_route_with_unavailable_fal_provider_fails_without_mock_outputs() {
     let (state, workspace_id, _version_id, _dir) = state_with_workspace_provider(
-        RuntimeProvider::unavailable("openai", "runtime provider `openai` is not configured"),
+        RuntimeProvider::unavailable("fal", "FAL_KEY is not configured"),
     )
     .await;
     write_graph(&state, &executable_graph()).await;
@@ -26,7 +26,7 @@ async fn queue_route_with_unavailable_provider_fails_without_mock_outputs() {
         .expect_err("unavailable provider should reject route run");
 
     assert_eq!(err.status, StatusCode::CONFLICT);
-    assert!(err.message.contains("openai"));
+    assert!(err.message.contains("fal"));
     let run = state
         .store
         .latest_workspace_run(&workspace_id)
@@ -86,14 +86,13 @@ fn executable_graph() -> WorkflowGraph {
         schema_version: 1,
         nodes: BTreeMap::from([
             (
-                "video".to_owned(),
+                "image".to_owned(),
                 GraphNode {
-                    node_type: "video.text_to_video".to_owned(),
-                    title: "Video render".to_owned(),
+                    node_type: "image.generate".to_owned(),
+                    title: "Image render".to_owned(),
                     params: json!({
                         "prompt": "clean product shot",
-                        "duration_sec": 4,
-                        "aspect_ratio": "9:16"
+                        "aspect_ratio": "1:1"
                     }),
                     pos: [0.0, 0.0],
                 },
@@ -109,7 +108,7 @@ fn executable_graph() -> WorkflowGraph {
             ),
         ]),
         edges: vec![GraphEdge {
-            from: ["video".to_owned(), "video".to_owned()],
+            from: ["image".to_owned(), "image".to_owned()],
             to: ["save".to_owned(), "artifact".to_owned()],
             edge_type: "artifact".to_owned(),
         }],

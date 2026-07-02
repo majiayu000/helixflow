@@ -6,10 +6,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 mod atlas;
+mod fal;
 mod registry;
 mod runtime_provider;
 
 pub use atlas::{ApiProviderConfig, AtlasProvider};
+pub use fal::{FalProvider, FalProviderConfig};
 pub use registry::ProviderRegistry;
 pub use runtime_provider::{RuntimeProvider, UnavailableProvider};
 

@@ -24,7 +24,11 @@ impl ProviderRegistry {
             .unwrap_or_else(|| "mock".to_owned());
         Self::new(
             default_provider,
-            vec![RuntimeProvider::mock(), RuntimeProvider::atlas_from_env()],
+            vec![
+                RuntimeProvider::mock(),
+                RuntimeProvider::atlas_from_env(),
+                RuntimeProvider::fal_from_env(),
+            ],
         )
     }
 
