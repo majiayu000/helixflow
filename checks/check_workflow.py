@@ -131,6 +131,23 @@ REQUIRED_TOKENS = {
     ],
 }
 
+LEGACY_SPEC_PACKET_DIRS = {
+    "GH21",
+    "GH23",
+    "GH24",
+    "GH25",
+    "GH26",
+    "GH27",
+    "GH28",
+    "GH40",
+    "GH42",
+    "GH44",
+    "GH45",
+    "GH46",
+    "GH47",
+    "GH48",
+}
+
 
 def issue_token_display(issue_number: str) -> str:
     return f"GH-{issue_number} or GH{issue_number} or #{issue_number} or issues/{issue_number}"
@@ -249,23 +266,6 @@ def discover_changed_spec_packet_dirs(repo: Path, base_ref: str | None) -> list[
     return sorted(spec_dirs, key=spec_packet_sort_key)
 
 
-def is_new_format_spec_packet(spec_dir: Path) -> bool:
-    marker_files = ["product.md", "tech.md", "tasks.md"]
-    markers = [
-        "## Linked Issue",
-        "## Implementation Tasks",
-        "## 实现任务",
-    ]
-    for name in marker_files:
-        path = spec_dir / name
-        if not path.is_file():
-            continue
-        text = read_text(path)
-        if any(marker in text for marker in markers):
-            return True
-    return False
-
-
 def select_spec_packet_dirs_for_validation(
     repo: Path,
     raw_spec_dirs: list[str],
@@ -285,7 +285,7 @@ def select_spec_packet_dirs_for_validation(
         if spec_dir in seen:
             continue
         seen.add(spec_dir)
-        strict = spec_dir in explicit_set or (all_specs and is_new_format_spec_packet(spec_dir))
+        strict = spec_dir in explicit_set or (all_specs and spec_dir.name not in LEGACY_SPEC_PACKET_DIRS)
         unique_spec_dirs.append((spec_dir, strict))
 
     if all_specs:
@@ -362,7 +362,7 @@ def validate_table_tasks(path: Path, text: str, issue_number: str | None) -> tup
                 "Dependencies, Task, Done When, and Verify columns"
             )
             continue
-        for index, name in [(1, "Owner"), (4, "Done when"), (5, "Verify")]:
+        for index, name in [(1, "Owner"), (3, "Task"), (4, "Done when"), (5, "Verify")]:
             if not cells[index].strip():
                 errors.append(f"{path}:{line_number}: task {task_id} missing {name}")
     return ids, errors
