@@ -39,7 +39,7 @@ GH-59
 5. 手动批量编辑生成的版本可通过既有 undo(`POST /versions/undo`)与 restore(`POST /versions/{version_id}/restore`)恢复到编辑前状态,恢复版本 source=restore。
 6. agent 提案路径行为完全不变:agent 产出的 proposal 仍进入 pending 状态,须经 apply/dismiss;agent 无法通过任何路径绕过 review 直接成版。
 7. 空 op 数组、空 `baseVersionId`、未知字段的请求返回 HTTP 400,不产生任何写入。
-8. `CanvasOpsRequest`/`CanvasOp` 删除后,agent 会话的输入上下文文件(ctx/canvas_state.json、ctx/canvas_ops.json)内容与生成行为不变。
+8. `CanvasOpsRequest`/`CanvasOp`/`CanvasLayoutMove` 删除后,agent 会话的输入上下文文件(ctx/canvas_state.json、ctx/canvas_ops.json)内容与生成行为不变。
 9. 既有 layout 保存端点(`POST /versions/layout`)行为不变。
 
 ## 验收标准
@@ -47,7 +47,7 @@ GH-59
 - [ ] 一次请求提交多个 op(含 add_node/remove_node/set_param/add_edge/remove_edge/move_node),成功生成单个 source=manual 版本;校验失败整体拒绝并返回含 `opIndex` 的结构化错误。
 - [ ] 手动批量编辑直接产生新版本,无 pending proposal;版本历史可 undo/restore 恢复。
 - [ ] `POST /api/workspaces/{workspace_id}/proposals/manual` 端点及 `manual_proposal_routes.rs` 删除,前端手动编辑面板走新端点且 `web` 测试通过。
-- [ ] `CanvasOpsRequest`/`CanvasOp` 死代码删除,`rg CanvasOpsRequest crates web` 无任何引用(含测试;限定实现路径,specs/ 历史规范文档中的文字提及不计)。
+- [ ] `CanvasOpsRequest`/`CanvasOp`/`CanvasLayoutMove` 死代码删除,`rg CanvasOpsRequest crates web`、`rg "CanvasOp\\b" crates web`、`rg CanvasLayoutMove crates web` 无任何引用(含测试;限定实现路径,specs/ 历史规范文档中的文字提及不计)。
 - [ ] `cargo test --workspace` 与 `cd web && npm test` 全部通过。
 
 ## 边界情况
@@ -56,7 +56,7 @@ GH-59
 - 同一请求内 op 之间存在顺序依赖(先 add_node 再 add_edge 指向它):按数组顺序依次应用,依赖成立即合法。
 - 同一请求内 op 互相冲突(remove_node 后又对该节点 set_param):应用到该 op 时失败,整体拒绝并返回该 op 的 `opIndex`。
 - `move_node` 指向不存在的节点、位置含 NaN/Infinity:400 拒绝。
-- `set_param` 对同一节点同一 key 重复设置:按 `ProposalOp` 既有语义处理(`SetParamConflict` 视为图级校验错误,整体拒绝)。
+- `set_param` 对同一节点同一 key 重复设置:第二个 `set_param` 属于应用到该 op 时失败,整体拒绝并返回该 op 的 `opIndex`;只有全部 op 应用完成后才发现的整体图问题使用 `opIndex: null`。
 - 请求成功但客户端超时未收到响应:客户端用旧 `baseVersionId` 重试会收到 409,刷新工作区状态即可发现版本已前进,不会重复成版。
 
 ## 发布说明
