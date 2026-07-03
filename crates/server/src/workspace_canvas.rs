@@ -18,31 +18,38 @@ pub(crate) async fn workspace_canvas(
         .workspace(&workspace_id)
         .await
         .map_err(ApiError::store)?;
-    let graph = match workspace.cur_version_id.as_deref() {
+    let (version_id, seq, graph) = match workspace.cur_version_id.as_deref() {
         Some(version_id) => {
             let version = state
                 .store
                 .version(version_id)
                 .await
                 .map_err(ApiError::store)?;
-            read_graph_file(&state.data_dir, &version.graph_path).await?
+            let graph = read_graph_file(&state.data_dir, &version.graph_path).await?;
+            (version.id, version.idx, graph)
         }
-        None => blank_graph(),
+        None => (String::new(), 0, blank_graph()),
     };
 
     Ok(Json(canvas_document_payload(
         &workspace.id,
-        workspace.cur_version_id.as_deref().unwrap_or_default(),
+        &version_id,
+        seq,
         &graph,
     )))
 }
 
-fn canvas_document_payload(workspace_id: &str, version_id: &str, graph: &WorkflowGraph) -> Value {
+fn canvas_document_payload(
+    workspace_id: &str,
+    version_id: &str,
+    seq: i64,
+    graph: &WorkflowGraph,
+) -> Value {
     json!({
         "schemaVersion": 1,
         "workspaceId": workspace_id,
         "versionId": version_id,
-        "seq": 0,
+        "seq": seq,
         "nodes": graph.nodes.iter().map(|(id, node)| {
             json!({
                 "id": id,
@@ -111,7 +118,7 @@ mod tests {
 
         assert_eq!(body["workspaceId"], workspace_id);
         assert_eq!(body["schemaVersion"], 1);
-        assert_eq!(body["seq"], 0);
+        assert_eq!(body["seq"], 1);
         assert_eq!(body["nodes"][0]["id"], "text");
         assert_eq!(body["nodes"][0]["nodeType"], "input.text");
         assert_eq!(body["nodes"][0]["position"]["x"], 10.0);

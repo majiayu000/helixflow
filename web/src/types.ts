@@ -420,6 +420,7 @@ export type CanvasMessageContext = z.infer<typeof CanvasMessageContextSchema>;
 export type GraphState = WorkbenchState['graph'];
 export type ManualProposalInput = {
   baseVersionId: string;
+  idempotencyKey?: string;
   label?: string;
   ops: Array<
     | {
@@ -431,7 +432,7 @@ export type ManualProposalInput = {
         pos: [number, number];
       }
     | { op: 'remove_node'; id: string }
-    | { op: 'set_param'; id: string; key: string; value: unknown }
+    | { op: 'set_param'; id: string; key: string; prev?: unknown; value: unknown }
     | { op: 'add_edge'; from: [string, string]; to: [string, string]; edge_type: string }
     | { op: 'remove_edge'; from: [string, string]; to: [string, string]; edge_type: string }
     | { op: 'move_node'; id: string; pos: [number, number] }
@@ -440,6 +441,7 @@ export type ManualProposalInput = {
 export type ManualEditOp = ManualProposalInput['ops'][number];
 export type ManualEditSession = {
   baseVersionId: string;
+  idempotencyKey: string;
   source: 'user';
   ops: ManualEditOp[];
   startedAt: string;

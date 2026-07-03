@@ -19,6 +19,7 @@ import {
   type WorkspaceMessageResponse,
   type WorkbenchState,
 } from './types';
+import { manualProposalWithIdempotency } from './workbench-edit-session';
 
 export type ConnectionStatus = 'connecting' | 'live' | 'offline';
 
@@ -330,12 +331,13 @@ export async function createManualWorkspaceProposal(
   workspaceId: string,
   input: ManualProposalInput,
 ): Promise<WorkbenchState> {
+  const payload = manualProposalWithIdempotency(input);
   const response = await fetch(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/versions/ops`,
     {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(input),
+      body: JSON.stringify(payload),
     },
   );
   const body = await response.json();
