@@ -215,12 +215,25 @@ async fn read_comment_store(
             ));
         }
     };
-    serde_json::from_slice(&bytes).map_err(|err| {
+    let store: CanvasCommentStore = serde_json::from_slice(&bytes).map_err(|err| {
         ApiError::server_error(format!(
             "canvas comments `{}` contains invalid JSON: {err}",
             relative.display()
         ))
-    })
+    })?;
+    if store.seq < 0 {
+        return Err(ApiError::server_error(format!(
+            "canvas comments `{}` has a negative seq",
+            relative.display()
+        )));
+    }
+    if store.comments.len() as i64 > store.seq {
+        return Err(ApiError::server_error(format!(
+            "canvas comments `{}` snapshot is ahead of seq",
+            relative.display()
+        )));
+    }
+    Ok(store)
 }
 
 async fn write_comment_store(

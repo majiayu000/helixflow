@@ -1733,6 +1733,102 @@ describe('GraphCanvas navigation', () => {
     expect(markup).toContain('collab-selection');
     expect(markup).toContain('comment-marker');
   });
+
+  it('renders a deterministic canvas-agent story after reload', () => {
+    const storyCanvas: CanvasDocument = {
+      ...canvasDocument(),
+      seq: 12,
+      nodes: [
+        canvasDocument().nodes[0]!,
+        {
+          id: 'canvas_video',
+          nodeType: 'video.text_to_video',
+          title: 'Canvas video',
+          position: { x: 520, y: 180 },
+          size: { width: 280, height: 190 },
+          params: { prompt: 'from canvas source', duration_sec: 4 },
+          runtime: null,
+          metadata: { source: 'test' },
+        },
+      ],
+      edges: [
+        {
+          id: 'edge_canvas_source_video',
+          from: { nodeId: 'canvas_text', port: 'text' },
+          to: { nodeId: 'canvas_video', port: 'prompt' },
+          kind: 'text',
+        },
+      ],
+      comments: [
+        {
+          id: 'comment_story',
+          target: { kind: 'node', nodeId: 'canvas_video' },
+          body: 'Approved result after reload',
+          author: { actorId: 'reviewer', displayName: 'Reviewer' },
+          status: 'open',
+          createdAt: 'unix:10',
+          updatedAt: 'unix:10',
+        },
+      ],
+    };
+    const storyGraph = graphStateFromCanvasDocument(storyCanvas, state.graph);
+    const markup = renderToStaticMarkup(
+      <GraphCanvas
+        graph={state.graph}
+        canvasGraph={storyGraph}
+        comments={storyCanvas.comments}
+        onQueueRun={() => undefined}
+        onSelectOutput={() => undefined}
+        outputs={[
+          {
+            id: 'artifact_story',
+            kind: 'video',
+            title: 'Canvas video result',
+            nodeId: 'canvas_video',
+            storageUri: '/api/outputs/artifact_story/download',
+            selected: true,
+            meta: '1080 x 1920',
+            mime: 'video/mp4',
+            preview: {
+              kind: 'video',
+              content: '/api/artifacts/artifact_story/content',
+              mime: 'video/mp4',
+            },
+          },
+        ]}
+        pendingProposal={null}
+        run={{
+          id: 'run_story',
+          label: 'Reloaded story',
+          status: 'succeeded',
+          steps: [
+            { nodeId: 'canvas_text', title: 'Canvas source', state: 'succeeded', provider: null },
+            {
+              nodeId: 'canvas_video',
+              title: 'Canvas video',
+              state: 'succeeded',
+              provider: 'mock',
+            },
+          ],
+          cost: { estimate: 0, actual: 0, currency: 'USD' },
+        }}
+        versionId="ver_test_1"
+        workspaceId="ws_test"
+      />,
+    );
+
+    expect(markup).toContain('Canvas source');
+    expect(markup).toContain('Canvas video');
+    expect(markup).toContain('Approved result after reload');
+    expect(markup).toContain('comment-marker');
+    expect(markup).toContain('node-artifact--selected');
+    expect(markup).toContain('Run');
+    expect(storyGraph.nodes.find((node) => node.id === 'canvas_video')?.position).toEqual({
+      x: 520,
+      y: 180,
+    });
+    expect(storyGraph.edges[0]?.from.nodeId).toBe('canvas_text');
+  });
 });
 
 describe('GraphCanvas layout editing', () => {
