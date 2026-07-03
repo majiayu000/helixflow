@@ -109,6 +109,46 @@ const GraphStateSchema = z.object({
   ),
 });
 
+const CanvasPositionSchema = z.object({
+  x: z.number(),
+  y: z.number(),
+});
+
+const CanvasNodeSchema = z.object({
+  id: z.string(),
+  nodeType: z.string(),
+  title: z.string(),
+  position: CanvasPositionSchema,
+  params: z.unknown(),
+  runtime: z.unknown().nullable().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional().default({}),
+});
+
+const CanvasEdgeSchema = z.object({
+  id: z.string(),
+  from: z.object({
+    nodeId: z.string(),
+    port: z.string(),
+  }),
+  to: z.object({
+    nodeId: z.string(),
+    port: z.string(),
+  }),
+  kind: z.string(),
+});
+
+export const CanvasDocumentSchema = z.object({
+  schemaVersion: z.number(),
+  workspaceId: z.string(),
+  versionId: z.string(),
+  seq: z.number(),
+  nodes: z.array(CanvasNodeSchema),
+  edges: z.array(CanvasEdgeSchema),
+  comments: z.array(z.unknown()).default([]),
+  runtime: z.record(z.string(), z.unknown()).default({}),
+  metadata: z.record(z.string(), z.unknown()).default({}),
+});
+
 const RuntimeProviderStatusSchema = z.object({
   id: z.string(),
   label: z.string(),
@@ -363,6 +403,7 @@ export const RunEventEnvelopeSchema = z.object({
 });
 
 export type WorkbenchState = z.infer<typeof WorkbenchStateSchema>;
+export type CanvasDocument = z.infer<typeof CanvasDocumentSchema>;
 export type RunEventEnvelope = z.infer<typeof RunEventEnvelopeSchema>;
 export type RunStepState = z.infer<typeof RunStepStateSchema>;
 export type RunStatus = z.infer<typeof RunStatusSchema>;
@@ -376,6 +417,7 @@ export type WorkspaceSummary = z.infer<typeof WorkspaceSummarySchema>;
 export type NodeCatalog = z.infer<typeof NodeCatalogSchema>;
 export type NodeDefinition = z.infer<typeof NodeDefinitionSchema>;
 export type CanvasMessageContext = z.infer<typeof CanvasMessageContextSchema>;
+export type GraphState = WorkbenchState['graph'];
 export type ManualProposalInput = {
   baseVersionId: string;
   label?: string;
@@ -422,6 +464,35 @@ function workflowGraphToGraphState(
       from: { nodeId: edge.from[0], port: edge.from[1] },
       to: { nodeId: edge.to[0], port: edge.to[1] },
       kind: edge.edge_type,
+    })),
+  };
+}
+
+export function graphStateFromCanvasDocument(
+  canvas: CanvasDocument,
+  fallback?: GraphState,
+): GraphState {
+  const fallbackById = new Map((fallback?.nodes ?? []).map((node) => [node.id, node] as const));
+  return {
+    nodes: canvas.nodes.map((node) => {
+      const fallbackNode = fallbackById.get(node.id);
+      return {
+        id: node.id,
+        nodeType: node.nodeType,
+        title: node.title,
+        category: fallbackNode?.category ?? nodeCategory(node.nodeType),
+        status: fallbackNode?.status ?? 'queued',
+        position: node.position,
+        provider: fallbackNode?.provider ?? null,
+        summary: nodeSummary(node.nodeType, node.params),
+        cached: fallbackNode?.cached,
+      };
+    }),
+    edges: canvas.edges.map((edge) => ({
+      id: edge.id,
+      from: edge.from,
+      to: edge.to,
+      kind: edge.kind,
     })),
   };
 }

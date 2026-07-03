@@ -99,6 +99,7 @@ type GraphCanvasProps = {
   workspaceId: string;
   versionId: string;
   graph: WorkbenchState['graph'];
+  canvasGraph?: WorkbenchState['graph'];
   pendingProposal: WorkbenchState['pendingProposal'];
   run: NonNullable<WorkbenchState['run']>;
   workflowGraph?: WorkbenchState['workflowGraph'];
@@ -143,6 +144,7 @@ export function GraphCanvas({
   workspaceId,
   versionId,
   graph,
+  canvasGraph,
   pendingProposal,
   run,
   workflowGraph,
@@ -168,16 +170,20 @@ export function GraphCanvas({
   const drag = useRef<DragState | null>(null);
   const nodeDrag = useRef<NodeDragState | null>(null);
   const suppressNextClick = useRef(false);
-  const drawGraph = pendingProposal?.previewGraph ?? graph;
+  const sourceGraph = canvasGraph ?? graph;
+  const drawGraph = pendingProposal?.previewGraph ?? sourceGraph;
   const activeMode = pendingProposal ? 'review' : mode;
   const connectionDisabled = !onCreateProposal || activeMode === 'review';
   const displayNodes = useMemo(
     () => applyPositionDrafts(drawGraph.nodes, draftPositions),
     [drawGraph.nodes, draftPositions],
   );
-  const baseComparableById = useMemo(() => buildComparableNodeMap(graph.nodes), [graph.nodes]);
+  const baseComparableById = useMemo(
+    () => buildComparableNodeMap(sourceGraph.nodes),
+    [sourceGraph.nodes],
+  );
   const nodeById = useMemo(() => buildNodeMap(displayNodes), [displayNodes]);
-  const baseEdgeIds = useMemo(() => buildEdgeSignatureSet(graph.edges), [graph.edges]);
+  const baseEdgeIds = useMemo(() => buildEdgeSignatureSet(sourceGraph.edges), [sourceGraph.edges]);
   const stepStateByNodeId = useMemo(() => buildRunStepStateMap(run.steps), [run.steps]);
   const definitionByType = useMemo(
     () => new Map((catalog?.nodes ?? []).map((definition) => [definition.type, definition] as const)),
@@ -200,8 +206,8 @@ export function GraphCanvas({
   const selectedIdList = useMemo(() => [...selectedIds], [selectedIds]);
   const nodeCount = displayNodes.length;
   const layoutUpdates = useMemo(
-    () => (pendingProposal ? [] : positionUpdatesFromDrafts(graph.nodes, draftPositions)),
-    [draftPositions, graph.nodes, pendingProposal],
+    () => (pendingProposal ? [] : positionUpdatesFromDrafts(sourceGraph.nodes, draftPositions)),
+    [draftPositions, pendingProposal, sourceGraph.nodes],
   );
   const hasDirtyLayout = layoutUpdates.length > 0;
   const minimapLayout = useMemo(

@@ -29,6 +29,7 @@ mod workbench_message;
 mod workbench_message_canvas;
 mod workbench_message_metadata;
 mod workbench_payload;
+mod workspace_canvas;
 mod workspace_routes;
 mod workspace_state;
 mod workspace_state_run;
@@ -43,6 +44,7 @@ use registry_routes::node_registry_catalog;
 use run_routes::{confirm_run, hold_run, interrupt_active_run, queue_workspace_run};
 use version_routes::{export_workflow_version, restore_workspace_version, undo_workspace_version};
 use workbench_message::post_workspace_message;
+use workspace_canvas::workspace_canvas;
 use workspace_routes::{create_workspace, list_workspaces, set_workspace_provider};
 use workspace_state::workspace_state;
 use ws::ws_handler;
@@ -73,6 +75,10 @@ fn app(state: AppState) -> Router {
             get(list_workspaces).post(create_workspace),
         )
         .route("/api/workspaces/{workspace_id}/state", get(workspace_state))
+        .route(
+            "/api/workspaces/{workspace_id}/canvas",
+            get(workspace_canvas),
+        )
         .route(
             "/api/workspaces/{workspace_id}/provider",
             put(set_workspace_provider),
