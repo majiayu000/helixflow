@@ -10,6 +10,7 @@ mod api_error;
 mod app_state;
 mod artifact_routes;
 mod canvas_collaboration;
+mod canvas_ticket;
 mod graph_files;
 mod layout_routes;
 mod ops_routes;
@@ -31,6 +32,7 @@ mod workbench_message_canvas;
 mod workbench_message_metadata;
 mod workbench_payload;
 mod workspace_canvas;
+mod workspace_events;
 mod workspace_routes;
 mod workspace_state;
 mod workspace_state_run;
@@ -39,6 +41,7 @@ mod ws;
 use app_state::AppState;
 use artifact_routes::{artifact_content, download_output, preview_output, select_output};
 use canvas_collaboration::{apply_canvas_comment_op, update_canvas_presence};
+use canvas_ticket::create_canvas_ticket;
 use layout_routes::save_workspace_layout;
 use ops_routes::apply_workspace_ops;
 use proposal_routes::{apply_workspace_proposal, dismiss_workspace_proposal};
@@ -47,6 +50,7 @@ use run_routes::{confirm_run, hold_run, interrupt_active_run, queue_workspace_ru
 use version_routes::{export_workflow_version, restore_workspace_version, undo_workspace_version};
 use workbench_message::post_workspace_message;
 use workspace_canvas::workspace_canvas;
+use workspace_events::workspace_events;
 use workspace_routes::{create_workspace, list_workspaces, set_workspace_provider};
 use workspace_state::workspace_state;
 use ws::ws_handler;
@@ -88,6 +92,14 @@ fn app(state: AppState) -> Router {
         .route(
             "/api/workspaces/{workspace_id}/canvas/presence",
             post(update_canvas_presence),
+        )
+        .route(
+            "/api/workspaces/{workspace_id}/events",
+            get(workspace_events),
+        )
+        .route(
+            "/api/canvases/{canvas_id}/ticket",
+            post(create_canvas_ticket),
         )
         .route(
             "/api/workspaces/{workspace_id}/provider",

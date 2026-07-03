@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useWorkbenchStore } from './store';
+import { jsonResponse, runEvent, waitUntil } from './test-utils';
 import type { WorkbenchState } from './types';
 
 describe('background run state reconciliation', () => {
@@ -122,17 +123,6 @@ function stateWithRun(
   };
 }
 
-function runEvent(runId: string, seq: number, ev: string) {
-  return {
-    workspace_id: 'ws_test',
-    run_id: runId,
-    seq,
-    server_time: '2026-07-02T00:00:01Z',
-    ev,
-    data: {},
-  };
-}
-
 function mockSnapshotFetch(nextState: WorkbenchState) {
   vi.stubGlobal(
     'fetch',
@@ -169,21 +159,4 @@ function canvasForState(nextState: WorkbenchState) {
     runtime: {},
     metadata: { source: 'test' },
   };
-}
-
-function jsonResponse(body: unknown): Response {
-  return new Response(JSON.stringify(body), {
-    status: 200,
-    headers: { 'content-type': 'application/json' },
-  });
-}
-
-async function waitUntil(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (predicate()) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-  throw new Error('condition was not met');
 }

@@ -1,8 +1,10 @@
 import {
   CanvasDocumentSchema,
   CanvasPresenceSchema,
+  CanvasTicketResponseSchema,
   RunConfirmationResponseSchema,
   RunEventEnvelopeSchema,
+  WorkspaceEventsSchema,
   WorkflowGraphSchema,
   WorkspaceSummarySchema,
   WorkspaceMessageResponseSchema,
@@ -30,7 +32,10 @@ type EventHandlers = {
   onEvent: (event: RunEventEnvelope) => void;
   onPresence?: (presence: CanvasPresence) => void;
   onStatus: (status: ConnectionStatus) => void;
+  getLastSeq?: () => number;
 };
+
+const RECONNECT_DELAY_MS = 1000;
 
 export async function fetchWorkspaceState(workspaceId: string): Promise<WorkbenchState> {
   const response = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/state`);
@@ -48,6 +53,40 @@ export async function fetchWorkspaceCanvas(workspaceId: string): Promise<CanvasD
   }
 
   return CanvasDocumentSchema.parse(await response.json());
+}
+
+export async function fetchWorkspaceEvents(
+  workspaceId: string,
+  afterSeq: number,
+): Promise<RunEventEnvelope[]> {
+  const safeAfterSeq = Number.isFinite(afterSeq) ? Math.max(0, Math.trunc(afterSeq)) : 0;
+  const response = await fetch(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/events?afterSeq=${safeAfterSeq}`,
+  );
+  if (!response.ok) {
+    throw new Error(`workspace events request failed: ${response.status}`);
+  }
+
+  return WorkspaceEventsSchema.parse(await response.json()).events;
+}
+
+export async function requestCanvasTicket(workspaceId: string): Promise<string | null> {
+  const response = await fetch(`/api/canvases/${encodeURIComponent(workspaceId)}/ticket`, {
+    method: 'POST',
+  });
+  const body = await response.json();
+  if (!response.ok) {
+    const message =
+      body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+        ? body.error
+        : `canvas ticket request failed: ${response.status}`;
+    throw new Error(message);
+  }
+  const parsed = CanvasTicketResponseSchema.parse(body);
+  if (parsed.mode === 'required' && !parsed.ticket) {
+    throw new Error('canvas ticket response did not include a ticket');
+  }
+  return parsed.ticket ?? null;
 }
 
 export async function submitCanvasCommentOp(
@@ -425,39 +464,132 @@ export function connectWorkspaceEvents(
   workspaceId: string,
   handlers: EventHandlers,
 ): () => void {
+  let closed = false;
+  let socket: WebSocket | null = null;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let catchup: Promise<void> | null = null;
+  let eventQueue: Promise<void> = Promise.resolve();
+  const lastSeq = () => handlers.getLastSeq?.() ?? 0;
+
+  const fetchMissingEvents = () => {
+    if (!catchup) {
+      catchup = fetchWorkspaceEvents(workspaceId, lastSeq())
+        .then((events) => {
+          for (const event of events.sort((left, right) => left.seq - right.seq)) {
+            if (event.seq > lastSeq()) {
+              handlers.onEvent(event);
+            }
+          }
+        })
+        .finally(() => {
+          catchup = null;
+        });
+    }
+    return catchup;
+  };
+
+  const scheduleReconnect = () => {
+    if (closed || reconnectTimer) return;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      void connect();
+    }, RECONNECT_DELAY_MS);
+  };
+
+  const handleEvent = async (event: RunEventEnvelope) => {
+    if (event.seq <= lastSeq()) return;
+    if (event.seq > lastSeq() + 1) {
+      try {
+        await fetchMissingEvents();
+      } catch {
+        handlers.onStatus('offline');
+        socket?.close();
+        return;
+      }
+      if (event.seq <= lastSeq()) return;
+      if (event.seq > lastSeq() + 1) {
+        handlers.onStatus('offline');
+        socket?.close();
+        return;
+      }
+    }
+    handlers.onEvent(event);
+  };
+
+  const openSocket = (ticket: string | null) => {
+    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const url = new URL(`${protocol}://${window.location.host}/ws`);
+    url.searchParams.set('workspace_id', workspaceId);
+    if (ticket) {
+      url.searchParams.set('ticket', ticket);
+    }
+    socket = new WebSocket(url.toString());
+
+    socket.addEventListener('open', () => handlers.onStatus('live'));
+    socket.addEventListener('close', () => {
+      handlers.onStatus('offline');
+      scheduleReconnect();
+    });
+    socket.addEventListener('error', () => {
+      handlers.onStatus('offline');
+      socket?.close();
+    });
+    socket.addEventListener('message', (message) => {
+      try {
+        const parsed = RunEventEnvelopeSchema.safeParse(JSON.parse(String(message.data)));
+        if (parsed.success) {
+          if (parsed.data.ev === 'canvas.presence') {
+            const presence = CanvasPresenceSchema.safeParse(parsed.data.data);
+            if (presence.success) {
+              handlers.onPresence?.(presence.data);
+            }
+            return;
+          }
+          eventQueue = eventQueue
+            .then(() => handleEvent(parsed.data))
+            .catch(() => {
+              handlers.onStatus('offline');
+              socket?.close();
+            });
+        } else {
+          handlers.onStatus('offline');
+          socket?.close();
+        }
+      } catch {
+        handlers.onStatus('offline');
+        socket?.close();
+      }
+    });
+  };
+
+  const connect = async () => {
+    if (closed) return;
+    handlers.onStatus('connecting');
+    try {
+      await fetchMissingEvents();
+      if (closed) return;
+      openSocket(await requestCanvasTicket(workspaceId));
+    } catch {
+      if (!closed) {
+        handlers.onStatus('offline');
+        scheduleReconnect();
+      }
+    }
+  };
+
   if (typeof WebSocket === 'undefined') {
+    void fetchMissingEvents().catch(() => undefined);
     handlers.onStatus('offline');
     return () => undefined;
   }
 
-  handlers.onStatus('connecting');
-  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  const socket = new WebSocket(
-    `${protocol}://${window.location.host}/ws?workspace_id=${encodeURIComponent(workspaceId)}`,
-  );
+  void connect();
 
-  socket.addEventListener('open', () => handlers.onStatus('live'));
-  socket.addEventListener('close', () => handlers.onStatus('offline'));
-  socket.addEventListener('error', () => handlers.onStatus('offline'));
-  socket.addEventListener('message', (message) => {
-    try {
-      const parsed = RunEventEnvelopeSchema.safeParse(JSON.parse(String(message.data)));
-      if (parsed.success) {
-        if (parsed.data.ev === 'canvas.presence') {
-          const presence = CanvasPresenceSchema.safeParse(parsed.data.data);
-          if (presence.success) {
-            handlers.onPresence?.(presence.data);
-          }
-          return;
-        }
-        handlers.onEvent(parsed.data);
-      } else {
-        handlers.onStatus('offline');
-      }
-    } catch {
-      handlers.onStatus('offline');
+  return () => {
+    closed = true;
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
     }
-  });
-
-  return () => socket.close();
+    socket?.close();
+  };
 }
