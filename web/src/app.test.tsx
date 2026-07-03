@@ -1669,6 +1669,44 @@ describe('GraphCanvas navigation', () => {
     expect(markup).toContain('Video render');
     expect(markup).not.toContain('Canvas source');
   });
+
+  it('renders canvas comments and collaborator presence overlays', () => {
+    const markup = renderToStaticMarkup(
+      <GraphCanvas
+        graph={state.graph}
+        canvasGraph={graphStateFromCanvasDocument(canvasDocument(), state.graph)}
+        comments={[
+          {
+            id: 'comment_1',
+            target: { kind: 'node', nodeId: 'canvas_text' },
+            body: 'Needs review',
+            author: { actorId: 'reviewer', displayName: 'Reviewer' },
+            status: 'open',
+            createdAt: 'unix:1',
+            updatedAt: 'unix:1',
+          },
+        ]}
+        pendingProposal={null}
+        presenceByActor={{
+          remote: {
+            actor: { actorId: 'remote', displayName: 'Remote' },
+            cursor: { x: 220, y: 160 },
+            selection: { nodeIds: ['canvas_text'], edgeIds: [] },
+            viewport: { x: 0, y: 0, zoom: 1 },
+          },
+        }}
+        run={state.run!}
+        versionId="ver_test_1"
+        workspaceId="ws_test"
+      />,
+    );
+
+    expect(markup).toContain('Needs review');
+    expect(markup).toContain('Reviewer');
+    expect(markup).toContain('Remote');
+    expect(markup).toContain('collab-selection');
+    expect(markup).toContain('comment-marker');
+  });
 });
 
 describe('GraphCanvas layout editing', () => {

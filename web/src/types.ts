@@ -82,6 +82,65 @@ const CanvasSizeSchema = z.object({
   height: z.number(),
 });
 
+const CanvasActorSchema = z.object({
+  actorId: z.string(),
+  displayName: z.string(),
+});
+
+const CanvasCommentTargetSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('node'),
+    nodeId: z.string(),
+  }),
+  z.object({
+    kind: z.literal('edge'),
+    edgeId: z.string(),
+  }),
+  z.object({
+    kind: z.literal('position'),
+    x: z.number(),
+    y: z.number(),
+  }),
+]);
+
+const CanvasCommentStatusSchema = z.enum(['open', 'resolved']);
+
+const CanvasCommentSchema = z.object({
+  id: z.string(),
+  target: CanvasCommentTargetSchema,
+  body: z.string(),
+  author: CanvasActorSchema,
+  status: CanvasCommentStatusSchema,
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+export const CanvasPresenceSchema = z.object({
+  actor: CanvasActorSchema,
+  cursor: z
+    .object({
+      x: z.number(),
+      y: z.number(),
+    })
+    .nullable()
+    .optional(),
+  selection: z
+    .object({
+      nodeIds: z.array(z.string()).default([]),
+      edgeIds: z.array(z.string()).default([]),
+    })
+    .nullable()
+    .optional(),
+  viewport: z
+    .object({
+      x: z.number(),
+      y: z.number(),
+      zoom: z.number(),
+    })
+    .nullable()
+    .optional(),
+});
+
 const GraphStateSchema = z.object({
   nodes: z.array(
     z.object({
@@ -152,7 +211,7 @@ export const CanvasDocumentSchema = z.object({
   seq: z.number(),
   nodes: z.array(CanvasNodeSchema),
   edges: z.array(CanvasEdgeSchema),
-  comments: z.array(z.unknown()).default([]),
+  comments: z.array(CanvasCommentSchema).default([]),
   runtime: z.record(z.string(), z.unknown()).default({}),
   metadata: z.record(z.string(), z.unknown()).default({}),
 });
@@ -412,6 +471,10 @@ export const RunEventEnvelopeSchema = z.object({
 
 export type WorkbenchState = z.infer<typeof WorkbenchStateSchema>;
 export type CanvasDocument = z.infer<typeof CanvasDocumentSchema>;
+export type CanvasActor = z.infer<typeof CanvasActorSchema>;
+export type CanvasComment = z.infer<typeof CanvasCommentSchema>;
+export type CanvasCommentTarget = z.infer<typeof CanvasCommentTargetSchema>;
+export type CanvasPresence = z.infer<typeof CanvasPresenceSchema>;
 export type RunEventEnvelope = z.infer<typeof RunEventEnvelopeSchema>;
 export type RunStepState = z.infer<typeof RunStepStateSchema>;
 export type RunStatus = z.infer<typeof RunStatusSchema>;
@@ -455,6 +518,19 @@ export type ManualEditSession = {
   source: 'user';
   ops: ManualEditOp[];
   startedAt: string;
+};
+export type CanvasCommentOpInput = {
+  baseSeq?: number;
+  op:
+    | {
+        op: 'comment_add';
+        id?: string;
+        target: CanvasCommentTarget;
+        body: string;
+        actor?: CanvasActor;
+      }
+    | { op: 'comment_patch'; id: string; body?: string; status?: CanvasComment['status'] }
+    | { op: 'comment_delete'; id: string };
 };
 
 function workflowGraphToGraphState(

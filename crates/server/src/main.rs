@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 mod api_error;
 mod app_state;
 mod artifact_routes;
+mod canvas_collaboration;
 mod graph_files;
 mod layout_routes;
 mod ops_routes;
@@ -37,6 +38,7 @@ mod ws;
 
 use app_state::AppState;
 use artifact_routes::{artifact_content, download_output, preview_output, select_output};
+use canvas_collaboration::{apply_canvas_comment_op, update_canvas_presence};
 use layout_routes::save_workspace_layout;
 use ops_routes::apply_workspace_ops;
 use proposal_routes::{apply_workspace_proposal, dismiss_workspace_proposal};
@@ -78,6 +80,14 @@ fn app(state: AppState) -> Router {
         .route(
             "/api/workspaces/{workspace_id}/canvas",
             get(workspace_canvas),
+        )
+        .route(
+            "/api/workspaces/{workspace_id}/canvas/comments/ops",
+            post(apply_canvas_comment_op),
+        )
+        .route(
+            "/api/workspaces/{workspace_id}/canvas/presence",
+            post(update_canvas_presence),
         )
         .route(
             "/api/workspaces/{workspace_id}/provider",

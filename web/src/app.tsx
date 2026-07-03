@@ -45,6 +45,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const error = useWorkbenchStore((store) => store.error);
   const connection = useWorkbenchStore((store) => store.connection);
   const canvas = useWorkbenchStore((store) => store.canvas);
+  const presenceByActor = useWorkbenchStore((store) => store.presenceByActor);
   const state = useWorkbenchStore((store) => store.state);
   const storeEditSession = useWorkbenchStore((store) => store.editSession);
   const editSession = initialEditSession ?? storeEditSession;
@@ -53,8 +54,11 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const setInitialState = useWorkbenchStore((store) => store.setInitialState);
   const setConnection = useWorkbenchStore((store) => store.setConnection);
   const setCanvasSelection = useWorkbenchStore((store) => store.setCanvasSelection);
+  const applyCanvasPresence = useWorkbenchStore((store) => store.applyCanvasPresence);
   const applyEvent = useWorkbenchStore((store) => store.applyEvent);
+  const sendCanvasPresence = useWorkbenchStore((store) => store.sendCanvasPresence);
   const sendMessage = useWorkbenchStore((store) => store.sendMessage);
+  const submitCanvasCommentOp = useWorkbenchStore((store) => store.submitCanvasCommentOp);
   const applyProposal = useWorkbenchStore((store) => store.applyProposal);
   const dismissProposal = useWorkbenchStore((store) => store.dismissProposal);
   const confirmRun = useWorkbenchStore((store) => store.confirmRun);
@@ -98,9 +102,10 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
     if (!activeState?.workspace.id) return;
     return connectWorkspaceEvents(activeState.workspace.id, {
       onEvent: applyEvent,
+      onPresence: applyCanvasPresence,
       onStatus: setConnection,
     });
-  }, [activeState?.workspace.id, applyEvent, setConnection]);
+  }, [activeState?.workspace.id, applyCanvasPresence, applyEvent, setConnection]);
 
   if (!activeState) {
     return <LoadingShell status={status} error={error} />;
@@ -262,7 +267,10 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
               <GraphCanvas
                 graph={previewState.graph}
                 canvasGraph={canvasGraph}
+                comments={canvas?.comments ?? []}
                 onCreateProposal={(input) => runAction(() => appendManualEdit(input))}
+                onCommentOp={(input) => runAction(() => submitCanvasCommentOp(input))}
+                onPresenceChange={(presence) => void sendCanvasPresence(presence)}
                 onRequestNodeProposal={(nodeId) =>
                   runAction(() =>
                     sendMessage(`围绕选中节点 ${nodeId} 生成最小修改 proposal。`, {
@@ -288,6 +296,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
                   );
                 }}
                 pendingProposal={activeState.pendingProposal}
+                presenceByActor={presenceByActor}
                 run={uiState.run}
                 versionId={activeState.workspace.versionId}
                 workflowGraph={previewState.workflowGraph}
