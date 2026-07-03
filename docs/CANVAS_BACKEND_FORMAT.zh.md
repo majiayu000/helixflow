@@ -661,7 +661,12 @@ CREATE TABLE canvas_presence (
 
 - 没有把现有 React 画布 UI 的内部状态完全迁移到 `CanvasDocument`；现在只是补齐前端调用边界，原有 UI 仍主要消费 `WorkbenchState.graph`。
 - 没有实现多人文本 CRDT；`node.patch.content` 第一阶段仍是 whole-field replace。
-- 没有实现独立 canvas auth ticket；当前本地服务沿用现有无登录本地 API 形态。
+
+当前已补齐的兼容层：
+
+- `POST /api/canvases/{canvas_id}/ticket` 返回本地短期 ticket；默认 local dev 为 disabled，`HELIXFLOW_CANVAS_TICKET_MODE=required` 时 WebSocket 需要携带有效 ticket。
+- `GET /api/workspaces/{workspace_id}/events?afterSeq=<seq>` 返回最新 run 的持久事件，用于 reconnect 和 seq gap catch-up。
+- 前端 WebSocket helper 会在连接前 fetch missing events；收到跳号事件时先 REST catch-up，再应用新的 WS event。
 
 完整功能的后续 spec / issue packet 已拆到：
 

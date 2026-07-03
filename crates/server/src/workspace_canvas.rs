@@ -145,6 +145,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn workspace_canvas_replays_comment_snapshot_when_seq_is_ahead_of_graph_version() {
+        let (state, workspace_id, _dir) = state_with_workspace().await;
+        write_json_file(
+            &state.data_dir,
+            &comments_path(&workspace_id),
+            &comment_store_json(7),
+            "write comments",
+        )
+        .await
+        .expect("write comments");
+
+        let body = workspace_canvas(AxumPath(workspace_id.clone()), State(state))
+            .await
+            .expect("workspace canvas")
+            .0;
+
+        assert_eq!(body["seq"], 7);
+        assert_eq!(body["comments"][0]["id"], "comment_replay");
+        assert_eq!(body["comments"][0]["target"]["nodeId"], "text");
+    }
+
+    #[tokio::test]
+    async fn workspace_canvas_rejects_snapshot_data_ahead_of_seq() {
+        let (state, workspace_id, _dir) = state_with_workspace().await;
+        write_json_file(
+            &state.data_dir,
+            &comments_path(&workspace_id),
+            &comment_store_json(0),
+            "write stale comments",
+        )
+        .await
+        .expect("write comments");
+
+        let err = workspace_canvas(AxumPath(workspace_id), State(state))
+            .await
+            .expect_err("snapshot ahead of seq should fail");
+
+        assert!(err.message.contains("snapshot is ahead of seq"));
+    }
+
+    #[tokio::test]
     async fn workspace_canvas_returns_blank_canvas_without_current_version() {
         let dir = tempfile::tempdir().expect("temp dir");
         let data_dir = dir.path().to_path_buf();
@@ -204,6 +245,30 @@ mod tests {
             Arc::new(FailingWorkbenchAgent),
             data_dir.join("sessions"),
         )
+    }
+
+    fn comments_path(workspace_id: &str) -> std::path::PathBuf {
+        std::path::PathBuf::from("canvas")
+            .join(workspace_id)
+            .join("comments.json")
+    }
+
+    fn comment_store_json(seq: i64) -> serde_json::Value {
+        json!({
+            "schemaVersion": 1,
+            "seq": seq,
+            "comments": [
+                {
+                    "id": "comment_replay",
+                    "target": { "kind": "node", "nodeId": "text" },
+                    "body": "Reload proof",
+                    "author": { "actorId": "reviewer", "displayName": "Reviewer" },
+                    "status": "open",
+                    "createdAt": "unix:1",
+                    "updatedAt": "unix:1"
+                }
+            ]
+        })
     }
 
     fn sample_graph() -> WorkflowGraph {
