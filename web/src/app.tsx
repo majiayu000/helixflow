@@ -156,6 +156,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const queueDisabled = queueLockReason.kind !== 'none';
   const versionHistoryCount = activeState.history.filter((item) => item.kind === 'version').length;
   const undoDisabled = busy || versionHistoryCount < 2;
+  const showArtifactPreview = hasPreviewArtifact(activeState.outputs) && dirtyEditCount === 0;
 
   const runAction = async (action: () => Promise<void>) => {
     setBusy(true);
@@ -259,56 +260,61 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
             run={activeState.run}
           />
         </div>
-        <section className="wb-canvas">
-          {hasPreviewArtifact(activeState.outputs) && dirtyEditCount === 0 ? (
-            <ArtifactStage outputs={activeState.outputs} />
-          ) : (
-            <>
-              <GraphCanvas
-                graph={previewState.graph}
-                canvasGraph={canvasGraph}
-                comments={canvas?.comments ?? []}
-                onCreateProposal={(input) => runAction(() => appendManualEdit(input))}
-                onCommentOp={(input) => runAction(() => submitCanvasCommentOp(input))}
-                onPresenceChange={(presence) => void sendCanvasPresence(presence)}
-                onRequestNodeProposal={(nodeId) =>
-                  runAction(() =>
-                    sendMessage(`围绕选中节点 ${nodeId} 生成最小修改 proposal。`, {
-                      selection: { nodeIds: [nodeId] },
-                    }),
-                  )
-                }
-                onSelectionChange={(nodeIds) => {
-                  setSelectedCanvasNodeIds(nodeIds);
-                  setCanvasSelection(nodeIds);
-                }}
-                onSetParam={(nodeId, key, value) => {
-                  return runAction(() =>
-                    appendManualEdit(
-                      buildSetParamEditInput(
-                        activeState.workspace.versionId,
-                        previewState.workflowGraph,
-                        nodeId,
-                        key,
-                        value,
-                      ),
-                    ),
-                  );
-                }}
-                pendingProposal={activeState.pendingProposal}
-                presenceByActor={presenceByActor}
-                run={uiState.run}
-                versionId={activeState.workspace.versionId}
-                workflowGraph={previewState.workflowGraph}
-                workspaceId={activeState.workspace.id}
-              />
-              <ManualProposalPanel
-                busy={busy}
-                state={previewState}
-                onCreateProposal={(input) => runAction(() => appendManualEdit(input))}
-              />
-            </>
+        <section className={showArtifactPreview ? 'wb-canvas wb-canvas--with-artifact' : 'wb-canvas'}>
+          <GraphCanvas
+            graph={previewState.graph}
+            canvasGraph={canvasGraph}
+            comments={canvas?.comments ?? []}
+            onCreateProposal={(input) => runAction(() => appendManualEdit(input))}
+            onCommentOp={(input) => runAction(() => submitCanvasCommentOp(input))}
+            onPresenceChange={(presence) => void sendCanvasPresence(presence)}
+            onQueueRun={() => {
+              if (!queueDisabled) void runAction(() => queueRun({ forceRerun }));
+            }}
+            onRequestNodeProposal={(nodeId) =>
+              runAction(() =>
+                sendMessage(`围绕选中节点 ${nodeId} 生成最小修改 proposal。`, {
+                  selection: { nodeIds: [nodeId] },
+                }),
+              )
+            }
+            onSelectionChange={(nodeIds) => {
+              setSelectedCanvasNodeIds(nodeIds);
+              setCanvasSelection(nodeIds);
+            }}
+            onSetParam={(nodeId, key, value) => {
+              return runAction(() =>
+                appendManualEdit(
+                  buildSetParamEditInput(
+                    activeState.workspace.versionId,
+                    previewState.workflowGraph,
+                    nodeId,
+                    key,
+                    value,
+                  ),
+                ),
+              );
+            }}
+            onSelectOutput={(id) => void runAction(() => selectOutput(id))}
+            outputs={activeState.outputs}
+            pendingProposal={activeState.pendingProposal}
+            presenceByActor={presenceByActor}
+            queueRunDisabled={queueDisabled}
+            run={uiState.run}
+            versionId={activeState.workspace.versionId}
+            workflowGraph={previewState.workflowGraph}
+            workspaceId={activeState.workspace.id}
+          />
+          {showArtifactPreview && (
+            <div className="canvas-artifact-preview">
+              <ArtifactStage outputs={activeState.outputs} />
+            </div>
           )}
+          <ManualProposalPanel
+            busy={busy}
+            state={previewState}
+            onCreateProposal={(input) => runAction(() => appendManualEdit(input))}
+          />
           <HistoryPanel
             busy={busy}
             history={activeState.history}

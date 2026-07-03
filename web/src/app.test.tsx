@@ -894,7 +894,7 @@ describe('App', () => {
     expect(useWorkbenchStore.getState().state?.providers.selectedProvider).toBe('atlas');
   });
 
-  it('renders the selected artifact preview instead of guessing from graph state', () => {
+  it('renders the selected artifact preview without replacing the canvas', () => {
     const markup = renderToStaticMarkup(
       <App
         initialState={{
@@ -904,6 +904,7 @@ describe('App', () => {
               id: 'art_video_1',
               kind: 'video',
               title: 'Vertical teaser',
+              nodeId: 'video',
               storageUri: '/api/outputs/art_video_1/download',
               selected: true,
               meta: '{}',
@@ -917,7 +918,8 @@ describe('App', () => {
 
     expect(markup).toContain('artifact-stage');
     expect(markup).toContain('Artifact: Vertical teaser');
-    expect(markup).not.toContain('canvas-grid');
+    expect(markup).toContain('canvas-grid');
+    expect(markup).toContain('node-artifact--selected');
   });
 
   it('keeps the graph canvas when the selected output has no preview', () => {
@@ -1651,6 +1653,30 @@ describe('GraphCanvas navigation', () => {
     expect(markup).toContain('Canvas source');
     expect(markup).not.toContain('Launch note');
     expect(canvasGraph.nodes[0]?.size).toEqual({ width: 260, height: 180 });
+  });
+
+  it('renders canvas run control and node-attached artifacts', () => {
+    const markup = renderToStaticMarkup(
+      <GraphCanvas
+        graph={state.graph}
+        onQueueRun={() => undefined}
+        onSelectOutput={() => undefined}
+        outputs={[
+          {
+            ...state.outputs[0]!,
+            nodeId: 'video',
+          },
+        ]}
+        pendingProposal={null}
+        run={state.run!}
+        versionId="ver_test_1"
+        workspaceId="ws_test"
+      />,
+    );
+
+    expect(markup).toContain('Run');
+    expect(markup).toContain('node-artifact');
+    expect(markup).toContain('node-artifact--selected');
   });
 
   it('keeps proposal preview ahead of CanvasDocument rendering', () => {

@@ -1,6 +1,7 @@
 import type { CSSProperties, PointerEvent } from 'react';
 import { Icon, Port } from '../icons';
 import type { GraphNodeState, NodeDefinition, RunStepState } from '../types';
+import type { CanvasNodeArtifact } from './graph-canvas-artifacts';
 import { portKey, type PortHighlight } from './graph-canvas-connections';
 import { graphNodeHeight, graphNodeWidth } from './graph-canvas-navigation';
 import {
@@ -19,7 +20,9 @@ type WorkflowNodeProps = {
   portHighlights: Map<string, PortHighlight>;
   selected: boolean;
   stepState: RunStepState;
+  artifactOutputs: CanvasNodeArtifact[];
   resizable: boolean;
+  onSelectOutput?: (outputId: string) => void;
   onOutputPortPointerDown: (
     node: GraphNodeState,
     port: { name: string; type: string },
@@ -46,7 +49,9 @@ export function WorkflowNode({
   portHighlights,
   selected,
   stepState,
+  artifactOutputs,
   resizable,
+  onSelectOutput,
   onOutputPortPointerDown,
   onPointerCancel,
   onPointerDown,
@@ -179,6 +184,28 @@ export function WorkflowNode({
             </div>
           ))
         )}
+        {artifactOutputs.length > 0 && (
+          <div className="node-artifacts">
+            {artifactOutputs.slice(0, 3).map((output) => (
+              <button
+                className={output.selected ? 'node-artifact node-artifact--selected' : 'node-artifact'}
+                key={output.id}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onSelectOutput?.(output.id);
+                }}
+                title={output.meta || output.title}
+                type="button"
+              >
+                <Icon n={artifactIcon(output.kind)} s={12} />
+                <span>{output.kind}</span>
+              </button>
+            ))}
+            {artifactOutputs.length > 3 && (
+              <span className="node-artifact-more">+{artifactOutputs.length - 3}</span>
+            )}
+          </div>
+        )}
       </div>
       {resizable && (
         <span
@@ -193,6 +220,15 @@ export function WorkflowNode({
       )}
     </div>
   );
+}
+
+function artifactIcon(kind: string): 'export' | 'image' | 'layers' | 'play' {
+  if (kind === 'image') return 'image';
+  if (kind === 'video') return 'play';
+  if (kind === 'html' || kind === 'markdown' || kind === 'text' || kind === 'json') {
+    return 'export';
+  }
+  return 'layers';
 }
 
 function portTargetClass(

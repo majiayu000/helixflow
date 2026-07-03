@@ -35,6 +35,7 @@ import {
   CanvasCollaborationWorld,
   CanvasCommentsPanel,
 } from './graph-canvas-collaboration';
+import { outputsByCanvasNode } from './graph-canvas-artifacts';
 import { createCanvasEditActions } from './graph-canvas-edit-actions';
 import { GraphEdges } from './graph-canvas-edges';
 import { GraphInspector, GraphSelectionInspector } from './graph-canvas-inspector';
@@ -123,9 +124,13 @@ export function GraphCanvas({
   onSaveLayout,
   onCreateProposal,
   onPresenceChange,
+  onQueueRun,
   onRequestNodeProposal,
+  onSelectOutput,
   onSelectionChange,
   onSetParam,
+  outputs,
+  queueRunDisabled,
 }: GraphCanvasProps) {
   const canvasRef = useRef<HTMLElement | null>(null);
   const [view, setView] = useState<ViewState>(DEFAULT_GRAPH_VIEW);
@@ -158,6 +163,7 @@ export function GraphCanvas({
     [sourceGraph.nodes],
   );
   const nodeById = useMemo(() => buildNodeMap(displayNodes), [displayNodes]);
+  const outputsByNodeId = useMemo(() => outputsByCanvasNode(outputs), [outputs]);
   const baseEdgeIds = useMemo(() => buildEdgeSignatureSet(sourceGraph.edges), [sourceGraph.edges]);
   const stepStateByNodeId = useMemo(() => buildRunStepStateMap(run.steps), [run.steps]);
   const definitionByType = useMemo(
@@ -664,7 +670,9 @@ export function GraphCanvas({
         layoutUpdateCount={layoutUpdates.length}
         nodeCount={nodeCount}
         onSaveLayout={() => void saveLayout()}
+        onQueueRun={onQueueRun}
         pendingProposal={Boolean(pendingProposal)}
+        queueRunDisabled={queueRunDisabled}
         runStatusLabel={runStatusLabel(run.status)}
         saveLayoutDisabled={layoutSaving || !onSaveLayout}
         setMode={setMode}
@@ -709,10 +717,12 @@ export function GraphCanvas({
             dirty={Boolean(draftPositions[node.id]) && !pendingProposal}
             locked={Boolean(pendingProposal)}
             node={node}
+            artifactOutputs={outputsByNodeId.get(node.id) ?? []}
             portHighlights={portHighlights}
             resizable={!connectionDisabled && !pendingProposal}
             selected={selectedIds.has(node.id)}
             stepState={stepStateByNodeId.get(node.id) ?? node.status}
+            onSelectOutput={onSelectOutput}
             onOutputPortPointerDown={startConnectionDrag}
             onPointerCancel={stopNodeDrag}
             onPointerDown={(event) => handleNodePointerDown(node, event)}
