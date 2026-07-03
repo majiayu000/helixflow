@@ -7,7 +7,12 @@ import { ManualProposalPanel } from './components/manual-proposal-panel';
 import { ConfirmModal, HistoryPanel, OutputsStrip, RunDock } from './components/run-panels';
 import { TopBar } from './components/top-bar';
 import { useWorkbenchStore } from './store';
-import type { ManualEditSession, WorkbenchState, WorkspaceSummary } from './types';
+import {
+  graphStateFromCanvasDocument,
+  type ManualEditSession,
+  type WorkbenchState,
+  type WorkspaceSummary,
+} from './types';
 import {
   deriveQueueLockReason,
   manualEditSummary,
@@ -38,6 +43,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const status = useWorkbenchStore((store) => store.status);
   const error = useWorkbenchStore((store) => store.error);
   const connection = useWorkbenchStore((store) => store.connection);
+  const canvas = useWorkbenchStore((store) => store.canvas);
   const state = useWorkbenchStore((store) => store.state);
   const storeEditSession = useWorkbenchStore((store) => store.editSession);
   const editSession = initialEditSession ?? storeEditSession;
@@ -45,6 +51,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const createWorkspaceAction = useWorkbenchStore((store) => store.createWorkspace);
   const setInitialState = useWorkbenchStore((store) => store.setInitialState);
   const setConnection = useWorkbenchStore((store) => store.setConnection);
+  const setCanvasSelection = useWorkbenchStore((store) => store.setCanvasSelection);
   const applyEvent = useWorkbenchStore((store) => store.applyEvent);
   const sendMessage = useWorkbenchStore((store) => store.sendMessage);
   const applyProposal = useWorkbenchStore((store) => store.applyProposal);
@@ -99,8 +106,12 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   }
 
   const previewState = previewWorkbenchStateWithManualEdits(activeState, editSession);
-  const uiState = stateForUi(previewState);
   const dirtyEditCount = editSession?.ops.length ?? 0;
+  const canvasGraph =
+    dirtyEditCount === 0 && canvas && canvas.versionId === activeState.workspace.versionId
+      ? graphStateFromCanvasDocument(canvas, activeState.graph)
+      : undefined;
+  const uiState = stateForUi(previewState);
   const editSummary =
     editSession && editSession.baseVersionId === activeState.workspace.versionId
       ? manualEditSummary(editSession)
@@ -249,6 +260,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
             <>
               <GraphCanvas
                 graph={previewState.graph}
+                canvasGraph={canvasGraph}
                 onCreateProposal={(input) => runAction(() => appendManualEdit(input))}
                 onRequestNodeProposal={(nodeId) =>
                   runAction(() =>
@@ -257,7 +269,10 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
                     }),
                   )
                 }
-                onSelectionChange={setSelectedCanvasNodeIds}
+                onSelectionChange={(nodeIds) => {
+                  setSelectedCanvasNodeIds(nodeIds);
+                  setCanvasSelection(nodeIds);
+                }}
                 onSetParam={(nodeId, key, value) =>
                   runAction(() =>
                     appendManualEdit({

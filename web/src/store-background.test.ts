@@ -8,6 +8,12 @@ describe('background run state reconciliation', () => {
       status: 'idle',
       error: null,
       connection: 'offline',
+      canvasStatus: 'idle',
+      canvasError: null,
+      canvasConnection: 'offline',
+      canvas: null,
+      selectedCanvasNodeIds: [],
+      presenceByActor: {},
       state: null,
       editSession: null,
     });
@@ -18,7 +24,7 @@ describe('background run state reconciliation', () => {
   });
 
   it('refetches workspace state after terminal run events', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(stateWithRun('run_1', 'succeeded', 1))));
+    mockSnapshotFetch(stateWithRun('run_1', 'succeeded', 1));
     useWorkbenchStore.getState().setInitialState(stateWithRun('run_1', 'running', 0));
 
     useWorkbenchStore.getState().applyEvent(runEvent('run_1', 2, 'run.succeeded'));
@@ -29,7 +35,7 @@ describe('background run state reconciliation', () => {
   });
 
   it('refetches workspace state when an event belongs to a different run', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(stateWithRun('run_new', 'running', 0))));
+    mockSnapshotFetch(stateWithRun('run_new', 'running', 0));
     useWorkbenchStore.getState().setInitialState(stateWithRun('run_old', 'running', 0));
 
     useWorkbenchStore.getState().applyEvent({
@@ -38,11 +44,11 @@ describe('background run state reconciliation', () => {
     });
 
     await waitUntil(() => useWorkbenchStore.getState().state?.run?.id === 'run_new');
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it('refetches workspace state when the websocket reconnects', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(stateWithRun('run_1', 'interrupted', 0))));
+    mockSnapshotFetch(stateWithRun('run_1', 'interrupted', 0));
     useWorkbenchStore.getState().setInitialState(stateWithRun('run_1', 'running', 0));
 
     useWorkbenchStore.getState().setConnection('live');
@@ -124,6 +130,44 @@ function runEvent(runId: string, seq: number, ev: string) {
     server_time: '2026-07-02T00:00:01Z',
     ev,
     data: {},
+  };
+}
+
+function mockSnapshotFetch(nextState: WorkbenchState) {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/workspaces/ws_test/state') {
+        return jsonResponse(nextState);
+      }
+      if (url === '/api/workspaces/ws_test/canvas') {
+        return jsonResponse(canvasForState(nextState));
+      }
+      return new Response('{}', { status: 404 });
+    }),
+  );
+}
+
+function canvasForState(nextState: WorkbenchState) {
+  return {
+    schemaVersion: 1,
+    workspaceId: nextState.workspace.id,
+    versionId: nextState.workspace.versionId,
+    seq: 0,
+    nodes: nextState.graph.nodes.map((node) => ({
+      id: node.id,
+      nodeType: node.nodeType,
+      title: node.title,
+      position: node.position,
+      params: {},
+      runtime: null,
+      metadata: { source: 'test' },
+    })),
+    edges: nextState.graph.edges,
+    comments: [],
+    runtime: {},
+    metadata: { source: 'test' },
   };
 }
 

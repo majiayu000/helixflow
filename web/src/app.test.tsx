@@ -49,8 +49,8 @@ import {
 import { ConfirmModal, HistoryPanel } from './components/run-panels';
 import { TopBar } from './components/top-bar';
 import { applyRunEvent, useWorkbenchStore } from './store';
-import { CanvasMessageContextSchema } from './types';
-import type { NodeCatalog, WorkbenchState } from './types';
+import { CanvasMessageContextSchema, graphStateFromCanvasDocument } from './types';
+import type { CanvasDocument, NodeCatalog, WorkbenchState } from './types';
 
 const state: WorkbenchState = {
   eventSeq: 0,
@@ -597,6 +597,14 @@ describe('App', () => {
             pendingProposal: null,
           });
         }
+        if (url === '/api/workspaces/ws_new/canvas') {
+          return jsonResponse({
+            ...canvasDocument(),
+            workspaceId: 'ws_new',
+            versionId: 'ver_new',
+            nodes: [],
+          });
+        }
         return new Response('{}', { status: 404 });
       }),
     );
@@ -608,6 +616,7 @@ describe('App', () => {
       '/api/workspaces',
       '/api/workspaces',
       '/api/workspaces/ws_new/state',
+      '/api/workspaces/ws_new/canvas',
     ]);
     expect(useWorkbenchStore.getState().state?.workspace.id).toBe('ws_new');
   });
@@ -1624,6 +1633,39 @@ describe('GraphCanvas navigation', () => {
     expect(markup).toContain('canvas-minimap');
     expect(markup).not.toContain('保存布局');
   });
+
+  it('renders CanvasDocument graph before legacy graph when no proposal is pending', () => {
+    const markup = renderToStaticMarkup(
+      <GraphCanvas
+        graph={state.graph}
+        canvasGraph={graphStateFromCanvasDocument(canvasDocument(), state.graph)}
+        pendingProposal={null}
+        run={state.run!}
+        versionId="ver_test_1"
+        workspaceId="ws_test"
+      />,
+    );
+
+    expect(markup).toContain('Canvas source');
+    expect(markup).not.toContain('Launch note');
+  });
+
+  it('keeps proposal preview ahead of CanvasDocument rendering', () => {
+    const markup = renderToStaticMarkup(
+      <GraphCanvas
+        graph={state.graph}
+        canvasGraph={graphStateFromCanvasDocument(canvasDocument(), state.graph)}
+        pendingProposal={pendingProposal()}
+        run={state.run!}
+        versionId="ver_test_1"
+        workspaceId="ws_test"
+      />,
+    );
+
+    expect(markup).toContain('待确认的图变更');
+    expect(markup).toContain('Video render');
+    expect(markup).not.toContain('Canvas source');
+  });
 });
 
 describe('GraphCanvas layout editing', () => {
@@ -1970,6 +2012,30 @@ function pendingProposal(): NonNullable<WorkbenchState['pendingProposal']> {
     },
     state: 'pending',
     messageId: 'msg_agent_proposal',
+  };
+}
+
+function canvasDocument(): CanvasDocument {
+  return {
+    schemaVersion: 1,
+    workspaceId: 'ws_test',
+    versionId: 'ver_test_1',
+    seq: 4,
+    nodes: [
+      {
+        id: 'canvas_text',
+        nodeType: 'input.text',
+        title: 'Canvas source',
+        position: { x: 140, y: 90 },
+        params: { text: 'from canvas' },
+        runtime: null,
+        metadata: { source: 'test' },
+      },
+    ],
+    edges: [],
+    comments: [],
+    runtime: {},
+    metadata: { source: 'test' },
   };
 }
 

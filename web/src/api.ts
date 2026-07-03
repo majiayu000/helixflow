@@ -1,4 +1,5 @@
 import {
+  CanvasDocumentSchema,
   RunConfirmationResponseSchema,
   RunEventEnvelopeSchema,
   WorkflowGraphSchema,
@@ -6,6 +7,7 @@ import {
   WorkspaceMessageResponseSchema,
   WorkbenchStateSchema,
   NodeCatalogSchema,
+  type CanvasDocument,
   type RunConfirmationResponse,
   type RunEventEnvelope,
   type CanvasMessageContext,
@@ -32,6 +34,15 @@ export async function fetchWorkspaceState(workspaceId: string): Promise<Workbenc
   }
 
   return WorkbenchStateSchema.parse(await response.json());
+}
+
+export async function fetchWorkspaceCanvas(workspaceId: string): Promise<CanvasDocument> {
+  const response = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/canvas`);
+  if (!response.ok) {
+    throw new Error(`workspace canvas request failed: ${response.status}`);
+  }
+
+  return CanvasDocumentSchema.parse(await response.json());
 }
 
 export async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
