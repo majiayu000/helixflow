@@ -312,6 +312,17 @@
   user-select: none;
 }
 
+.node-resize-handle {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 13px;
+  height: 13px;
+  border-right: 2px solid var(--text-3);
+  border-bottom: 2px solid var(--text-3);
+  cursor: nwse-resize;
+}
+
 .node:active {
   cursor: grabbing;
 }

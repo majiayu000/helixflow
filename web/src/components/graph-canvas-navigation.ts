@@ -39,6 +39,10 @@ export const GRAPH_CANVAS_VIEW_STORAGE_PREFIX = 'helixflow:graph-canvas-view:';
 export const GRAPH_NODE_WIDTH = 188;
 export const GRAPH_NODE_HEAD_HEIGHT = 31;
 export const GRAPH_NODE_ROW_HEIGHT = 26;
+export const GRAPH_NODE_MIN_WIDTH = 140;
+export const GRAPH_NODE_MIN_HEIGHT = 96;
+export const GRAPH_NODE_MAX_WIDTH = 420;
+export const GRAPH_NODE_MAX_HEIGHT = 360;
 export const MINIMAP_WIDTH = 188;
 export const MINIMAP_HEIGHT = 124;
 
@@ -103,8 +107,8 @@ export function computeMinimapLayout(
       id: node.id,
       x: node.position.x,
       y: node.position.y,
-      width: GRAPH_NODE_WIDTH,
-      height: nodeVisualHeight(node),
+      width: graphNodeWidth(node),
+      height: graphNodeHeight(node),
     }))
     .filter((node) =>
       [node.x, node.y, node.width, node.height].every((item) => Number.isFinite(item)),
@@ -186,12 +190,22 @@ export function minimapViewportRect(
   };
 }
 
-function nodeVisualHeight(node: GraphNodeState): number {
-  return (
+export function graphNodeWidth(node: GraphNodeState): number {
+  const width = node.size?.width;
+  return typeof width === 'number' && Number.isFinite(width)
+    ? Math.min(GRAPH_NODE_MAX_WIDTH, Math.max(GRAPH_NODE_MIN_WIDTH, width))
+    : GRAPH_NODE_WIDTH;
+}
+
+export function graphNodeHeight(node: GraphNodeState): number {
+  const height = node.size?.height;
+  const contentHeight =
     GRAPH_NODE_HEAD_HEIGHT +
     GRAPH_NODE_ROW_HEIGHT +
-    Math.max(1, Math.min(4, summaryParamCount(node.summary))) * GRAPH_NODE_ROW_HEIGHT
-  );
+    Math.max(1, Math.min(4, summaryParamCount(node.summary))) * GRAPH_NODE_ROW_HEIGHT;
+  return typeof height === 'number' && Number.isFinite(height)
+    ? Math.min(GRAPH_NODE_MAX_HEIGHT, Math.max(contentHeight, height))
+    : contentHeight;
 }
 
 function summaryParamCount(summary: string): number {

@@ -55,6 +55,7 @@ fn executable_graph() -> WorkflowGraph {
                     title: "Text".to_owned(),
                     params: json!({ "text": "launch teaser" }),
                     pos: [0.0, 0.0],
+                    size: None,
                 },
             ),
             (
@@ -64,6 +65,7 @@ fn executable_graph() -> WorkflowGraph {
                     title: "Prompt Writer".to_owned(),
                     params: json!({ "style": "cinematic" }),
                     pos: [240.0, 0.0],
+                    size: None,
                 },
             ),
             (
@@ -77,6 +79,7 @@ fn executable_graph() -> WorkflowGraph {
                         "aspect_ratio": "9:16"
                     }),
                     pos: [480.0, 0.0],
+                    size: None,
                 },
             ),
             (
@@ -86,6 +89,7 @@ fn executable_graph() -> WorkflowGraph {
                     title: "Save".to_owned(),
                     params: json!({}),
                     pos: [720.0, 0.0],
+                    size: None,
                 },
             ),
         ]),

@@ -59,6 +59,10 @@ enum ManualOpRequest {
         id: String,
         pos: [f32; 2],
     },
+    ResizeNode {
+        id: String,
+        size: [f32; 2],
+    },
 }
 
 pub(crate) async fn apply_workspace_ops(
@@ -226,6 +230,7 @@ fn manual_op_to_proposal_op(
                         .unwrap_or_else(|| definition.title.clone()),
                     params,
                     pos,
+                    size: None,
                 },
             })
         }
@@ -287,6 +292,11 @@ fn manual_op_to_proposal_op(
             ensure_finite_pos(pos)?;
             Ok(ProposalOp::MoveNode { id, pos })
         }
+        ManualOpRequest::ResizeNode { id, size } => {
+            ensure_non_empty("node id", &id)?;
+            ensure_finite_size(size)?;
+            Ok(ProposalOp::ResizeNode { id, size })
+        }
     }
 }
 
@@ -315,6 +325,15 @@ fn ensure_finite_pos(pos: [f32; 2]) -> Result<(), ApiError> {
     if pos.iter().any(|value| !value.is_finite()) {
         return Err(ApiError::bad_request(
             "node position must contain finite numbers",
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_finite_size(size: [f32; 2]) -> Result<(), ApiError> {
+    if size.iter().any(|value| !value.is_finite()) || size[0] <= 0.0 || size[1] <= 0.0 {
+        return Err(ApiError::bad_request(
+            "node size must contain positive finite numbers",
         ));
     }
     Ok(())
@@ -374,6 +393,7 @@ fn manual_title(op: &ProposalOp) -> String {
             edge.from[0], edge.from[1], edge.to[0], edge.to[1]
         ),
         ProposalOp::MoveNode { id, .. } => format!("Move node {id}"),
+        ProposalOp::ResizeNode { id, .. } => format!("Resize node {id}"),
     }
 }
 

@@ -7,7 +7,7 @@ import type {
 import {
   GRAPH_NODE_HEAD_HEIGHT,
   GRAPH_NODE_ROW_HEIGHT,
-  GRAPH_NODE_WIDTH,
+  graphNodeWidth,
 } from './graph-canvas-navigation';
 import type { Point } from './graph-canvas-selection';
 
@@ -113,7 +113,7 @@ export function portAnchorPoint(
   direction: PortDirection,
   index: number,
 ): Point {
-  const x = direction === 'output' ? node.position.x + GRAPH_NODE_WIDTH : node.position.x;
+  const x = direction === 'output' ? node.position.x + graphNodeWidth(node) : node.position.x;
   return {
     x,
     y: node.position.y + GRAPH_NODE_HEAD_HEIGHT + GRAPH_NODE_ROW_HEIGHT + index * 22,

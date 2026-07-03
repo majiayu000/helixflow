@@ -524,6 +524,7 @@ mod tests {
                         "aspect_ratio": "9:16"
                     }),
                     pos: [10.0, 20.0],
+                    size: None,
                 },
             )]),
             edges: Vec::new(),
@@ -838,6 +839,7 @@ mod tests {
                     title: "Input".to_owned(),
                     params: json!({ "summary": "Source text" }),
                     pos: [10.0, 20.0],
+                    size: None,
                 },
             )]),
             edges: vec![GraphEdge {

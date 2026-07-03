@@ -59,6 +59,10 @@ fn canvas_document_payload(
                     "x": node.pos[0],
                     "y": node.pos[1],
                 },
+                "size": node.size.map(|size| json!({
+                    "width": size[0],
+                    "height": size[1],
+                })),
                 "params": node.params,
                 "runtime": Value::Null,
                 "metadata": {
@@ -122,6 +126,8 @@ mod tests {
         assert_eq!(body["nodes"][0]["id"], "text");
         assert_eq!(body["nodes"][0]["nodeType"], "input.text");
         assert_eq!(body["nodes"][0]["position"]["x"], 10.0);
+        assert_eq!(body["nodes"][0]["size"]["width"], 260.0);
+        assert_eq!(body["nodes"][0]["size"]["height"], 180.0);
         assert_eq!(body["edges"][0]["from"]["nodeId"], "text");
         assert_eq!(body["metadata"]["source"], "workflow_graph_compat");
     }
@@ -199,6 +205,7 @@ mod tests {
                         title: "Text".to_owned(),
                         params: json!({ "text": "hello" }),
                         pos: [10.0, 20.0],
+                        size: Some([260.0, 180.0]),
                     },
                 ),
                 (
@@ -208,6 +215,7 @@ mod tests {
                         title: "Video".to_owned(),
                         params: json!({ "prompt": "hello", "duration_sec": 4 }),
                         pos: [300.0, 20.0],
+                        size: None,
                     },
                 ),
             ]),

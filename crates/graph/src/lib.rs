@@ -25,6 +25,8 @@ pub struct GraphNode {
     pub title: String,
     pub params: Value,
     pub pos: [f32; 2],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<[f32; 2]>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -54,6 +56,11 @@ impl GraphService {
             let definition = self.registry.definition(&node.node_type)?;
             self.registry
                 .validate_node_params(&node.node_type, &node.params)?;
+            if let Some(size) = node.size
+                && (size.iter().any(|value| !value.is_finite()) || size[0] <= 0.0 || size[1] <= 0.0)
+            {
+                return Err(GraphError::InvalidNodeSize(node_id.clone()));
+            }
 
             for required_input in definition.inputs.iter().filter(|input| input.required) {
                 let connected = graph
@@ -257,6 +264,13 @@ impl GraphService {
                         .ok_or_else(|| GraphError::MissingNode(id.clone()))?;
                     node.pos = *pos;
                 }
+                ProposalOp::ResizeNode { id, size } => {
+                    let node = graph
+                        .nodes
+                        .get_mut(id)
+                        .ok_or_else(|| GraphError::MissingNode(id.clone()))?;
+                    node.size = Some(*size);
+                }
             }
         }
 
@@ -393,6 +407,10 @@ pub enum ProposalOp {
         id: String,
         pos: [f32; 2],
     },
+    ResizeNode {
+        id: String,
+        size: [f32; 2],
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -439,6 +457,7 @@ pub enum GraphError {
     DuplicateNode(String),
     MissingNode(String),
     MissingEdge(GraphEdge),
+    InvalidNodeSize(String),
     ParamsNotObject(String),
     SetParamConflict {
         node_id: String,
@@ -488,6 +507,7 @@ impl fmt::Display for GraphError {
             Self::DuplicateNode(node_id) => write!(f, "duplicate node id: {node_id}"),
             Self::MissingNode(node_id) => write!(f, "missing node: {node_id}"),
             Self::MissingEdge(edge) => write!(f, "missing edge: {edge:?}"),
+            Self::InvalidNodeSize(node_id) => write!(f, "invalid node size: {node_id}"),
             Self::ParamsNotObject(node_id) => {
                 write!(f, "node params must be an object: {node_id}")
             }

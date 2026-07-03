@@ -52,6 +52,7 @@ fn background_graph() -> WorkflowGraph {
                     title: "Text".to_owned(),
                     params: json!({ "text": "launch teaser" }),
                     pos: [0.0, 0.0],
+                    size: None,
                 },
             ),
             (
@@ -61,6 +62,7 @@ fn background_graph() -> WorkflowGraph {
                     title: "Prompt Writer".to_owned(),
                     params: json!({ "style": "cinematic" }),
                     pos: [240.0, 0.0],
+                    size: None,
                 },
             ),
             (
@@ -70,6 +72,7 @@ fn background_graph() -> WorkflowGraph {
                     title: "Save".to_owned(),
                     params: json!({}),
                     pos: [480.0, 0.0],
+                    size: None,
                 },
             ),
         ]),

@@ -95,6 +95,7 @@ fn executable_graph() -> WorkflowGraph {
                         "aspect_ratio": "1:1"
                     }),
                     pos: [0.0, 0.0],
+                    size: None,
                 },
             ),
             (
@@ -104,6 +105,7 @@ fn executable_graph() -> WorkflowGraph {
                     title: "Save".to_owned(),
                     params: json!({}),
                     pos: [240.0, 0.0],
+                    size: None,
                 },
             ),
         ]),

@@ -540,6 +540,7 @@ mod tests {
                     title: "Input".to_owned(),
                     params: json!({ "text": "launch teaser" }),
                     pos: [0.0, 0.0],
+                    size: None,
                 },
             )]),
             edges: Vec::new(),

@@ -1,10 +1,9 @@
 import type { GraphNodeState, WorkbenchState } from '../types';
 import {
   DEFAULT_GRAPH_VIEW,
-  GRAPH_NODE_HEAD_HEIGHT,
-  GRAPH_NODE_ROW_HEIGHT,
-  GRAPH_NODE_WIDTH,
   clampZoom,
+  graphNodeHeight,
+  graphNodeWidth,
   type ViewState,
   type ViewportSize,
 } from './graph-canvas-navigation';
@@ -43,8 +42,8 @@ export function selectedIdsInWorldRect(nodes: GraphNodeState[], rect: Rect): Set
     const nodeRect = {
       x: node.position.x,
       y: node.position.y,
-      width: GRAPH_NODE_WIDTH,
-      height: GRAPH_NODE_HEAD_HEIGHT + GRAPH_NODE_ROW_HEIGHT * 5,
+      width: graphNodeWidth(node),
+      height: graphNodeHeight(node),
     };
     if (rectsIntersect(rect, nodeRect)) {
       selected.add(node.id);
@@ -81,8 +80,8 @@ export function fitViewToNodes(nodes: GraphNodeState[], viewportSize: ViewportSi
   for (const node of measured) {
     minX = Math.min(minX, node.position.x);
     minY = Math.min(minY, node.position.y);
-    maxX = Math.max(maxX, node.position.x + GRAPH_NODE_WIDTH);
-    maxY = Math.max(maxY, node.position.y + GRAPH_NODE_HEAD_HEIGHT + GRAPH_NODE_ROW_HEIGHT * 5);
+    maxX = Math.max(maxX, node.position.x + graphNodeWidth(node));
+    maxY = Math.max(maxY, node.position.y + graphNodeHeight(node));
   }
   const padding = 72;
   const width = Math.max(1, maxX - minX + padding * 2);

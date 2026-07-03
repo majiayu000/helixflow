@@ -416,6 +416,7 @@ mod tests {
                         title: "Text".to_owned(),
                         params: json!({ "text": "make a product clip" }),
                         pos: [0.0, 0.0],
+                        size: None,
                     },
                 ),
                 (
@@ -425,6 +426,7 @@ mod tests {
                         title: "Prompt".to_owned(),
                         params: json!({ "style": "product" }),
                         pos: [220.0, 0.0],
+                        size: None,
                     },
                 ),
                 (
@@ -438,6 +440,7 @@ mod tests {
                             "aspect_ratio": "9:16"
                         }),
                         pos: [440.0, 0.0],
+                        size: None,
                     },
                 ),
             ]),

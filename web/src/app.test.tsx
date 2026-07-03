@@ -1636,10 +1636,11 @@ describe('GraphCanvas navigation', () => {
   });
 
   it('renders CanvasDocument graph before legacy graph when no proposal is pending', () => {
+    const canvasGraph = graphStateFromCanvasDocument(canvasDocument(), state.graph);
     const markup = renderToStaticMarkup(
       <GraphCanvas
         graph={state.graph}
-        canvasGraph={graphStateFromCanvasDocument(canvasDocument(), state.graph)}
+        canvasGraph={canvasGraph}
         pendingProposal={null}
         run={state.run!}
         versionId="ver_test_1"
@@ -1649,6 +1650,7 @@ describe('GraphCanvas navigation', () => {
 
     expect(markup).toContain('Canvas source');
     expect(markup).not.toContain('Launch note');
+    expect(canvasGraph.nodes[0]?.size).toEqual({ width: 260, height: 180 });
   });
 
   it('keeps proposal preview ahead of CanvasDocument rendering', () => {
@@ -2028,6 +2030,7 @@ function canvasDocument(): CanvasDocument {
         nodeType: 'input.text',
         title: 'Canvas source',
         position: { x: 140, y: 90 },
+        size: { width: 260, height: 180 },
         params: { text: 'from canvas' },
         runtime: null,
         metadata: { source: 'test' },
