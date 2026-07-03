@@ -101,6 +101,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   useEffect(() => {
     if (!activeState?.workspace.id) return;
     return connectWorkspaceEvents(activeState.workspace.id, {
+      getLastSeq: () => useWorkbenchStore.getState().state?.eventSeq ?? 0,
       onEvent: applyEvent,
       onPresence: applyCanvasPresence,
       onStatus: setConnection,

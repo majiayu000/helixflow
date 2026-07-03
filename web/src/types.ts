@@ -470,6 +470,16 @@ export const RunEventEnvelopeSchema = z.object({
   data: z.record(z.string(), z.unknown()),
 });
 
+export const WorkspaceEventsSchema = z.object({
+  events: z.array(RunEventEnvelopeSchema),
+});
+
+export const CanvasTicketResponseSchema = z.object({
+  mode: z.enum(['disabled', 'required']),
+  ticket: z.string().nullable().optional(),
+  expiresAt: z.number().nullable().optional(),
+});
+
 export type WorkbenchState = z.infer<typeof WorkbenchStateSchema>;
 export type CanvasDocument = z.infer<typeof CanvasDocumentSchema>;
 export type CanvasActor = z.infer<typeof CanvasActorSchema>;

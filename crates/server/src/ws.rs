@@ -3,25 +3,37 @@ use axum::{
         Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    response::IntoResponse,
+    response::{IntoResponse, Response},
 };
 use helixflow_run::RunEventEnvelope;
 use serde::Deserialize;
 use tokio::sync::broadcast;
 
 use crate::app_state::AppState;
+use crate::canvas_ticket::validate_canvas_ws_ticket;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct WorkspaceEventQuery {
     workspace_id: Option<String>,
+    ticket: Option<String>,
 }
 
 pub(crate) async fn ws_handler(
     ws: WebSocketUpgrade,
     Query(query): Query<WorkspaceEventQuery>,
     State(state): State<AppState>,
-) -> impl IntoResponse {
+) -> Response {
+    if let Err(error) = validate_canvas_ws_ticket(
+        &state,
+        query.workspace_id.as_deref(),
+        query.ticket.as_deref(),
+    )
+    .await
+    {
+        return error.into_response();
+    }
     ws.on_upgrade(move |socket| stream_events(socket, state.events.subscribe(), query.workspace_id))
+        .into_response()
 }
 
 async fn stream_events(

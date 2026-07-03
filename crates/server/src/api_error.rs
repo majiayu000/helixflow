@@ -36,6 +36,14 @@ impl ApiError {
         }
     }
 
+    pub(crate) fn unauthorized(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            message: message.into(),
+            details: None,
+        }
+    }
+
     pub(crate) fn conflict_with_details(
         message: impl Into<String>,
         details: serde_json::Value,
