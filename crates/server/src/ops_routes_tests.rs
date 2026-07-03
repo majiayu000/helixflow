@@ -62,6 +62,57 @@ async fn ops_route_applies_multiple_ops_as_one_manual_version() {
 }
 
 #[tokio::test]
+async fn ops_route_reuses_idempotency_key_without_duplicate_versions() {
+    let (state, workspace_id, base_version_id, _dir) = state_with_graph().await;
+    let body = json!({
+        "baseVersionId": base_version_id,
+        "idempotencyKey": "canvas_op_retry_1",
+        "ops": [{ "op": "move_node", "id": "writer", "pos": [420, 80] }]
+    });
+
+    let first = apply_workspace_ops(
+        Path(workspace_id.clone()),
+        State(state.clone()),
+        body.to_string(),
+    )
+    .await
+    .expect("first ops response")
+    .0;
+    let first_version_id = first["workspace"]["versionId"]
+        .as_str()
+        .expect("first version id")
+        .to_owned();
+    let graph_count = graph_file_count(&state, &workspace_id).await;
+    let version_count = state
+        .store
+        .versions_for_workspace(&workspace_id)
+        .await
+        .expect("versions")
+        .len();
+
+    let retry = apply_workspace_ops(
+        Path(workspace_id.clone()),
+        State(state.clone()),
+        body.to_string(),
+    )
+    .await
+    .expect("retry ops response")
+    .0;
+
+    assert_eq!(retry["workspace"]["versionId"], first_version_id);
+    assert_eq!(graph_file_count(&state, &workspace_id).await, graph_count);
+    assert_eq!(
+        state
+            .store
+            .versions_for_workspace(&workspace_id)
+            .await
+            .expect("versions")
+            .len(),
+        version_count
+    );
+}
+
+#[tokio::test]
 async fn ops_route_rejects_op_level_failures_with_op_index() {
     let (state, workspace_id, base_version_id, _dir) = state_with_graph().await;
     let body = json!({
@@ -82,6 +133,45 @@ async fn ops_route_rejects_op_level_failures_with_op_index() {
     let body = error_body(err).await;
 
     assert_eq!(body["opIndex"], 1);
+    assert_eq!(
+        state
+            .store
+            .workspace(&workspace_id)
+            .await
+            .expect("workspace")
+            .cur_version_id
+            .as_deref(),
+        Some(base_version_id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn ops_route_rejects_set_param_prev_conflict_with_op_index() {
+    let (state, workspace_id, base_version_id, _dir) = state_with_graph().await;
+    let body = json!({
+        "baseVersionId": base_version_id,
+        "ops": [
+            { "op": "set_param", "id": "text", "key": "text", "prev": "newer", "value": "updated" }
+        ]
+    });
+
+    let err = apply_workspace_ops(
+        Path(workspace_id.clone()),
+        State(state.clone()),
+        body.to_string(),
+    )
+    .await
+    .expect_err("prev mismatch should fail");
+    assert_eq!(err.status, axum::http::StatusCode::CONFLICT);
+    let body = error_body(err).await;
+
+    assert_eq!(body["opIndex"], 0);
+    assert!(
+        body["error"]
+            .as_str()
+            .expect("error")
+            .contains("set_param conflict")
+    );
     assert_eq!(
         state
             .store

@@ -33,7 +33,13 @@ export function appendManualEditInput(
   const current =
     session?.baseVersionId === baseVersionId
       ? session
-      : { baseVersionId, source: 'user' as const, ops: [], startedAt: now };
+      : {
+          baseVersionId,
+          idempotencyKey: input.idempotencyKey ?? createCanvasOpIdempotencyKey(),
+          source: 'user' as const,
+          ops: [],
+          startedAt: now,
+        };
 
   return {
     ...current,
@@ -44,9 +50,26 @@ export function appendManualEditInput(
 export function manualEditInputFromSession(session: ManualEditSession): ManualProposalInput {
   return {
     baseVersionId: session.baseVersionId,
+    idempotencyKey: session.idempotencyKey,
     label: `Manual edit session (${session.ops.length} changes)`,
     ops: session.ops,
   };
+}
+
+export function manualProposalWithIdempotency(input: ManualProposalInput): ManualProposalInput {
+  if (input.idempotencyKey && input.idempotencyKey.trim()) {
+    return input;
+  }
+  return { ...input, idempotencyKey: createCanvasOpIdempotencyKey() };
+}
+
+export function createCanvasOpIdempotencyKey(): string {
+  const randomUuid = globalThis.crypto?.randomUUID?.();
+  if (randomUuid) {
+    return `canvas_op_${randomUuid}`;
+  }
+  const suffix = Math.random().toString(36).slice(2, 12);
+  return `canvas_op_${Date.now()}_${suffix}`;
 }
 
 export function manualEditSummary(session: ManualEditSession | null, limit = 6): string[] {
@@ -69,6 +92,25 @@ export function buildMoveNodeEditInput(
       id: position.id,
       pos: [position.x, position.y],
     })),
+  };
+}
+
+export function buildSetParamEditInput(
+  baseVersionId: string,
+  workflowGraph: WorkflowGraph | undefined,
+  nodeId: string,
+  key: string,
+  value: unknown,
+): ManualProposalInput {
+  const prev = workflowParamPrev(workflowGraph, nodeId, key);
+  return {
+    baseVersionId,
+    label: `Inspector set ${key}`,
+    ops: [
+      prev.found
+        ? { op: 'set_param', id: nodeId, key, prev: prev.value, value }
+        : { op: 'set_param', id: nodeId, key, value },
+    ],
   };
 }
 
@@ -300,6 +342,21 @@ function objectParams(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function workflowParamPrev(
+  graph: WorkflowGraph | undefined,
+  nodeId: string,
+  key: string,
+): { found: true; value: unknown } | { found: false } {
+  const params = graph?.nodes[nodeId]?.params;
+  if (!params || typeof params !== 'object' || Array.isArray(params)) {
+    return { found: false };
+  }
+  if (!Object.prototype.hasOwnProperty.call(params, key)) {
+    return { found: false };
+  }
+  return { found: true, value: (params as Record<string, unknown>)[key] };
 }
 
 function cloneUnknown<T>(value: T): T {

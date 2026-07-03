@@ -36,6 +36,17 @@ impl ApiError {
         }
     }
 
+    pub(crate) fn conflict_with_details(
+        message: impl Into<String>,
+        details: serde_json::Value,
+    ) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            message: message.into(),
+            details: Some(details),
+        }
+    }
+
     pub(crate) fn bad_request_with_details(
         message: impl Into<String>,
         details: serde_json::Value,

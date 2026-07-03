@@ -1539,6 +1539,7 @@ describe('App', () => {
     });
     expect(JSON.parse(String((init as RequestInit).body))).toEqual({
       baseVersionId: 'ver_test_1',
+      idempotencyKey: expect.any(String),
       ops: [{ op: 'set_param', id: 'video', key: 'duration_sec', value: 4 }],
     });
     expect(useWorkbenchStore.getState().state?.pendingProposal?.id).toBe('proposal_1');

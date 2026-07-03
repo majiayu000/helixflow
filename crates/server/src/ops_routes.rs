@@ -21,6 +21,7 @@ use crate::workspace_state::workspace_state_value;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct OpsRequest {
     base_version_id: String,
+    idempotency_key: Option<String>,
     label: Option<String>,
     ops: Vec<ManualOpRequest>,
 }
@@ -41,6 +42,7 @@ enum ManualOpRequest {
     SetParam {
         id: String,
         key: String,
+        prev: Option<Value>,
         value: Value,
     },
     AddEdge {
@@ -69,9 +71,16 @@ pub(crate) async fn apply_workspace_ops(
     if input.base_version_id.trim().is_empty() {
         return Err(ApiError::bad_request("baseVersionId is required"));
     }
+    if let Some(key) = input.idempotency_key.as_deref() {
+        ensure_idempotency_key(key)?;
+    }
     if input.ops.is_empty() {
         return Err(ApiError::bad_request("ops must contain at least one op"));
     }
+    let idempotent_graph_path = input
+        .idempotency_key
+        .as_deref()
+        .map(|key| ops_graph_path(&workspace_id, Some(key)));
 
     let workspace = state
         .store
@@ -83,6 +92,17 @@ pub(crate) async fn apply_workspace_ops(
         .as_deref()
         .ok_or_else(|| ApiError::conflict("workspace has no current version"))?;
     if input.base_version_id != current_version_id {
+        if let Some(graph_path) = idempotent_graph_path.as_deref()
+            && accepted_idempotent_version(
+                &state,
+                &workspace_id,
+                &input.base_version_id,
+                graph_path,
+            )
+            .await?
+        {
+            return Ok(Json(workspace_state_value(&state, &workspace_id).await?));
+        }
         return Err(ApiError::conflict(format!(
             "ops base `{}` is superseded by `{current_version_id}`",
             input.base_version_id
@@ -113,7 +133,8 @@ pub(crate) async fn apply_workspace_ops(
         .validate_graph(&edited_graph)
         .map_err(|err| graph_ops_error(err, None))?;
 
-    let graph_path = ops_graph_path(&workspace_id);
+    let graph_path = idempotent_graph_path.unwrap_or_else(|| ops_graph_path(&workspace_id, None));
+    ensure_idempotent_path_available(&state, &graph_path).await?;
     let graph_hash = write_graph_atomically(&state.data_dir, &graph_path, &edited_graph).await?;
     let graph_path_string = graph_path.to_string_lossy().into_owned();
     let label = input
@@ -212,10 +233,15 @@ fn manual_op_to_proposal_op(
             ensure_non_empty("node id", &id)?;
             Ok(ProposalOp::RemoveNode { id })
         }
-        ManualOpRequest::SetParam { id, key, value } => {
+        ManualOpRequest::SetParam {
+            id,
+            key,
+            prev,
+            value,
+        } => {
             ensure_non_empty("node id", &id)?;
             ensure_non_empty("param key", &key)?;
-            let prev = base_graph
+            let current_prev = base_graph
                 .nodes
                 .get(&id)
                 .and_then(|node| node.params.as_object())
@@ -224,7 +250,7 @@ fn manual_op_to_proposal_op(
             Ok(ProposalOp::SetParam {
                 id,
                 key,
-                prev,
+                prev: prev.or(current_prev),
                 value,
             })
         }
@@ -271,6 +297,9 @@ fn op_error(index: usize, message: impl Into<String>) -> ApiError {
 fn graph_ops_error(err: GraphError, index: Option<usize>) -> ApiError {
     match err {
         GraphError::ProposalSuperseded { .. } => ApiError::conflict(err.to_string()),
+        GraphError::SetParamConflict { .. } => {
+            ApiError::conflict_with_details(err.to_string(), json!({ "opIndex": index }))
+        }
         _ => ApiError::bad_request_with_details(err.to_string(), json!({ "opIndex": index })),
     }
 }
@@ -286,6 +315,26 @@ fn ensure_finite_pos(pos: [f32; 2]) -> Result<(), ApiError> {
     if pos.iter().any(|value| !value.is_finite()) {
         return Err(ApiError::bad_request(
             "node position must contain finite numbers",
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_idempotency_key(key: &str) -> Result<(), ApiError> {
+    if key.trim().is_empty() {
+        return Err(ApiError::bad_request("idempotencyKey must not be empty"));
+    }
+    if key.len() > 128 {
+        return Err(ApiError::bad_request(
+            "idempotencyKey must be 128 bytes or less",
+        ));
+    }
+    if !key
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err(ApiError::bad_request(
+            "idempotencyKey may only contain ASCII letters, digits, `_`, or `-`",
         ));
     }
     Ok(())
@@ -328,11 +377,48 @@ fn manual_title(op: &ProposalOp) -> String {
     }
 }
 
-fn ops_graph_path(workspace_id: &str) -> PathBuf {
+fn ops_graph_path(workspace_id: &str, idempotency_key: Option<&str>) -> PathBuf {
+    let filename = match idempotency_key {
+        Some(key) => format!("ops-{key}.json"),
+        None => format!("ops-{}.json", Uuid::now_v7().simple()),
+    };
     PathBuf::from("workspaces")
         .join(workspace_id)
         .join("graphs")
-        .join(format!("ops-{}.json", Uuid::now_v7().simple()))
+        .join(filename)
+}
+
+async fn accepted_idempotent_version(
+    state: &AppState,
+    workspace_id: &str,
+    base_version_id: &str,
+    graph_path: &Path,
+) -> Result<bool, ApiError> {
+    let graph_path_string = graph_path.to_string_lossy();
+    let versions = state
+        .store
+        .versions_for_workspace(workspace_id)
+        .await
+        .map_err(ApiError::store)?;
+    Ok(versions.iter().any(|version| {
+        version.parent_id.as_deref() == Some(base_version_id)
+            && version.graph_path == graph_path_string.as_ref()
+    }))
+}
+
+async fn ensure_idempotent_path_available(
+    state: &AppState,
+    graph_path: &Path,
+) -> Result<(), ApiError> {
+    if tokio::fs::try_exists(state.data_dir.join(graph_path))
+        .await
+        .map_err(|err| ApiError::io("check idempotent ops graph path", err))?
+    {
+        return Err(ApiError::conflict(
+            "idempotencyKey is already reserved; refresh and retry",
+        ));
+    }
+    Ok(())
 }
 
 async fn write_graph_atomically(

@@ -14,6 +14,7 @@ import {
   type WorkspaceSummary,
 } from './types';
 import {
+  buildSetParamEditInput,
   deriveQueueLockReason,
   manualEditSummary,
   previewWorkbenchStateWithManualEdits,
@@ -273,15 +274,19 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
                   setSelectedCanvasNodeIds(nodeIds);
                   setCanvasSelection(nodeIds);
                 }}
-                onSetParam={(nodeId, key, value) =>
-                  runAction(() =>
-                    appendManualEdit({
-                      baseVersionId: activeState.workspace.versionId,
-                      label: `Inspector set ${key}`,
-                      ops: [{ op: 'set_param', id: nodeId, key, value }],
-                    }),
-                  )
-                }
+                onSetParam={(nodeId, key, value) => {
+                  return runAction(() =>
+                    appendManualEdit(
+                      buildSetParamEditInput(
+                        activeState.workspace.versionId,
+                        previewState.workflowGraph,
+                        nodeId,
+                        key,
+                        value,
+                      ),
+                    ),
+                  );
+                }}
                 pendingProposal={activeState.pendingProposal}
                 run={uiState.run}
                 versionId={activeState.workspace.versionId}

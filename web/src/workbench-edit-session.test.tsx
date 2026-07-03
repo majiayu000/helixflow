@@ -4,6 +4,7 @@ import { App } from './app';
 import { useWorkbenchStore } from './store';
 import type { WorkbenchState } from './types';
 import {
+  buildSetParamEditInput,
   deriveQueueLockReason,
   previewWorkbenchStateWithManualEdits,
 } from './workbench-edit-session';
@@ -144,11 +145,32 @@ describe('manual edit session workbench flow', () => {
     });
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
       baseVersionId: 'ver_test_1',
+      idempotencyKey: expect.any(String),
       label: 'Manual edit session (1 changes)',
       ops: [{ op: 'set_param', id: 'video', key: 'duration_sec', value: 3 }],
     });
     expect(useWorkbenchStore.getState().editSession).toBeNull();
     expect(useWorkbenchStore.getState().state?.workspace.versionId).toBe('ver_manual_2');
+  });
+
+  it('reuses one idempotency key for retries within the same edit session', async () => {
+    vi.stubGlobal('fetch', vi.fn());
+    useWorkbenchStore.getState().setInitialState(state);
+
+    await useWorkbenchStore.getState().appendManualEdit({
+      baseVersionId: 'ver_test_1',
+      ops: [{ op: 'move_node', id: 'video', pos: [620, 210] }],
+    });
+    const firstKey = useWorkbenchStore.getState().editSession?.idempotencyKey;
+
+    await useWorkbenchStore.getState().appendManualEdit({
+      baseVersionId: 'ver_test_1',
+      ops: [{ op: 'add_edge', from: ['text', 'text'], to: ['video', 'prompt'], edge_type: 'text' }],
+    });
+
+    const editSession = useWorkbenchStore.getState().editSession;
+    expect(editSession?.idempotencyKey).toBe(firstKey);
+    expect(editSession?.ops).toHaveLength(2);
   });
 
   it('discards manual edits without writing a new version', async () => {
@@ -191,6 +213,7 @@ describe('manual edit session workbench flow', () => {
       <App
         initialEditSession={{
           baseVersionId: 'ver_test_1',
+          idempotencyKey: 'canvas_op_existing',
           source: 'user',
           startedAt: '2026-07-02T00:00:00Z',
           ops: [{ op: 'move_node', id: 'video', pos: [620, 210] }],
@@ -209,6 +232,7 @@ describe('manual edit session workbench flow', () => {
   it('previews manual edit ops without mutating the committed state', () => {
     const preview = previewWorkbenchStateWithManualEdits(state, {
       baseVersionId: 'ver_test_1',
+      idempotencyKey: 'canvas_op_existing',
       source: 'user',
       startedAt: '2026-07-02T00:00:00Z',
       ops: [
@@ -225,6 +249,22 @@ describe('manual edit session workbench flow', () => {
     expect(state.graph.nodes.find((node) => node.id === 'video')?.position).toEqual({
       x: 486,
       y: 156,
+    });
+  });
+
+  it('builds inspector set_param edits with prev from the preview workflow graph', () => {
+    expect(
+      buildSetParamEditInput(
+        'ver_test_1',
+        state.workflowGraph,
+        'video',
+        'duration_sec',
+        6,
+      ),
+    ).toEqual({
+      baseVersionId: 'ver_test_1',
+      label: 'Inspector set duration_sec',
+      ops: [{ op: 'set_param', id: 'video', key: 'duration_sec', prev: 4, value: 6 }],
     });
   });
 
