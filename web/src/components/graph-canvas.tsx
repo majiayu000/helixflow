@@ -13,8 +13,6 @@ import { portColor } from '../icons';
 import { buildMoveNodeEditInput } from '../workbench-edit-session';
 import type {
   GraphNodeState,
-  LayoutPositionUpdate,
-  ManualProposalInput,
   NodeCatalog,
   WorkbenchState,
 } from '../types';
@@ -26,7 +24,6 @@ import {
   findInputConnection,
   portAnchorPoint,
   portTypeMatches,
-  type ConnectionPort,
   type PortHighlight,
 } from './graph-canvas-connections';
 import {
@@ -34,6 +31,10 @@ import {
   portDropTargetFromPoint,
   releaseConnectionCapture,
 } from './graph-canvas-connection-events';
+import {
+  CanvasCollaborationWorld,
+  CanvasCommentsPanel,
+} from './graph-canvas-collaboration';
 import { createCanvasEditActions } from './graph-canvas-edit-actions';
 import { GraphEdges } from './graph-canvas-edges';
 import { GraphInspector, GraphSelectionInspector } from './graph-canvas-inspector';
@@ -42,7 +43,6 @@ import {
   moveNodeDrafts,
   positionUpdatesFromDrafts,
   selectionForNodePointer,
-  type DragNodeStart,
   type PositionDrafts,
 } from './graph-canvas-layout';
 import {
@@ -85,6 +85,13 @@ import {
   worldRectFromLocalRect,
   type Point,
 } from './graph-canvas-selection';
+import type {
+  ConnectionDragState,
+  DragState,
+  GraphCanvasProps,
+  NodeDragState,
+  SelectionDragState,
+} from './graph-canvas-types';
 import { NodeLibrary } from './node-library';
 
 export {
@@ -102,61 +109,20 @@ export {
 } from './graph-canvas-navigation';
 export type { MinimapLayout, ViewState, ViewportSize } from './graph-canvas-navigation';
 
-type GraphCanvasProps = {
-  workspaceId: string;
-  versionId: string;
-  graph: WorkbenchState['graph'];
-  canvasGraph?: WorkbenchState['graph'];
-  pendingProposal: WorkbenchState['pendingProposal'];
-  run: NonNullable<WorkbenchState['run']>;
-  workflowGraph?: WorkbenchState['workflowGraph'];
-  onSaveLayout?: (positions: LayoutPositionUpdate[]) => Promise<void>;
-  onCreateProposal?: (input: ManualProposalInput) => Promise<void>;
-  onRequestNodeProposal?: (nodeId: string) => Promise<void>;
-  onSelectionChange?: (nodeIds: string[]) => void;
-  onSetParam?: (nodeId: string, key: string, value: unknown) => Promise<void>;
-};
-
-type DragState = {
-  pointerId: number;
-  sx: number;
-  sy: number;
-  ox: number;
-  oy: number;
-};
-
-type NodeDragState = {
-  pointerId: number;
-  sx: number;
-  sy: number;
-  starts: DragNodeStart[];
-};
-
-type SelectionDragState = {
-  pointerId: number;
-  start: Point;
-  current: Point;
-  additive: boolean;
-  baseIds: Set<string>;
-};
-
-type ConnectionDragState = {
-  pointerId: number;
-  source: ConnectionPort;
-  sourcePoint: Point;
-  currentPoint: Point;
-};
-
 export function GraphCanvas({
   workspaceId,
   versionId,
   graph,
   canvasGraph,
+  comments = [],
   pendingProposal,
+  presenceByActor = {},
   run,
   workflowGraph,
+  onCommentOp,
   onSaveLayout,
   onCreateProposal,
+  onPresenceChange,
   onRequestNodeProposal,
   onSelectionChange,
   onSetParam,
@@ -175,6 +141,7 @@ export function GraphCanvas({
   const [connectionDrag, setConnectionDrag] = useState<ConnectionDragState | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<string | null>(null);
   const [clipboardStatus, setClipboardStatus] = useState<string | null>(null);
+  const [localCursor, setLocalCursor] = useState<Point | null>(null);
   const drag = useRef<DragState | null>(null);
   const nodeDrag = useRef<NodeDragState | null>(null);
   const suppressNextClick = useRef(false);
@@ -276,6 +243,19 @@ export function GraphCanvas({
   useEffect(() => {
     onSelectionChange?.(selectedIdList);
   }, [onSelectionChange, selectedIdList]);
+
+  useEffect(() => {
+    if (!onPresenceChange) return;
+    const timer = setTimeout(() => {
+      onPresenceChange({
+        actor: { actorId: 'local', displayName: 'Local user' },
+        cursor: localCursor,
+        selection: { nodeIds: selectedIdList, edgeIds: [] },
+        viewport: { x: view.x, y: view.y, zoom: view.z },
+      });
+    }, 180);
+    return () => clearTimeout(timer);
+  }, [localCursor, onPresenceChange, selectedIdList, view.x, view.y, view.z]);
 
   useEffect(() => {
     const current = canvasRef.current;
@@ -625,6 +605,7 @@ export function GraphCanvas({
         };
       }}
       onPointerMove={(event) => {
+        setLocalCursor(worldPointFromClient(event.clientX, event.clientY));
         if (connectionDrag?.pointerId === event.pointerId) {
           event.preventDefault();
           event.stopPropagation();
@@ -743,6 +724,11 @@ export function GraphCanvas({
             onResizePointerUp={stopNodeResize}
           />
         ))}
+        <CanvasCollaborationWorld
+          comments={comments}
+          nodes={displayNodes}
+          presenceByActor={presenceByActor}
+        />
       </div>
       {nodeCount === 0 && <EmptyCanvas />}
       {selectionDrag && (
@@ -774,6 +760,15 @@ export function GraphCanvas({
           workflowNode={selectedWorkflowNode}
         />
       )}
+      <CanvasCommentsPanel
+        comments={comments}
+        edges={drawGraph.edges}
+        nodes={displayNodes}
+        onCommentOp={pendingProposal ? undefined : onCommentOp}
+        selectedNodeId={selectedNodeId}
+        view={view}
+        viewportSize={viewportSize}
+      />
     </section>
   );
 }

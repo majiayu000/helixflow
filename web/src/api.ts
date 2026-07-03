@@ -1,5 +1,6 @@
 import {
   CanvasDocumentSchema,
+  CanvasPresenceSchema,
   RunConfirmationResponseSchema,
   RunEventEnvelopeSchema,
   WorkflowGraphSchema,
@@ -8,6 +9,8 @@ import {
   WorkbenchStateSchema,
   NodeCatalogSchema,
   type CanvasDocument,
+  type CanvasCommentOpInput,
+  type CanvasPresence,
   type RunConfirmationResponse,
   type RunEventEnvelope,
   type CanvasMessageContext,
@@ -25,6 +28,7 @@ export type ConnectionStatus = 'connecting' | 'live' | 'offline';
 
 type EventHandlers = {
   onEvent: (event: RunEventEnvelope) => void;
+  onPresence?: (presence: CanvasPresence) => void;
   onStatus: (status: ConnectionStatus) => void;
 };
 
@@ -44,6 +48,47 @@ export async function fetchWorkspaceCanvas(workspaceId: string): Promise<CanvasD
   }
 
   return CanvasDocumentSchema.parse(await response.json());
+}
+
+export async function submitCanvasCommentOp(
+  workspaceId: string,
+  input: CanvasCommentOpInput,
+): Promise<CanvasDocument> {
+  const response = await fetch(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/canvas/comments/ops`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+  );
+  const body = await response.json();
+  if (!response.ok) {
+    const message =
+      body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+        ? body.error
+        : `canvas comment request failed: ${response.status}`;
+    throw new Error(message);
+  }
+
+  return CanvasDocumentSchema.parse(body);
+}
+
+export async function sendCanvasPresence(
+  workspaceId: string,
+  input: CanvasPresence,
+): Promise<void> {
+  const response = await fetch(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/canvas/presence`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`canvas presence request failed: ${response.status}`);
+  }
 }
 
 export async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
@@ -398,6 +443,13 @@ export function connectWorkspaceEvents(
     try {
       const parsed = RunEventEnvelopeSchema.safeParse(JSON.parse(String(message.data)));
       if (parsed.success) {
+        if (parsed.data.ev === 'canvas.presence') {
+          const presence = CanvasPresenceSchema.safeParse(parsed.data.data);
+          if (presence.success) {
+            handlers.onPresence?.(presence.data);
+          }
+          return;
+        }
         handlers.onEvent(parsed.data);
       } else {
         handlers.onStatus('offline');

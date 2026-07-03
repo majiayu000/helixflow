@@ -14,25 +14,37 @@ import {
   queueWorkspaceRun,
   restoreWorkspaceVersion,
   saveWorkspaceLayout,
+  sendCanvasPresence as sendCanvasPresenceRequest,
   selectOutput as selectOutputRequest,
   selectWorkspaceProvider,
   sendWorkspaceMessage,
+  submitCanvasCommentOp as submitCanvasCommentOpRequest,
   undoWorkspaceVersion,
   type ConnectionStatus,
 } from './api';
 import type {
   CanvasDocument,
+  CanvasCommentOpInput,
   CanvasMessageContext,
+  CanvasPresence,
   LayoutPositionUpdate,
   ManualEditSession,
   ManualProposalInput,
-  RunConfirmationResponse,
   RunEventEnvelope,
   WorkflowGraph,
-  WorkspaceMessageResponse,
   WorkbenchState,
 } from './types';
 import { applyRunEvent, shouldRefetchWorkspaceState } from './store-events';
+import {
+  appendChatMessages,
+  appendSystemError,
+  applyMessageResponse,
+  applyRunConfirmation,
+  compatibleEditSession,
+  markRunConfirming,
+  messageTime,
+  workflowGraphFromState,
+} from './store-model';
 import {
   appendManualEditInput,
   manualEditInputFromSession,
@@ -42,7 +54,7 @@ export { applyRunEvent } from './store-events';
 
 type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
 type QueueRunOptions = { forceRerun?: boolean };
-type PresenceByActor = Record<string, unknown>;
+type PresenceByActor = Record<string, CanvasPresence>;
 type WorkspaceSnapshot = { state: WorkbenchState; canvas: CanvasDocument };
 
 type WorkbenchStore = {
@@ -63,6 +75,9 @@ type WorkbenchStore = {
   setInitialState: (state: WorkbenchState) => void;
   setConnection: (status: ConnectionStatus) => void;
   setCanvasSelection: (nodeIds: string[]) => void;
+  applyCanvasPresence: (presence: CanvasPresence) => void;
+  sendCanvasPresence: (presence: CanvasPresence) => Promise<void>;
+  submitCanvasCommentOp: (input: CanvasCommentOpInput) => Promise<void>;
   applyEvent: (event: RunEventEnvelope) => void;
   sendMessage: (text: string, canvasContext?: CanvasMessageContext) => Promise<void>;
   queueRun: (options?: QueueRunOptions) => Promise<void>;
@@ -184,6 +199,45 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
   },
   setCanvasSelection: (selectedCanvasNodeIds) => set({ selectedCanvasNodeIds }),
+  applyCanvasPresence: (presence) =>
+    set((current) => ({
+      presenceByActor: {
+        ...current.presenceByActor,
+        [presence.actor.actorId]: presence,
+      },
+    })),
+  sendCanvasPresence: async (presence) => {
+    const state = get().state;
+    if (!state) return;
+    set((current) => ({
+      presenceByActor: {
+        ...current.presenceByActor,
+        [presence.actor.actorId]: presence,
+      },
+    }));
+    try {
+      await sendCanvasPresenceRequest(state.workspace.id, presence);
+    } catch {
+      set({ canvasConnection: 'offline' });
+    }
+  },
+  submitCanvasCommentOp: async (input) => {
+    const state = get().state;
+    if (!state) return;
+    try {
+      const canvas = await submitCanvasCommentOpRequest(state.workspace.id, input);
+      set({ canvas, canvasStatus: 'ready', canvasError: null });
+    } catch (error) {
+      const normalized =
+        error instanceof Error ? error : new Error('canvas comment request failed');
+      set((current) => ({
+        canvasStatus: 'error',
+        canvasError: normalized.message,
+        state: current.state ? appendSystemError(current.state, normalized.message) : current.state,
+      }));
+      throw normalized;
+    }
+  },
   sendMessage: async (text, canvasContext) => {
     const trimmed = text.trim();
     if (!trimmed) {
@@ -598,40 +652,8 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
   };
 });
 
-function appendChatMessages(
-  state: WorkbenchState,
-  messages: WorkbenchState['chat']['messages'],
-): WorkbenchState {
-  return {
-    ...state,
-    chat: {
-      ...state.chat,
-      messages: [...state.chat.messages, ...messages],
-    },
-  };
-}
-
-function appendSystemError(state: WorkbenchState, message: string): WorkbenchState {
-  return appendChatMessages(state, [
-    {
-      id: `msg_system_${Date.now()}`,
-      role: 'system',
-      kind: 'run_failed',
-      text: message,
-      time: messageTime(),
-    },
-  ]);
-}
-
 function hasDirtyEdits(session: ManualEditSession | null): session is ManualEditSession {
   return Boolean(session && session.ops.length > 0);
-}
-
-function compatibleEditSession(
-  session: ManualEditSession | null,
-  state: WorkbenchState,
-): ManualEditSession | null {
-  return session?.baseVersionId === state.workspace.versionId ? session : null;
 }
 
 async function fetchWorkspaceSnapshot(workspaceId: string): Promise<WorkspaceSnapshot> {
@@ -662,108 +684,4 @@ function snapshotError(error: unknown, fallback: string) {
     error: message,
     canvasError: message,
   };
-}
-
-function applyMessageResponse(
-  state: WorkbenchState,
-  response: WorkspaceMessageResponse,
-): WorkbenchState {
-  let next = appendChatMessages(state, response.messages);
-  if (response.run) {
-    next = applyRunSnapshot(next, response.run);
-  }
-  if (response.proposal) {
-    next = {
-      ...next,
-      pendingProposal: response.proposal,
-    };
-  }
-  if (response.pendingConfirmation !== undefined) {
-    next = {
-      ...next,
-      pendingConfirmation: response.pendingConfirmation,
-    };
-  }
-  return next;
-}
-
-function applyRunConfirmation(
-  state: WorkbenchState,
-  response: RunConfirmationResponse,
-): WorkbenchState {
-  return applyRunSnapshot(
-    {
-      ...state,
-      outputs: response.outputs,
-      pendingConfirmation: response.pendingConfirmation,
-    },
-    response.run,
-  );
-}
-
-function markRunConfirming(state: WorkbenchState, runId: string): WorkbenchState {
-  return {
-    ...state,
-    pendingConfirmation: null,
-    run:
-      state.run?.id === runId
-        ? {
-            ...state.run,
-            status: 'running',
-          }
-        : state.run,
-  };
-}
-
-function applyRunSnapshot(
-  state: WorkbenchState,
-  run: NonNullable<WorkbenchState['run']>,
-): WorkbenchState {
-  const eventSeq = state.run?.id === run.id ? state.eventSeq : 0;
-
-  return {
-    ...state,
-    eventSeq,
-    run,
-    graph: {
-      ...state.graph,
-      nodes: state.graph.nodes.map((node) => {
-        const step = run.steps.find((candidate) => candidate.nodeId === node.id);
-        return step
-          ? { ...node, status: step.state, provider: step.provider, cached: step.cached }
-          : node;
-      }),
-    },
-  };
-}
-
-function workflowGraphFromState(state: WorkbenchState): WorkflowGraph {
-  if (state.workflowGraph) {
-    return state.workflowGraph;
-  }
-
-  return {
-    schema_version: 1,
-    nodes: Object.fromEntries(
-      state.graph.nodes.map((node) => [
-        node.id,
-        {
-          node_type: node.nodeType,
-          title: node.title,
-          params: {},
-          pos: [node.position.x, node.position.y] as [number, number],
-          size: node.size ? ([node.size.width, node.size.height] as [number, number]) : undefined,
-        },
-      ]),
-    ),
-    edges: state.graph.edges.map((edge) => ({
-      from: [edge.from.nodeId, edge.from.port],
-      to: [edge.to.nodeId, edge.to.port],
-      edge_type: edge.kind,
-    })),
-  };
-}
-
-function messageTime(): string {
-  return new Date().toISOString();
 }

@@ -7,15 +7,23 @@ use serde_json::{Value, json};
 
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
+use crate::canvas_collaboration::{canvas_comment_seq, load_canvas_comments};
 use crate::graph_files::{blank_graph, read_graph_file};
 
 pub(crate) async fn workspace_canvas(
     AxumPath(workspace_id): AxumPath<String>,
     State(state): State<AppState>,
 ) -> Result<Json<Value>, ApiError> {
+    Ok(Json(workspace_canvas_value(&state, &workspace_id).await?))
+}
+
+pub(crate) async fn workspace_canvas_value(
+    state: &AppState,
+    workspace_id: &str,
+) -> Result<Value, ApiError> {
     let workspace = state
         .store
-        .workspace(&workspace_id)
+        .workspace(workspace_id)
         .await
         .map_err(ApiError::store)?;
     let (version_id, seq, graph) = match workspace.cur_version_id.as_deref() {
@@ -30,13 +38,16 @@ pub(crate) async fn workspace_canvas(
         }
         None => (String::new(), 0, blank_graph()),
     };
+    let comments = load_canvas_comments(&state.data_dir, &workspace.id).await?;
+    let comment_seq = canvas_comment_seq(&state.data_dir, &workspace.id).await?;
 
-    Ok(Json(canvas_document_payload(
+    Ok(canvas_document_payload(
         &workspace.id,
         &version_id,
-        seq,
+        seq.max(comment_seq),
         &graph,
-    )))
+        comments,
+    ))
 }
 
 fn canvas_document_payload(
@@ -44,6 +55,7 @@ fn canvas_document_payload(
     version_id: &str,
     seq: i64,
     graph: &WorkflowGraph,
+    comments: Vec<crate::canvas_collaboration::CanvasComment>,
 ) -> Value {
     json!({
         "schemaVersion": 1,
@@ -87,7 +99,7 @@ fn canvas_document_payload(
                 "kind": edge.edge_type,
             })
         }).collect::<Vec<_>>(),
-        "comments": [],
+        "comments": comments,
         "runtime": {},
         "metadata": {
             "source": "workflow_graph_compat",
