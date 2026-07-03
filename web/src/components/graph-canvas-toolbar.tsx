@@ -12,7 +12,9 @@ type GraphCanvasToolbarProps = {
   layoutUpdateCount: number;
   nodeCount: number;
   onSaveLayout: () => void;
+  onQueueRun?: () => void;
   pendingProposal: boolean;
+  queueRunDisabled?: boolean;
   runStatusLabel: string;
   saveLayoutDisabled: boolean;
   setMode: (mode: CanvasMode) => void;
@@ -27,8 +29,10 @@ export function GraphCanvasToolbar({
   layoutSaving,
   layoutUpdateCount,
   nodeCount,
+  onQueueRun,
   onSaveLayout,
   pendingProposal,
+  queueRunDisabled,
   runStatusLabel,
   saveLayoutDisabled,
   setMode,
@@ -54,6 +58,11 @@ export function GraphCanvasToolbar({
         <span className="led" />
         {pendingProposal ? '待确认的图变更 — 预览中' : runStatusLabel}
       </span>
+      {onQueueRun && (
+        <button className="layout-save" disabled={queueRunDisabled} onClick={onQueueRun}>
+          Run
+        </button>
+      )}
       {connectionStatus && <span className="canvas-pill">{connectionStatus}</span>}
       {!pendingProposal && hasDirtyLayout && (
         <button className="layout-save" disabled={saveLayoutDisabled} onClick={onSaveLayout}>

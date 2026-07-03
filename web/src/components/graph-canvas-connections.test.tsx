@@ -82,6 +82,7 @@ describe('graph canvas connections', () => {
         dirty={false}
         locked={false}
         node={videoNode()}
+        artifactOutputs={[]}
         portHighlights={highlights}
         resizable={false}
         selected={false}

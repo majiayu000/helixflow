@@ -36,6 +36,8 @@ pub(crate) struct OutputPayload {
     pub(crate) id: String,
     pub(crate) kind: String,
     pub(crate) title: String,
+    #[serde(rename = "nodeId", skip_serializing_if = "Option::is_none")]
+    pub(crate) node_id: Option<String>,
     #[serde(rename = "storageUri")]
     pub(crate) storage_uri: String,
     pub(crate) selected: bool,
@@ -212,6 +214,7 @@ pub(crate) fn output_payload_from_artifact(artifact: &ArtifactRecord) -> OutputP
         id: artifact.id.clone(),
         kind: artifact.kind.clone(),
         title: title.clone(),
+        node_id: artifact.node_id.clone(),
         storage_uri: safe_download_uri(&artifact.id),
         selected: artifact.selected,
         meta: output_meta_summary(artifact),

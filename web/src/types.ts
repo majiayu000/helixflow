@@ -328,6 +328,7 @@ const OutputSchema = z.object({
   id: z.string(),
   kind: z.string(),
   title: z.string(),
+  nodeId: z.string().nullable().optional(),
   storageUri: z.string(),
   selected: z.boolean(),
   meta: z.string(),

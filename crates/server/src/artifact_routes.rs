@@ -243,6 +243,11 @@ mod tests {
                 .selected,
             true
         );
+        let selected_output = outputs
+            .iter()
+            .find(|output| output["id"] == second_id)
+            .expect("selected output");
+        assert_eq!(selected_output["nodeId"], "video");
         assert!(
             outputs[1]["preview"]["content"]
                 .as_str()
