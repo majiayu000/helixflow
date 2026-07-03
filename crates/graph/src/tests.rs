@@ -18,6 +18,7 @@ fn sample_graph() -> WorkflowGraph {
                     title: "Text".to_string(),
                     params: json!({ "text": "make a product clip" }),
                     pos: [0.0, 0.0],
+                    size: None,
                 },
             ),
             (
@@ -27,6 +28,7 @@ fn sample_graph() -> WorkflowGraph {
                     title: "Prompt".to_string(),
                     params: json!({ "style": "product" }),
                     pos: [220.0, 0.0],
+                    size: None,
                 },
             ),
             (
@@ -40,6 +42,7 @@ fn sample_graph() -> WorkflowGraph {
                         "aspect_ratio": "9:16"
                     }),
                     pos: [440.0, 0.0],
+                    size: None,
                 },
             ),
             (
@@ -49,6 +52,7 @@ fn sample_graph() -> WorkflowGraph {
                     title: "Save".to_string(),
                     params: json!({}),
                     pos: [660.0, 0.0],
+                    size: None,
                 },
             ),
         ]),
@@ -114,12 +118,18 @@ fn validates_proposal_ops_and_preview_graph() {
         kind: ProposalKind::Modify,
         title: "Shorter clip".to_string(),
         summary: "Set duration to three seconds.".to_string(),
-        ops: vec![ProposalOp::SetParam {
-            id: "video".to_string(),
-            key: "duration_sec".to_string(),
-            prev: Some(json!(5)),
-            value: json!(3),
-        }],
+        ops: vec![
+            ProposalOp::SetParam {
+                id: "video".to_string(),
+                key: "duration_sec".to_string(),
+                prev: Some(json!(5)),
+                value: json!(3),
+            },
+            ProposalOp::ResizeNode {
+                id: "video".to_string(),
+                size: [260.0, 180.0],
+            },
+        ],
         message_id: Some("msg_1".to_string()),
     };
 
@@ -132,6 +142,7 @@ fn validates_proposal_ops_and_preview_graph() {
 
     assert_eq!(proposal.state, ProposalState::Pending);
     assert_eq!(applied.nodes["video"].params["duration_sec"], 3);
+    assert_eq!(applied.nodes["video"].size, Some([260.0, 180.0]));
     assert_ne!(applied, graph);
 }
 

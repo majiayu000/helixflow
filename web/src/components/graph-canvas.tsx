@@ -9,7 +9,7 @@ import {
   type WheelEvent,
 } from 'react';
 import { fetchNodeCatalog } from '../api';
-import { Icon, portColor } from '../icons';
+import { portColor } from '../icons';
 import { buildMoveNodeEditInput } from '../workbench-edit-session';
 import type {
   GraphNodeState,
@@ -60,6 +60,8 @@ import {
 } from './graph-canvas-navigation';
 import { CanvasMinimap } from './graph-canvas-minimap';
 import { WorkflowNode } from './graph-canvas-node';
+import { EmptyCanvas, ZoomControls } from './graph-canvas-overlays';
+import { GraphCanvasToolbar } from './graph-canvas-toolbar';
 import {
   buildComparableNodeMap,
   buildEdgeSignatureSet,
@@ -68,6 +70,11 @@ import {
   nodeDiffState,
   runStatusLabel,
 } from './graph-canvas-rendering';
+import {
+  applySizeDrafts,
+  useNodeResizeController,
+  type SizeDrafts,
+} from './graph-canvas-resize';
 import {
   fitViewToNodes,
   graphShortcutFromEvent,
@@ -160,6 +167,7 @@ export function GraphCanvas({
   const [mode, setMode] = useState<'view' | 'edit' | 'review'>('view');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [draftPositions, setDraftPositions] = useState<PositionDrafts>({});
+  const [draftSizes, setDraftSizes] = useState<SizeDrafts>({});
   const [layoutSaving, setLayoutSaving] = useState(false);
   const [catalog, setCatalog] = useState<NodeCatalog | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
@@ -175,8 +183,8 @@ export function GraphCanvas({
   const activeMode = pendingProposal ? 'review' : mode;
   const connectionDisabled = !onCreateProposal || activeMode === 'review';
   const displayNodes = useMemo(
-    () => applyPositionDrafts(drawGraph.nodes, draftPositions),
-    [drawGraph.nodes, draftPositions],
+    () => applySizeDrafts(applyPositionDrafts(drawGraph.nodes, draftPositions), draftSizes),
+    [drawGraph.nodes, draftPositions, draftSizes],
   );
   const baseComparableById = useMemo(
     () => buildComparableNodeMap(sourceGraph.nodes),
@@ -224,26 +232,46 @@ export function GraphCanvas({
     viewportSize,
     workflowGraph,
   });
+  const {
+    handleNodeResizeMove,
+    resetNodeResize,
+    startNodeResize,
+    stopNodeResize,
+  } = useNodeResizeController({
+    connectionDisabled,
+    onCreateProposal,
+    pendingProposal: Boolean(pendingProposal),
+    setConnectionStatus,
+    setDraftSizes,
+    setSelectedIds,
+    sourceNodes: sourceGraph.nodes,
+    versionId,
+    viewZoom: view.z,
+  });
 
   useEffect(() => {
     setView(loadGraphCanvasView(workspaceId));
     setSelectedIds(new Set());
     setDraftPositions({});
+    setDraftSizes({});
     setSelectionDrag(null);
     setConnectionDrag(null);
     setConnectionStatus(null);
     setClipboardStatus(null);
     nodeDrag.current = null;
-  }, [workspaceId]);
+    resetNodeResize();
+  }, [resetNodeResize, workspaceId]);
 
   useEffect(() => {
     setDraftPositions({});
+    setDraftSizes({});
     setSelectionDrag(null);
     setConnectionDrag(null);
     setConnectionStatus(null);
     setClipboardStatus(null);
     nodeDrag.current = null;
-  }, [versionId, pendingProposal?.id]);
+    resetNodeResize();
+  }, [pendingProposal?.id, resetNodeResize, versionId]);
 
   useEffect(() => {
     onSelectionChange?.(selectedIdList);
@@ -645,38 +673,21 @@ export function GraphCanvas({
         error={catalogError}
         onAddNode={editActions.addNode}
       />
-      <div className="canvas-toolbar" onPointerDown={(event) => event.stopPropagation()}>
-        <div className="mode-seg">
-          <button className={activeMode === 'view' ? 'on' : ''} onClick={() => setMode('view')}>
-            查看
-          </button>
-          <button className={activeMode === 'edit' ? 'on' : ''} onClick={() => setMode('edit')}>
-            编辑
-          </button>
-          <button className={activeMode === 'review' ? 'on' : ''} onClick={() => setMode('review')}>
-            审阅
-          </button>
-        </div>
-        <span className="canvas-pill">
-          <Icon n="layers" s={13} c="var(--text-3)" />
-          {nodeCount} 节点 · {drawGraph.edges.length} 连线
-        </span>
-        <span className={pendingProposal ? 'pill pill--warn' : 'pill pill--off'}>
-          <span className="led" />
-          {pendingProposal ? '待确认的图变更 — 预览中' : runStatusLabel(run.status)}
-        </span>
-        {connectionStatus && <span className="canvas-pill">{connectionStatus}</span>}
-        {!pendingProposal && hasDirtyLayout && (
-          <button
-            className="layout-save"
-            disabled={layoutSaving || !onSaveLayout}
-            onClick={() => void saveLayout()}
-          >
-            {layoutSaving ? '保存中' : `保存布局 · ${layoutUpdates.length}`}
-          </button>
-        )}
-        {clipboardStatus && <span className="canvas-pill">{clipboardStatus}</span>}
-      </div>
+      <GraphCanvasToolbar
+        activeMode={activeMode}
+        clipboardStatus={clipboardStatus}
+        connectionStatus={connectionStatus}
+        edgeCount={drawGraph.edges.length}
+        hasDirtyLayout={hasDirtyLayout}
+        layoutSaving={layoutSaving}
+        layoutUpdateCount={layoutUpdates.length}
+        nodeCount={nodeCount}
+        onSaveLayout={() => void saveLayout()}
+        pendingProposal={Boolean(pendingProposal)}
+        runStatusLabel={runStatusLabel(run.status)}
+        saveLayoutDisabled={layoutSaving || !onSaveLayout}
+        setMode={setMode}
+      />
       <div
         className="world"
         style={{
@@ -718,6 +729,7 @@ export function GraphCanvas({
             locked={Boolean(pendingProposal)}
             node={node}
             portHighlights={portHighlights}
+            resizable={!connectionDisabled && !pendingProposal}
             selected={selectedIds.has(node.id)}
             stepState={stepStateByNodeId.get(node.id) ?? node.status}
             onOutputPortPointerDown={startConnectionDrag}
@@ -725,35 +737,21 @@ export function GraphCanvas({
             onPointerDown={(event) => handleNodePointerDown(node, event)}
             onPointerMove={handleNodePointerMove}
             onPointerUp={stopNodeDrag}
+            onResizePointerCancel={stopNodeResize}
+            onResizePointerDown={(event) => startNodeResize(node, event)}
+            onResizePointerMove={handleNodeResizeMove}
+            onResizePointerUp={stopNodeResize}
           />
         ))}
       </div>
-      {nodeCount === 0 && (
-        <div className="empty-canvas">
-          <div className="empty-card">
-            <div className="empty-icon">
-              <Icon n="layers" s={22} />
-            </div>
-            <div className="empty-title">空白工作流</div>
-            <div className="empty-sub">先描述要设计的结果；需要自动化时再生成 workflow。</div>
-          </div>
-        </div>
-      )}
+      {nodeCount === 0 && <EmptyCanvas />}
       {selectionDrag && (
         <span
           className="selection-rect"
           style={selectionRectFromPoints(selectionDrag.start, selectionDrag.current)}
         />
       )}
-      <div className="zoom-ctl" onPointerDown={(event) => event.stopPropagation()}>
-        <button onClick={() => updateView((current) => ({ ...current, z: current.z - 0.1 }))}>
-          -
-        </button>
-        <span>{Math.round(view.z * 100)}%</span>
-        <button onClick={() => updateView((current) => ({ ...current, z: current.z + 0.1 }))}>
-          +
-        </button>
-      </div>
+      <ZoomControls setView={updateView} view={view} />
       {minimapLayout && (
         <CanvasMinimap
           layout={minimapLayout}

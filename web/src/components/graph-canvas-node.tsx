@@ -2,7 +2,7 @@ import type { CSSProperties, PointerEvent } from 'react';
 import { Icon, Port } from '../icons';
 import type { GraphNodeState, NodeDefinition, RunStepState } from '../types';
 import { portKey, type PortHighlight } from './graph-canvas-connections';
-import { GRAPH_NODE_WIDTH } from './graph-canvas-navigation';
+import { graphNodeHeight, graphNodeWidth } from './graph-canvas-navigation';
 import {
   categorySwatch,
   paramsFromSummary,
@@ -19,6 +19,7 @@ type WorkflowNodeProps = {
   portHighlights: Map<string, PortHighlight>;
   selected: boolean;
   stepState: RunStepState;
+  resizable: boolean;
   onOutputPortPointerDown: (
     node: GraphNodeState,
     port: { name: string; type: string },
@@ -29,6 +30,10 @@ type WorkflowNodeProps = {
   onPointerDown: (event: PointerEvent<HTMLDivElement>) => void;
   onPointerMove: (event: PointerEvent<HTMLDivElement>) => void;
   onPointerUp: (event: PointerEvent<HTMLDivElement>) => void;
+  onResizePointerCancel: (event: PointerEvent<HTMLSpanElement>) => void;
+  onResizePointerDown: (event: PointerEvent<HTMLSpanElement>) => void;
+  onResizePointerMove: (event: PointerEvent<HTMLSpanElement>) => void;
+  onResizePointerUp: (event: PointerEvent<HTMLSpanElement>) => void;
 };
 
 export function WorkflowNode({
@@ -41,11 +46,16 @@ export function WorkflowNode({
   portHighlights,
   selected,
   stepState,
+  resizable,
   onOutputPortPointerDown,
   onPointerCancel,
   onPointerDown,
   onPointerMove,
   onPointerUp,
+  onResizePointerCancel,
+  onResizePointerDown,
+  onResizePointerMove,
+  onResizePointerUp,
 }: WorkflowNodeProps) {
   const params = paramsFromSummary(node.summary);
   const active = stepState === 'running';
@@ -78,7 +88,8 @@ export function WorkflowNode({
       style={{
         left: node.position.x,
         top: node.position.y,
-        width: GRAPH_NODE_WIDTH,
+        width: graphNodeWidth(node),
+        minHeight: graphNodeHeight(node),
         '--swatch': categorySwatch(node.category),
       } as CSSProperties}
     >
@@ -169,6 +180,17 @@ export function WorkflowNode({
           ))
         )}
       </div>
+      {resizable && (
+        <span
+          aria-label={`Resize ${node.title}`}
+          className="node-resize-handle"
+          onPointerCancel={onResizePointerCancel}
+          onPointerDown={onResizePointerDown}
+          onPointerMove={onResizePointerMove}
+          onPointerUp={onResizePointerUp}
+          title="Resize node"
+        />
+      )}
     </div>
   );
 }

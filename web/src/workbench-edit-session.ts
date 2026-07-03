@@ -3,6 +3,7 @@ import type {
   ManualEditOp,
   ManualEditSession,
   ManualProposalInput,
+  NodeSizeUpdate,
   WorkbenchState,
   WorkflowGraph,
 } from './types';
@@ -91,6 +92,22 @@ export function buildMoveNodeEditInput(
       op: 'move_node' as const,
       id: position.id,
       pos: [position.x, position.y],
+    })),
+  };
+}
+
+export function buildResizeNodeEditInput(
+  baseVersionId: string,
+  sizes: NodeSizeUpdate[],
+): ManualProposalInput | null {
+  if (sizes.length === 0) return null;
+  return {
+    baseVersionId,
+    label: `Resize ${sizes.length} node${sizes.length === 1 ? '' : 's'}`,
+    ops: sizes.map((size) => ({
+      op: 'resize_node' as const,
+      id: size.id,
+      size: [size.width, size.height],
     })),
   };
 }
@@ -221,6 +238,14 @@ function previewManualEditGraph(
         workflow.nodes[op.id] = { ...workflow.nodes[op.id], pos: op.pos };
       }
     }
+    if (op.op === 'resize_node') {
+      nodes = nodes.map((node) =>
+        node.id === op.id ? { ...node, size: { width: op.size[0], height: op.size[1] } } : node,
+      );
+      if (workflow?.nodes[op.id]) {
+        workflow.nodes[op.id] = { ...workflow.nodes[op.id], size: op.size };
+      }
+    }
     if (op.op === 'set_param') {
       if (workflow?.nodes[op.id]) {
         const params = objectParams(workflow.nodes[op.id].params);
@@ -303,6 +328,8 @@ function manualEditOpSummary(op: ManualEditOp): string {
   switch (op.op) {
     case 'move_node':
       return `Move ${op.id} to ${Math.round(op.pos[0])}, ${Math.round(op.pos[1])}`;
+    case 'resize_node':
+      return `Resize ${op.id} to ${Math.round(op.size[0])} x ${Math.round(op.size[1])}`;
     case 'set_param':
       return `Set ${op.id}.${op.key}`;
     case 'add_node':
@@ -327,6 +354,7 @@ function cloneWorkflowGraph(graph: WorkflowGraph): WorkflowGraph {
           title: node.title,
           params: cloneUnknown(node.params),
           pos: [...node.pos] as [number, number],
+          size: node.size ? ([...node.size] as [number, number]) : undefined,
         },
       ]),
     ),

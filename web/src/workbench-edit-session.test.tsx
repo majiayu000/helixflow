@@ -4,6 +4,7 @@ import { App } from './app';
 import { useWorkbenchStore } from './store';
 import type { WorkbenchState } from './types';
 import {
+  buildResizeNodeEditInput,
   buildSetParamEditInput,
   deriveQueueLockReason,
   previewWorkbenchStateWithManualEdits,
@@ -237,6 +238,7 @@ describe('manual edit session workbench flow', () => {
       startedAt: '2026-07-02T00:00:00Z',
       ops: [
         { op: 'move_node', id: 'video', pos: [620, 210] },
+        { op: 'resize_node', id: 'video', size: [260, 180] },
         { op: 'set_param', id: 'video', key: 'duration_sec', value: 3 },
       ],
     });
@@ -245,10 +247,25 @@ describe('manual edit session workbench flow', () => {
       x: 620,
       y: 210,
     });
+    expect(preview.graph.nodes.find((node) => node.id === 'video')?.size).toEqual({
+      width: 260,
+      height: 180,
+    });
     expect(preview.workflowGraph?.nodes.video.params).toMatchObject({ duration_sec: 3 });
+    expect(preview.workflowGraph?.nodes.video.size).toEqual([260, 180]);
     expect(state.graph.nodes.find((node) => node.id === 'video')?.position).toEqual({
       x: 486,
       y: 156,
+    });
+  });
+
+  it('builds resize_node edits from node size updates', () => {
+    expect(
+      buildResizeNodeEditInput('ver_test_1', [{ id: 'video', width: 260, height: 180 }]),
+    ).toEqual({
+      baseVersionId: 'ver_test_1',
+      label: 'Resize 1 node',
+      ops: [{ op: 'resize_node', id: 'video', size: [260, 180] }],
     });
   });
 

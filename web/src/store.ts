@@ -752,6 +752,7 @@ function workflowGraphFromState(state: WorkbenchState): WorkflowGraph {
           title: node.title,
           params: {},
           pos: [node.position.x, node.position.y] as [number, number],
+          size: node.size ? ([node.size.width, node.size.height] as [number, number]) : undefined,
         },
       ]),
     ),

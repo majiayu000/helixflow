@@ -596,6 +596,7 @@ mod tests {
                         title: "Text".to_owned(),
                         params: json!({ "text": "launch teaser" }),
                         pos: [0.0, 0.0],
+                        size: None,
                     },
                 ),
                 (
@@ -605,6 +606,7 @@ mod tests {
                         title: "Video render".to_owned(),
                         params,
                         pos: [240.0, 0.0],
+                        size: None,
                     },
                 ),
             ]),

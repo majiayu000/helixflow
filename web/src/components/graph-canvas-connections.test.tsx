@@ -83,6 +83,7 @@ describe('graph canvas connections', () => {
         locked={false}
         node={videoNode()}
         portHighlights={highlights}
+        resizable={false}
         selected={false}
         stepState="queued"
         onOutputPortPointerDown={() => undefined}
@@ -90,6 +91,10 @@ describe('graph canvas connections', () => {
         onPointerDown={() => undefined}
         onPointerMove={() => undefined}
         onPointerUp={() => undefined}
+        onResizePointerCancel={() => undefined}
+        onResizePointerDown={() => undefined}
+        onResizePointerMove={() => undefined}
+        onResizePointerUp={() => undefined}
       />,
     );
 

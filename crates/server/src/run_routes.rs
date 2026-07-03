@@ -684,6 +684,7 @@ mod tests {
                     title: "Text".to_owned(),
                     params: json!({ "text": "launch teaser" }),
                     pos: [0.0, 0.0],
+                    size: None,
                 },
             )]),
             edges: Vec::new(),
@@ -717,6 +718,7 @@ mod tests {
                             "aspect_ratio": "9:16"
                         }),
                         pos: [0.0, 0.0],
+                        size: None,
                     },
                 ),
                 (
@@ -726,6 +728,7 @@ mod tests {
                         title: "Save".to_owned(),
                         params: json!({}),
                         pos: [240.0, 0.0],
+                        size: None,
                     },
                 ),
             ]),

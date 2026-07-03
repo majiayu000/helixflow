@@ -52,6 +52,7 @@ export const WorkflowGraphSchema = z.object({
       title: z.string(),
       params: z.unknown(),
       pos: z.tuple([z.number(), z.number()]),
+      size: z.tuple([z.number(), z.number()]).optional(),
     }),
   ),
   edges: z.array(
@@ -76,6 +77,11 @@ const ChatMessageSchema = z.object({
     .optional(),
 });
 
+const CanvasSizeSchema = z.object({
+  width: z.number(),
+  height: z.number(),
+});
+
 const GraphStateSchema = z.object({
   nodes: z.array(
     z.object({
@@ -88,6 +94,7 @@ const GraphStateSchema = z.object({
         x: z.number(),
         y: z.number(),
       }),
+      size: CanvasSizeSchema.optional(),
       provider: z.string().nullable(),
       summary: z.string(),
       cached: z.boolean().optional(),
@@ -119,6 +126,7 @@ const CanvasNodeSchema = z.object({
   nodeType: z.string(),
   title: z.string(),
   position: CanvasPositionSchema,
+  size: CanvasSizeSchema.nullish(),
   params: z.unknown(),
   runtime: z.unknown().nullable().optional(),
   metadata: z.record(z.string(), z.unknown()).optional().default({}),
@@ -409,6 +417,7 @@ export type RunStepState = z.infer<typeof RunStepStateSchema>;
 export type RunStatus = z.infer<typeof RunStatusSchema>;
 export type GraphNodeState = WorkbenchState['graph']['nodes'][number];
 export type LayoutPositionUpdate = { id: string; x: number; y: number };
+export type NodeSizeUpdate = { id: string; width: number; height: number };
 export type ChatMessageKind = z.infer<typeof ChatMessageKindSchema>;
 export type WorkflowGraph = z.infer<typeof WorkflowGraphSchema>;
 export type WorkspaceMessageResponse = z.infer<typeof WorkspaceMessageResponseSchema>;
@@ -436,6 +445,7 @@ export type ManualProposalInput = {
     | { op: 'add_edge'; from: [string, string]; to: [string, string]; edge_type: string }
     | { op: 'remove_edge'; from: [string, string]; to: [string, string]; edge_type: string }
     | { op: 'move_node'; id: string; pos: [number, number] }
+    | { op: 'resize_node'; id: string; size: [number, number] }
   >;
 };
 export type ManualEditOp = ManualProposalInput['ops'][number];
@@ -458,6 +468,7 @@ function workflowGraphToGraphState(
       category: nodeCategory(node.node_type),
       status: 'queued',
       position: { x: node.pos[0], y: node.pos[1] },
+      size: node.size ? { width: node.size[0], height: node.size[1] } : undefined,
       provider: null,
       summary: nodeSummary(node.node_type, node.params),
     })),
@@ -485,6 +496,7 @@ export function graphStateFromCanvasDocument(
         category: fallbackNode?.category ?? nodeCategory(node.nodeType),
         status: fallbackNode?.status ?? 'queued',
         position: node.position,
+        size: node.size ?? undefined,
         provider: fallbackNode?.provider ?? null,
         summary: nodeSummary(node.nodeType, node.params),
         cached: fallbackNode?.cached,

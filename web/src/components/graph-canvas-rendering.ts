@@ -2,7 +2,7 @@ import type { GraphNodeState, RunStepState, WorkbenchState } from '../types';
 import {
   GRAPH_NODE_HEAD_HEIGHT,
   GRAPH_NODE_ROW_HEIGHT,
-  GRAPH_NODE_WIDTH,
+  graphNodeWidth,
 } from './graph-canvas-navigation';
 
 export type DiffState = 'add' | 'upd' | null;
@@ -45,7 +45,7 @@ export function edgeSignature(edge: WorkbenchState['graph']['edges'][number]): s
 }
 
 export function edgePath(from: GraphNodeState, to: GraphNodeState): string {
-  const x1 = from.position.x + GRAPH_NODE_WIDTH;
+  const x1 = from.position.x + graphNodeWidth(from);
   const y1 = from.position.y + GRAPH_NODE_HEAD_HEIGHT + GRAPH_NODE_ROW_HEIGHT;
   const x2 = to.position.x;
   const y2 = to.position.y + GRAPH_NODE_HEAD_HEIGHT + GRAPH_NODE_ROW_HEIGHT;
@@ -93,6 +93,7 @@ function comparableNode(node: GraphNodeState): string {
     title: node.title,
     category: node.category,
     position: node.position,
+    size: node.size,
     provider: node.provider,
     summary: node.summary,
   });

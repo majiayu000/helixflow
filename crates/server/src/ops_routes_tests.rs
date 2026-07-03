@@ -23,6 +23,7 @@ async fn ops_route_applies_multiple_ops_as_one_manual_version() {
         "ops": [
             { "op": "set_param", "id": "text", "key": "text", "value": "updated" },
             { "op": "move_node", "id": "writer", "pos": [420, 80] },
+            { "op": "resize_node", "id": "writer", "size": [260, 180] },
             { "op": "add_node", "id": "alt", "node_type": "input.text", "title": null, "params": { "text": "alt" }, "pos": [120, 0] },
             { "op": "remove_edge", "from": ["text", "text"], "to": ["writer", "text"], "edge_type": "text" },
             { "op": "add_edge", "from": ["alt", "text"], "to": ["writer", "text"], "edge_type": "text" },
@@ -59,6 +60,14 @@ async fn ops_route_applies_multiple_ops_as_one_manual_version() {
         2
     );
     assert!(response["graph"]["nodes"].to_string().contains("alt"));
+    assert_eq!(
+        response["workflowGraph"]["nodes"]["writer"]["size"][0],
+        260.0
+    );
+    assert_eq!(
+        response["workflowGraph"]["nodes"]["writer"]["size"][1],
+        180.0
+    );
 }
 
 #[tokio::test]
@@ -172,6 +181,39 @@ async fn ops_route_rejects_set_param_prev_conflict_with_op_index() {
             .expect("error")
             .contains("set_param conflict")
     );
+    assert_eq!(
+        state
+            .store
+            .workspace(&workspace_id)
+            .await
+            .expect("workspace")
+            .cur_version_id
+            .as_deref(),
+        Some(base_version_id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn ops_route_rejects_invalid_resize_without_writes() {
+    let (state, workspace_id, base_version_id, _dir) = state_with_graph().await;
+    let graph_count = graph_file_count(&state, &workspace_id).await;
+    let body = json!({
+        "baseVersionId": base_version_id,
+        "ops": [{ "op": "resize_node", "id": "writer", "size": [0, 180] }]
+    });
+
+    let err = apply_workspace_ops(
+        Path(workspace_id.clone()),
+        State(state.clone()),
+        body.to_string(),
+    )
+    .await
+    .expect_err("invalid resize should fail");
+    let body = error_body(err).await;
+
+    assert_eq!(body["opIndex"], 0);
+    assert!(body["error"].as_str().expect("error").contains("node size"));
+    assert_eq!(graph_file_count(&state, &workspace_id).await, graph_count);
     assert_eq!(
         state
             .store
@@ -305,6 +347,7 @@ fn ops_graph() -> WorkflowGraph {
                     title: "Text".to_owned(),
                     params: json!({ "text": "old" }),
                     pos: [0.0, 0.0],
+                    size: None,
                 },
             ),
             (
@@ -314,6 +357,7 @@ fn ops_graph() -> WorkflowGraph {
                     title: "Writer".to_owned(),
                     params: json!({ "style": "plain" }),
                     pos: [240.0, 0.0],
+                    size: None,
                 },
             ),
         ]),

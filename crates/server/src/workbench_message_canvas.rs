@@ -204,6 +204,7 @@ mod tests {
                     title: "Text".to_owned(),
                     params: json!({ "text": "hello" }),
                     pos: [0.0, 0.0],
+                    size: None,
                 },
             )]),
             edges: Vec::new(),
