@@ -35,7 +35,7 @@
 .progress-fill {
   height: 100%;
   border-radius: 999px;
-  background: linear-gradient(90deg, var(--accent), #2f8f6b);
+  background: linear-gradient(90deg, var(--accent), var(--amber));
 }
 
 .run-steps {
@@ -66,7 +66,7 @@
 
 .run-step.active {
   background: var(--accent-soft);
-  color: var(--accent-ink);
+  color: var(--accent);
   border-color: var(--accent-line);
 }
 
@@ -113,8 +113,10 @@
   margin: 0 auto;
   border: 1px solid var(--border-2);
   border-radius: var(--r-sm);
-  background: linear-gradient(135deg, #e6d9f2, #d6c4ec 50%, #c9d2e4);
-  color: var(--accent-ink);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 18%, transparent), transparent 54%),
+    repeating-linear-gradient(45deg, #222228 0 6px, #1c1c22 6px 12px);
+  color: var(--accent);
 }
 
 .output-thumb.sel {
@@ -193,7 +195,7 @@
   z-index: 50;
   display: grid;
   place-items: center;
-  background: rgba(24, 24, 27, 0.32);
+  background: rgb(0 0 0 / 0.55);
 }
 
 .confirm {

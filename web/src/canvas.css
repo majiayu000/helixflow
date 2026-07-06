@@ -109,8 +109,11 @@
   position: absolute;
   inset: 0;
   background-color: var(--surface-2);
-  background-image: radial-gradient(circle, var(--border-2) 1px, transparent 1px);
-  background-size: 22px 22px;
+  background-image:
+    radial-gradient(ellipse at 50% -10%, #141419 0%, transparent 55%),
+    radial-gradient(circle, var(--border-2) 1px, transparent 1px);
+  background-repeat: no-repeat, repeat;
+  background-size: 100% 100%, 22px 22px;
 }
 
 .canvas-toolbar {
@@ -146,7 +149,7 @@
 
 .mode-seg button.on {
   background: var(--accent-soft);
-  color: var(--accent-ink);
+  color: var(--accent);
 }
 
 .canvas-pill {
@@ -267,7 +270,7 @@
   border: 1px solid var(--green);
   border-radius: var(--r-sm);
   background: var(--green);
-  color: #fff;
+  color: var(--bg);
   padding: 0 11px;
   box-shadow: var(--sh-sm);
   font-size: 12px;
@@ -302,7 +305,7 @@
 .node {
   position: absolute;
   width: 188px;
-  border: 1px solid transparent;
+  border: 1px solid var(--border-2);
   border-radius: var(--r-md);
   background: var(--surface);
   box-shadow: var(--sh-md);
@@ -332,8 +335,9 @@
   align-items: center;
   gap: 6px;
   border-radius: var(--r-md) var(--r-md) 0 0;
-  background: var(--swatch, var(--accent));
-  color: #fff;
+  border-bottom: 1px solid var(--border);
+  background: #1b1b21;
+  color: var(--text);
   padding: 7px 10px;
   font-weight: 600;
 }
@@ -343,13 +347,13 @@
   width: 8px;
   height: 8px;
   border-radius: 2px;
-  background: rgba(255, 255, 255, 0.65);
+  background: var(--swatch, var(--accent));
   flex-shrink: 0;
 }
 
 .p-nid {
   margin-left: auto;
-  color: rgba(255, 255, 255, 0.78);
+  color: var(--text-4);
   font-family: var(--font-mono);
   font-size: 9.5px;
   font-weight: 500;
@@ -389,7 +393,7 @@
   width: 9px;
   height: 9px;
   flex-shrink: 0;
-  border: 2px solid var(--surface);
+  border: 2px solid var(--bg);
   border-radius: 50%;
   box-shadow: 0 0 0 1.5px currentColor;
 }
@@ -448,15 +452,15 @@
 }
 
 .node--err .node-title {
-  background: var(--red);
+  border-bottom-color: var(--red-line);
 }
 
 .node--add .node-title {
-  background: var(--green);
+  border-bottom-color: var(--green-line);
 }
 
 .node--upd .node-title {
-  background: var(--amber);
+  border-bottom-color: var(--amber-line);
 }
 
 .node-flag {
@@ -468,7 +472,7 @@
   align-items: center;
   border-radius: 999px;
   background: var(--red);
-  color: #fff;
+  color: var(--bg);
   padding: 0 7px;
   font-size: 10px;
   font-weight: 700;
@@ -515,7 +519,7 @@
   border: 2px solid var(--surface);
   border-radius: 50%;
   background: var(--green);
-  color: #fff;
+  color: var(--bg);
   box-shadow: var(--sh-sm);
 }
 
@@ -599,9 +603,9 @@
 }
 
 .canvas-minimap-viewport {
-  border: 1px solid var(--accent-ink);
+  border: 1px solid var(--accent);
   background: color-mix(in srgb, var(--accent-soft) 58%, transparent);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.72);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 42%, transparent);
 }
 
 .empty-canvas {

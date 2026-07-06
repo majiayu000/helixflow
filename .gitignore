@@ -9,5 +9,6 @@ target/
 *.log
 .idea/
 .vscode/
+.helixflow/
 .design-canvas.state.json
 .thumbnail

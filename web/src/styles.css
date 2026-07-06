@@ -3,46 +3,47 @@
 @import "./canvas-collaboration.css";
 @import "./panels.css";
 @import "./chat-log.css";
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Manrope:wght@500;600;700;800&family=Noto+Sans+SC:wght@400;500;700&family=Space+Grotesk:wght@500;600;700&display=swap");
 
 :root {
-  --font-sans: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
-  --hf-bg: #fbfbfc;
-  --hf-panel: #ffffff;
-  --hf-panel-2: #f7f7f9;
-  --hf-border: #ececef;
-  --hf-text: #18181b;
-  --hf-text-muted: #65656e;
-  --hf-accent: #245f8f;
-  --hf-accent-soft: #e9f2f8;
-  --hf-success: #168c4c;
-  --hf-danger: #d23b3b;
+  --font-sans: "Space Grotesk", "Noto Sans SC", "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --hf-bg: #0b0b0e;
+  --hf-panel: #131318;
+  --hf-panel-2: #0e0e12;
+  --hf-border: #1f1f25;
+  --hf-text: #ececea;
+  --hf-text-muted: #a5a5a8;
+  --hf-accent: oklch(0.72 0.15 45);
+  --hf-accent-soft: oklch(0.72 0.15 45 / 0.1);
+  --hf-success: oklch(0.68 0.14 150);
+  --hf-danger: #f06f6f;
   --hf-radius-sm: 7px;
-  --hf-radius-md: 10px;
+  --hf-radius-md: 9px;
   --bg: var(--hf-bg);
   --surface: var(--hf-panel);
   --surface-2: var(--hf-panel-2);
-  --surface-3: #f1f1f4;
+  --surface-3: #1a1a20;
   --border: var(--hf-border);
-  --border-2: #e2e2e7;
-  --border-3: #d6d6dc;
+  --border-2: #2b2b33;
+  --border-3: #3a3a44;
   --text: var(--hf-text);
   --text-2: var(--hf-text-muted);
-  --text-3: #9b9ba6;
-  --text-4: #bdbdc6;
+  --text-3: #8a8a90;
+  --text-4: #55555c;
   --accent: var(--hf-accent);
-  --accent-ink: #164468;
+  --accent-ink: #160d05;
   --accent-soft: var(--hf-accent-soft);
-  --accent-line: #bfd9ea;
+  --accent-line: oklch(0.72 0.15 45 / 0.45);
   --green: var(--hf-success);
-  --green-soft: #e6f4ec;
-  --green-line: #c5e6d2;
-  --amber: #b07514;
-  --amber-soft: #faf0dc;
-  --amber-line: #efdcb0;
+  --green-soft: oklch(0.68 0.14 150 / 0.1);
+  --green-line: oklch(0.68 0.14 150 / 0.35);
+  --amber: oklch(0.82 0.12 85);
+  --amber-soft: oklch(0.82 0.12 85 / 0.1);
+  --amber-line: oklch(0.82 0.12 85 / 0.35);
   --red: var(--hf-danger);
-  --red-soft: #fcebeb;
-  --red-line: #f2caca;
+  --red-soft: rgb(240 111 111 / 0.1);
+  --red-line: rgb(240 111 111 / 0.35);
   --t-model: #a874e0;
   --t-clip: #d8b23c;
   --t-latent: #dd6cae;
@@ -53,14 +54,15 @@
   --r-xs: 5px;
   --r-sm: var(--hf-radius-sm);
   --r-md: var(--hf-radius-md);
-  --r-lg: 14px;
-  --sh-sm: 0 1px 2px rgba(24, 24, 27, 0.05), 0 1px 1px rgba(24, 24, 27, 0.04);
-  --sh-md: 0 4px 12px rgba(24, 24, 27, 0.07), 0 1px 3px rgba(24, 24, 27, 0.05);
-  --sh-lg: 0 12px 36px rgba(24, 24, 27, 0.12), 0 4px 10px rgba(24, 24, 27, 0.06);
-  --sh-pop: 0 8px 28px rgba(24, 24, 27, 0.16), 0 2px 6px rgba(24, 24, 27, 0.08);
+  --r-lg: 12px;
+  --sh-sm: 0 1px 2px rgb(0 0 0 / 0.22);
+  --sh-md: 0 10px 26px rgb(0 0 0 / 0.3), 0 1px 3px rgb(0 0 0 / 0.24);
+  --sh-lg: 0 20px 50px rgb(0 0 0 / 0.42);
+  --sh-pop: 0 24px 70px rgb(0 0 0 / 0.55), 0 2px 8px rgb(0 0 0 / 0.3);
   font-family: var(--font-sans);
   color: var(--text);
   background: var(--bg);
+  color-scheme: dark;
   font-synthesis: none;
 }
 
@@ -175,8 +177,8 @@ textarea:disabled {
   display: grid;
   place-items: center;
   border-radius: 7px;
-  background: linear-gradient(140deg, var(--accent), #2f8f6b);
-  color: #fff;
+  background: var(--accent);
+  color: var(--accent-ink);
   font-size: 13px;
   font-weight: 700;
 }
@@ -307,7 +309,7 @@ textarea:disabled {
 
 .pill--live {
   background: var(--accent-soft);
-  color: var(--accent-ink);
+  color: var(--accent);
 }
 
 .pill--live .led {
@@ -362,13 +364,13 @@ textarea:disabled {
 
 .btn--primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
   box-shadow: var(--sh-sm);
 }
 
 .btn--soft {
   background: var(--accent-soft);
-  color: var(--accent-ink);
+  color: var(--accent);
 }
 
 .btn--ghost {
@@ -409,7 +411,7 @@ textarea:disabled {
 
 .ibtn.p-on {
   background: var(--accent-soft);
-  color: var(--accent-ink);
+  color: var(--accent);
   border-color: var(--accent-line);
 }
 
@@ -540,8 +542,8 @@ textarea:disabled {
 }
 
 .msg-avatar--agent {
-  background: linear-gradient(140deg, var(--accent), #2f8f6b);
-  color: #fff;
+  background: var(--accent);
+  color: var(--accent-ink);
 }
 
 .msg-body {
@@ -571,8 +573,8 @@ textarea:disabled {
   max-width: 100%;
   border: 1px solid var(--border);
   border-radius: var(--r-md);
-  background: var(--text);
-  color: var(--surface);
+  background: var(--surface-3);
+  color: var(--text);
   padding: 8px 12px;
 }
 
@@ -611,7 +613,7 @@ textarea:disabled {
   place-items: center;
   border-radius: 6px;
   background: var(--red);
-  color: #fff;
+  color: var(--bg);
   flex-shrink: 0;
 }
 
@@ -728,7 +730,7 @@ textarea:disabled {
   gap: 5px;
   border-radius: 999px;
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
   padding: 0 8px;
   font-size: 10.5px;
   font-weight: 600;

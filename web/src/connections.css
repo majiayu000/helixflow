@@ -85,5 +85,5 @@
 
 .connection-drag-path {
   stroke-dasharray: 7 7;
-  filter: drop-shadow(0 0 5px rgba(15, 23, 42, 0.22));
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 42%, transparent));
 }

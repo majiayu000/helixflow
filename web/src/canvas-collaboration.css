@@ -140,7 +140,7 @@
   border: 2px solid var(--surface);
   border-radius: 50%;
   background: var(--amber);
-  color: #fff;
+  color: var(--bg);
   box-shadow: var(--sh-sm);
   font-size: 14px;
   font-weight: 900;
@@ -170,7 +170,7 @@
   height: 22px;
   border-radius: 0 var(--r-sm) var(--r-sm) var(--r-sm);
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
   padding: 0 7px;
   box-shadow: var(--sh-sm);
   font-size: 11px;
