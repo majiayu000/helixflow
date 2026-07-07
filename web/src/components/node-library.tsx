@@ -26,6 +26,28 @@ export function NodeLibrary({ catalog, error, disabled, onAddNode }: NodeLibrary
   );
   const showTray = open && category !== 'select';
   const visibleItems = query.trim() ? filtered : filtered.slice(0, 8);
+  const definitionsByCategory = useMemo(() => groupDefinitionsByCategory(definitions), [definitions]);
+
+  const selectTool = (tool: ToolbarItem) => {
+    if (tool.category === 'select') {
+      setCategory('select');
+      setOpen(false);
+      return;
+    }
+
+    setQuery('');
+    setCategory(tool.category);
+
+    const categoryDefinitions =
+      tool.category === 'all' ? definitions : definitionsByCategory.get(tool.category) ?? [];
+    if (!disabled && tool.category !== 'all' && categoryDefinitions.length === 1) {
+      setOpen(false);
+      onAddNode(categoryDefinitions[0]!);
+      return;
+    }
+
+    setOpen(true);
+  };
 
   return (
     <aside className="node-library" onPointerDown={(event) => event.stopPropagation()}>
@@ -36,10 +58,7 @@ export function NodeLibrary({ catalog, error, disabled, onAddNode }: NodeLibrary
             disabled={Boolean(tool.disabled)}
             key={tool.key}
             leadingDivider={index === 3 || index === 7 || index === tools.length - 1}
-            onClick={() => {
-              setCategory(tool.category);
-              setOpen(tool.category !== 'select');
-            }}
+            onClick={() => selectTool(tool)}
             tool={tool}
           />
         ))}
@@ -126,7 +145,7 @@ function FragmentedToolButton({
         title={tool.label}
         type="button"
       >
-        <Icon n={tool.icon} s={24} sw={1.8} />
+        <Icon n={tool.icon} s={18} sw={1.9} />
       </button>
     </>
   );
@@ -165,6 +184,16 @@ function toolLabel(category: string): string {
   if (category === 'image') return '图像节点';
   if (category === 'video') return '视频节点';
   return `${category} 节点`;
+}
+
+function groupDefinitionsByCategory(definitions: NodeDefinition[]): Map<string, NodeDefinition[]> {
+  const groups = new Map<string, NodeDefinition[]>();
+  for (const definition of definitions) {
+    const current = groups.get(definition.category) ?? [];
+    current.push(definition);
+    groups.set(definition.category, current);
+  }
+  return groups;
 }
 
 export function filterNodeDefinitions(
