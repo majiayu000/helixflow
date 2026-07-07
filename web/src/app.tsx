@@ -35,6 +35,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
     () => workspaceId ?? workspaceIdFromUrl(),
     [workspaceId],
   );
+  const showAdvancedEditPanel = useMemo(() => advancedEditPanelEnabledFromUrl(), []);
   const [forceRerun, setForceRerun] = useState(false);
   const [selectedCanvasNodeIds, setSelectedCanvasNodeIds] = useState<string[]>([]);
   const status = useWorkbenchStore((store) => store.status);
@@ -302,11 +303,13 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
               <ArtifactStage outputs={activeState.outputs} />
             </div>
           )}
-          <ManualProposalPanel
-            busy={navigationLocked}
-            state={previewState}
-            onCreateProposal={(input) => runAction(() => appendManualEdit(input), true)}
-          />
+          {showAdvancedEditPanel && (
+            <ManualProposalPanel
+              busy={navigationLocked}
+              state={previewState}
+              onCreateProposal={(input) => runAction(() => appendManualEdit(input), true)}
+            />
+          )}
           <HistoryPanel
             busy={navigationLocked}
             history={activeState.history}
@@ -375,4 +378,9 @@ function emptyRunSnapshot(): RunSnapshot {
       currency: 'USD',
     },
   };
+}
+
+function advancedEditPanelEnabledFromUrl(): boolean {
+  if (typeof window === 'undefined') return false;
+  return new URLSearchParams(window.location.search).get('advanced_edit') === '1';
 }
