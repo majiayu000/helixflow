@@ -1,21 +1,78 @@
 .node-library {
   position: absolute;
-  z-index: 7;
-  top: 72px;
-  left: 14px;
-  width: 236px;
-  max-height: min(520px, calc(100% - 148px));
+  z-index: 8;
+  top: 58px;
+  left: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: min(calc(100% - 48px), 760px);
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+.node-library-bar {
+  height: 68px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid color-mix(in srgb, var(--border-2) 76%, transparent);
+  border-radius: 22px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  box-shadow: var(--sh-pop);
+  padding: 10px 16px;
+  pointer-events: auto;
+}
+
+.node-library-tool {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text-2);
+  padding: 0;
+}
+
+.node-library-tool:hover:not(:disabled),
+.node-library-tool.is-active {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.node-library-tool.is-active {
+  box-shadow: inset 0 0 0 1px var(--border-2);
+}
+
+.node-library-tool:disabled {
+  cursor: default;
+  opacity: 0.36;
+}
+
+.node-library-divider {
+  width: 1px;
+  height: 36px;
+  flex: 0 0 auto;
+  background: var(--border-2);
+}
+
+.node-library-tray {
+  width: min(520px, 100%);
   display: flex;
   flex-direction: column;
   gap: 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: color-mix(in srgb, var(--surface) 94%, transparent);
-  box-shadow: var(--sh-md);
+  margin-top: 10px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-lg);
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  box-shadow: var(--sh-lg);
   padding: 10px;
+  pointer-events: auto;
 }
 
-.node-library-head {
+.node-library-tray-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -24,7 +81,7 @@
   font-size: 12px;
 }
 
-.node-library-head span {
+.node-library-tray-head span {
   color: var(--amber);
   font-size: 11px;
 }
@@ -32,53 +89,39 @@
 .node-library-search {
   width: 100%;
   border: 1px solid var(--border);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-sm);
   background: var(--surface-2);
   color: var(--text);
-  padding: 7px 8px;
+  padding: 8px 9px;
   font-size: 12px;
 }
 
-.node-library-tabs {
-  display: flex;
-  gap: 5px;
-  overflow-x: auto;
-}
-
-.node-library-tabs button {
-  flex: 0 0 auto;
-  border: 1px solid var(--border);
-  border-radius: var(--r-xs);
-  background: var(--surface-2);
-  color: var(--text-2);
-  padding: 4px 7px;
-  font-size: 11px;
-}
-
-.node-library-tabs button.on {
-  border-color: var(--accent);
-  color: var(--text);
-}
-
 .node-library-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  max-height: 220px;
   overflow-y: auto;
   padding-right: 2px;
 }
 
 .node-library-item {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 3px;
   border: 1px solid var(--border);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-sm);
   background: var(--surface-2);
   color: var(--text);
-  padding: 7px 8px;
+  padding: 8px 9px;
   text-align: left;
   cursor: grab;
+}
+
+.node-library-item:hover:not(:disabled) {
+  border-color: var(--accent-line);
+  background: var(--surface-3);
 }
 
 .node-library-item:disabled {
@@ -87,12 +130,16 @@
 }
 
 .node-library-title {
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 7px;
-  min-width: 0;
   font-size: 12px;
   font-weight: 650;
+}
+
+.node-library-title .port {
+  border-color: var(--bg);
 }
 
 .node-library-type {
@@ -106,8 +153,29 @@
 
 .node-library-empty {
   border: 1px dashed var(--border);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-sm);
   color: var(--text-3);
   padding: 12px;
   font-size: 12px;
+}
+
+@media (max-width: 760px) {
+  .node-library {
+    top: 64px;
+    left: 12px;
+    right: 12px;
+    width: auto;
+    transform: none;
+  }
+
+  .node-library-bar {
+    width: 100%;
+    justify-content: flex-start;
+    overflow-x: auto;
+    border-radius: 18px;
+  }
+
+  .node-library-list {
+    grid-template-columns: 1fr;
+  }
 }
