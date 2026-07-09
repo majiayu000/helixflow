@@ -200,6 +200,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
         exportDisabled={busy || !activeState.workspace.versionId}
         historyOpen={historyOpen}
         onAgentRun={() => void runAction(() => sendMessage('运行当前 workflow'))}
+        onCommitEdits={() => void runAction(() => commitManualEdits())}
         onExport={exportCurrentWorkflow}
         onHistory={() => setHistoryOpen((open) => !open)}
         onNewWorkspace={() => requestNavigation({ kind: 'create_workspace' })}
