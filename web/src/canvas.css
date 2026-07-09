@@ -549,30 +549,44 @@
   left: 14px;
   z-index: 5;
   display: flex;
+  align-items: center;
+  gap: 8px;
   overflow: hidden;
   border: 1px solid var(--border-2);
-  border-radius: var(--r-sm);
-  background: var(--surface);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
   box-shadow: var(--sh-sm);
+  padding: 7px;
+  backdrop-filter: blur(14px);
 }
 
 .zoom-ctl button {
-  width: 30px;
-  height: 30px;
+  width: 34px;
+  height: 34px;
   border: 0;
-  border-right: 1px solid var(--border);
-  background: transparent;
+  border-radius: 8px;
+  background: var(--surface-3);
   color: var(--text-2);
   font-size: 14px;
+  font-weight: 800;
+}
+
+.zoom-ctl input {
+  width: 160px;
+  accent-color: var(--accent);
 }
 
 .zoom-ctl span {
-  min-width: 48px;
+  min-width: 58px;
+  height: 34px;
   display: grid;
   place-items: center;
+  border-radius: 8px;
+  background: var(--surface-3);
   color: var(--text-2);
   font-family: var(--font-mono);
   font-size: 12px;
+  font-weight: 700;
 }
 
 .canvas-minimap {
