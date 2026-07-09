@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Icon, type IconName } from '../icons';
+import { Icon } from '../icons';
 import type { WorkbenchState } from '../types';
 
 type ChatMessage = WorkbenchState['chat']['messages'][number];
@@ -22,35 +22,13 @@ type ComposerKeyEvent = {
   };
 };
 
-const presets: Array<{ icon: IconName; label: string; text: string }> = [
-  {
-    icon: 'bolt',
-    label: '做界面',
-    text: '设计一个用于图片生成任务的工作台界面，包含左侧对话、右侧预览和历史记录。',
-  },
-  {
-    icon: 'layers',
-    label: 'ControlNet',
-    text: '在当前工作流基础上加入 ControlNet depth 分支，并保留已有节点连接。',
-  },
-  {
-    icon: 'dice',
-    label: 'Seed 试验',
-    text: '为当前工作流设计 4 个不同 seed 的真实运行计划，先让我确认再执行。',
-  },
-  {
-    icon: 'refresh',
-    label: '修复报错',
-    text: '读取当前失败节点和运行记录，给出最小修复方案并应用到工作流。',
-  },
-];
-
 type ChatPaneProps = {
   messages: ChatMessage[];
   pendingProposal: WorkbenchState['pendingProposal'];
   run: WorkbenchState['run'];
   busy: boolean;
   editSessionSummary: EditSessionSummary | null;
+  selectedNodeIds?: string[];
   onSend: (text: string) => Promise<void>;
   onCommitEdits: () => Promise<void>;
   onDiscardEdits: () => void;
@@ -64,6 +42,7 @@ export function ChatPane({
   run,
   busy,
   editSessionSummary,
+  selectedNodeIds = [],
   onSend,
   onCommitEdits,
   onDiscardEdits,
@@ -74,6 +53,9 @@ export function ChatPane({
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const isComposingRef = useRef(false);
   const entries = chatEntries(messages);
+  const selectedSummary = selectedNodeIds.length > 0
+    ? `@选中 ${selectedNodeIds.join(', ')}`
+    : '@未选中';
 
   useEffect(() => {
     const element = scrollRef.current;
@@ -93,22 +75,11 @@ export function ChatPane({
   return (
     <aside className="wb-chat">
       <div className="chat-head">
-        <Icon n="spark" s={14} c="var(--accent)" fill />
-        对话
-        <span className="sub">Codex CLI · 真实执行</span>
+        <span>SESSION · CODEX</span>
+        <span className="sub">{busy ? 'busy · 执行中' : 'idle · 观察中'}</span>
       </div>
-      <div className="preset-row">
-        {presets.map((preset) => (
-          <button
-            className="chip"
-            disabled={busy}
-            key={preset.label}
-            onClick={() => submit(preset.text)}
-          >
-            <Icon n={preset.icon} s={13} />
-            {preset.label}
-          </button>
-        ))}
+      <div className="session-brief">
+        你在手动改图 — 我不会打断。提交编辑后，我的下一个提案会基于它。
       </div>
       {editSessionSummary && (
         <EditSessionCard
@@ -143,6 +114,11 @@ export function ChatPane({
         />}
       </div>
       <div className="composer">
+        <div className="composer-context">
+          <span>节点对话</span>
+          <span>{selectedSummary}</span>
+          {selectedNodeIds.length > 1 && <span>含上游 · {selectedNodeIds.length} 个节点</span>}
+        </div>
         <div className="composer-box">
           <textarea
             aria-label="message composer"
@@ -160,7 +136,7 @@ export function ChatPane({
                 void submit();
               }
             }}
-            placeholder="描述想要的界面、应用，或对当前工作流提出修改..."
+            placeholder={selectedNodeIds.length > 0 ? '围绕选中节点提问...' : '围绕当前工作流提问...'}
             rows={2}
             value={draft}
           />
@@ -210,7 +186,7 @@ function EditSessionCard({
   return (
     <div className="edit-session-card">
       <div className="edit-session-head">
-        <span>EDITING · {summary.count} CHANGES</span>
+        <span>UNCOMMITTED · 手动编辑</span>
         <em>{summary.baseVersionId}</em>
       </div>
       <div className="edit-session-list">
@@ -220,11 +196,11 @@ function EditSessionCard({
       </div>
       <div className="edit-session-actions">
         <button className="btn btn--ghost btn--sm" disabled={busy} onClick={onDiscard}>
-          Discard
+          放弃
         </button>
         <button className="btn btn--primary btn--sm" disabled={busy} onClick={() => void onCommit()}>
           <Icon n="check" s={13} />
-          Commit
+          提交编辑
         </button>
       </div>
     </div>

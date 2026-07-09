@@ -238,6 +238,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
                   }
                 : null
             }
+            selectedNodeIds={selectedCanvasNodeIds}
             onCommitEdits={() => runAction(() => commitManualEdits())}
             onDiscardEdits={discardManualEdits}
             onSend={(text) =>
