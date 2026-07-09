@@ -91,6 +91,7 @@ export function CanvasCommentsPanel({
   viewportSize,
 }: CanvasCommentsPanelProps) {
   const [draft, setDraft] = useState('');
+  const [open, setOpen] = useState(comments.length > 0);
   const targetOptions = useMemo(
     () => commentTargetOptions(nodes, edges, selectedNodeId, view, viewportSize),
     [edges, nodes, selectedNodeId, view, viewportSize],
@@ -116,11 +117,21 @@ export function CanvasCommentsPanel({
     }
   };
 
+  if (!open) {
+    return (
+      <button className="comment-toggle" onClick={() => setOpen(true)} type="button">
+        Comments <strong>{comments.length}</strong>
+      </button>
+    );
+  }
+
   return (
     <aside className="comment-panel" onPointerDown={(event) => event.stopPropagation()}>
       <div className="comment-panel-head">
         <span>Comments</span>
-        <strong>{comments.length}</strong>
+        <button onClick={() => setOpen(false)} type="button">
+          {comments.length}
+        </button>
       </div>
       <div className="comment-compose">
         <select
