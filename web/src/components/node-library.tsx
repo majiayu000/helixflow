@@ -52,12 +52,12 @@ export function NodeLibrary({ catalog, error, disabled, onAddNode }: NodeLibrary
   return (
     <aside className="node-library" onPointerDown={(event) => event.stopPropagation()}>
       <div className="node-library-bar" role="toolbar" aria-label="节点工具条">
-        {tools.map((tool, index) => (
+        {tools.map((tool) => (
           <FragmentedToolButton
             active={tool.category === category}
             disabled={Boolean(tool.disabled)}
             key={tool.key}
-            leadingDivider={index === 3 || index === 7 || index === tools.length - 1}
+            leadingDivider={Boolean(tool.dividerBefore)}
             onClick={() => selectTool(tool)}
             tool={tool}
           />
@@ -115,10 +115,13 @@ export function NodeLibrary({ catalog, error, disabled, onAddNode }: NodeLibrary
 
 type ToolbarItem = {
   category: string;
+  dividerBefore?: boolean;
   disabled?: boolean;
   icon: IconName;
   key: string;
   label: string;
+  primary?: boolean;
+  text?: string;
 };
 
 function FragmentedToolButton({
@@ -139,13 +142,14 @@ function FragmentedToolButton({
       {leadingDivider && <span className="node-library-divider" />}
       <button
         aria-pressed={active}
-        className={active ? 'node-library-tool is-active' : 'node-library-tool'}
+        className={toolClassName(active, tool)}
         disabled={disabled}
         onClick={onClick}
         title={tool.label}
         type="button"
       >
         <Icon n={tool.icon} s={18} sw={1.9} />
+        {tool.text && <span>{tool.text}</span>}
       </button>
     </>
   );
@@ -154,18 +158,16 @@ function FragmentedToolButton({
 function toolbarItems(categories: string[]): ToolbarItem[] {
   const available = new Set(categories);
   const items: ToolbarItem[] = [
+    { category: 'all', icon: 'play', key: 'node-menu', label: '打开节点库', primary: true },
     { category: 'select', icon: 'hand', key: 'select', label: '选择画布' },
     { category: 'undo', disabled: true, icon: 'undo', key: 'undo', label: '撤销' },
     { category: 'redo', disabled: true, icon: 'redo', key: 'redo', label: '重做' },
-    { category: 'text', icon: 'text', key: 'text', label: '文本节点' },
+    { category: 'text', dividerBefore: true, icon: 'text', key: 'text', label: '文本节点' },
     { category: 'image', icon: 'image', key: 'image', label: '图像节点' },
     { category: 'video', icon: 'play', key: 'video', label: '视频节点' },
     { category: 'audio', icon: 'music', key: 'audio', label: '音频节点' },
-    { category: 'all', icon: 'sliders', key: 'all', label: '全部节点' },
-    { category: 'input', icon: 'export', key: 'input', label: '输入节点' },
-    { category: 'output', icon: 'folder', key: 'output', label: '输出节点' },
-    { category: 'style', disabled: true, icon: 'palette', key: 'style', label: '样式' },
-    { category: 'erase', disabled: true, icon: 'eraser', key: 'erase', label: '清除' },
+    { category: 'input', dividerBefore: true, icon: 'export', key: 'input', label: '导入节点', text: '导入' },
+    { category: 'output', icon: 'folder', key: 'output', label: '素材库', text: '素材库' },
   ];
   return items.map((item) => ({
     ...item,
@@ -174,6 +176,15 @@ function toolbarItems(categories: string[]): ToolbarItem[] {
       (!['select', 'all', 'undo', 'redo', 'style', 'erase'].includes(item.category) &&
         !available.has(item.category)),
   }));
+}
+
+function toolClassName(active: boolean, tool: ToolbarItem): string {
+  return [
+    'node-library-tool',
+    active ? 'is-active' : '',
+    tool.primary ? 'is-primary' : '',
+    tool.text ? 'has-text' : '',
+  ].filter(Boolean).join(' ');
 }
 
 function toolLabel(category: string): string {
