@@ -108,7 +108,7 @@ export function ConfirmModal({ confirmation, busy, onApprove, onHold }: ConfirmM
           <span className="ic">
             <Icon n="warn" s={14} />
           </span>
-          Agent 请求运行生成
+          成本确认
         </div>
         <div className="confirm-list">
           <div className="confirm-item">
@@ -149,7 +149,7 @@ export function ConfirmModal({ confirmation, busy, onApprove, onHold }: ConfirmM
           ) : null}
           <div className="confirm-item">
             <span className="k">真实执行</span>
-            <span className="v">确认后才会调用运行服务</span>
+            <span className="v">超过阈值才需要确认，确认后调用运行服务</span>
           </div>
         </div>
         <div className="confirm-foot">

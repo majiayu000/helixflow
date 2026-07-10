@@ -264,7 +264,7 @@ Runtime facts supplied by the backend:
 - base version id;
 - current graph summary;
 - whether the graph is empty;
-- pending proposal summary if one exists;
+- pending/applied proposal summary if one exists;
 - latest run status and error details;
 - selected workflow backend status;
 - selected runtime provider status;
@@ -530,7 +530,7 @@ Rules:
 - `kind` must be one of `create`, `modify`, `fix`, or `sweep`.
 - `ops` must use only supported graph operations.
 - The proposal is a diff, not an entire replacement graph.
-- The backend validates the proposal before showing it as pending.
+- The backend validates the proposal before applying it as a version transaction.
 
 Run request:
 
@@ -554,7 +554,7 @@ Rules:
 - `kind` must be `run`.
 - `runtime_provider_id`, `connector_id`, and `capability_id` must come from backend-supplied catalogs.
 - `graph_scope` must be `current` unless the backend later supports named subgraph runs.
-- `requires_confirmation` must be `true` for paid, external, or side-effecting providers.
+- `requires_confirmation` is backend-owned and should be true only when the estimated cost exceeds the configured threshold.
 - The agent must not include credentials, raw endpoints, signed URLs, or provider tokens.
 - The backend validates the request, estimates cost, creates the pending run, and owns execution.
 
@@ -664,7 +664,7 @@ The transcript shown in the UI should be user-centered:
 
 - Show user messages as user chat bubbles.
 - Show assistant replies as assistant chat bubbles.
-- Show pending proposals as assistant review cards.
+- Show applied graph transactions in history and keep detailed diffs in debug/history surfaces.
 - Nest tool calls under the assistant turn that caused them.
 - Collapse tool logs by default.
 - Hide internal lifecycle events such as `thread.started`, `turn.started`, and `turn.completed`.
@@ -758,8 +758,8 @@ The UI can expose this as "查看 prompt" for debugging. It should not be part o
 1. Asking `你是谁` calls the agent and produces one assistant reply without visible tool calls.
 2. Asking `你好啊` calls the agent and produces one assistant reply without reading `ctx/graph.json`.
 3. A new workspace opens with an empty graph.
-4. Asking for a workflow from an empty workspace creates a pending graph proposal.
-5. The proposal uses catalog-backed node types and validates before display.
+4. Asking for a workflow from an empty workspace creates an applied graph transaction.
+5. The proposal uses catalog-backed node types and validates before application.
 6. User-visible external provider runs never present mock output as real output.
 7. Atlas integration is represented as a runtime provider or API connector entry, not a prompt-level product boundary.
 8. The chat UI remains readable, with tool logs collapsed under the relevant assistant turn.

@@ -236,17 +236,17 @@ fn mode_override(mode: TurnMode, output_contract: OutputContract) -> String {
             output_contract.file_name()
         ),
         TurnMode::CreateWorkflow => format!(
-            "Mode: CreateWorkflow. Read the graph and catalogs, design a valid workflow from the user's intent, and write `out/{}`. Do not mutate the graph directly.\n\n{}",
+            "Mode: CreateWorkflow. Read the graph and catalogs, design a valid workflow from the user's intent, and write `out/{}`. Do not mutate the graph directly; the backend validates and applies the proposal as a version transaction.\n\n{}",
             output_contract.file_name(),
             proposal_output_contract()
         ),
         TurnMode::ModifyWorkflow => format!(
-            "Mode: ModifyWorkflow. Preserve the current graph and write the smallest valid proposal diff to `out/{}`. Do not apply changes directly.\n\n{}",
+            "Mode: ModifyWorkflow. Preserve the current graph and write the smallest valid proposal diff to `out/{}`. Do not apply changes directly; the backend validates and applies the proposal as a version transaction.\n\n{}",
             output_contract.file_name(),
             proposal_output_contract()
         ),
         TurnMode::DebugWorkflow => format!(
-            "Mode: DebugWorkflow. Inspect the declared graph/run context and write a fix proposal to `out/{}`. If context is insufficient, produce a proposal that clearly explains the blocker.\n\n{}",
+            "Mode: DebugWorkflow. Inspect the declared graph/run context and write a fix proposal to `out/{}`. If context is insufficient, produce a proposal that clearly explains the blocker. The backend validates and applies successful fixes as version transactions.\n\n{}",
             output_contract.file_name(),
             proposal_output_contract()
         ),
@@ -283,13 +283,13 @@ fn canvas_ops_contract(mode: TurnMode) -> &'static str {
 - `read_selection` means inspect only `selection.node_ids`; an empty selection is valid.
 - `propose_layout` must be expressed as `move_node` ops in `out/proposal.json`.
 - `propose_graph_ops` must be expressed as bounded proposal ops in `out/proposal.json`.
-- Never apply, dismiss, restore, save layout, or mutate graph state directly."#
+- Never restore, save layout, call provider execution, or mutate graph state directly."#
         }
         TurnMode::RunRequest => {
             r#"Canvas ops contract:
 - Read compact canvas state from `ctx/canvas_state.json`.
 - `run_selected_workflow` is only a run request contract for the current workflow/version.
-- Write `out/run_request.json`; backend creates pending confirmation before any provider execution.
+- Write `out/run_request.json`; backend estimates cost and only creates pending confirmation when the run exceeds the configured threshold.
 - Do not confirm runs, queue provider execution directly, or implement selected-subgraph execution."#
         }
         TurnMode::Chat => "Canvas ops are not available in chat mode.",
@@ -325,7 +325,7 @@ fn system_behavior(mode: TurnMode) -> &'static str {
             "Explain root cause through the proposal summary and avoid weakening validation."
         }
         TurnMode::RunRequest => {
-            "Return a backend run request only; provider invocation happens after confirmation."
+            "Return a backend run request only; provider invocation is backend-owned and may start automatically when the estimate is within the cost threshold."
         }
     }
 }

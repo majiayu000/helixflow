@@ -253,11 +253,11 @@ function RunErrorCard({
         disabled={busy}
         onClick={() =>
           void onRequestFix(
-            `读取当前失败节点 ${failedNodeText} 和运行错误，生成最小修复 proposal。`,
+            `读取当前失败节点 ${failedNodeText} 和运行错误，生成最小修复并自动应用到工作流。`,
           )
         }
       >
-        Create minimal fix proposal
+        Auto fix workflow
       </button>
       {raw && (
         <>
@@ -302,7 +302,7 @@ function ProposalMessage({
       <div className="msg-body">
         <div className="msg-name">Agent</div>
         <div className="msg-text dim proposal-intro">
-          已生成待审核的图变更提议，画布正在预览这次变更。
+          检测到旧的待处理图变更，画布正在预览这次变更。
         </div>
         <ProposalCard
           busy={busy}

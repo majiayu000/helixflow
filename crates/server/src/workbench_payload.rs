@@ -1,4 +1,4 @@
-use helixflow_graph::{PreparedProposal, ProposalKind, ProposalOp, ProposalState, WorkflowGraph};
+use helixflow_graph::{ProposalKind, ProposalOp, ProposalState, WorkflowGraph};
 use helixflow_run::{PendingRun, PendingSweep, RunOutcome};
 use helixflow_store::{ArtifactRecord, CostLedgerRecord, ProposalRecord, RunRecord, RunStepRecord};
 use serde::{Serialize, Serializer};
@@ -343,24 +343,6 @@ fn html_escape(value: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
-}
-
-pub(crate) fn proposal_payload_from_prepared(
-    id: impl Into<String>,
-    proposal: &PreparedProposal,
-) -> ProposalPayload {
-    ProposalPayload {
-        id: id.into(),
-        base_version_id: proposal.base_version_id.clone(),
-        kind: proposal.kind,
-        title: proposal.title.clone(),
-        summary: proposal.summary.clone(),
-        ops: proposal.ops.clone(),
-        diff_summary: proposal.diff_summary.clone(),
-        preview_graph: proposal.preview_graph.clone(),
-        state: proposal.state,
-        message_id: proposal.message_id.clone(),
-    }
 }
 
 pub(crate) fn pending_proposal_payload_from_record(

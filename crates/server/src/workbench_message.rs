@@ -1,24 +1,20 @@
-use std::path::PathBuf;
-
 use axum::{
     Json,
     extract::{Path, State},
 };
 use helixflow_agent::{AgentLogEntry, AgentSessionRequest, TurnMode, classify_turn_mode};
-use helixflow_graph::{ProposalKind, WorkflowGraph};
-use helixflow_store::{MessageRecord, NewMessage, NewProposal, RunRecord, RunStepRecord};
+use helixflow_graph::WorkflowGraph;
+use helixflow_store::{MessageRecord, NewMessage, RunRecord, RunStepRecord};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
-use crate::graph_files::write_json_file;
 use crate::sweep_support::handle_run_request;
 use crate::workbench_message_canvas::{WorkspaceCanvasContext, prepare_agent_canvas_context};
 use crate::workbench_message_metadata::turn_metadata_json;
-use crate::workbench_payload::{
-    PendingConfirmationPayload, ProposalPayload, RunPayload, proposal_payload_from_prepared,
-};
+use crate::workbench_message_proposals::persist_and_apply_agent_proposal;
+use crate::workbench_payload::{PendingConfirmationPayload, ProposalPayload, RunPayload};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -130,61 +126,13 @@ pub(crate) async fn post_workspace_message(
             }))
         }
         TurnMode::CreateWorkflow | TurnMode::ModifyWorkflow | TurnMode::DebugWorkflow => {
-            let mut proposal = state
+            let proposal = state
                 .agent
                 .propose_graph_change(request)
                 .await
                 .map_err(ApiError::agent)?;
-            let (ops_path, preview_graph_path) =
-                proposal_storage_paths(&workspace_id, &proposal.session_id);
-            write_json_file(
-                &state.data_dir,
-                &ops_path,
-                &proposal.proposal.ops,
-                "write proposal ops",
-            )
-            .await?;
-            write_json_file(
-                &state.data_dir,
-                &preview_graph_path,
-                &proposal.proposal.preview_graph,
-                "write proposal preview graph",
-            )
-            .await?;
-            let ops_path_string = ops_path.to_string_lossy().into_owned();
-            let preview_graph_path_string = preview_graph_path.to_string_lossy().into_owned();
-            let proposal_record = state
-                .store
-                .create_proposal(NewProposal {
-                    workspace_id: &workspace_id,
-                    base_version_id: &proposal.proposal.base_version_id,
-                    kind: proposal_kind_as_str(proposal.proposal.kind),
-                    title: &proposal.proposal.title,
-                    summary: &proposal.proposal.summary,
-                    ops_path: &ops_path_string,
-                    preview_graph_path: Some(&preview_graph_path_string),
-                    message_id: None,
-                })
-                .await
-                .map_err(ApiError::store)?;
-            let message = state
-                .store
-                .create_message(NewMessage {
-                    workspace_id: &workspace_id,
-                    role: "agent",
-                    kind: "proposal_pending",
-                    text: Some(&proposal.proposal.summary),
-                    ref_id: Some(&proposal_record.id),
-                    attachment_ids_json: None,
-                })
-                .await
-                .map_err(ApiError::store)?;
-            proposal.proposal.message_id = Some(message.id.clone());
-            let proposal_record = state
-                .store
-                .attach_proposal_message(&proposal_record.id, &message.id)
-                .await
-                .map_err(ApiError::store)?;
+            let message =
+                persist_and_apply_agent_proposal(&state, &workspace_id, &proposal).await?;
             persist_agent_logs(
                 &state,
                 &workspace_id,
@@ -195,10 +143,7 @@ pub(crate) async fn post_workspace_message(
             Ok(Json(WorkspaceMessageResponse {
                 turn_mode: classification.mode,
                 messages: vec![ChatMessagePayload::from_record(message)],
-                proposal: Some(proposal_payload_from_prepared(
-                    proposal_record.id,
-                    &proposal.proposal,
-                )),
+                proposal: None,
                 run: None,
                 pending_confirmation: None,
             }))
@@ -222,7 +167,7 @@ pub(crate) async fn post_workspace_message(
                 messages: vec![ChatMessagePayload::from_record(message)],
                 proposal: None,
                 run: Some(run_request.run),
-                pending_confirmation: Some(run_request.pending_confirmation),
+                pending_confirmation: run_request.pending_confirmation,
             }))
         }
     }
@@ -412,23 +357,6 @@ fn truncate_debug_text(value: &str) -> String {
     value.chars().take(MAX_DEBUG_TEXT).collect()
 }
 
-fn proposal_storage_paths(workspace_id: &str, session_id: &str) -> (PathBuf, PathBuf) {
-    let dir = PathBuf::from("workspaces")
-        .join(workspace_id)
-        .join("proposals")
-        .join(session_id);
-    (dir.join("ops.json"), dir.join("preview.json"))
-}
-
-fn proposal_kind_as_str(kind: ProposalKind) -> &'static str {
-    match kind {
-        ProposalKind::Create => "create",
-        ProposalKind::Modify => "modify",
-        ProposalKind::Fix => "fix",
-        ProposalKind::Sweep => "sweep",
-    }
-}
-
 #[cfg(test)]
 mod gh60_tests;
 
@@ -497,7 +425,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn post_message_creates_pending_run_request() {
+    async fn post_message_auto_starts_free_run_request() {
         let (state, workspace_id, version_id, _dir) = state_with_workspace().await;
 
         let response = post_workspace_message(
@@ -516,18 +444,9 @@ mod tests {
 
         assert_eq!(response.turn_mode, TurnMode::RunRequest);
         assert_eq!(response.messages[0].kind, "run_requested");
-        assert_eq!(
-            response.run.as_ref().expect("run").status,
-            "waiting_confirmation"
-        );
-        assert_eq!(
-            response
-                .pending_confirmation
-                .as_ref()
-                .expect("confirmation")
-                .id,
-            response.run.as_ref().expect("run").id
-        );
+        assert_eq!(response.run.as_ref().expect("run").status, "running");
+        assert_eq!(response.pending_confirmation, None);
+        assert!(response.messages[0].text.contains("started automatically"));
 
         let persisted = state
             .store
@@ -546,11 +465,11 @@ mod tests {
             .run(&response.run.expect("run").id)
             .await
             .expect("persisted run");
-        assert_eq!(run.status, "waiting_confirmation");
+        assert!(matches!(run.status.as_str(), "running" | "succeeded"));
     }
 
     #[tokio::test]
-    async fn post_message_persists_pending_proposal_record() {
+    async fn post_message_auto_applies_proposal_record() {
         let (state, workspace_id, version_id, _dir) = state_with_workspace().await;
 
         let response = post_workspace_message(
@@ -568,10 +487,19 @@ mod tests {
         .0;
 
         assert_eq!(response.turn_mode, TurnMode::CreateWorkflow);
-        let proposal_id = response.proposal.as_ref().expect("proposal").id.clone();
+        assert_eq!(response.proposal, None);
+        assert_eq!(response.messages[0].kind, "proposal_applied");
+        let proposals = state
+            .store
+            .workspace_proposals(&workspace_id)
+            .await
+            .expect("proposals");
+        assert_eq!(proposals.len(), 1);
+        let proposal_id = proposals[0].id.clone();
         let proposal = state.store.proposal(&proposal_id).await.expect("proposal");
-        assert_eq!(proposal.state, "pending");
+        assert_eq!(proposal.state, "applied");
         assert_eq!(proposal.kind, "modify");
+        assert!(proposal.result_version_id.is_some());
         assert!(state.data_dir.join(&proposal.ops_path).exists());
         assert!(
             state
@@ -585,7 +513,7 @@ mod tests {
             .workspace_messages(&workspace_id)
             .await
             .expect("messages");
-        assert_eq!(persisted[1].kind, "proposal_pending");
+        assert_eq!(persisted[1].kind, "proposal_applied");
         assert_eq!(persisted[1].ref_id.as_deref(), Some(proposal_id.as_str()));
         assert_eq!(persisted[2].kind, "agent_log:status");
     }
@@ -648,7 +576,7 @@ mod tests {
             Path(workspace_id.clone()),
             State(state.clone()),
             Json(WorkspaceMessageRequest {
-                base_version_id: version_id,
+                base_version_id: version_id.clone(),
                 user_message: "为什么失败了，帮我修复".to_owned(),
                 graph: sample_graph(),
                 canvas_context: None,
@@ -659,8 +587,9 @@ mod tests {
         .0;
 
         assert_eq!(response.turn_mode, TurnMode::DebugWorkflow);
-        assert!(response.proposal.is_some());
-        assert_eq!(
+        assert_eq!(response.proposal, None);
+        assert_eq!(response.messages[0].kind, "proposal_applied");
+        assert_ne!(
             state
                 .store
                 .workspace(&workspace_id)
@@ -668,14 +597,7 @@ mod tests {
                 .expect("workspace")
                 .cur_version_id
                 .as_deref(),
-            Some(
-                response
-                    .proposal
-                    .as_ref()
-                    .expect("proposal")
-                    .base_version_id
-                    .as_str()
-            )
+            Some(version_id.as_str())
         );
         let persisted = state
             .store
@@ -708,6 +630,15 @@ mod tests {
             })
             .await
             .expect("create version");
+        tokio::fs::create_dir_all(data_dir.join("graphs"))
+            .await
+            .expect("create graph dir");
+        tokio::fs::write(
+            data_dir.join("graphs/message.json"),
+            serde_json::to_vec_pretty(&sample_graph()).expect("graph json"),
+        )
+        .await
+        .expect("write graph");
         let state = AppState::with_store_agent(
             EventBus::new(16),
             store,

@@ -1,7 +1,7 @@
 use helixflow_agent::AgentSessionRequest;
 use helixflow_graph::WorkflowGraph;
 use helixflow_registry::NodeRegistry;
-use helixflow_run::{AgentRunRequest, SweepPlan, SweepVariant};
+use helixflow_run::{AgentRunRequest, CostSummary, SweepPlan, SweepVariant};
 use helixflow_store::RunRecord;
 use serde_json::{Number, Value};
 
@@ -9,14 +9,14 @@ use crate::api_error::ApiError;
 use crate::app_state::AppState;
 use crate::workbench_payload::{
     PendingConfirmationPayload, RunPayload, pending_confirmation_from_pending,
-    pending_confirmation_from_sweep, run_payload_from_pending,
+    pending_confirmation_from_sweep, run_payload_from_outcome, run_payload_from_pending,
 };
 
 pub(crate) struct RunRequestResult {
     pub(crate) ref_id: String,
     pub(crate) message_text: String,
     pub(crate) run: RunPayload,
-    pub(crate) pending_confirmation: PendingConfirmationPayload,
+    pub(crate) pending_confirmation: Option<PendingConfirmationPayload>,
 }
 
 pub(crate) async fn handle_run_request(
@@ -41,12 +41,39 @@ pub(crate) async fn handle_run_request(
         })
         .await
         .map_err(ApiError::run)?;
+    if !requires_run_confirmation(&pending.estimate) {
+        let outcome = state
+            .runner
+            .start_confirmed_run(&pending.run.id)
+            .await
+            .map_err(ApiError::run)?;
+        let costs = state
+            .store
+            .cost_ledger_for_run(&outcome.run.id)
+            .await
+            .map_err(ApiError::store)?;
+
+        return Ok(RunRequestResult {
+            ref_id: outcome.run.id.clone(),
+            message_text: format!(
+                "Run {} started automatically after cost estimate {}.",
+                outcome.run.id,
+                format_cost(&pending.estimate)
+            ),
+            run: run_payload_from_outcome(&outcome, &costs),
+            pending_confirmation: None,
+        });
+    }
 
     Ok(RunRequestResult {
         ref_id: pending.run.id.clone(),
-        message_text: format!("Run {} is waiting for confirmation.", pending.run.id),
+        message_text: format!(
+            "Run {} is waiting for confirmation; estimated cost is {}.",
+            pending.run.id,
+            format_cost(&pending.estimate)
+        ),
         run: run_payload_from_pending(&pending),
-        pending_confirmation: pending_confirmation_from_pending(&pending),
+        pending_confirmation: Some(pending_confirmation_from_pending(&pending)),
     })
 }
 
@@ -104,20 +131,77 @@ async fn request_seed_sweep(
         .runs
         .last()
         .ok_or_else(|| ApiError::server_error("sweep plan did not produce a recommended run"))?;
+    if !requires_run_confirmation(&pending.estimate) {
+        let run_ids = pending
+            .runs
+            .iter()
+            .map(|run| run.run.id.clone())
+            .collect::<Vec<_>>();
+        let outcome = state
+            .runner
+            .start_confirmed_sweep(&run_ids, &recommended.run.id)
+            .await
+            .map_err(ApiError::run)?;
+        let response_run = outcome
+            .runs
+            .iter()
+            .find(|candidate| candidate.run.id == recommended.run.id)
+            .or_else(|| outcome.runs.last())
+            .ok_or_else(|| ApiError::server_error("started sweep omitted recommended run"))?;
+        let costs = state
+            .store
+            .cost_ledger_for_run(&response_run.run.id)
+            .await
+            .map_err(ApiError::store)?;
+
+        return Ok(RunRequestResult {
+            ref_id: recommended.run.id.clone(),
+            message_text: format!(
+                "Seed sweep {} started automatically after cost estimate {}.",
+                pending.group_id,
+                format_cost(&pending.estimate)
+            ),
+            run: run_payload_from_outcome(response_run, &costs),
+            pending_confirmation: None,
+        });
+    }
 
     Ok(RunRequestResult {
         ref_id: recommended.run.id.clone(),
         message_text: format!(
-            "Seed sweep {} is waiting for confirmation.",
-            pending.group_id
+            "Seed sweep {} is waiting for confirmation; estimated cost is {}.",
+            pending.group_id,
+            format_cost(&pending.estimate)
         ),
         run: run_payload_from_pending(recommended),
-        pending_confirmation: pending_confirmation_from_sweep(
+        pending_confirmation: Some(pending_confirmation_from_sweep(
             &pending,
             &recommended.run.id,
             seed_plan.pending_changes,
-        ),
+        )),
     })
+}
+
+fn requires_run_confirmation(cost: &CostSummary) -> bool {
+    if !cost.amount.is_finite() {
+        return true;
+    }
+    if cost.currency != "USD" {
+        return cost.amount > 0.0;
+    }
+    cost.amount > run_confirmation_threshold_usd()
+}
+
+fn run_confirmation_threshold_usd() -> f64 {
+    std::env::var("HELIXFLOW_AGENT_RUN_CONFIRMATION_THRESHOLD_USD")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .unwrap_or(0.0)
+}
+
+fn format_cost(cost: &CostSummary) -> String {
+    format!("{:.2} {}", cost.amount, cost.currency)
 }
 
 struct SeedSweepPlan {
@@ -255,7 +339,7 @@ mod tests {
     use crate::app_state::{AppState, WorkbenchAgent};
 
     #[tokio::test]
-    async fn seed_sweep_request_creates_grouped_pending_confirmation_without_outputs() {
+    async fn seed_sweep_request_auto_starts_free_group() {
         let (state, workspace_id, version_id, _dir) = state_with_workspace().await;
 
         let response = handle_run_request(
@@ -276,25 +360,16 @@ mod tests {
         .await
         .expect("seed sweep response");
 
-        assert_eq!(response.run.status, "waiting_confirmation");
-        assert_eq!(response.pending_confirmation.run_count, Some(4));
-        assert_eq!(response.pending_confirmation.interruptible, Some(true));
-        assert_eq!(response.pending_confirmation.cost.currency, "USD");
-        assert!(
-            response
-                .pending_confirmation
-                .pending_changes
-                .iter()
-                .any(|change| change == "video.seed = 101")
-        );
+        assert_eq!(response.run.status, "queued");
+        assert_eq!(response.pending_confirmation, None);
+        assert!(response.message_text.contains("started automatically"));
 
         let recommended = state
             .store
-            .run(&response.pending_confirmation.id)
+            .run(&response.run.id)
             .await
             .expect("recommended run");
         assert_eq!(recommended.trigger, "sweep");
-        assert_eq!(recommended.status, "waiting_confirmation");
         let group_id = recommended.group_id.clone().expect("group id");
         let group_runs = state
             .store
@@ -305,7 +380,7 @@ mod tests {
         assert!(
             group_runs
                 .iter()
-                .all(|run| run.status == "waiting_confirmation" && run.trigger == "sweep")
+                .all(|run| run.status != "waiting_confirmation" && run.trigger == "sweep")
         );
         for run in group_runs {
             let ledger = state
@@ -314,8 +389,6 @@ mod tests {
                 .await
                 .expect("cost ledger");
             assert!(ledger.iter().any(|entry| entry.estimated));
-            let artifacts = state.store.run_artifacts(&run.id).await.expect("artifacts");
-            assert!(artifacts.is_empty());
         }
     }
 
