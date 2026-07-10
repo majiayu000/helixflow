@@ -570,6 +570,82 @@ impl BlockingProvider {
     }
 }
 
+#[tokio::test]
+async fn self_heal_retries_failed_run_within_budget_and_bounded() {
+    let (store, _dir) = open_temp_store().await;
+    let (workspace_id, version_id) = workspace_version(&store).await;
+    // Estimate succeeds at 0 USD (within the default threshold); execution
+    // fails, so the failed run is auto-retried once (default cap).
+    let service = RunService::with_provider(store.clone(), FailingProvider);
+
+    let pending = service
+        .request_agent_run(AgentRunRequest {
+            workspace_id: workspace_id.clone(),
+            version_id,
+            group_id: None,
+            label: "Self-heal".to_owned(),
+            provider: "mock".to_owned(),
+            graph: executable_graph(),
+        })
+        .await
+        .expect("request agent run");
+    assert_eq!(pending.estimate.amount, 0.0);
+
+    service
+        .start_confirmed_run(&pending.run.id)
+        .await
+        .expect("start confirmed run");
+
+    let retry = wait_for_retry_run(&store, &workspace_id).await;
+    assert_eq!(retry.attempt, 1);
+    assert_eq!(retry.parent_run_id.as_deref(), Some(pending.run.id.as_str()));
+
+    wait_for_run_status(&store, &retry.id, "failed").await;
+
+    // The original failed run is preserved with its error for audit.
+    let parent = store.run(&pending.run.id).await.expect("parent run");
+    assert_eq!(parent.status, "failed");
+    assert!(parent.error_json.is_some());
+
+    // Bounded: the retry (attempt 1) does not spawn an attempt 2.
+    let latest = store
+        .latest_workspace_run(&workspace_id)
+        .await
+        .expect("latest")
+        .expect("run");
+    assert_eq!(latest.attempt, 1, "bounded at default max retries = 1");
+}
+
+async fn wait_for_retry_run(store: &Store, workspace_id: &str) -> helixflow_store::RunRecord {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(Some(run)) = store.latest_workspace_run(workspace_id).await {
+                if run.attempt >= 1 {
+                    return run;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        }
+    })
+    .await
+    .expect("self-heal should derive a retry run")
+}
+
+async fn wait_for_run_status(store: &Store, run_id: &str, expected: &str) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(run) = store.run(run_id).await {
+                if run.status == expected {
+                    return;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("run {run_id} should reach status {expected}"));
+}
+
 #[derive(Clone)]
 struct FailingProvider;
 

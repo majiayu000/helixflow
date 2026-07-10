@@ -285,7 +285,6 @@ fn parse_run_confirmation_threshold_usd(raw: Option<&str>) -> Result<f64, String
     }
     Ok(value)
 }
-
 fn format_cost(cost: &CostSummary) -> String {
     format!("{} {}", format_cost_amount(cost.amount), cost.currency)
 }

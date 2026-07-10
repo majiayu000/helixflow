@@ -66,6 +66,7 @@ pub struct SweepOutcome {
     pub recommendation: Option<ArtifactRecord>,
 }
 
+/// USD cost threshold above which a run requires explicit confirmation.
 impl<P> RunService<P>
 where
     P: Provider + Clone + Send + Sync + 'static,
@@ -128,14 +129,7 @@ where
         };
         let runner = self.clone();
         tokio::spawn(async move {
-            let run_id = run.id.clone();
-            let result = runner
-                .execute_created_run(&run, &run.workspace_id, &plan, interrupt, false)
-                .await;
-            if let Err(err) = result {
-                eprintln!("background run `{run_id}` failed: {err}");
-            }
-            runner.interrupts.lock().await.remove(&run_id);
+            runner.run_with_self_heal(run, plan, interrupt).await;
         });
 
         Ok(outcome)
@@ -211,7 +205,7 @@ where
         Ok((run, plan))
     }
 
-    async fn claim_run_for_background(
+    pub(crate) async fn claim_run_for_background(
         &self,
         run_id: &str,
     ) -> RunResult<(RunRecord, helixflow_graph::ExecutionPlan, RunInterrupt)> {

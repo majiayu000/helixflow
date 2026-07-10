@@ -65,28 +65,64 @@ export function OutputsStrip({
   outputs,
   busy,
   onSelect,
+  onAccept,
+  onReject,
 }: {
   outputs: WorkbenchState['outputs'];
   busy: boolean;
   onSelect: (id: string) => void;
+  onAccept: (id: string) => void;
+  onReject: (id: string, rerun: boolean) => void;
 }) {
   if (!outputs.length) return null;
   return (
     <div className="outputs">
-      {outputs.map((output) => (
-        <button
-          className="output-item"
-          disabled={busy}
-          key={output.id}
-          onClick={() => onSelect(output.id)}
-          type="button"
-        >
-          <div className={`output-thumb ${output.selected ? 'sel' : ''}`} data-kind={output.kind}>
-            <Icon n={outputIcon(output.kind)} s={18} />
+      {outputs.map((output) => {
+        const review = output.reviewState ?? 'pending';
+        return (
+          <div className={`output-item-wrap output-review--${review}`} key={output.id}>
+            <button
+              className="output-item"
+              disabled={busy}
+              onClick={() => onSelect(output.id)}
+              type="button"
+            >
+              <div className={`output-thumb ${output.selected ? 'sel' : ''}`} data-kind={output.kind}>
+                <Icon n={outputIcon(output.kind)} s={18} />
+              </div>
+              <div className="output-title">{output.title}</div>
+            </button>
+            <div className="output-review">
+              {review === 'pending' ? (
+                <>
+                  <button
+                    className="output-review-accept"
+                    disabled={busy}
+                    onClick={() => onAccept(output.id)}
+                    title="接受该输出"
+                    type="button"
+                  >
+                    <Icon n="check" s={12} />
+                  </button>
+                  <button
+                    className="output-review-reject"
+                    disabled={busy}
+                    onClick={() => onReject(output.id, true)}
+                    title="打回并重跑"
+                    type="button"
+                  >
+                    <Icon n="undo" s={12} />
+                  </button>
+                </>
+              ) : (
+                <span className="output-review-state">
+                  {review === 'accepted' ? '已接受' : '已打回'}
+                </span>
+              )}
+            </div>
           </div>
-          <div className="output-title">{output.title}</div>
-        </button>
-      ))}
+        );
+      })}
       <div className="outputs-note">{outputs.length} 个真实 artifact</div>
     </div>
   );

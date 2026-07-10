@@ -17,6 +17,8 @@ mod cache;
 mod cost_gate;
 mod error;
 mod executor;
+mod run_policy;
+mod self_heal;
 mod sweep_background;
 
 use artifacts::default_artifact_root;
@@ -24,6 +26,7 @@ pub use cost_gate::{
     AgentRunRequest, CostSummary, PendingRun, PendingSweep, SweepOutcome, SweepPlan, SweepVariant,
 };
 pub use error::{RunError, RunResult};
+pub use run_policy::{max_run_retries, run_confirmation_threshold_usd, run_requires_confirmation};
 
 pub fn module_name() -> &'static str {
     "run"

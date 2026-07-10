@@ -22,7 +22,7 @@ impl Store {
             r#"
             SELECT a.id, a.workspace_id, a.run_id, a.run_step_id, a.node_id, a.kind,
                    a.storage_uri, a.sha256, a.mime, a.width, a.height, a.duration_ms,
-                   a.selected, a.meta_json, a.created_at
+                   a.selected, a.meta_json, a.created_at, a.review_state
             FROM artifacts a
             INNER JOIN runs r ON r.id = a.run_id
             WHERE r.group_id = ?

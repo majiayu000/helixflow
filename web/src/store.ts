@@ -16,6 +16,8 @@ import {
   saveWorkspaceLayout,
   sendCanvasPresence as sendCanvasPresenceRequest,
   selectOutput as selectOutputRequest,
+  acceptOutput as acceptOutputRequest,
+  rejectOutput as rejectOutputRequest,
   selectWorkspaceProvider,
   sendWorkspaceMessage,
   submitCanvasCommentOp as submitCanvasCommentOpRequest,
@@ -87,6 +89,8 @@ type WorkbenchStore = {
   restoreVersion: (versionId: string) => Promise<void>;
   saveLayout: (positions: LayoutPositionUpdate[]) => Promise<void>;
   selectOutput: (outputId: string) => Promise<void>;
+  acceptOutput: (outputId: string) => Promise<void>;
+  rejectOutput: (outputId: string, rerun?: boolean) => Promise<void>;
   selectProvider: (providerId: string) => Promise<void>;
   appendManualEdit: (input: ManualProposalInput) => Promise<void>;
   commitManualEdits: () => Promise<void>;
@@ -446,6 +450,44 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       }));
     } catch (error) {
       const message = error instanceof Error ? error.message : 'output select request failed';
+      set((current) => ({
+        state: current.state ? appendSystemError(current.state, message) : current.state,
+      }));
+    }
+  },
+  acceptOutput: async (outputId) => {
+    if (!get().state) {
+      return;
+    }
+    try {
+      const next = await acceptOutputRequest(outputId);
+      set((current) => ({
+        state: next,
+        status: 'ready',
+        error: null,
+        editSession: compatibleEditSession(current.editSession, next),
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'output accept request failed';
+      set((current) => ({
+        state: current.state ? appendSystemError(current.state, message) : current.state,
+      }));
+    }
+  },
+  rejectOutput: async (outputId, rerun = false) => {
+    if (!get().state) {
+      return;
+    }
+    try {
+      const next = await rejectOutputRequest(outputId, rerun);
+      set((current) => ({
+        state: next,
+        status: 'ready',
+        error: null,
+        editSession: compatibleEditSession(current.editSession, next),
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'output reject request failed';
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
       }));
