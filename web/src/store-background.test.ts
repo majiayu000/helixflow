@@ -237,6 +237,41 @@ describe('background run state reconciliation', () => {
     expect(useWorkbenchStore.getState().canvasConnection).toBe('live');
     expect(useWorkbenchStore.getState().presenceByActor).toEqual({});
   });
+
+  it('publishes generation changes so A to B to A can resubscribe', () => {
+    const generations: number[] = [];
+    const unsubscribe = useWorkbenchStore.subscribe((store) => {
+      if (generations.at(-1) !== store.workspaceGeneration) {
+        generations.push(store.workspaceGeneration);
+      }
+    });
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_b'));
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
+    unsubscribe();
+
+    expect(generations.slice(-3)).toEqual([
+      expect.any(Number),
+      expect.any(Number),
+      expect.any(Number),
+    ]);
+    expect(new Set(generations.slice(-3)).size).toBe(3);
+  });
+
+  it('does not post from stale visible state after target activation begins', async () => {
+    const responses = delayedSnapshotFetch();
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
+    const hydrateB = useWorkbenchStore.getState().hydrate('ws_b');
+
+    await useWorkbenchStore.getState().sendMessage('must not post to A');
+    expect(vi.mocked(fetch).mock.calls.map((call) => String(call[0]))).not.toContain(
+      '/api/workspaces/ws_a/messages',
+    );
+    expect(useWorkbenchStore.getState().state?.chat.messages).toHaveLength(0);
+
+    responses.resolve('ws_b', stateForWorkspace('ws_b'));
+    await hydrateB;
+  });
 });
 
 function stateForWorkspace(workspaceId: string): WorkbenchState {

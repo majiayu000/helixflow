@@ -103,9 +103,9 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
 
   useEffect(() => {
     if (!activeState?.workspace.id) return;
-    const generation = workspaceGeneration();
+    const generation = workspaceGeneration;
     const isCurrentSubscription = () =>
-      useWorkbenchStore.getState().workspaceGeneration() === generation &&
+      useWorkbenchStore.getState().workspaceGeneration === generation &&
       useWorkbenchStore.getState().state?.workspace.id === activeState.workspace.id;
     return connectWorkspaceEvents(activeState.workspace.id, {
       getLastSeq: () => useWorkbenchStore.getState().state?.eventSeq ?? 0,

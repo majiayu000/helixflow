@@ -79,6 +79,7 @@ type WorkbenchStore = {
   presenceByActor: PresenceByActor;
   state: WorkbenchState | null;
   editSession: ManualEditSession | null;
+  workspaceGeneration: number;
   bootstrap: (workspaceId?: string | null) => Promise<void>;
   hydrate: (workspaceId: string) => Promise<void>;
   createWorkspace: () => Promise<void>;
@@ -88,7 +89,6 @@ type WorkbenchStore = {
   applyCanvasPresence: (presence: CanvasPresence) => void;
   sendCanvasPresence: (presence: CanvasPresence) => Promise<void>;
   submitCanvasCommentOp: (input: CanvasCommentOpInput) => Promise<void>;
-  workspaceGeneration: () => number;
   applyEvent: (event: RunEventEnvelope, generation?: number) => void;
   sendMessage: (text: string, canvasContext?: CanvasMessageContext) => Promise<void>;
   queueRun: (options?: QueueRunOptions) => Promise<void>;
@@ -115,6 +115,17 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
   const requestScope = new WorkspaceRequestScope();
   let snapshotRefresh: { generation: number; promise: Promise<void> } | null = null;
   let trailingSnapshotGeneration: number | null = null;
+  const activateWorkspace = (workspaceId: string | null) => {
+    const activation = requestScope.begin(workspaceId);
+    snapshotRefresh = null;
+    trailingSnapshotGeneration = null;
+    set({
+      workspaceGeneration: activation.generation,
+      selectedCanvasNodeIds: [],
+      presenceByActor: {},
+    });
+    return activation;
+  };
   const refreshSnapshot = (workspaceId: string) => {
     const generation = requestScope.currentGeneration();
     if (requestScope.currentWorkspaceId() !== workspaceId || requestScope.signal()?.aborted) return;
@@ -173,14 +184,14 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
   presenceByActor: {},
   state: null,
   editSession: null,
+  workspaceGeneration: 0,
   bootstrap: async (workspaceId) => {
     if (workspaceId) {
       await get().hydrate(workspaceId);
       return;
     }
 
-    const activation = requestScope.begin(null);
-    snapshotRefresh = null;
+    const activation = activateWorkspace(null);
     set({ status: 'loading', error: null });
     try {
       const workspaces = await fetchWorkspaces(activation.signal);
@@ -195,8 +206,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
   },
   hydrate: async (workspaceId) => {
-    const activation = requestScope.begin(workspaceId);
-    snapshotRefresh = null;
+    const activation = activateWorkspace(workspaceId);
     set({ status: 'loading', canvasStatus: 'loading', error: null, canvasError: null });
     try {
       const snapshot = await fetchWorkspaceSnapshot(workspaceId, activation.signal);
@@ -208,8 +218,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
   },
   createWorkspace: async () => {
-    const activation = requestScope.begin(null);
-    snapshotRefresh = null;
+    const activation = activateWorkspace(null);
     set({ status: 'loading', canvasStatus: 'loading', error: null, canvasError: null });
     try {
       const workspace = await createWorkspace();
@@ -223,8 +232,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
   },
   setInitialState: (state) => {
-    requestScope.begin(state.workspace.id);
-    snapshotRefresh = null;
+    activateWorkspace(state.workspace.id);
     set({
       status: 'ready',
       canvasStatus: 'idle',
@@ -317,6 +325,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       graph: workflowGraphFromState(state),
     };
     const generation = requestScope.currentGeneration();
+    if (!requestScope.isActive(generation, request.workspaceId)) return;
 
     set({
       state: appendChatMessages(state, [
@@ -365,7 +374,6 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       }));
     }
   },
-  workspaceGeneration: () => requestScope.currentGeneration(),
   applyEvent: (event, generation = requestScope.currentGeneration()) => {
     if (!requestScope.isActive(generation, event.workspace_id)) return;
     const state = get().state;

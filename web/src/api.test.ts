@@ -131,6 +131,30 @@ describe('connectWorkspaceEvents', () => {
 
     expect(MockWebSocket.sockets).toHaveLength(0);
   });
+
+  it('ignores presence envelopes from another workspace', async () => {
+    stubBrowser();
+    vi.stubGlobal('fetch', ticketFetch('disabled'));
+    const presences: unknown[] = [];
+    const cleanup = connectWorkspaceEvents('ws_test', {
+      getLastSeq: () => 0,
+      onEvent: () => undefined,
+      onPresence: (presence) => presences.push(presence),
+      onStatus: () => undefined,
+    });
+    await waitUntil(() => MockWebSocket.sockets.length === 1);
+    MockWebSocket.sockets[0]?.emitMessage({
+      ...baseRunEvent('presence', 1, 'canvas.presence'),
+      workspace_id: 'ws_other',
+      data: {
+        actor: { actorId: 'other', displayName: 'Other' },
+        cursor: { x: 1, y: 2 },
+      },
+    });
+
+    expect(presences).toEqual([]);
+    cleanup();
+  });
 });
 
 function stubBrowser(): void {

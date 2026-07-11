@@ -597,6 +597,7 @@ export function connectWorkspaceEvents(
       try {
         const parsed = RunEventEnvelopeSchema.safeParse(JSON.parse(String(message.data)));
         if (parsed.success) {
+          if (parsed.data.workspace_id !== workspaceId) return;
           if (parsed.data.ev === 'canvas.presence') {
             const presence = CanvasPresenceSchema.safeParse(parsed.data.data);
             if (presence.success) {
