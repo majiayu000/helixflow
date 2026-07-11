@@ -125,7 +125,7 @@ impl CanvasOpsContract {
                 ),
                 CanvasOpSpec::new(
                     "run_selected_workflow",
-                    "Write run_request.json; backend creates pending confirmation.",
+                    "Write run_request.json; backend estimates cost and decides auto-start or confirmation.",
                 ),
             ],
         }

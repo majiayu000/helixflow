@@ -131,8 +131,6 @@ pub(crate) async fn post_workspace_message(
                 .propose_graph_change(request)
                 .await
                 .map_err(ApiError::agent)?;
-            let message =
-                persist_and_apply_agent_proposal(&state, &workspace_id, &proposal).await?;
             persist_agent_logs(
                 &state,
                 &workspace_id,
@@ -140,6 +138,8 @@ pub(crate) async fn post_workspace_message(
                 &proposal.agent_logs,
             )
             .await?;
+            let message =
+                persist_and_apply_agent_proposal(&state, &workspace_id, &proposal).await?;
             Ok(Json(WorkspaceMessageResponse {
                 turn_mode: classification.mode,
                 messages: vec![ChatMessagePayload::from_record(message)],
@@ -150,21 +150,9 @@ pub(crate) async fn post_workspace_message(
         }
         TurnMode::RunRequest => {
             let run_request = handle_run_request(&state, request).await?;
-            let message = state
-                .store
-                .create_message(NewMessage {
-                    workspace_id: &workspace_id,
-                    role: "agent",
-                    kind: "run_requested",
-                    text: Some(&run_request.message_text),
-                    ref_id: Some(&run_request.ref_id),
-                    attachment_ids_json: None,
-                })
-                .await
-                .map_err(ApiError::store)?;
             Ok(Json(WorkspaceMessageResponse {
                 turn_mode: classification.mode,
-                messages: vec![ChatMessagePayload::from_record(message)],
+                messages: vec![ChatMessagePayload::from_record(run_request.message)],
                 proposal: None,
                 run: Some(run_request.run),
                 pending_confirmation: run_request.pending_confirmation,
@@ -358,6 +346,8 @@ fn truncate_debug_text(value: &str) -> String {
 }
 
 #[cfg(test)]
+mod gh102_tests;
+#[cfg(test)]
 mod gh60_tests;
 
 #[cfg(test)]
@@ -427,6 +417,7 @@ mod tests {
     #[tokio::test]
     async fn post_message_auto_starts_free_run_request() {
         let (state, workspace_id, version_id, _dir) = state_with_workspace().await;
+        let mut events = state.events.subscribe();
 
         let response = post_workspace_message(
             Path(workspace_id.clone()),
@@ -446,7 +437,16 @@ mod tests {
         assert_eq!(response.messages[0].kind, "run_requested");
         assert_eq!(response.run.as_ref().expect("run").status, "running");
         assert_eq!(response.pending_confirmation, None);
-        assert!(response.messages[0].text.contains("started automatically"));
+        assert!(
+            response.messages[0]
+                .text
+                .contains("automatic cost approval")
+        );
+        let run_id = response.run.as_ref().expect("run").id.clone();
+        let requested = std::iter::from_fn(|| events.try_recv().ok())
+            .find(|event| event.run_id == run_id && event.ev == "run.requested")
+            .expect("run.requested event");
+        assert_eq!(requested.data["requires_confirmation"], false);
 
         let persisted = state
             .store
@@ -488,6 +488,8 @@ mod tests {
 
         assert_eq!(response.turn_mode, TurnMode::CreateWorkflow);
         assert_eq!(response.proposal, None);
+        assert_eq!(response.run, None);
+        assert_eq!(response.pending_confirmation, None);
         assert_eq!(response.messages[0].kind, "proposal_applied");
         let proposals = state
             .store
@@ -513,9 +515,25 @@ mod tests {
             .workspace_messages(&workspace_id)
             .await
             .expect("messages");
-        assert_eq!(persisted[1].kind, "proposal_applied");
-        assert_eq!(persisted[1].ref_id.as_deref(), Some(proposal_id.as_str()));
-        assert_eq!(persisted[2].kind, "agent_log:status");
+        assert_eq!(persisted[1].kind, "agent_log:status");
+        assert_eq!(persisted[2].kind, "proposal_applied");
+        assert_eq!(persisted[2].ref_id.as_deref(), Some(proposal_id.as_str()));
+        assert_eq!(
+            persisted[2]
+                .attachment_ids_json
+                .as_deref()
+                .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+                .and_then(|value| value["versionId"].as_str().map(str::to_owned)),
+            proposal.result_version_id
+        );
+        assert!(
+            state
+                .store
+                .latest_pending_proposal(&workspace_id)
+                .await
+                .expect("pending proposal")
+                .is_none()
+        );
     }
 
     #[tokio::test]

@@ -536,25 +536,16 @@ Run request:
 
 ```json
 {
-  "base_version_id": "ver_...",
-  "kind": "run",
-  "label": "Generate image",
-  "runtime_provider_id": "atlas",
-  "connector_id": "atlas_image",
-  "capability_id": "image.generate",
-  "graph_scope": "current",
-  "requires_confirmation": true,
+  "action": "request_confirmation",
   "summary": "Requests a backend-managed image generation run for the current graph."
 }
 ```
 
 Rules:
 
-- `base_version_id` must match the current graph version.
-- `kind` must be `run`.
-- `runtime_provider_id`, `connector_id`, and `capability_id` must come from backend-supplied catalogs.
-- `graph_scope` must be `current` unless the backend later supports named subgraph runs.
-- `requires_confirmation` is backend-owned and should be true only when the estimated cost exceeds the configured threshold.
+- `action` retains the stable `request_confirmation` wire value, but it requests a run; the backend may auto-start it when the estimate is within the configured threshold.
+- The backend binds the request to the current workspace version and selected provider catalogs; the Agent must not invent ids in the output contract.
+- Run scope and confirmation are backend-owned; the Agent must not add those fields to the wire output.
 - The agent must not include credentials, raw endpoints, signed URLs, or provider tokens.
 - The backend validates the request, estimates cost, creates the pending run, and owns execution.
 

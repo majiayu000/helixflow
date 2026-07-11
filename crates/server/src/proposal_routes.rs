@@ -177,7 +177,7 @@ async fn prepared_proposal(
     })
 }
 
-fn graph_apply_error(err: GraphError) -> ApiError {
+pub(crate) fn graph_apply_error(err: GraphError) -> ApiError {
     match err {
         GraphError::ProposalSuperseded { .. } => ApiError::conflict(err.to_string()),
         _ => ApiError::bad_request(err.to_string()),

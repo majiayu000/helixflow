@@ -231,6 +231,29 @@ where
             }
         }
 
+        let actual_cost_result = async {
+            let outcome = self.outcome(&run.id).await?;
+            self.record_actual_costs(&outcome).await
+        }
+        .await;
+        if let Err(err) = actual_cost_result {
+            let error_json = serde_json::to_string(&json!({
+                "error": err.to_string(),
+                "phase": "actual_cost_ledger"
+            }))?;
+            self.store
+                .update_run_status(&run.id, RunStatus::Failed.as_str(), Some(&error_json))
+                .await?;
+            self.emit(
+                workspace_id,
+                &run.id,
+                "run.failed",
+                json!({ "error": err.to_string(), "phase": "actual_cost_ledger" }),
+            )
+            .await?;
+            return Err(err);
+        }
+
         if let Some((err, error_json)) = first_error {
             self.store
                 .update_run_status(&run.id, RunStatus::Failed.as_str(), Some(&error_json))

@@ -244,6 +244,25 @@ describe('App', () => {
     expect(markup).toContain('1.68 USD');
   });
 
+  it('does not round a small confirmation cost down to zero', () => {
+    const markup = renderToStaticMarkup(
+      <ConfirmModal
+        busy={false}
+        confirmation={{
+          id: 'run_small_cost',
+          title: 'Small paid run',
+          summary: 'Above the configured threshold.',
+          cost: { amount: 0.0012, currency: 'USD' },
+        }}
+        onApprove={async () => {}}
+        onHold={async () => {}}
+      />,
+    );
+
+    expect(markup).toContain('0.0012 USD');
+    expect(markup).not.toContain('0.00 USD');
+  });
+
   it('keeps the interrupt button enabled while another run action is busy', () => {
     const markup = renderToStaticMarkup(
       <TopBar
@@ -1287,6 +1306,44 @@ describe('App', () => {
     const updated = useWorkbenchStore.getState().state;
     expect(updated?.pendingProposal?.id).toBe('proposal_1');
     expect(updated?.chat.messages.at(-1)?.kind).toBe('proposal_pending');
+  });
+
+  it('refreshes workspace state and clears pending preview after proposal_applied', async () => {
+    const appliedMessage = {
+      id: 'msg_agent_applied',
+      role: 'agent' as const,
+      kind: 'proposal_applied' as const,
+      text: 'Applied as a new version.',
+      time: 'unix:2',
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        turnMode: 'create_workflow',
+        messages: [appliedMessage],
+        proposal: null,
+        run: null,
+        pendingConfirmation: null,
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        ...state,
+        workspace: { ...state.workspace, versionId: 'ver_applied' },
+        pendingProposal: null,
+        chat: { messages: [...state.chat.messages, appliedMessage] },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    useWorkbenchStore.getState().setInitialState({
+      ...state,
+      pendingProposal: pendingProposal(),
+    });
+
+    await useWorkbenchStore.getState().sendMessage('创建一个 workflow');
+
+    const updated = useWorkbenchStore.getState().state;
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/workspaces/ws_test/state');
+    expect(updated?.workspace.versionId).toBe('ver_applied');
+    expect(updated?.pendingProposal).toBeNull();
+    expect(updated?.chat.messages.at(-1)?.kind).toBe('proposal_applied');
   });
 
   it('confirms a pending run through the run confirmation API', async () => {

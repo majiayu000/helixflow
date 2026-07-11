@@ -71,7 +71,29 @@ where
     P: Provider + Clone + Send + Sync + 'static,
 {
     pub async fn request_agent_run(&self, request: AgentRunRequest) -> RunResult<PendingRun> {
-        self.request_confirmed_run("agent", request).await
+        self.request_confirmed_run("agent", request, true).await
+    }
+
+    pub async fn prepare_agent_run(&self, request: AgentRunRequest) -> RunResult<PendingRun> {
+        self.request_confirmed_run("agent", request, false).await
+    }
+
+    pub async fn announce_run_requested(
+        &self,
+        pending: &PendingRun,
+        requires_confirmation: bool,
+    ) -> RunResult<()> {
+        self.emit(
+            &pending.run.workspace_id,
+            &pending.run.id,
+            "run.requested",
+            json!({
+                "trigger": pending.run.trigger,
+                "estimate": pending.estimate,
+                "requires_confirmation": requires_confirmation
+            }),
+        )
+        .await
     }
 
     pub async fn confirm_run(&self, run_id: &str) -> RunResult<RunOutcome> {
@@ -110,14 +132,6 @@ where
             let result = runner
                 .execute_created_run(&run, &run.workspace_id, &plan, interrupt, false)
                 .await;
-            match runner.outcome(&run_id).await {
-                Ok(outcome) => {
-                    if let Err(err) = runner.record_actual_costs(&outcome).await {
-                        eprintln!("background run `{run_id}` failed to record costs: {err}");
-                    }
-                }
-                Err(err) => eprintln!("background run `{run_id}` failed to load outcome: {err}"),
-            }
             if let Err(err) = result {
                 eprintln!("background run `{run_id}` failed: {err}");
             }
@@ -258,7 +272,6 @@ where
         self.interrupts.lock().await.remove(&run.id);
 
         let outcome = self.outcome(&run.id).await?;
-        self.record_actual_costs(&outcome).await?;
         match result {
             Ok(_) => Ok(outcome),
             Err(err) => Err(err),
@@ -266,6 +279,14 @@ where
     }
 
     pub async fn request_sweep_plan(&self, plan: SweepPlan) -> RunResult<PendingSweep> {
+        let pending = self.prepare_sweep_plan(plan).await?;
+        for run in &pending.runs {
+            self.announce_run_requested(run, true).await?;
+        }
+        Ok(pending)
+    }
+
+    pub async fn prepare_sweep_plan(&self, plan: SweepPlan) -> RunResult<PendingSweep> {
         validate_sweep_plan(&plan)?;
         let group_id = format!("sweep_{}", Uuid::now_v7().simple());
         let mut runs = Vec::new();
@@ -283,6 +304,7 @@ where
                         provider: plan.provider.clone(),
                         graph: variant.graph,
                     },
+                    false,
                 )
                 .await?;
             total.add(&pending.estimate)?;
@@ -471,6 +493,7 @@ where
         &self,
         trigger: &str,
         request: AgentRunRequest,
+        emit_requested: bool,
     ) -> RunResult<PendingRun> {
         let plan =
             self.graph
@@ -555,17 +578,19 @@ where
             json!({ "estimate": estimate }),
         )
         .await?;
-        self.emit(
-            &request.workspace_id,
-            &run.id,
-            "run.requested",
-            json!({
-                "trigger": trigger,
-                "estimate": estimate,
-                "requires_confirmation": true
-            }),
-        )
-        .await?;
+        if emit_requested {
+            self.emit(
+                &request.workspace_id,
+                &run.id,
+                "run.requested",
+                json!({
+                    "trigger": trigger,
+                    "estimate": estimate,
+                    "requires_confirmation": true
+                }),
+            )
+            .await?;
+        }
         self.interrupts.lock().await.remove(&run.id);
 
         let steps = self.store.run_steps(&run.id).await?;

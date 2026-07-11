@@ -47,6 +47,23 @@ cargo check --workspace
 cd web && npm run build
 ```
 
+## Agent proposals and run confirmation
+
+Validated Agent graph proposals are applied atomically as immutable workflow
+versions. The proposal, version, current-workspace pointer, and
+`proposal_applied` message commit together; version history remains the rollback
+surface. Applying a proposal does not implicitly start a run.
+
+Agent `RunRequest` and seed sweep requests estimate cost before execution.
+Set `HELIXFLOW_AGENT_RUN_CONFIRMATION_THRESHOLD_USD` to a finite,
+non-negative USD amount:
+
+- estimates at or below the threshold start through the normal confirmed-run
+  entrypoint;
+- estimates above the threshold stay in `waiting_confirmation` until approved;
+- an unset value defaults to `0`, while an invalid value fails the request
+  explicitly before a run record is created.
+
 The implementation workspace is:
 
 ```text

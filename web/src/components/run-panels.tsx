@@ -122,7 +122,7 @@ export function ConfirmModal({ confirmation, busy, onApprove, onHold }: ConfirmM
           <div className="confirm-item">
             <span className="k">费用估算</span>
             <span className="v">
-              {confirmation.cost.amount.toFixed(2)} {confirmation.cost.currency}
+              {formatCostAmount(confirmation.cost.amount)} {confirmation.cost.currency}
             </span>
           </div>
           {confirmation.runCount ? (
@@ -164,6 +164,12 @@ export function ConfirmModal({ confirmation, busy, onApprove, onHold }: ConfirmM
       </div>
     </div>
   );
+}
+
+function formatCostAmount(amount: number): string {
+  if (amount === 0 || Math.abs(amount) >= 0.01) return amount.toFixed(2);
+  if (Math.abs(amount) < 0.000001) return amount.toExponential(2);
+  return amount.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
 }
 
 export function HistoryPanel({
