@@ -37,8 +37,13 @@ type EventHandlers = {
 
 const RECONNECT_DELAY_MS = 1000;
 
-export async function fetchWorkspaceState(workspaceId: string): Promise<WorkbenchState> {
-  const response = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/state`);
+export async function fetchWorkspaceState(
+  workspaceId: string,
+  signal?: AbortSignal,
+): Promise<WorkbenchState> {
+  const response = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/state`, {
+    signal,
+  });
   if (!response.ok) {
     throw new Error(`workspace state request failed: ${response.status}`);
   }
@@ -46,8 +51,13 @@ export async function fetchWorkspaceState(workspaceId: string): Promise<Workbenc
   return WorkbenchStateSchema.parse(await response.json());
 }
 
-export async function fetchWorkspaceCanvas(workspaceId: string): Promise<CanvasDocument> {
-  const response = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/canvas`);
+export async function fetchWorkspaceCanvas(
+  workspaceId: string,
+  signal?: AbortSignal,
+): Promise<CanvasDocument> {
+  const response = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/canvas`, {
+    signal,
+  });
   if (!response.ok) {
     throw new Error(`workspace canvas request failed: ${response.status}`);
   }
@@ -58,10 +68,12 @@ export async function fetchWorkspaceCanvas(workspaceId: string): Promise<CanvasD
 export async function fetchWorkspaceEvents(
   workspaceId: string,
   afterSeq: number,
+  signal?: AbortSignal,
 ): Promise<RunEventEnvelope[]> {
   const safeAfterSeq = Number.isFinite(afterSeq) ? Math.max(0, Math.trunc(afterSeq)) : 0;
   const response = await fetch(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/events?afterSeq=${safeAfterSeq}`,
+    { signal },
   );
   if (!response.ok) {
     throw new Error(`workspace events request failed: ${response.status}`);
@@ -70,9 +82,13 @@ export async function fetchWorkspaceEvents(
   return WorkspaceEventsSchema.parse(await response.json()).events;
 }
 
-export async function requestCanvasTicket(workspaceId: string): Promise<string | null> {
+export async function requestCanvasTicket(
+  workspaceId: string,
+  signal?: AbortSignal,
+): Promise<string | null> {
   const response = await fetch(`/api/canvases/${encodeURIComponent(workspaceId)}/ticket`, {
     method: 'POST',
+    signal,
   });
   const body = await response.json();
   if (!response.ok) {
@@ -92,6 +108,7 @@ export async function requestCanvasTicket(workspaceId: string): Promise<string |
 export async function submitCanvasCommentOp(
   workspaceId: string,
   input: CanvasCommentOpInput,
+  signal?: AbortSignal,
 ): Promise<CanvasDocument> {
   const response = await fetch(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/canvas/comments/ops`,
@@ -99,6 +116,7 @@ export async function submitCanvasCommentOp(
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(input),
+      signal,
     },
   );
   const body = await response.json();
@@ -116,6 +134,7 @@ export async function submitCanvasCommentOp(
 export async function sendCanvasPresence(
   workspaceId: string,
   input: CanvasPresence,
+  signal?: AbortSignal,
 ): Promise<void> {
   const response = await fetch(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/canvas/presence`,
@@ -123,6 +142,7 @@ export async function sendCanvasPresence(
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(input),
+      signal,
     },
   );
   if (!response.ok) {
@@ -130,8 +150,8 @@ export async function sendCanvasPresence(
   }
 }
 
-export async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
-  const response = await fetch('/api/workspaces');
+export async function fetchWorkspaces(signal?: AbortSignal): Promise<WorkspaceSummary[]> {
+  const response = await fetch('/api/workspaces', { signal });
   if (!response.ok) {
     throw new Error(`workspace list request failed: ${response.status}`);
   }
@@ -169,11 +189,13 @@ export async function createWorkspace(name?: string): Promise<WorkspaceSummary> 
 export async function selectWorkspaceProvider(
   workspaceId: string,
   providerId: string,
+  signal?: AbortSignal,
 ): Promise<WorkbenchState> {
   const response = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/provider`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ providerId }),
+    signal,
   });
   const body = await response.json();
   if (!response.ok) {
@@ -195,11 +217,13 @@ export async function sendWorkspaceMessage(
     graph: WorkflowGraph;
     canvasContext?: CanvasMessageContext;
   },
+  signal?: AbortSignal,
 ): Promise<WorkspaceMessageResponse> {
   const response = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/messages`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(input),
+    signal,
   });
   const body = await response.json();
   if (!response.ok) {
@@ -503,11 +527,12 @@ export function connectWorkspaceEvents(
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let catchup: Promise<void> | null = null;
   let eventQueue: Promise<void> = Promise.resolve();
+  const controller = new AbortController();
   const lastSeq = () => handlers.getLastSeq?.() ?? 0;
 
   const fetchMissingEvents = () => {
     if (!catchup) {
-      catchup = fetchWorkspaceEvents(workspaceId, lastSeq())
+      catchup = fetchWorkspaceEvents(workspaceId, lastSeq(), controller.signal)
         .then((events) => {
           for (const event of events.sort((left, right) => left.seq - right.seq)) {
             if (event.seq > lastSeq()) {
@@ -572,6 +597,7 @@ export function connectWorkspaceEvents(
       try {
         const parsed = RunEventEnvelopeSchema.safeParse(JSON.parse(String(message.data)));
         if (parsed.success) {
+          if (parsed.data.workspace_id !== workspaceId) return;
           if (parsed.data.ev === 'canvas.presence') {
             const presence = CanvasPresenceSchema.safeParse(parsed.data.data);
             if (presence.success) {
@@ -602,7 +628,9 @@ export function connectWorkspaceEvents(
     try {
       await fetchMissingEvents();
       if (closed) return;
-      openSocket(await requestCanvasTicket(workspaceId));
+      const ticket = await requestCanvasTicket(workspaceId, controller.signal);
+      if (closed) return;
+      openSocket(ticket);
     } catch {
       if (!closed) {
         handlers.onStatus('offline');
@@ -621,6 +649,7 @@ export function connectWorkspaceEvents(
 
   return () => {
     closed = true;
+    controller.abort();
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
     }

@@ -1,0 +1,62 @@
+import type { ConnectionStatus } from './api';
+import type {
+  CanvasCommentOpInput,
+  CanvasDocument,
+  CanvasMessageContext,
+  CanvasPresence,
+  LayoutPositionUpdate,
+  ManualEditSession,
+  ManualProposalInput,
+  RunEventEnvelope,
+  WorkbenchState,
+  WorkflowGraph,
+} from './types';
+
+export type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
+export type QueueRunOptions = { forceRerun?: boolean };
+export type PresenceByActor = Record<string, CanvasPresence>;
+
+export type WorkbenchStore = {
+  status: LoadStatus;
+  error: string | null;
+  connection: ConnectionStatus;
+  canvasStatus: LoadStatus;
+  canvasError: string | null;
+  canvasConnection: ConnectionStatus;
+  canvas: CanvasDocument | null;
+  selectedCanvasNodeIds: string[];
+  presenceByActor: PresenceByActor;
+  state: WorkbenchState | null;
+  editSession: ManualEditSession | null;
+  workspaceGeneration: number;
+  activeWorkspaceId: string | null;
+  bootstrap: (workspaceId?: string | null) => Promise<void>;
+  hydrate: (workspaceId: string) => Promise<void>;
+  createWorkspace: () => Promise<void>;
+  setInitialState: (state: WorkbenchState) => void;
+  setConnection: (status: ConnectionStatus) => void;
+  setCanvasSelection: (nodeIds: string[]) => void;
+  applyCanvasPresence: (presence: CanvasPresence) => void;
+  sendCanvasPresence: (presence: CanvasPresence) => Promise<void>;
+  submitCanvasCommentOp: (input: CanvasCommentOpInput) => Promise<void>;
+  applyEvent: (event: RunEventEnvelope, generation?: number) => void;
+  sendMessage: (text: string, canvasContext?: CanvasMessageContext) => Promise<void>;
+  queueRun: (options?: QueueRunOptions) => Promise<void>;
+  interruptRun: (runId?: string) => Promise<void>;
+  exportWorkflow: () => Promise<WorkflowGraph | null>;
+  undoVersion: () => Promise<void>;
+  restoreVersion: (versionId: string) => Promise<void>;
+  saveLayout: (positions: LayoutPositionUpdate[]) => Promise<void>;
+  selectOutput: (outputId: string) => Promise<void>;
+  acceptOutput: (outputId: string) => Promise<void>;
+  rejectOutput: (outputId: string, rerun?: boolean) => Promise<void>;
+  selectProvider: (providerId: string) => Promise<void>;
+  appendManualEdit: (input: ManualProposalInput) => Promise<void>;
+  commitManualEdits: () => Promise<void>;
+  discardManualEdits: () => void;
+  confirmRun: (runId: string) => Promise<void>;
+  holdRun: (runId: string) => Promise<void>;
+  createManualProposal: (input: ManualProposalInput) => Promise<void>;
+  applyProposal: (proposalId: string) => Promise<void>;
+  dismissProposal: (proposalId: string) => Promise<void>;
+};

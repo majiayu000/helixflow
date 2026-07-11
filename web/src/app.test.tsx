@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './app';
 import { ArtifactStage } from './components/artifact-stage';
-import { shouldSubmitComposerKey } from './components/chat-pane';
+import { composerDraftAfterSubmit, shouldSubmitComposerKey } from './components/chat-pane';
 import {
   DEFAULT_GRAPH_VIEW,
   GraphCanvas,
@@ -590,7 +590,7 @@ describe('App', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
-        if (url === '/api/workspaces' && !init) {
+        if (url === '/api/workspaces' && !init?.method) {
           return jsonResponse([]);
         }
         if (url === '/api/workspaces' && init?.method === 'POST') {
@@ -676,6 +676,7 @@ describe('App', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: expect.any(String),
+      signal: expect.any(AbortSignal),
     });
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(body).toMatchObject({
@@ -909,6 +910,7 @@ describe('App', () => {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ providerId: 'atlas' }),
+      signal: expect.any(AbortSignal),
     });
     expect(useWorkbenchStore.getState().state?.providers.selectedProvider).toBe('atlas');
   });
@@ -2092,6 +2094,17 @@ describe('ManualProposalPanel', () => {
 });
 
 describe('chat composer keyboard handling', () => {
+  it('clears only after success and preserves the draft after rejection', async () => {
+    await expect(
+      composerDraftAfterSubmit('keep me', 'keep me', async () => {
+        throw new Error('workspace changed');
+      }),
+    ).resolves.toBe('keep me');
+    await expect(composerDraftAfterSubmit('clear me', 'clear me', async () => undefined)).resolves.toBe(
+      '',
+    );
+  });
+
   it('does not submit Enter while IME composition is active', () => {
     expect(shouldSubmitComposerKey({
       key: 'Enter',

@@ -85,8 +85,9 @@ export function ChatPane({
   const submit = async (text = draft) => {
     const trimmed = text.trim();
     if (!trimmed || busy) return;
-    setDraft('');
-    await onSend(trimmed);
+    const submittedDraft = draft;
+    const nextDraft = await composerDraftAfterSubmit(submittedDraft, trimmed, onSend);
+    setDraft((current) => (current === submittedDraft ? nextDraft : current));
   };
 
   return (
@@ -182,6 +183,19 @@ export function ChatPane({
   );
 }
 
+export async function composerDraftAfterSubmit(
+  draft: string,
+  submittedText: string,
+  onSend: (text: string) => Promise<void>,
+): Promise<string> {
+  try {
+    await onSend(submittedText);
+    return submittedText === draft.trim() ? '' : draft;
+  } catch {
+    return draft;
+  }
+}
+
 function EditSessionCard({
   summary,
   busy,
@@ -254,7 +268,7 @@ function RunErrorCard({
         onClick={() =>
           void onRequestFix(
             `读取当前失败节点 ${failedNodeText} 和运行错误，生成最小修复并自动应用到工作流。`,
-          )
+          ).catch(() => undefined)
         }
       >
         Auto fix workflow

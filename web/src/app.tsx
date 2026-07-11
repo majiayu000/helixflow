@@ -56,6 +56,8 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const setCanvasSelection = useWorkbenchStore((store) => store.setCanvasSelection);
   const applyCanvasPresence = useWorkbenchStore((store) => store.applyCanvasPresence);
   const applyEvent = useWorkbenchStore((store) => store.applyEvent);
+  const workspaceGeneration = useWorkbenchStore((store) => store.workspaceGeneration);
+  const activeWorkspaceId = useWorkbenchStore((store) => store.activeWorkspaceId);
   const sendCanvasPresence = useWorkbenchStore((store) => store.sendCanvasPresence);
   const sendMessage = useWorkbenchStore((store) => store.sendMessage);
   const submitCanvasCommentOp = useWorkbenchStore((store) => store.submitCanvasCommentOp);
@@ -101,14 +103,34 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   }, [initialWorkspaceId]);
 
   useEffect(() => {
+    setSelectedCanvasNodeIds([]);
+  }, [activeWorkspaceId, workspaceGeneration]);
+
+  useEffect(() => {
     if (!activeState?.workspace.id) return;
+    if (activeWorkspaceId !== activeState.workspace.id) return;
+    const generation = workspaceGeneration;
+    const isCurrentSubscription = () =>
+      useWorkbenchStore.getState().workspaceGeneration === generation &&
+      useWorkbenchStore.getState().state?.workspace.id === activeState.workspace.id;
     return connectWorkspaceEvents(activeState.workspace.id, {
       getLastSeq: () => useWorkbenchStore.getState().state?.eventSeq ?? 0,
-      onEvent: applyEvent,
-      onPresence: applyCanvasPresence,
-      onStatus: setConnection,
+      onEvent: (event) => applyEvent(event, generation),
+      onPresence: (presence) => {
+        if (isCurrentSubscription()) applyCanvasPresence(presence);
+      },
+      onStatus: (status) => {
+        if (isCurrentSubscription()) setConnection(status);
+      },
     });
-  }, [activeState?.workspace.id, applyCanvasPresence, applyEvent, setConnection]);
+  }, [
+    activeState?.workspace.id,
+    activeWorkspaceId,
+    applyCanvasPresence,
+    applyEvent,
+    setConnection,
+    workspaceGeneration,
+  ]);
 
   if (!activeState) {
     return <LoadingShell status={status} error={error} />;
@@ -161,11 +183,13 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const undoDisabled = busy || versionHistoryCount < 2;
   const showArtifactPreview = hasPreviewArtifact(activeState.outputs) && dirtyEditCount === 0;
 
-  const runAction = async (action: () => Promise<void>) => {
+  const runAction = async (action: () => Promise<void>, propagateError = false) => {
     setBusy(true);
     try {
       await action();
       await refreshWorkspaces();
+    } catch (error) {
+      if (propagateError) throw error;
     } finally {
       setBusy(false);
     }
@@ -201,6 +225,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
           );
         }
       })
+      .catch(() => undefined)
       .finally(() => setBusy(false));
   };
 
@@ -219,7 +244,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
         onProviderSelect={(providerId) => void runAction(() => selectProvider(providerId))}
         onQueue={() => {
           if (activeRun) {
-            void interruptRun();
+            void runAction(() => interruptRun());
           } else {
             void runAction(() => queueRun({ forceRerun }));
           }
@@ -253,10 +278,11 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
             onCommitEdits={() => runAction(() => commitManualEdits())}
             onDiscardEdits={discardManualEdits}
             onSend={(text) =>
-              runAction(() =>
-                sendMessage(text, {
+              runAction(
+                () => sendMessage(text, {
                   selection: { nodeIds: selectedCanvasNodeIds },
                 }),
+                true,
               )
             }
             pendingProposal={activeState.pendingProposal}
@@ -268,17 +294,18 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
             graph={previewState.graph}
             canvasGraph={canvasGraph}
             comments={canvas?.comments ?? []}
-            onCreateProposal={(input) => runAction(() => appendManualEdit(input))}
-            onCommentOp={(input) => runAction(() => submitCanvasCommentOp(input))}
+            onCreateProposal={(input) => runAction(() => appendManualEdit(input), true)}
+            onCommentOp={(input) => runAction(() => submitCanvasCommentOp(input), true)}
             onPresenceChange={(presence) => void sendCanvasPresence(presence)}
             onQueueRun={() => {
               if (!queueDisabled) void runAction(() => queueRun({ forceRerun }));
             }}
             onRequestNodeProposal={(nodeId) =>
-              runAction(() =>
-                sendMessage(`围绕选中节点 ${nodeId} 生成最小修改 proposal。`, {
+              runAction(
+                () => sendMessage(`围绕选中节点 ${nodeId} 生成最小修改 proposal。`, {
                   selection: { nodeIds: [nodeId] },
                 }),
+                true,
               )
             }
             onSelectionChange={(nodeIds) => {
@@ -286,16 +313,17 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
               setCanvasSelection(nodeIds);
             }}
             onSetParam={(nodeId, key, value) => {
-              return runAction(() =>
-                appendManualEdit(
-                  buildSetParamEditInput(
-                    activeState.workspace.versionId,
-                    previewState.workflowGraph,
-                    nodeId,
-                    key,
-                    value,
+              return runAction(
+                () => appendManualEdit(
+                    buildSetParamEditInput(
+                      activeState.workspace.versionId,
+                      previewState.workflowGraph,
+                      nodeId,
+                      key,
+                      value,
+                    ),
                   ),
-                ),
+                true,
               );
             }}
             onSelectOutput={(id) => void runAction(() => selectOutput(id))}
@@ -316,7 +344,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
           <ManualProposalPanel
             busy={busy}
             state={previewState}
-            onCreateProposal={(input) => runAction(() => appendManualEdit(input))}
+            onCreateProposal={(input) => runAction(() => appendManualEdit(input), true)}
           />
           <HistoryPanel
             busy={busy}

@@ -6,7 +6,6 @@ import {
   createWorkspace,
   dismissWorkspaceProposal,
   exportWorkflowVersion,
-  fetchWorkspaceCanvas,
   fetchWorkspaceState,
   fetchWorkspaces,
   holdWorkspaceRun,
@@ -22,20 +21,7 @@ import {
   sendWorkspaceMessage,
   submitCanvasCommentOp as submitCanvasCommentOpRequest,
   undoWorkspaceVersion,
-  type ConnectionStatus,
 } from './api';
-import type {
-  CanvasDocument,
-  CanvasCommentOpInput,
-  CanvasMessageContext,
-  CanvasPresence,
-  LayoutPositionUpdate,
-  ManualEditSession,
-  ManualProposalInput,
-  RunEventEnvelope,
-  WorkflowGraph,
-  WorkbenchState,
-} from './types';
 import {
   applyRunEvent,
   preserveRetryNotices,
@@ -53,69 +39,55 @@ import {
 } from './store-model';
 import {
   appendManualEditInput,
+  hasDirtyEdits,
   manualEditInputFromSession,
 } from './workbench-edit-session';
+import { isAbortError, WorkspaceRequestScope } from './workspace-request-scope';
+import {
+  fetchWorkspaceSnapshot,
+  snapshotError,
+  snapshotReady,
+} from './workspace-snapshot';
+import type { WorkbenchStore } from './store-types';
+import { WorkspaceActionGuard, WorkspaceChangedError } from './workspace-action-guard';
 
 export { applyRunEvent } from './store-events';
 
-type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
-type QueueRunOptions = { forceRerun?: boolean };
-type PresenceByActor = Record<string, CanvasPresence>;
-type WorkspaceSnapshot = { state: WorkbenchState; canvas: CanvasDocument };
-
-type WorkbenchStore = {
-  status: LoadStatus;
-  error: string | null;
-  connection: ConnectionStatus;
-  canvasStatus: LoadStatus;
-  canvasError: string | null;
-  canvasConnection: ConnectionStatus;
-  canvas: CanvasDocument | null;
-  selectedCanvasNodeIds: string[];
-  presenceByActor: PresenceByActor;
-  state: WorkbenchState | null;
-  editSession: ManualEditSession | null;
-  bootstrap: (workspaceId?: string | null) => Promise<void>;
-  hydrate: (workspaceId: string) => Promise<void>;
-  createWorkspace: () => Promise<void>;
-  setInitialState: (state: WorkbenchState) => void;
-  setConnection: (status: ConnectionStatus) => void;
-  setCanvasSelection: (nodeIds: string[]) => void;
-  applyCanvasPresence: (presence: CanvasPresence) => void;
-  sendCanvasPresence: (presence: CanvasPresence) => Promise<void>;
-  submitCanvasCommentOp: (input: CanvasCommentOpInput) => Promise<void>;
-  applyEvent: (event: RunEventEnvelope) => void;
-  sendMessage: (text: string, canvasContext?: CanvasMessageContext) => Promise<void>;
-  queueRun: (options?: QueueRunOptions) => Promise<void>;
-  interruptRun: (runId?: string) => Promise<void>;
-  exportWorkflow: () => Promise<WorkflowGraph | null>;
-  undoVersion: () => Promise<void>;
-  restoreVersion: (versionId: string) => Promise<void>;
-  saveLayout: (positions: LayoutPositionUpdate[]) => Promise<void>;
-  selectOutput: (outputId: string) => Promise<void>;
-  acceptOutput: (outputId: string) => Promise<void>;
-  rejectOutput: (outputId: string, rerun?: boolean) => Promise<void>;
-  selectProvider: (providerId: string) => Promise<void>;
-  appendManualEdit: (input: ManualProposalInput) => Promise<void>;
-  commitManualEdits: () => Promise<void>;
-  discardManualEdits: () => void;
-  confirmRun: (runId: string) => Promise<void>;
-  holdRun: (runId: string) => Promise<void>;
-  createManualProposal: (input: ManualProposalInput) => Promise<void>;
-  applyProposal: (proposalId: string) => Promise<void>;
-  dismissProposal: (proposalId: string) => Promise<void>;
-};
-
 export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
-  let snapshotRefresh: Promise<void> | null = null;
+  const requestScope = new WorkspaceRequestScope();
+  let snapshotRefresh: { generation: number; promise: Promise<void> } | null = null;
+  let trailingSnapshotGeneration: number | null = null;
+  const actionGuard = new WorkspaceActionGuard(requestScope);
+  const activateWorkspace = (workspaceId: string | null) => {
+    const activation = requestScope.begin(workspaceId);
+    snapshotRefresh = null;
+    trailingSnapshotGeneration = null;
+    set({
+      workspaceGeneration: activation.generation,
+      activeWorkspaceId: workspaceId,
+      selectedCanvasNodeIds: [],
+      presenceByActor: {},
+    });
+    return activation;
+  };
+  const adoptWorkspace = (generation: number, workspaceId: string) => {
+    if (!requestScope.adopt(generation, workspaceId)) return false;
+    set({ activeWorkspaceId: workspaceId });
+    return true;
+  };
   const refreshSnapshot = (workspaceId: string) => {
-    if (snapshotRefresh) {
+    const generation = requestScope.currentGeneration();
+    if (requestScope.currentWorkspaceId() !== workspaceId || requestScope.signal()?.aborted) return;
+    if (snapshotRefresh?.generation === generation) {
+      trailingSnapshotGeneration = generation;
       return;
     }
-    snapshotRefresh = fetchWorkspaceSnapshot(workspaceId)
+    const promise = fetchWorkspaceSnapshot(workspaceId, requestScope.signal())
       .then(({ state, canvas }) =>
         set((current) =>
-          current.state?.workspace.id === workspaceId
+          requestScope.isActive(generation, workspaceId) &&
+            trailingSnapshotGeneration !== generation &&
+            current.state?.workspace.id === workspaceId
             ? {
                 status: 'ready',
                 canvasStatus: 'ready',
@@ -129,6 +101,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
         ),
       )
       .catch((error) => {
+        if (isAbortError(error) || !requestScope.isActive(generation, workspaceId)) return;
         const message =
           error instanceof Error ? error.message : 'workspace state request failed';
         set((current) =>
@@ -138,8 +111,14 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
         );
       })
       .finally(() => {
+        if (snapshotRefresh?.generation !== generation) return;
         snapshotRefresh = null;
+        if (trailingSnapshotGeneration === generation) {
+          trailingSnapshotGeneration = null;
+          refreshSnapshot(workspaceId);
+        }
       });
+    snapshotRefresh = { generation, promise };
   };
 
   return {
@@ -154,42 +133,60 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
   presenceByActor: {},
   state: null,
   editSession: null,
+  workspaceGeneration: 0,
+  activeWorkspaceId: null,
   bootstrap: async (workspaceId) => {
     if (workspaceId) {
       await get().hydrate(workspaceId);
       return;
     }
 
+    const activation = activateWorkspace(null);
     set({ status: 'loading', error: null });
     try {
-      const workspaces = await fetchWorkspaces();
+      const workspaces = await fetchWorkspaces(activation.signal);
       const workspace = workspaces[0] ?? (await createWorkspace());
-      const snapshot = await fetchWorkspaceSnapshot(workspace.id);
+      if (!adoptWorkspace(activation.generation, workspace.id)) return;
+      const snapshot = await fetchWorkspaceSnapshot(workspace.id, activation.signal);
+      if (!requestScope.isActive(activation.generation, workspace.id)) return;
       set(snapshotReady(snapshot));
     } catch (error) {
+      if (isAbortError(error) || !requestScope.isActive(activation.generation)) return;
       set(snapshotError(error, 'workspace bootstrap request failed'));
     }
   },
   hydrate: async (workspaceId) => {
+    const previousWorkspaceId = get().state?.workspace.id ?? null;
+    const activation = activateWorkspace(workspaceId);
     set({ status: 'loading', canvasStatus: 'loading', error: null, canvasError: null });
     try {
-      const snapshot = await fetchWorkspaceSnapshot(workspaceId);
+      const snapshot = await fetchWorkspaceSnapshot(workspaceId, activation.signal);
+      if (!requestScope.isActive(activation.generation, workspaceId)) return;
       set(snapshotReady(snapshot));
     } catch (error) {
+      if (isAbortError(error) || !requestScope.isActive(activation.generation, workspaceId)) return;
+      if (previousWorkspaceId) activateWorkspace(previousWorkspaceId);
       set(snapshotError(error, 'workspace state request failed'));
     }
   },
   createWorkspace: async () => {
+    const previousWorkspaceId = get().state?.workspace.id ?? null;
+    const activation = activateWorkspace(null);
     set({ status: 'loading', canvasStatus: 'loading', error: null, canvasError: null });
     try {
       const workspace = await createWorkspace();
-      const snapshot = await fetchWorkspaceSnapshot(workspace.id);
+      if (!adoptWorkspace(activation.generation, workspace.id)) return;
+      const snapshot = await fetchWorkspaceSnapshot(workspace.id, activation.signal);
+      if (!requestScope.isActive(activation.generation, workspace.id)) return;
       set(snapshotReady(snapshot));
     } catch (error) {
+      if (isAbortError(error) || !requestScope.isActive(activation.generation)) return;
+      if (previousWorkspaceId) activateWorkspace(previousWorkspaceId);
       set(snapshotError(error, 'workspace create request failed'));
     }
   },
-  setInitialState: (state) =>
+  setInitialState: (state) => {
+    activateWorkspace(state.workspace.id);
     set({
       status: 'ready',
       canvasStatus: 'idle',
@@ -198,7 +195,10 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       error: null,
       canvasError: null,
       editSession: null,
-    }),
+      selectedCanvasNodeIds: [],
+      presenceByActor: {},
+    });
+  },
   setConnection: (connection) => {
     set({ connection, canvasConnection: connection });
     const state = get().state;
@@ -217,6 +217,8 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
   sendCanvasPresence: async (presence) => {
     const state = get().state;
     if (!state) return;
+    const generation = requestScope.currentGeneration();
+    if (!requestScope.isActive(generation, state.workspace.id)) return;
     set((current) => ({
       presenceByActor: {
         ...current.presenceByActor,
@@ -224,18 +226,33 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       },
     }));
     try {
-      await sendCanvasPresenceRequest(state.workspace.id, presence);
-    } catch {
+      await sendCanvasPresenceRequest(state.workspace.id, presence, requestScope.signal());
+    } catch (error) {
+      if (isAbortError(error) || !requestScope.isActive(generation, state.workspace.id)) return;
       set({ canvasConnection: 'offline' });
     }
   },
   submitCanvasCommentOp: async (input) => {
     const state = get().state;
     if (!state) return;
+    const generation = requestScope.currentGeneration();
+    if (!requestScope.isActive(generation, state.workspace.id)) {
+      actionGuard.fail('workspace changed before the canvas comment could be sent');
+    }
     try {
-      const canvas = await submitCanvasCommentOpRequest(state.workspace.id, input);
+      const canvas = await submitCanvasCommentOpRequest(
+        state.workspace.id,
+        input,
+        requestScope.signal(),
+      );
+      if (!requestScope.isActive(generation, state.workspace.id)) {
+        actionGuard.fail('workspace changed while the canvas comment was sending');
+      }
       set({ canvas, canvasStatus: 'ready', canvasError: null });
     } catch (error) {
+      if (isAbortError(error) || !requestScope.isActive(generation, state.workspace.id)) {
+        actionGuard.fail('workspace changed while the canvas comment was sending');
+      }
       const normalized =
         error instanceof Error ? error : new Error('canvas comment request failed');
       set((current) => ({
@@ -256,19 +273,24 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     if (!state) {
       return;
     }
-    if (hasDirtyEdits(get().editSession)) {
-      set((current) => ({
-        state: current.state
-          ? appendSystemError(current.state, '请先提交或放弃手动编辑后再发送 Agent 请求。')
-          : current.state,
-      }));
-      return;
-    }
     const request = {
       workspaceId: state.workspace.id,
       baseVersionId: state.workspace.versionId,
       graph: workflowGraphFromState(state),
     };
+    const generation = requestScope.currentGeneration();
+    if (!requestScope.isActive(generation, request.workspaceId)) {
+      throw new WorkspaceChangedError('workspace changed before the message could be sent');
+    }
+    if (hasDirtyEdits(get().editSession)) {
+      const message = '请先提交或放弃手动编辑后再发送 Agent 请求。';
+      set((current) => ({
+        state: current.state
+          ? appendSystemError(current.state, message)
+          : current.state,
+      }));
+      throw new Error(message);
+    }
 
     set({
       state: appendChatMessages(state, [
@@ -288,9 +310,15 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
         canvasContext,
         userMessage: trimmed,
         graph: request.graph,
-      });
+      }, requestScope.signal());
+      if (!requestScope.isActive(generation, request.workspaceId)) {
+        actionGuard.fail('workspace changed while the message was sending');
+      }
       if (response.messages.some((message) => message.kind === 'proposal_applied')) {
-        const next = await fetchWorkspaceState(request.workspaceId);
+        const next = await fetchWorkspaceState(request.workspaceId, requestScope.signal());
+        if (!requestScope.isActive(generation, request.workspaceId)) {
+          actionGuard.fail('workspace changed while the message was sending');
+        }
         set({ state: next, status: 'ready', error: null, editSession: null });
         return;
       }
@@ -298,7 +326,10 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
         state: current.state ? applyMessageResponse(current.state, response) : current.state,
       }));
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'workspace message request failed';
+      if (isAbortError(error) || !requestScope.isActive(generation, request.workspaceId)) {
+        actionGuard.fail('workspace changed while the message was sending');
+      }
+      const normalized = error instanceof Error ? error : new Error('workspace message request failed');
       set((current) => ({
         state: current.state
           ? appendChatMessages(current.state, [
@@ -306,15 +337,17 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
                 id: `msg_system_${Date.now()}`,
                 role: 'system',
                 kind: 'run_failed',
-                text: message,
+                text: normalized.message,
                 time: messageTime(),
               },
             ])
           : current.state,
       }));
+      throw normalized;
     }
   },
-  applyEvent: (event) => {
+  applyEvent: (event, generation = requestScope.currentGeneration()) => {
+    if (!requestScope.isActive(generation, event.workspace_id)) return;
     const state = get().state;
     if (!state) {
       return;
@@ -330,6 +363,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     if (!state) {
       return;
     }
+    actionGuard.assertActive(state.workspace.id, 'queueing the run');
     if (hasDirtyEdits(get().editSession)) {
       set((current) => ({
         state: current.state
@@ -340,11 +374,13 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
 
     try {
-      const response = await queueWorkspaceRun(state.workspace.id, options);
+      const response = await actionGuard.run(state.workspace.id, 'queueing the run', () =>
+        queueWorkspaceRun(state.workspace.id, options));
       set((current) => ({
         state: current.state ? applyRunConfirmation(current.state, response) : current.state,
       }));
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const message = error instanceof Error ? error.message : 'run queue request failed';
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
@@ -359,11 +395,13 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
 
     try {
-      const response = await interruptRunRequest(targetRunId);
+      const response = await actionGuard.run(state.workspace.id, 'interrupting the run', () =>
+        interruptRunRequest(targetRunId));
       set((current) => ({
         state: current.state ? applyRunConfirmation(current.state, response) : current.state,
       }));
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const message = error instanceof Error ? error.message : 'run interrupt request failed';
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
@@ -378,8 +416,10 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
 
     try {
-      return await exportWorkflowVersion(versionId);
+      return await actionGuard.run(state.workspace.id, 'exporting the workflow', () =>
+        exportWorkflowVersion(versionId));
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const message = error instanceof Error ? error.message : 'workflow export request failed';
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
@@ -394,9 +434,11 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
 
     try {
-      const next = await undoWorkspaceVersion(state.workspace.id);
+      const next = await actionGuard.run(state.workspace.id, 'undoing the version', () =>
+        undoWorkspaceVersion(state.workspace.id));
       set({ state: next, status: 'ready', error: null, editSession: null });
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const message = error instanceof Error ? error.message : 'workspace undo request failed';
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
@@ -410,9 +452,11 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
 
     try {
-      const next = await restoreWorkspaceVersion(state.workspace.id, versionId);
+      const next = await actionGuard.run(state.workspace.id, 'restoring the version', () =>
+        restoreWorkspaceVersion(state.workspace.id, versionId));
       set({ state: next, status: 'ready', error: null, editSession: null });
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const message = error instanceof Error ? error.message : 'workspace restore request failed';
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
@@ -426,12 +470,14 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
 
     try {
-      const next = await saveWorkspaceLayout(state.workspace.id, {
-        baseVersionId: state.workspace.versionId,
-        positions,
-      });
+      const next = await actionGuard.run(state.workspace.id, 'saving the layout', () =>
+        saveWorkspaceLayout(state.workspace.id, {
+          baseVersionId: state.workspace.versionId,
+          positions,
+        }));
       set({ state: next, status: 'ready', error: null, editSession: null });
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const message = error instanceof Error ? error.message : 'workspace layout request failed';
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
@@ -445,7 +491,8 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
 
     try {
-      const next = await selectOutputRequest(outputId);
+      const next = await actionGuard.run(state.workspace.id, 'selecting the output', () =>
+        selectOutputRequest(outputId));
       set((current) => ({
         state: next,
         status: 'ready',
@@ -453,6 +500,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
         editSession: compatibleEditSession(current.editSession, next),
       }));
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const message = error instanceof Error ? error.message : 'output select request failed';
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
@@ -460,11 +508,13 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
   },
   acceptOutput: async (outputId) => {
-    if (!get().state) {
+    const state = get().state;
+    if (!state) {
       return;
     }
     try {
-      const next = await acceptOutputRequest(outputId);
+      const next = await actionGuard.run(state.workspace.id, 'accepting the output', () =>
+        acceptOutputRequest(outputId));
       set((current) => ({
         state: next,
         status: 'ready',
@@ -472,6 +522,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
         editSession: compatibleEditSession(current.editSession, next),
       }));
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const message = error instanceof Error ? error.message : 'output accept request failed';
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
@@ -479,11 +530,13 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
   },
   rejectOutput: async (outputId, rerun = false) => {
-    if (!get().state) {
+    const state = get().state;
+    if (!state) {
       return;
     }
     try {
-      const next = await rejectOutputRequest(outputId, rerun);
+      const next = await actionGuard.run(state.workspace.id, 'rejecting the output', () =>
+        rejectOutputRequest(outputId, rerun));
       set((current) => ({
         state: next,
         status: 'ready',
@@ -491,6 +544,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
         editSession: compatibleEditSession(current.editSession, next),
       }));
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const message = error instanceof Error ? error.message : 'output reject request failed';
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
@@ -503,8 +557,19 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       return;
     }
 
+    const generation = requestScope.currentGeneration();
+    if (!requestScope.isActive(generation, state.workspace.id)) {
+      actionGuard.fail('workspace changed before the provider could be selected');
+    }
     try {
-      const next = await selectWorkspaceProvider(state.workspace.id, providerId);
+      const next = await selectWorkspaceProvider(
+        state.workspace.id,
+        providerId,
+        requestScope.signal(),
+      );
+      if (!requestScope.isActive(generation, state.workspace.id)) {
+        actionGuard.fail('workspace changed while the provider was being selected');
+      }
       set((current) => ({
         state: next,
         status: 'ready',
@@ -512,10 +577,14 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
         editSession: compatibleEditSession(current.editSession, next),
       }));
     } catch (error) {
+      if (isAbortError(error) || !requestScope.isActive(generation, state.workspace.id)) {
+        actionGuard.fail('workspace changed while the provider was being selected');
+      }
       const message = error instanceof Error ? error.message : 'workspace provider request failed';
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
       }));
+      throw error instanceof Error ? error : new Error(message);
     }
   },
   appendManualEdit: async (input) => {
@@ -523,6 +592,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     if (!state) {
       return;
     }
+    actionGuard.assertActive(state.workspace.id, 'editing the workspace');
     if (state.pendingProposal) {
       const message = '请先应用或忽略待审核 proposal 后再编辑。';
       set((current) => ({
@@ -553,6 +623,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     if (!state || !hasDirtyEdits(editSession)) {
       return;
     }
+    actionGuard.assertActive(state.workspace.id, 'committing manual edits');
     if (editSession.baseVersionId !== state.workspace.versionId) {
       const message = '手动编辑基于旧版本，请刷新后重试。';
       set((current) => ({
@@ -563,12 +634,14 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
 
     try {
-      const next = await createManualWorkspaceProposal(
-        state.workspace.id,
-        manualEditInputFromSession(editSession),
-      );
+      const next = await actionGuard.run(state.workspace.id, 'committing manual edits', () =>
+        createManualWorkspaceProposal(
+          state.workspace.id,
+          manualEditInputFromSession(editSession),
+        ));
       set({ state: next, status: 'ready', error: null, editSession: null });
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const normalized =
         error instanceof Error ? error : new Error('manual edit request failed');
       set((current) => ({
@@ -583,6 +656,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     if (!state) {
       return;
     }
+    actionGuard.assertActive(state.workspace.id, 'confirming the run');
     const previousRun = state.run;
     const previousPendingConfirmation = state.pendingConfirmation;
 
@@ -590,11 +664,13 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       state: current.state ? markRunConfirming(current.state, runId) : current.state,
     }));
     try {
-      const response = await confirmWorkspaceRun(state.workspace.id, runId);
+      const response = await actionGuard.run(state.workspace.id, 'confirming the run', () =>
+        confirmWorkspaceRun(state.workspace.id, runId));
       set((current) => ({
         state: current.state ? applyRunConfirmation(current.state, response) : current.state,
       }));
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const message = error instanceof Error ? error.message : 'run confirmation request failed';
       set((current) => ({
         state:
@@ -618,11 +694,13 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
 
     try {
-      const response = await holdWorkspaceRun(state.workspace.id, runId);
+      const response = await actionGuard.run(state.workspace.id, 'holding the run', () =>
+        holdWorkspaceRun(state.workspace.id, runId));
       set((current) => ({
         state: current.state ? applyRunConfirmation(current.state, response) : current.state,
       }));
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const message = error instanceof Error ? error.message : 'run hold request failed';
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
@@ -636,9 +714,11 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
 
     try {
-      const next = await createManualWorkspaceProposal(state.workspace.id, input);
+      const next = await actionGuard.run(state.workspace.id, 'creating the proposal', () =>
+        createManualWorkspaceProposal(state.workspace.id, input));
       set({ state: next, status: 'ready', error: null, editSession: null });
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const normalized =
         error instanceof Error ? error : new Error('manual edit request failed');
       const message = normalized.message;
@@ -655,9 +735,11 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
 
     try {
-      const next = await applyWorkspaceProposal(state.workspace.id, proposalId);
+      const next = await actionGuard.run(state.workspace.id, 'applying the proposal', () =>
+        applyWorkspaceProposal(state.workspace.id, proposalId));
       set({ state: next, status: 'ready', error: null, editSession: null });
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const message = error instanceof Error ? error.message : 'proposal apply request failed';
       set((current) => ({
         state: current.state
@@ -681,9 +763,11 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
 
     try {
-      const next = await dismissWorkspaceProposal(state.workspace.id, proposalId);
+      const next = await actionGuard.run(state.workspace.id, 'dismissing the proposal', () =>
+        dismissWorkspaceProposal(state.workspace.id, proposalId));
       set({ state: next, status: 'ready', error: null, editSession: null });
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const message = error instanceof Error ? error.message : 'proposal dismiss request failed';
       set((current) => ({
         state: current.state
@@ -702,37 +786,3 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
   },
   };
 });
-
-function hasDirtyEdits(session: ManualEditSession | null): session is ManualEditSession {
-  return Boolean(session && session.ops.length > 0);
-}
-
-async function fetchWorkspaceSnapshot(workspaceId: string): Promise<WorkspaceSnapshot> {
-  const [state, canvas] = await Promise.all([
-    fetchWorkspaceState(workspaceId),
-    fetchWorkspaceCanvas(workspaceId),
-  ]);
-  return { state, canvas };
-}
-
-function snapshotReady(snapshot: WorkspaceSnapshot) {
-  return {
-    status: 'ready' as const,
-    canvasStatus: 'ready' as const,
-    state: snapshot.state,
-    canvas: snapshot.canvas,
-    error: null,
-    canvasError: null,
-    editSession: null,
-  };
-}
-
-function snapshotError(error: unknown, fallback: string) {
-  const message = error instanceof Error ? error.message : fallback;
-  return {
-    status: 'error' as const,
-    canvasStatus: 'error' as const,
-    error: message,
-    canvasError: message,
-  };
-}

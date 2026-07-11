@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './app';
+import { composerDraftAfterSubmit } from './components/chat-pane';
 import { useWorkbenchStore } from './store';
 import type { WorkbenchState } from './types';
 import {
@@ -201,7 +202,11 @@ describe('manual edit session workbench flow', () => {
     });
 
     await useWorkbenchStore.getState().queueRun();
-    await useWorkbenchStore.getState().sendMessage('运行当前 workflow');
+    await expect(
+      composerDraftAfterSubmit('运行当前 workflow', '运行当前 workflow', (text) =>
+        useWorkbenchStore.getState().sendMessage(text),
+      ),
+    ).resolves.toBe('运行当前 workflow');
 
     expect(fetch).not.toHaveBeenCalled();
     const messages = useWorkbenchStore.getState().state?.chat.messages ?? [];

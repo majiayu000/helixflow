@@ -100,7 +100,10 @@ export function GraphInspector({
           <span className="field-input">{node.provider ?? 'local/builtin'}</span>
         </div>
         {onRequestProposal && (
-          <button className="inspector-agent-request" onClick={() => void onRequestProposal(node.id)}>
+          <button
+            className="inspector-agent-request"
+            onClick={() => void onRequestProposal(node.id).catch(() => undefined)}
+          >
             Ask Agent for node proposal
           </button>
         )}

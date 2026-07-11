@@ -102,14 +102,18 @@ export function CanvasCommentsPanel({
 
   const submit = async () => {
     if (!onCommentOp || !selectedTarget) return;
-    await onCommentOp({
-      op: {
-        op: 'comment_add',
-        target: selectedTarget.target,
-        body: draft,
-      },
-    });
-    setDraft('');
+    try {
+      await onCommentOp({
+        op: {
+          op: 'comment_add',
+          target: selectedTarget.target,
+          body: draft,
+        },
+      });
+      setDraft('');
+    } catch {
+      // The store owns visible errors; keep the draft for retry.
+    }
   };
 
   return (
@@ -151,7 +155,7 @@ export function CanvasCommentsPanel({
             <div className="comment-actions">
               <button
                 disabled={!onCommentOp}
-                onClick={() => void patchCommentBody(comment, onCommentOp)}
+                onClick={() => void patchCommentBody(comment, onCommentOp).catch(() => undefined)}
               >
                 Edit
               </button>
@@ -164,14 +168,16 @@ export function CanvasCommentsPanel({
                       id: comment.id,
                       status: comment.status === 'resolved' ? 'open' : 'resolved',
                     },
-                  })
+                  }).catch(() => undefined)
                 }
               >
                 {comment.status === 'resolved' ? 'Reopen' : 'Resolve'}
               </button>
               <button
                 disabled={!onCommentOp}
-                onClick={() => void onCommentOp?.({ op: { op: 'comment_delete', id: comment.id } })}
+                onClick={() => void onCommentOp?.({
+                  op: { op: 'comment_delete', id: comment.id },
+                }).catch(() => undefined)}
               >
                 Delete
               </button>
