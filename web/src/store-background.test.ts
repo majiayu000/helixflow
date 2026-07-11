@@ -213,6 +213,110 @@ describe('background run state reconciliation', () => {
     expect(useWorkbenchStore.getState().error).toContain('workspace changed');
   });
 
+  it.each([
+    ['queue', () => useWorkbenchStore.getState().queueRun()],
+    ['interrupt', () => useWorkbenchStore.getState().interruptRun()],
+    ['confirm', () => useWorkbenchStore.getState().confirmRun('run_ws_a')],
+    ['hold', () => useWorkbenchStore.getState().holdRun('run_ws_a')],
+  ])('rejects a stale %s completion without modifying B', async (_name, startAction) => {
+    const response = delayedResponseFetch();
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
+    const action = startAction();
+    const workspaceB = stateForWorkspace('ws_b');
+    useWorkbenchStore.getState().setInitialState(workspaceB);
+
+    response.resolve(jsonResponse(runConfirmationForWorkspace('ws_a')));
+
+    await expect(action).rejects.toThrow('workspace changed');
+    expect(useWorkbenchStore.getState().state).toEqual(workspaceB);
+  });
+
+  it.each([
+    ['undo', () => useWorkbenchStore.getState().undoVersion()],
+    ['restore', () => useWorkbenchStore.getState().restoreVersion('ver_old_a')],
+    ['layout', () => useWorkbenchStore.getState().saveLayout([{ id: 'video', x: 10, y: 20 }])],
+    ['select output', () => useWorkbenchStore.getState().selectOutput('output_a')],
+    ['accept output', () => useWorkbenchStore.getState().acceptOutput('output_a')],
+    ['reject output', () => useWorkbenchStore.getState().rejectOutput('output_a')],
+    ['create proposal', () => useWorkbenchStore.getState().createManualProposal({
+      baseVersionId: 'ver_ws_a',
+      ops: [{ op: 'move_node', id: 'video', pos: [10, 20] }],
+    })],
+    ['commit edits', () => {
+      useWorkbenchStore.setState({
+        editSession: {
+          baseVersionId: 'ver_ws_a',
+          idempotencyKey: 'canvas_op_a',
+          source: 'user',
+          startedAt: '2026-07-11T00:00:00Z',
+          ops: [{ op: 'move_node', id: 'video', pos: [10, 20] }],
+        },
+      });
+      return useWorkbenchStore.getState().commitManualEdits();
+    }],
+    ['apply proposal', () => useWorkbenchStore.getState().applyProposal('proposal_a')],
+    ['dismiss proposal', () => useWorkbenchStore.getState().dismissProposal('proposal_a')],
+  ])('rejects a stale %s state replacement without modifying B', async (_name, startAction) => {
+    const response = delayedResponseFetch();
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
+    const action = startAction();
+    const workspaceB = stateForWorkspace('ws_b');
+    useWorkbenchStore.getState().setInitialState(workspaceB);
+
+    response.resolve(jsonResponse(stateForWorkspace('ws_a')));
+
+    await expect(action).rejects.toThrow('workspace changed');
+    expect(useWorkbenchStore.getState().state).toEqual(workspaceB);
+  });
+
+  it('does not append a stale A request failure to B', async () => {
+    const response = delayedResponseFetch();
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
+    const queueing = useWorkbenchStore.getState().queueRun();
+    const workspaceB = stateForWorkspace('ws_b');
+    useWorkbenchStore.getState().setInitialState(workspaceB);
+
+    response.resolve(new Response(JSON.stringify({ error: 'A failed' }), {
+      status: 503,
+      headers: { 'content-type': 'application/json' },
+    }));
+
+    await expect(queueing).rejects.toThrow('workspace changed');
+    expect(useWorkbenchStore.getState().state).toEqual(workspaceB);
+    expect(useWorkbenchStore.getState().state?.chat.messages).toHaveLength(0);
+  });
+
+  it('does not revive an old A action generation after A to B to A', async () => {
+    const response = delayedResponseFetch();
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
+    const restoring = useWorkbenchStore.getState().restoreVersion('ver_old_a');
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_b'));
+    const currentA = stateForWorkspace('ws_a');
+    currentA.workspace.versionId = 'ver_current_a';
+    useWorkbenchStore.getState().setInitialState(currentA);
+
+    const staleA = stateForWorkspace('ws_a');
+    staleA.workspace.versionId = 'ver_stale_a';
+    response.resolve(jsonResponse(staleA));
+
+    await expect(restoring).rejects.toThrow('workspace changed');
+    expect(useWorkbenchStore.getState().state).toEqual(currentA);
+  });
+
+  it('rejects a stale workflow export instead of returning A data in B', async () => {
+    const response = delayedResponseFetch();
+    const workspaceA = stateForWorkspace('ws_a');
+    useWorkbenchStore.getState().setInitialState(workspaceA);
+    const exporting = useWorkbenchStore.getState().exportWorkflow();
+    const workspaceB = stateForWorkspace('ws_b');
+    useWorkbenchStore.getState().setInitialState(workspaceB);
+
+    response.resolve(jsonResponse(workspaceA.workflowGraph));
+
+    await expect(exporting).rejects.toThrow('workspace changed');
+    expect(useWorkbenchStore.getState().state).toEqual(workspaceB);
+  });
+
   it('rejects a delayed workspace A provider response without modifying B', async () => {
     let resolveProvider!: (response: Response) => void;
     const providerResponse = new Promise<Response>((resolve) => {
@@ -406,6 +510,23 @@ function delayedSnapshotFetch() {
       pending.get(stateUrl)?.shift()?.(jsonResponse(state));
       pending.get(canvasUrl)?.shift()?.(jsonResponse(canvasForState(state)));
     },
+  };
+}
+
+function delayedResponseFetch() {
+  let resolve!: (response: Response) => void;
+  vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((next) => {
+    resolve = next;
+  })));
+  return { resolve: (response: Response) => resolve(response) };
+}
+
+function runConfirmationForWorkspace(workspaceId: string) {
+  const state = stateForWorkspace(workspaceId);
+  return {
+    run: state.run,
+    outputs: state.outputs,
+    pendingConfirmation: state.pendingConfirmation,
   };
 }
 

@@ -49,6 +49,7 @@ import {
   snapshotReady,
 } from './workspace-snapshot';
 import type { WorkbenchStore } from './store-types';
+import { WorkspaceActionGuard, WorkspaceChangedError } from './workspace-action-guard';
 
 export { applyRunEvent } from './store-events';
 
@@ -56,10 +57,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
   const requestScope = new WorkspaceRequestScope();
   let snapshotRefresh: { generation: number; promise: Promise<void> } | null = null;
   let trailingSnapshotGeneration: number | null = null;
-  const failWorkspaceAction = (message: string): never => {
-    set({ error: message });
-    throw new Error(message);
-  };
+  const actionGuard = new WorkspaceActionGuard(requestScope, (error) => set({ error }));
   const activateWorkspace = (workspaceId: string | null) => {
     const activation = requestScope.begin(workspaceId);
     snapshotRefresh = null;
@@ -235,7 +233,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     if (!state) return;
     const generation = requestScope.currentGeneration();
     if (!requestScope.isActive(generation, state.workspace.id)) {
-      failWorkspaceAction('workspace changed before the canvas comment could be sent');
+      actionGuard.fail('workspace changed before the canvas comment could be sent');
     }
     try {
       const canvas = await submitCanvasCommentOpRequest(
@@ -244,12 +242,12 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
         requestScope.signal(),
       );
       if (!requestScope.isActive(generation, state.workspace.id)) {
-        failWorkspaceAction('workspace changed while the canvas comment was sending');
+        actionGuard.fail('workspace changed while the canvas comment was sending');
       }
       set({ canvas, canvasStatus: 'ready', canvasError: null });
     } catch (error) {
       if (isAbortError(error) || !requestScope.isActive(generation, state.workspace.id)) {
-        failWorkspaceAction('workspace changed while the canvas comment was sending');
+        actionGuard.fail('workspace changed while the canvas comment was sending');
       }
       const normalized =
         error instanceof Error ? error : new Error('canvas comment request failed');
@@ -272,12 +270,13 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       return;
     }
     if (hasDirtyEdits(get().editSession)) {
+      const message = '请先提交或放弃手动编辑后再发送 Agent 请求。';
       set((current) => ({
         state: current.state
-          ? appendSystemError(current.state, '请先提交或放弃手动编辑后再发送 Agent 请求。')
+          ? appendSystemError(current.state, message)
           : current.state,
       }));
-      return;
+      throw new Error(message);
     }
     const request = {
       workspaceId: state.workspace.id,
@@ -313,12 +312,12 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
         graph: request.graph,
       }, requestScope.signal());
       if (!requestScope.isActive(generation, request.workspaceId)) {
-        failWorkspaceAction('workspace changed while the message was sending');
+        actionGuard.fail('workspace changed while the message was sending');
       }
       if (response.messages.some((message) => message.kind === 'proposal_applied')) {
         const next = await fetchWorkspaceState(request.workspaceId, requestScope.signal());
         if (!requestScope.isActive(generation, request.workspaceId)) {
-          failWorkspaceAction('workspace changed while the message was sending');
+          actionGuard.fail('workspace changed while the message was sending');
         }
         set({ state: next, status: 'ready', error: null, editSession: null });
         return;
@@ -328,7 +327,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       }));
     } catch (error) {
       if (isAbortError(error) || !requestScope.isActive(generation, request.workspaceId)) {
-        failWorkspaceAction('workspace changed while the message was sending');
+        actionGuard.fail('workspace changed while the message was sending');
       }
       const normalized = error instanceof Error ? error : new Error('workspace message request failed');
       set((current) => ({
@@ -374,11 +373,13 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
 
     try {
-      const response = await queueWorkspaceRun(state.workspace.id, options);
+      const response = await actionGuard.run(state.workspace.id, 'queueing the run', () =>
+        queueWorkspaceRun(state.workspace.id, options));
       set((current) => ({
         state: current.state ? applyRunConfirmation(current.state, response) : current.state,
       }));
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const message = error instanceof Error ? error.message : 'run queue request failed';
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
@@ -393,11 +394,13 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
 
     try {
-      const response = await interruptRunRequest(targetRunId);
+      const response = await actionGuard.run(state.workspace.id, 'interrupting the run', () =>
+        interruptRunRequest(targetRunId));
       set((current) => ({
         state: current.state ? applyRunConfirmation(current.state, response) : current.state,
       }));
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const message = error instanceof Error ? error.message : 'run interrupt request failed';
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
@@ -412,8 +415,10 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
 
     try {
-      return await exportWorkflowVersion(versionId);
+      return await actionGuard.run(state.workspace.id, 'exporting the workflow', () =>
+        exportWorkflowVersion(versionId));
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const message = error instanceof Error ? error.message : 'workflow export request failed';
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
@@ -428,9 +433,11 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
 
     try {
-      const next = await undoWorkspaceVersion(state.workspace.id);
+      const next = await actionGuard.run(state.workspace.id, 'undoing the version', () =>
+        undoWorkspaceVersion(state.workspace.id));
       set({ state: next, status: 'ready', error: null, editSession: null });
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const message = error instanceof Error ? error.message : 'workspace undo request failed';
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
@@ -444,9 +451,11 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
 
     try {
-      const next = await restoreWorkspaceVersion(state.workspace.id, versionId);
+      const next = await actionGuard.run(state.workspace.id, 'restoring the version', () =>
+        restoreWorkspaceVersion(state.workspace.id, versionId));
       set({ state: next, status: 'ready', error: null, editSession: null });
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const message = error instanceof Error ? error.message : 'workspace restore request failed';
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
@@ -460,12 +469,14 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
 
     try {
-      const next = await saveWorkspaceLayout(state.workspace.id, {
-        baseVersionId: state.workspace.versionId,
-        positions,
-      });
+      const next = await actionGuard.run(state.workspace.id, 'saving the layout', () =>
+        saveWorkspaceLayout(state.workspace.id, {
+          baseVersionId: state.workspace.versionId,
+          positions,
+        }));
       set({ state: next, status: 'ready', error: null, editSession: null });
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const message = error instanceof Error ? error.message : 'workspace layout request failed';
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
@@ -479,7 +490,8 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
 
     try {
-      const next = await selectOutputRequest(outputId);
+      const next = await actionGuard.run(state.workspace.id, 'selecting the output', () =>
+        selectOutputRequest(outputId));
       set((current) => ({
         state: next,
         status: 'ready',
@@ -487,6 +499,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
         editSession: compatibleEditSession(current.editSession, next),
       }));
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const message = error instanceof Error ? error.message : 'output select request failed';
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
@@ -494,11 +507,13 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
   },
   acceptOutput: async (outputId) => {
-    if (!get().state) {
+    const state = get().state;
+    if (!state) {
       return;
     }
     try {
-      const next = await acceptOutputRequest(outputId);
+      const next = await actionGuard.run(state.workspace.id, 'accepting the output', () =>
+        acceptOutputRequest(outputId));
       set((current) => ({
         state: next,
         status: 'ready',
@@ -506,6 +521,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
         editSession: compatibleEditSession(current.editSession, next),
       }));
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const message = error instanceof Error ? error.message : 'output accept request failed';
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
@@ -513,11 +529,13 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
   },
   rejectOutput: async (outputId, rerun = false) => {
-    if (!get().state) {
+    const state = get().state;
+    if (!state) {
       return;
     }
     try {
-      const next = await rejectOutputRequest(outputId, rerun);
+      const next = await actionGuard.run(state.workspace.id, 'rejecting the output', () =>
+        rejectOutputRequest(outputId, rerun));
       set((current) => ({
         state: next,
         status: 'ready',
@@ -525,6 +543,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
         editSession: compatibleEditSession(current.editSession, next),
       }));
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const message = error instanceof Error ? error.message : 'output reject request failed';
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
@@ -539,7 +558,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
 
     const generation = requestScope.currentGeneration();
     if (!requestScope.isActive(generation, state.workspace.id)) {
-      failWorkspaceAction('workspace changed before the provider could be selected');
+      actionGuard.fail('workspace changed before the provider could be selected');
     }
     try {
       const next = await selectWorkspaceProvider(
@@ -548,7 +567,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
         requestScope.signal(),
       );
       if (!requestScope.isActive(generation, state.workspace.id)) {
-        failWorkspaceAction('workspace changed while the provider was being selected');
+        actionGuard.fail('workspace changed while the provider was being selected');
       }
       set((current) => ({
         state: next,
@@ -558,7 +577,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       }));
     } catch (error) {
       if (isAbortError(error) || !requestScope.isActive(generation, state.workspace.id)) {
-        failWorkspaceAction('workspace changed while the provider was being selected');
+        actionGuard.fail('workspace changed while the provider was being selected');
       }
       const message = error instanceof Error ? error.message : 'workspace provider request failed';
       set((current) => ({
@@ -612,12 +631,14 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
 
     try {
-      const next = await createManualWorkspaceProposal(
-        state.workspace.id,
-        manualEditInputFromSession(editSession),
-      );
+      const next = await actionGuard.run(state.workspace.id, 'committing manual edits', () =>
+        createManualWorkspaceProposal(
+          state.workspace.id,
+          manualEditInputFromSession(editSession),
+        ));
       set({ state: next, status: 'ready', error: null, editSession: null });
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const normalized =
         error instanceof Error ? error : new Error('manual edit request failed');
       set((current) => ({
@@ -639,11 +660,13 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       state: current.state ? markRunConfirming(current.state, runId) : current.state,
     }));
     try {
-      const response = await confirmWorkspaceRun(state.workspace.id, runId);
+      const response = await actionGuard.run(state.workspace.id, 'confirming the run', () =>
+        confirmWorkspaceRun(state.workspace.id, runId));
       set((current) => ({
         state: current.state ? applyRunConfirmation(current.state, response) : current.state,
       }));
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const message = error instanceof Error ? error.message : 'run confirmation request failed';
       set((current) => ({
         state:
@@ -667,11 +690,13 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
 
     try {
-      const response = await holdWorkspaceRun(state.workspace.id, runId);
+      const response = await actionGuard.run(state.workspace.id, 'holding the run', () =>
+        holdWorkspaceRun(state.workspace.id, runId));
       set((current) => ({
         state: current.state ? applyRunConfirmation(current.state, response) : current.state,
       }));
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const message = error instanceof Error ? error.message : 'run hold request failed';
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
@@ -685,9 +710,11 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
 
     try {
-      const next = await createManualWorkspaceProposal(state.workspace.id, input);
+      const next = await actionGuard.run(state.workspace.id, 'creating the proposal', () =>
+        createManualWorkspaceProposal(state.workspace.id, input));
       set({ state: next, status: 'ready', error: null, editSession: null });
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const normalized =
         error instanceof Error ? error : new Error('manual edit request failed');
       const message = normalized.message;
@@ -704,9 +731,11 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
 
     try {
-      const next = await applyWorkspaceProposal(state.workspace.id, proposalId);
+      const next = await actionGuard.run(state.workspace.id, 'applying the proposal', () =>
+        applyWorkspaceProposal(state.workspace.id, proposalId));
       set({ state: next, status: 'ready', error: null, editSession: null });
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const message = error instanceof Error ? error.message : 'proposal apply request failed';
       set((current) => ({
         state: current.state
@@ -730,9 +759,11 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
 
     try {
-      const next = await dismissWorkspaceProposal(state.workspace.id, proposalId);
+      const next = await actionGuard.run(state.workspace.id, 'dismissing the proposal', () =>
+        dismissWorkspaceProposal(state.workspace.id, proposalId));
       set({ state: next, status: 'ready', error: null, editSession: null });
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       const message = error instanceof Error ? error.message : 'proposal dismiss request failed';
       set((current) => ({
         state: current.state
