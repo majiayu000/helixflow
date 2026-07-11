@@ -96,6 +96,25 @@ describe('background run state reconciliation', () => {
     expect(useWorkbenchStore.getState().state?.workspace.id).toBe('ws_b');
   });
 
+  it('does not revive the first A generation after A to B to A', async () => {
+    const responses = delayedSnapshotFetch();
+    const firstA = useWorkbenchStore.getState().hydrate('ws_a');
+    const b = useWorkbenchStore.getState().hydrate('ws_b');
+    const secondA = useWorkbenchStore.getState().hydrate('ws_a');
+    const staleA = stateForWorkspace('ws_a');
+    staleA.run = { ...staleA.run!, id: 'run_stale_a' };
+    const currentA = stateForWorkspace('ws_a');
+    currentA.run = { ...currentA.run!, id: 'run_current_a' };
+
+    responses.resolve('ws_b', stateForWorkspace('ws_b'));
+    responses.resolve('ws_a', staleA);
+    responses.resolve('ws_a', currentA);
+    await Promise.all([firstA, b, secondA]);
+
+    expect(useWorkbenchStore.getState().state?.workspace.id).toBe('ws_a');
+    expect(useWorkbenchStore.getState().state?.run?.id).toBe('run_current_a');
+  });
+
   it('ignores a delayed workspace A message response after switching to B', async () => {
     let resolveMessage!: (response: Response) => void;
     const messageResponse = new Promise<Response>((resolve) => {
@@ -127,6 +146,62 @@ describe('background run state reconciliation', () => {
 
     expect(useWorkbenchStore.getState().state?.workspace.id).toBe('ws_b');
     expect(useWorkbenchStore.getState().state?.chat.messages).toHaveLength(0);
+  });
+
+  it('ignores a delayed workspace A provider response after switching to B', async () => {
+    let resolveProvider!: (response: Response) => void;
+    const providerResponse = new Promise<Response>((resolve) => {
+      resolveProvider = resolve;
+    });
+    vi.stubGlobal('fetch', vi.fn(() => providerResponse));
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
+    const selecting = useWorkbenchStore.getState().selectProvider('atlas');
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_b'));
+    const staleA = stateForWorkspace('ws_a');
+    staleA.providers.selectedProvider = 'atlas';
+    resolveProvider(jsonResponse(staleA));
+    await selecting;
+
+    expect(useWorkbenchStore.getState().state?.workspace.id).toBe('ws_b');
+    expect(useWorkbenchStore.getState().state?.providers.selectedProvider).toBe('mock');
+  });
+
+  it('runs a trailing refresh when an event arrives during an in-flight refresh', async () => {
+    const responses = delayedSnapshotFetch();
+    useWorkbenchStore.getState().setInitialState(stateWithRun('run_1', 'running', 0));
+    useWorkbenchStore.getState().setConnection('live');
+    useWorkbenchStore.getState().applyEvent(runEvent('run_1', 2, 'run.succeeded'));
+
+    responses.resolve('ws_test', stateWithRun('run_1', 'running', 0));
+    await waitUntil(() => vi.mocked(fetch).mock.calls.length === 4);
+    responses.resolve('ws_test', stateWithRun('run_1', 'succeeded', 1));
+    await waitUntil(() => useWorkbenchStore.getState().state?.outputs.length === 1);
+
+    expect(useWorkbenchStore.getState().state?.run?.status).toBe('succeeded');
+    expect(fetch).toHaveBeenCalledTimes(4);
+  });
+
+  it('ignores a delayed canvas comment response after switching workspaces', async () => {
+    let resolveCanvas!: (response: Response) => void;
+    const canvasResponse = new Promise<Response>((resolve) => {
+      resolveCanvas = resolve;
+    });
+    vi.stubGlobal('fetch', vi.fn(() => canvasResponse));
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
+    const submitting = useWorkbenchStore.getState().submitCanvasCommentOp({
+      baseSeq: 0,
+      op: {
+        op: 'comment_add',
+        target: { kind: 'position', x: 10, y: 20 },
+        body: 'workspace A comment',
+      },
+    });
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_b'));
+    resolveCanvas(jsonResponse(canvasForState(stateForWorkspace('ws_a'))));
+    await submitting;
+
+    expect(useWorkbenchStore.getState().state?.workspace.id).toBe('ws_b');
+    expect(useWorkbenchStore.getState().canvas).toBeNull();
   });
 });
 

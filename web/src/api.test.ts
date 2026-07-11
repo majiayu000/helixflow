@@ -51,8 +51,14 @@ describe('connectWorkspaceEvents', () => {
     });
 
     await waitUntil(() => MockWebSocket.sockets.length === 1);
-    expect(fetch).toHaveBeenCalledWith('/api/workspaces/ws_test/events?afterSeq=0');
-    expect(fetch).toHaveBeenCalledWith('/api/canvases/ws_test/ticket', { method: 'POST' });
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/workspaces/ws_test/events?afterSeq=0',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/canvases/ws_test/ticket',
+      expect.objectContaining({ method: 'POST', signal: expect.any(AbortSignal) }),
+    );
     expect(MockWebSocket.sockets[0]?.url).toBe(
       'ws://localhost/ws?workspace_id=ws_test&ticket=ticket_1',
     );
@@ -94,6 +100,36 @@ describe('connectWorkspaceEvents', () => {
 
     await waitUntil(() => applied.join(',') === '2,3,4');
     cleanup();
+  });
+
+  it('does not open a websocket when cleanup wins the ticket request race', async () => {
+    stubBrowser();
+    let resolveTicket!: (response: Response) => void;
+    const ticket = new Promise<Response>((resolve) => {
+      resolveTicket = resolve;
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/events?')) return jsonResponse({ events: [] });
+        if (url.includes('/ticket')) return ticket;
+        return new Response('{}', { status: 404 });
+      }),
+    );
+
+    const cleanup = connectWorkspaceEvents('ws_test', {
+      getLastSeq: () => 0,
+      onEvent: () => undefined,
+      onStatus: () => undefined,
+    });
+    await waitUntil(() => vi.mocked(fetch).mock.calls.length === 2);
+    cleanup();
+    resolveTicket(jsonResponse({ mode: 'disabled' }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(MockWebSocket.sockets).toHaveLength(0);
   });
 });
 

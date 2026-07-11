@@ -104,11 +104,18 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   useEffect(() => {
     if (!activeState?.workspace.id) return;
     const generation = workspaceGeneration();
+    const isCurrentSubscription = () =>
+      useWorkbenchStore.getState().workspaceGeneration() === generation &&
+      useWorkbenchStore.getState().state?.workspace.id === activeState.workspace.id;
     return connectWorkspaceEvents(activeState.workspace.id, {
       getLastSeq: () => useWorkbenchStore.getState().state?.eventSeq ?? 0,
       onEvent: (event) => applyEvent(event, generation),
-      onPresence: applyCanvasPresence,
-      onStatus: setConnection,
+      onPresence: (presence) => {
+        if (isCurrentSubscription()) applyCanvasPresence(presence);
+      },
+      onStatus: (status) => {
+        if (isCurrentSubscription()) setConnection(status);
+      },
     });
   }, [
     activeState?.workspace.id,

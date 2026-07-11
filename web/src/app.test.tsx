@@ -676,6 +676,7 @@ describe('App', () => {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: expect.any(String),
+      signal: expect.any(AbortSignal),
     });
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(body).toMatchObject({
@@ -909,6 +910,7 @@ describe('App', () => {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ providerId: 'atlas' }),
+      signal: expect.any(AbortSignal),
     });
     expect(useWorkbenchStore.getState().state?.providers.selectedProvider).toBe('atlas');
   });
