@@ -87,16 +87,9 @@ pub(crate) async fn reject_output(
             .run_id
             .as_deref()
             .ok_or_else(|| ApiError::conflict("output is not attached to a run to rerun"))?;
-        let retry = state
-            .store
-            .create_retry_run(run_id, true)
-            .await
-            .map_err(ApiError::store)?;
-        // Reuse the self-repair cost gate: within budget it starts now,
-        // otherwise it waits in `waiting_confirmation` for the user.
         state
             .runner
-            .start_confirmed_run_within_budget(&retry.id)
+            .retry_rejected_run(run_id)
             .await
             .map_err(ApiError::run)?;
     }

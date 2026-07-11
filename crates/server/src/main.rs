@@ -8,6 +8,8 @@ use serde_json::{Value, json};
 
 mod api_error;
 mod app_state;
+#[cfg(test)]
+mod artifact_retry_tests;
 mod artifact_routes;
 mod canvas_collaboration;
 mod canvas_ticket;

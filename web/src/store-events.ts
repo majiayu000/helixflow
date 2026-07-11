@@ -100,6 +100,7 @@ export function shouldRefetchWorkspaceState(
       event.run_id !== state.run.id ||
       event.ev === 'run.retry' ||
       event.ev === 'run.retry_pending' ||
+      event.ev === 'run.retry_failed' ||
       event.ev === 'run.succeeded' ||
       event.ev === 'run.failed' ||
       event.ev === 'run.interrupted')

@@ -5,7 +5,7 @@ use serde_json::json;
 
 use super::cost_types::CostSummary;
 use super::run_policy::{max_run_retries, run_requires_confirmation};
-use super::{RunInterrupt, RunResult, RunService, RunStatus};
+use super::{RunError, RunInterrupt, RunResult, RunService, RunStatus};
 
 impl<P> RunService<P>
 where
@@ -45,6 +45,7 @@ where
                 }
                 Ok(None) => break,
                 Err(err) => {
+                    self.emit_retry_failure(&workspace_id, &run_id, &err).await;
                     eprintln!("background run `{run_id}` self-heal failed: {err}");
                     break;
                 }
@@ -68,6 +69,86 @@ where
             self.start_confirmed_run(run_id).await?;
         }
         Ok(within_budget)
+    }
+
+    /// Derive a force-rerun child after an output is rejected and emit the
+    /// same observable retry events used by failure self-repair.
+    pub async fn retry_rejected_run(&self, parent_run_id: &str) -> RunResult<RunRecord> {
+        let parent = self.store.run(parent_run_id).await?;
+        let estimate = parent
+            .estimate_json
+            .as_deref()
+            .map(serde_json::from_str::<CostSummary>)
+            .transpose()?;
+        let requires_confirmation = estimate
+            .as_ref()
+            .map(run_requires_confirmation)
+            .unwrap_or(true);
+        let child = self.store.create_retry_run(parent_run_id, true).await?;
+        self.emit(
+            &parent.workspace_id,
+            &parent.id,
+            "run.retry",
+            json!({
+                "child_run_id": child.id,
+                "attempt": child.attempt,
+                "requires_confirmation": requires_confirmation,
+                "previous_error": parent.error_json,
+                "reason": "output_rejected",
+            }),
+        )
+        .await?;
+        if requires_confirmation {
+            self.emit(
+                &child.workspace_id,
+                &child.id,
+                "run.retry_pending",
+                json!({
+                    "parent_run_id": parent.id,
+                    "estimate": estimate,
+                    "reason": "output_rejected",
+                }),
+            )
+            .await?;
+        } else if let Err(err) = self.start_confirmed_run(&child.id).await {
+            self.emit_retry_failure(&child.workspace_id, &child.id, &err)
+                .await;
+            return Err(err);
+        }
+        Ok(child)
+    }
+
+    pub(crate) async fn continue_self_heal_from_failed(&self, run: &RunRecord) -> RunResult<()> {
+        match self
+            .prepare_retry(&run.workspace_id, &run.id, run.attempt)
+            .await
+        {
+            Ok(Some((next_run, next_plan, next_interrupt))) => {
+                self.run_with_self_heal(next_run, next_plan, next_interrupt)
+                    .await;
+                Ok(())
+            }
+            Ok(None) => Ok(()),
+            Err(err) => {
+                self.emit_retry_failure(&run.workspace_id, &run.id, &err)
+                    .await;
+                Err(err)
+            }
+        }
+    }
+
+    async fn emit_retry_failure(&self, workspace_id: &str, run_id: &str, err: &RunError) {
+        if let Err(emit_err) = self
+            .emit(
+                workspace_id,
+                run_id,
+                "run.retry_failed",
+                json!({ "error": err.to_string() }),
+            )
+            .await
+        {
+            eprintln!("run `{run_id}` failed to persist retry failure `{err}`: {emit_err}");
+        }
     }
 
     /// Decide whether the just-finished run should be retried. Returns the

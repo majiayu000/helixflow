@@ -109,11 +109,19 @@ where
             let plan = execution_plan_for_run(&run)?;
             let interrupt = self.interrupt_for_background_run(&run.id).await?;
             let result = self
-                .execute_created_run(&run, &run.workspace_id, &plan, interrupt, false)
+                .execute_created_run(&run, &run.workspace_id, &plan, interrupt, run.force_rerun)
                 .await;
             self.interrupts.lock().await.remove(&run.id);
             let outcome = self.outcome(&run.id).await?;
-            if result.is_err() || outcome.run.status == RunStatus::Interrupted.as_str() {
+            if result.is_err() {
+                if run.id == recommended_run_id {
+                    self.continue_self_heal_from_failed(&run).await?;
+                }
+                self.interrupt_queued_sweep_runs(&run_ids[(index + 1)..])
+                    .await?;
+                break;
+            }
+            if outcome.run.status == RunStatus::Interrupted.as_str() {
                 self.interrupt_queued_sweep_runs(&run_ids[(index + 1)..])
                     .await?;
                 break;

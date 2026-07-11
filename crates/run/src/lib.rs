@@ -20,6 +20,8 @@ mod error;
 mod executor;
 mod run_policy;
 mod self_heal;
+#[cfg(test)]
+mod self_heal_tests;
 mod sweep_background;
 
 use artifacts::default_artifact_root;

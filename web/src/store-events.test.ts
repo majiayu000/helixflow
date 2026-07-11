@@ -41,4 +41,17 @@ describe('run retry events', () => {
       }),
     ).toBe(true);
   });
+
+  it('refetches when retry infrastructure fails visibly', () => {
+    expect(
+      shouldRefetchWorkspaceState(state, {
+        workspace_id: 'ws_1',
+        run_id: 'run_parent',
+        seq: 6,
+        server_time: '2026-07-11T00:00:02Z',
+        ev: 'run.retry_failed',
+        data: { error: 'retry persistence failed' },
+      }),
+    ).toBe(true);
+  });
 });
