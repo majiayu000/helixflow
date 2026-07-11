@@ -89,6 +89,69 @@ describe('GraphCanvas view-mode integration', () => {
     expect(renderer.root.findByType(WorkflowNode).props.connectionDisabled).toBe(true);
   });
 
+  it('dispatches an edit-mode node move through the extracted drag controller', async () => {
+    renderer = await renderCanvas();
+    await act(async () => renderer?.root.findByType(GraphCanvasToolbar).props.setMode('edit'));
+    const workflowNode = renderer.root.findByType(WorkflowNode);
+    const start = pointerEvent();
+
+    await act(async () => {
+      workflowNode.props.onPointerDown(start);
+      workflowNode.props.onPointerMove({ ...start, clientX: 70, clientY: 50 });
+      workflowNode.props.onPointerUp({ ...start, clientX: 70, clientY: 50 });
+      await flushActions();
+    });
+
+    expect(onCreateProposal).toHaveBeenCalledWith(expect.objectContaining({
+      baseVersionId: 'ver_a',
+      ops: [expect.objectContaining({ id: 'video', op: 'move_node' })],
+    }));
+  });
+
+  it('keeps an edit-mode connection rejection visible through the extracted controller', async () => {
+    renderer = await renderCanvas();
+    await act(async () => renderer?.root.findByType(GraphCanvasToolbar).props.setMode('edit'));
+    class TestElement {}
+    vi.stubGlobal('HTMLElement', TestElement);
+    vi.stubGlobal('document', {
+      elementFromPoint: () => ({
+        closest: () => ({
+          dataset: {
+            portDirection: 'input',
+            portIndex: '0',
+            portName: 'video',
+            portNodeId: 'save',
+            portType: 'VIDEO',
+          },
+        }),
+      }),
+    });
+    onCreateProposal.mockRejectedValueOnce(new Error('connection failed'));
+    const workflowNode = renderer.root.findByType(WorkflowNode);
+    const event = pointerEvent();
+
+    await act(async () => {
+      workflowNode.props.onOutputPortPointerDown(
+        viewModeNode(),
+        { name: 'video', type: 'VIDEO' },
+        0,
+        event,
+      );
+    });
+    await act(async () => {
+      section().props.onPointerUp(event);
+      await flushActions();
+    });
+
+    expect(onCreateProposal).toHaveBeenCalledWith(expect.objectContaining({
+      baseVersionId: 'ver_a',
+      ops: [expect.objectContaining({ op: 'add_edge' })],
+    }));
+    expect(renderer.root.findByType(GraphCanvasToolbar).props.connectionStatus).toBe(
+      'connection failed',
+    );
+  });
+
   async function renderCanvas(): Promise<ReactTestRenderer> {
     let next!: ReactTestRenderer;
     await act(async () => {
