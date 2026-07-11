@@ -28,6 +28,7 @@ export class WorkspaceActionGuard {
       }
       return result;
     } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
       if (!this.requestScope.isActive(generation, workspaceId)) {
         this.fail(`workspace changed while ${label}`);
       }

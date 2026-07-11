@@ -183,11 +183,13 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const undoDisabled = busy || versionHistoryCount < 2;
   const showArtifactPreview = hasPreviewArtifact(activeState.outputs) && dirtyEditCount === 0;
 
-  const runAction = async (action: () => Promise<void>) => {
+  const runAction = async (action: () => Promise<void>, propagateError = false) => {
     setBusy(true);
     try {
       await action();
       await refreshWorkspaces();
+    } catch (error) {
+      if (propagateError) throw error;
     } finally {
       setBusy(false);
     }
@@ -223,6 +225,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
           );
         }
       })
+      .catch(() => undefined)
       .finally(() => setBusy(false));
   };
 
@@ -241,7 +244,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
         onProviderSelect={(providerId) => void runAction(() => selectProvider(providerId))}
         onQueue={() => {
           if (activeRun) {
-            void interruptRun();
+            void runAction(() => interruptRun());
           } else {
             void runAction(() => queueRun({ forceRerun }));
           }
@@ -275,10 +278,11 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
             onCommitEdits={() => runAction(() => commitManualEdits())}
             onDiscardEdits={discardManualEdits}
             onSend={(text) =>
-              runAction(() =>
-                sendMessage(text, {
+              runAction(
+                () => sendMessage(text, {
                   selection: { nodeIds: selectedCanvasNodeIds },
                 }),
+                true,
               )
             }
             pendingProposal={activeState.pendingProposal}
@@ -291,7 +295,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
             canvasGraph={canvasGraph}
             comments={canvas?.comments ?? []}
             onCreateProposal={(input) => runAction(() => appendManualEdit(input))}
-            onCommentOp={(input) => runAction(() => submitCanvasCommentOp(input))}
+            onCommentOp={(input) => runAction(() => submitCanvasCommentOp(input), true)}
             onPresenceChange={(presence) => void sendCanvasPresence(presence)}
             onQueueRun={() => {
               if (!queueDisabled) void runAction(() => queueRun({ forceRerun }));
