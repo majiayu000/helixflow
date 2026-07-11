@@ -494,9 +494,31 @@
   background: var(--red);
 }
 
+.node-flag.selected {
+  right: 10px;
+  top: 9px;
+  height: 18px;
+  border: 1px solid var(--accent-line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-soft) 74%, var(--surface));
+  color: var(--accent);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+}
+
 .p-sel {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--surface) 82%, var(--accent-soft));
+  box-shadow:
+    0 0 0 2px var(--accent),
+    0 0 0 7px color-mix(in srgb, var(--accent-soft) 72%, transparent),
+    0 18px 42px color-mix(in srgb, var(--accent) 18%, transparent),
+    var(--sh-md);
+}
+
+.p-sel .node-title {
+  border-bottom-color: var(--accent-line);
+  background: color-mix(in srgb, var(--surface-3) 68%, var(--accent-soft));
 }
 
 .p-active {
@@ -678,6 +700,72 @@
 
 .inspector {
   width: 260px;
+}
+
+.selection-actionbar {
+  position: absolute;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(580px, calc(100% - 28px));
+  border: 1px solid color-mix(in srgb, var(--accent-line) 68%, var(--border-2));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 95%, transparent);
+  box-shadow: 0 20px 52px rgb(0 0 0 / 38%);
+  padding: 7px 9px;
+  pointer-events: auto;
+  backdrop-filter: blur(16px);
+}
+
+.selection-summary-accessible {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.selection-count {
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.selection-categories {
+  max-width: 180px;
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.selection-actionbar button {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--surface-3);
+  color: var(--text-2);
+  padding: 0 9px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.selection-actionbar button:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .history-panel-pop {

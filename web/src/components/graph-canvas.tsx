@@ -607,7 +607,14 @@ export function GraphCanvas({
         />
       )}
       {selectedNodes.length > 1 && (
-        <GraphSelectionInspector nodes={selectedNodes} onClose={() => setSelectedIds(new Set())} />
+        <GraphSelectionInspector
+          nodes={selectedNodes}
+          onClose={() => setSelectedIds(new Set())}
+          onCopy={() => void editActions.copySelection(selectedNodes)}
+          onDelete={() => editActions.deleteSelection(selectedIds)}
+          view={view}
+          viewportSize={viewportSize}
+        />
       )}
       {selectedNodes.length === 1 && selectedNode && (
         <GraphInspector

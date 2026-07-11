@@ -108,6 +108,7 @@ export function WorkflowNode({
       {diffState === 'upd' && <span className="node-flag upd">~ 修改</span>}
       {cached && <span className="node-flag cache">缓存</span>}
       {failed && <span className="node-flag err">失败</span>}
+      {selected && <span className="node-flag selected">SELECTED</span>}
       <div className="node-title">
         <span className="swatch" />
         {node.title}

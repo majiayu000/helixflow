@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { Icon } from '../icons';
 import type { GraphNodeState, NodeDefinition, WorkflowGraph } from '../types';
+import { graphNodeHeight, graphNodeWidth, type ViewState, type ViewportSize } from './graph-canvas-navigation';
 import { categorySwatch } from './graph-canvas-rendering';
 
 type WorkflowNode = WorkflowGraph['nodes'][string];
@@ -341,41 +343,74 @@ function randomSeed(): number {
 
 export function GraphSelectionInspector({
   nodes,
+  onCopy,
+  onDelete,
   onClose,
+  view,
+  viewportSize,
 }: {
   nodes: GraphNodeState[];
+  onCopy?: () => void;
+  onDelete?: () => void;
   onClose: () => void;
+  view?: ViewState;
+  viewportSize?: ViewportSize;
 }) {
   const categories = [...new Set(nodes.map((node) => node.category))].sort();
+  const style = selectionToolbarStyle(
+    nodes,
+    view ?? { x: 0, y: 0, z: 1 },
+    viewportSize ?? { width: 900, height: 640 },
+  );
   return (
-    <div className="inspector p-inspector" onClick={(event) => event.stopPropagation()}>
-      <div className="inspector-head">
-        <div className="kicker">多选 · {nodes.length} 个节点</div>
-        <div className="title">
-          <span />
-          Selection summary
-        </div>
-        <button className="p-close" onClick={onClose}>
-          x
-        </button>
-      </div>
-      <div className="inspector-body">
-        <div className="field">
-          <span className="field-label">categories</span>
-          <span className="field-input">{categories.join(', ')}</span>
-        </div>
-        <div className="selection-summary-list">
-          {nodes.map((node) => (
-            <div className="selection-summary-row" key={node.id}>
-              <span style={{ background: categorySwatch(node.category) }} />
-              <div>
-                <strong>{node.title}</strong>
-                <small>{node.id}</small>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
+    <div className="selection-actionbar" onClick={(event) => event.stopPropagation()} style={style}>
+      <span className="selection-summary-accessible">
+        多选 · {nodes.length} 个节点 · Selection summary · {nodes.map((node) => node.title).join(', ')}
+      </span>
+      <span className="selection-count">{nodes.length} selected</span>
+      <span className="selection-categories" title={categories.join(', ')}>
+        {categories.join(' · ')}
+      </span>
+      <button onClick={onCopy} type="button">
+        <Icon n="paperclip" s={13} />
+        复制
+      </button>
+      <button onClick={onDelete} type="button">
+        <Icon n="eraser" s={13} />
+        删除
+      </button>
+      <button onClick={onClose} type="button">
+        取消
+      </button>
     </div>
   );
+}
+
+function selectionToolbarStyle(
+  nodes: GraphNodeState[],
+  view: ViewState,
+  viewportSize: ViewportSize,
+): CSSProperties {
+  const bounds = nodes.reduce(
+    (current, node) => {
+      const left = node.position.x;
+      const top = node.position.y;
+      const right = left + graphNodeWidth(node);
+      const bottom = top + graphNodeHeight(node);
+      return {
+        minX: Math.min(current.minX, left),
+        minY: Math.min(current.minY, top),
+        maxX: Math.max(current.maxX, right),
+        maxY: Math.max(current.maxY, bottom),
+      };
+    },
+    { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity },
+  );
+  const x = (bounds.minX + (bounds.maxX - bounds.minX) / 2) * view.z + view.x;
+  const y = bounds.maxY * view.z + view.y + 14;
+  return {
+    left: Math.min(Math.max(14, x), viewportSize.width - 14),
+    top: Math.min(Math.max(108, y), viewportSize.height - 84),
+    transform: 'translateX(-50%)',
+  };
 }
