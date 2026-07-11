@@ -96,18 +96,9 @@ import type {
 } from './graph-canvas-types';
 import { NodeLibrary } from './node-library';
 
-export {
-  DEFAULT_GRAPH_VIEW,
-  GRAPH_CANVAS_VIEW_STORAGE_PREFIX,
-  clampZoom,
-  computeMinimapLayout,
-  loadGraphCanvasView,
-  minimapViewportRect,
-  normalizeView,
-  saveGraphCanvasView,
-  viewForMinimapPoint,
-  viewStorageKey,
-  zoomViewAtPoint,
+export { DEFAULT_GRAPH_VIEW, GRAPH_CANVAS_VIEW_STORAGE_PREFIX, clampZoom,
+  computeMinimapLayout, loadGraphCanvasView, minimapViewportRect, normalizeView,
+  saveGraphCanvasView, viewForMinimapPoint, viewStorageKey, zoomViewAtPoint,
 } from './graph-canvas-navigation';
 export type { MinimapLayout, ViewState, ViewportSize } from './graph-canvas-navigation';
 
@@ -249,6 +240,12 @@ export function GraphCanvas({
   }, [pendingProposal?.id, resetNodeResize, versionId]);
 
   useEffect(() => {
+    if (!capabilities.move) nodeDrag.current = null;
+    if (!capabilities.connect) setConnectionDrag(null);
+    if (!capabilities.resize) resetNodeResize();
+  }, [capabilities.connect, capabilities.move, capabilities.resize, resetNodeResize]);
+
+  useEffect(() => {
     onSelectionChange?.(selectedIdList);
   }, [onSelectionChange, selectedIdList]);
 
@@ -386,6 +383,7 @@ export function GraphCanvas({
     if (!current || current.pointerId !== event.pointerId) return false;
     releaseConnectionCapture(event);
     setConnectionDrag(null);
+    if (!capabilities.connect) return true;
     setConnectionStatus('连线已取消');
     return true;
   };
@@ -476,6 +474,10 @@ export function GraphCanvas({
   const handleNodePointerMove = (event: PointerEvent<HTMLDivElement>) => {
     const currentDrag = nodeDrag.current;
     if (!currentDrag || currentDrag.pointerId !== event.pointerId) return;
+    if (!capabilities.move) {
+      nodeDrag.current = null;
+      return;
+    }
     event.stopPropagation();
     const moved = moveNodeDrafts(currentDrag.starts, {
       x: (event.clientX - currentDrag.sx) / view.z,
@@ -487,6 +489,10 @@ export function GraphCanvas({
   const stopNodeDrag = (event: PointerEvent<HTMLDivElement>) => {
     const currentDrag = nodeDrag.current;
     if (!currentDrag || currentDrag.pointerId !== event.pointerId) return;
+    if (!capabilities.move) {
+      nodeDrag.current = null;
+      return;
+    }
     event.stopPropagation();
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
@@ -511,7 +517,7 @@ export function GraphCanvas({
   };
 
   const saveLayout = async () => {
-    if (!onSaveLayout || !hasDirtyLayout || pendingProposal || layoutSaving) return;
+    if (!capabilities.move || !onSaveLayout || !hasDirtyLayout || pendingProposal || layoutSaving) return;
     setLayoutSaving(true);
     try {
       await onSaveLayout(layoutUpdates);
@@ -618,6 +624,10 @@ export function GraphCanvas({
       onPointerMove={(event) => {
         setLocalCursor(worldPointFromClient(event.clientX, event.clientY));
         if (connectionDrag?.pointerId === event.pointerId) {
+          if (!capabilities.connect) {
+            setConnectionDrag(null);
+            return;
+          }
           event.preventDefault();
           event.stopPropagation();
           setConnectionDrag((current) =>
@@ -679,7 +689,7 @@ export function GraphCanvas({
         pendingProposal={Boolean(pendingProposal)}
         queueRunDisabled={queueRunDisabled}
         runStatusLabel={runStatusLabel(run.status)}
-        saveLayoutDisabled={layoutSaving || !onSaveLayout}
+        saveLayoutDisabled={!capabilities.move || layoutSaving || !onSaveLayout}
         setMode={setMode}
       />
       <div
