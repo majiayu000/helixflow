@@ -272,6 +272,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     const state = get().state;
     if (!state) return;
     const generation = requestScope.currentGeneration();
+    if (!requestScope.isActive(generation, state.workspace.id)) return;
     set((current) => ({
       presenceByActor: {
         ...current.presenceByActor,
@@ -289,6 +290,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     const state = get().state;
     if (!state) return;
     const generation = requestScope.currentGeneration();
+    if (!requestScope.isActive(generation, state.workspace.id)) return;
     try {
       const canvas = await submitCanvasCommentOpRequest(
         state.workspace.id,
@@ -579,6 +581,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
 
     const generation = requestScope.currentGeneration();
+    if (!requestScope.isActive(generation, state.workspace.id)) return;
     try {
       const next = await selectWorkspaceProvider(
         state.workspace.id,

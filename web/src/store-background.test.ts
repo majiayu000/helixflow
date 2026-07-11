@@ -277,6 +277,33 @@ describe('background run state reconciliation', () => {
     responses.resolve('ws_b', stateForWorkspace('ws_b'));
     await hydrateB;
   });
+
+  it('does not post presence, comments, or provider writes from stale visible state', async () => {
+    const responses = delayedSnapshotFetch();
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
+    const hydrateB = useWorkbenchStore.getState().hydrate('ws_b');
+
+    await useWorkbenchStore.getState().sendCanvasPresence({
+      actor: { actorId: 'actor_a', displayName: 'A' },
+      cursor: { x: 1, y: 2 },
+    });
+    await useWorkbenchStore.getState().submitCanvasCommentOp({
+      op: {
+        op: 'comment_add',
+        target: { kind: 'position', x: 1, y: 2 },
+        body: 'stale A',
+      },
+    });
+    await useWorkbenchStore.getState().selectProvider('atlas');
+    const urls = vi.mocked(fetch).mock.calls.map((call) => String(call[0]));
+    expect(urls).not.toContain('/api/workspaces/ws_a/canvas/presence');
+    expect(urls).not.toContain('/api/workspaces/ws_a/canvas/comments/ops');
+    expect(urls).not.toContain('/api/workspaces/ws_a/provider');
+    expect(useWorkbenchStore.getState().presenceByActor).toEqual({});
+
+    responses.resolve('ws_b', stateForWorkspace('ws_b'));
+    await hydrateB;
+  });
 });
 
 function stateForWorkspace(workspaceId: string): WorkbenchState {

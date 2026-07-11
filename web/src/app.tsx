@@ -103,6 +103,10 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   }, [initialWorkspaceId]);
 
   useEffect(() => {
+    setSelectedCanvasNodeIds([]);
+  }, [activeWorkspaceId, workspaceGeneration]);
+
+  useEffect(() => {
     if (!activeState?.workspace.id) return;
     if (activeWorkspaceId !== activeState.workspace.id) return;
     const generation = workspaceGeneration;
