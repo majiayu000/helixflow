@@ -36,7 +36,11 @@ import type {
   WorkflowGraph,
   WorkbenchState,
 } from './types';
-import { applyRunEvent, shouldRefetchWorkspaceState } from './store-events';
+import {
+  applyRunEvent,
+  preserveRetryNotices,
+  shouldRefetchWorkspaceState,
+} from './store-events';
 import {
   appendChatMessages,
   appendSystemError,
@@ -115,7 +119,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
             ? {
                 status: 'ready',
                 canvasStatus: 'ready',
-                state,
+                state: preserveRetryNotices(current.state, state),
                 canvas,
                 error: null,
                 canvasError: null,

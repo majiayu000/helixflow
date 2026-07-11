@@ -48,6 +48,25 @@ describe('background run state reconciliation', () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  it('keeps retry notices after the retry snapshot replaces the run', async () => {
+    mockSnapshotFetch(stateWithRun('run_child', 'running', 0));
+    useWorkbenchStore.getState().setInitialState(stateWithRun('run_parent', 'failed', 0));
+
+    useWorkbenchStore.getState().applyEvent({
+      ...runEvent('run_parent', 3, 'run.retry'),
+      data: {
+        child_run_id: 'run_child',
+        attempt: 1,
+        requires_confirmation: false,
+      },
+    });
+
+    await waitUntil(() => useWorkbenchStore.getState().state?.run?.id === 'run_child');
+    expect(useWorkbenchStore.getState().state?.chat.messages.at(-1)?.text).toContain(
+      'started automatically',
+    );
+  });
+
   it('refetches workspace state when the websocket reconnects', async () => {
     mockSnapshotFetch(stateWithRun('run_1', 'interrupted', 0));
     useWorkbenchStore.getState().setInitialState(stateWithRun('run_1', 'running', 0));

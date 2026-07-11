@@ -273,20 +273,7 @@ pub(crate) fn run_confirmation_threshold_config() -> Result<Option<String>, ApiE
 }
 
 pub(crate) fn parse_run_confirmation_threshold_usd(raw: Option<&str>) -> Result<f64, String> {
-    let Some(raw) = raw else {
-        return Ok(0.0);
-    };
-    let value = raw.parse::<f64>().map_err(|_| {
-        "HELIXFLOW_AGENT_RUN_CONFIRMATION_THRESHOLD_USD must be a finite non-negative number"
-            .to_owned()
-    })?;
-    if !value.is_finite() || value < 0.0 {
-        return Err(
-            "HELIXFLOW_AGENT_RUN_CONFIRMATION_THRESHOLD_USD must be a finite non-negative number"
-                .to_owned(),
-        );
-    }
-    Ok(value)
+    helixflow_run::parse_run_confirmation_threshold_usd(raw).map_err(|err| err.to_string())
 }
 fn format_cost(cost: &CostSummary) -> String {
     format!("{} {}", format_cost_amount(cost.amount), cost.currency)

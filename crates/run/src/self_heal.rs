@@ -59,12 +59,15 @@ where
     /// the same cost gate as self-repair so the two cannot drift.
     pub async fn start_confirmed_run_within_budget(&self, run_id: &str) -> RunResult<bool> {
         let run = self.store.run(run_id).await?;
-        let within_budget = run
+        let estimate = run
             .estimate_json
             .as_deref()
-            .and_then(|json| serde_json::from_str::<CostSummary>(json).ok())
-            .map(|estimate| !run_requires_confirmation(&estimate))
-            .unwrap_or(false);
+            .map(serde_json::from_str::<CostSummary>)
+            .transpose()?;
+        let within_budget = match estimate {
+            Some(estimate) => !run_requires_confirmation(&estimate)?,
+            None => false,
+        };
         if within_budget {
             self.start_confirmed_run(run_id).await?;
         }
@@ -80,10 +83,10 @@ where
             .as_deref()
             .map(serde_json::from_str::<CostSummary>)
             .transpose()?;
-        let requires_confirmation = estimate
-            .as_ref()
-            .map(run_requires_confirmation)
-            .unwrap_or(true);
+        let requires_confirmation = match estimate.as_ref() {
+            Some(estimate) => run_requires_confirmation(estimate)?,
+            None => true,
+        };
         let child = self.store.create_retry_run(parent_run_id, true).await?;
         self.emit(
             &parent.workspace_id,
@@ -174,8 +177,8 @@ where
         };
         let estimate: CostSummary = serde_json::from_str(estimate_json)?;
 
+        let requires_confirmation = run_requires_confirmation(&estimate)?;
         let child = self.store.create_retry_run(run_id, false).await?;
-        let requires_confirmation = run_requires_confirmation(&estimate);
         self.emit(
             workspace_id,
             run_id,

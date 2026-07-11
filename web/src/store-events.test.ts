@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { applyRunEvent, shouldRefetchWorkspaceState } from './store-events';
+import {
+  applyRunEvent,
+  preserveRetryNotices,
+  shouldRefetchWorkspaceState,
+} from './store-events';
 import type { WorkbenchState } from './types';
 
 const state = {
@@ -53,5 +57,25 @@ describe('run retry events', () => {
         data: { error: 'retry persistence failed' },
       }),
     ).toBe(true);
+  });
+
+  it('preserves event-derived retry notices after a server snapshot refresh', () => {
+    const withNotice = applyRunEvent(state, {
+      workspace_id: 'ws_1',
+      run_id: 'run_parent',
+      seq: 7,
+      server_time: '2026-07-11T00:00:03Z',
+      ev: 'run.retry',
+      data: { child_run_id: 'run_child', attempt: 1, requires_confirmation: false },
+    });
+    const snapshot = {
+      ...state,
+      run: { ...state.run, id: 'run_child' },
+      chat: { messages: [] },
+    } as unknown as WorkbenchState;
+
+    const merged = preserveRetryNotices(withNotice, snapshot);
+    expect(merged.chat.messages).toHaveLength(1);
+    expect(merged.chat.messages[0]?.text).toContain('started automatically');
   });
 });

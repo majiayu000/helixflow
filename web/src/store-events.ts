@@ -15,6 +15,14 @@ export function applyRunEvent(state: WorkbenchState, event: RunEventEnvelope): W
     return applyAgentStatusEvent(state, event);
   }
 
+  if (
+    event.ev === 'run.retry' ||
+    event.ev === 'run.retry_pending' ||
+    event.ev === 'run.retry_failed'
+  ) {
+    return applyRetryNotice(state, event);
+  }
+
   if (!state.run || event.run_id !== state.run.id || event.seq <= state.eventSeq) {
     return state;
   }
@@ -47,32 +55,6 @@ export function applyRunEvent(state: WorkbenchState, event: RunEventEnvelope): W
     };
   }
 
-  if (event.ev === 'run.retry') {
-    const childRunId = stringData(event, 'child_run_id');
-    const attempt = numberData(event, 'attempt');
-    const requiresConfirmation = booleanData(event, 'requires_confirmation');
-    const messageId = `run-retry-${childRunId ?? event.seq}`;
-    const message = {
-      id: messageId,
-      role: 'system' as const,
-      kind: 'run_requested' as const,
-      text: requiresConfirmation
-        ? `Retry ${attempt ?? ''} is waiting for cost confirmation.`.replace('  ', ' ')
-        : `Retry ${attempt ?? ''} started automatically.`.replace('  ', ' '),
-      time: event.server_time,
-    };
-    return {
-      ...state,
-      eventSeq: event.seq,
-      chat: {
-        ...state.chat,
-        messages: state.chat.messages.some((item) => item.id === messageId)
-          ? state.chat.messages
-          : [...state.chat.messages, message],
-      },
-    };
-  }
-
   const nextRunStatus = runStatusFromEvent(event.ev);
   if (nextRunStatus) {
     return {
@@ -87,6 +69,61 @@ export function applyRunEvent(state: WorkbenchState, event: RunEventEnvelope): W
   }
 
   return { ...state, eventSeq: event.seq };
+}
+
+export function preserveRetryNotices(
+  current: WorkbenchState,
+  snapshot: WorkbenchState,
+): WorkbenchState {
+  const existingIds = new Set(snapshot.chat.messages.map((message) => message.id));
+  const notices = current.chat.messages.filter(
+    (message) => message.id.startsWith('run-retry-') && !existingIds.has(message.id),
+  );
+  if (notices.length === 0) {
+    return snapshot;
+  }
+  return {
+    ...snapshot,
+    chat: {
+      ...snapshot.chat,
+      messages: [...snapshot.chat.messages, ...notices],
+    },
+  };
+}
+
+function applyRetryNotice(state: WorkbenchState, event: RunEventEnvelope): WorkbenchState {
+  const childRunId = stringData(event, 'child_run_id') ?? event.run_id;
+  const attempt = numberData(event, 'attempt');
+  const requiresConfirmation = booleanData(event, 'requires_confirmation');
+  const messageId = `run-retry-${event.ev}-${childRunId}-${event.seq}`;
+  let text: string;
+  if (event.ev === 'run.retry_failed') {
+    text = `Retry failed: ${stringData(event, 'error') ?? 'unknown retry error'}`;
+  } else if (event.ev === 'run.retry_pending' || requiresConfirmation) {
+    text = `Retry ${attempt ?? ''} is waiting for cost confirmation.`.replace('  ', ' ');
+  } else {
+    text = `Retry ${attempt ?? ''} started automatically.`.replace('  ', ' ');
+  }
+  if (state.chat.messages.some((item) => item.id === messageId)) {
+    return state;
+  }
+  return {
+    ...state,
+    eventSeq: Math.max(state.eventSeq, event.seq),
+    chat: {
+      ...state.chat,
+      messages: [
+        ...state.chat.messages,
+        {
+          id: messageId,
+          role: 'system',
+          kind: event.ev === 'run.retry_failed' ? 'run_failed' : 'run_requested',
+          text,
+          time: event.server_time,
+        },
+      ],
+    },
+  };
 }
 
 export function shouldRefetchWorkspaceState(
