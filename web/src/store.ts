@@ -57,7 +57,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
   const requestScope = new WorkspaceRequestScope();
   let snapshotRefresh: { generation: number; promise: Promise<void> } | null = null;
   let trailingSnapshotGeneration: number | null = null;
-  const actionGuard = new WorkspaceActionGuard(requestScope, (error) => set({ error }));
+  const actionGuard = new WorkspaceActionGuard(requestScope);
   const activateWorkspace = (workspaceId: string | null) => {
     const activation = requestScope.begin(workspaceId);
     snapshotRefresh = null;
@@ -269,6 +269,15 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     if (!state) {
       return;
     }
+    const request = {
+      workspaceId: state.workspace.id,
+      baseVersionId: state.workspace.versionId,
+      graph: workflowGraphFromState(state),
+    };
+    const generation = requestScope.currentGeneration();
+    if (!requestScope.isActive(generation, request.workspaceId)) {
+      throw new WorkspaceChangedError('workspace changed before the message could be sent');
+    }
     if (hasDirtyEdits(get().editSession)) {
       const message = '请先提交或放弃手动编辑后再发送 Agent 请求。';
       set((current) => ({
@@ -277,19 +286,6 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
           : current.state,
       }));
       throw new Error(message);
-    }
-    const request = {
-      workspaceId: state.workspace.id,
-      baseVersionId: state.workspace.versionId,
-      graph: workflowGraphFromState(state),
-    };
-    const generation = requestScope.currentGeneration();
-    if (!requestScope.isActive(generation, request.workspaceId)) {
-      const error = new Error('workspace changed before the message could be sent');
-      set((current) => ({
-        state: current.state ? appendSystemError(current.state, error.message) : current.state,
-      }));
-      throw error;
     }
 
     set({
@@ -363,6 +359,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     if (!state) {
       return;
     }
+    actionGuard.assertActive(state.workspace.id, 'queueing the run');
     if (hasDirtyEdits(get().editSession)) {
       set((current) => ({
         state: current.state
@@ -591,6 +588,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     if (!state) {
       return;
     }
+    actionGuard.assertActive(state.workspace.id, 'editing the workspace');
     if (state.pendingProposal) {
       const message = '请先应用或忽略待审核 proposal 后再编辑。';
       set((current) => ({
@@ -621,6 +619,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     if (!state || !hasDirtyEdits(editSession)) {
       return;
     }
+    actionGuard.assertActive(state.workspace.id, 'committing manual edits');
     if (editSession.baseVersionId !== state.workspace.versionId) {
       const message = '手动编辑基于旧版本，请刷新后重试。';
       set((current) => ({
@@ -653,6 +652,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     if (!state) {
       return;
     }
+    actionGuard.assertActive(state.workspace.id, 'confirming the run');
     const previousRun = state.run;
     const previousPendingConfirmation = state.pendingConfirmation;
 

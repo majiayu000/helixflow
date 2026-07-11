@@ -149,7 +149,7 @@ describe('background run state reconciliation', () => {
 
     expect(useWorkbenchStore.getState().state?.workspace.id).toBe('ws_b');
     expect(useWorkbenchStore.getState().state?.chat.messages).toHaveLength(0);
-    expect(useWorkbenchStore.getState().error).toContain('workspace changed');
+    expect(useWorkbenchStore.getState().error).toBeNull();
   });
 
   it('preserves the composer draft when the message request fails', async () => {
@@ -210,7 +210,7 @@ describe('background run state reconciliation', () => {
     await expect(sending).resolves.toBe('apply it');
     expect(useWorkbenchStore.getState().state?.workspace.id).toBe('ws_b');
     expect(useWorkbenchStore.getState().state?.chat.messages).toHaveLength(0);
-    expect(useWorkbenchStore.getState().error).toContain('workspace changed');
+    expect(useWorkbenchStore.getState().error).toBeNull();
   });
 
   it.each([
@@ -229,6 +229,7 @@ describe('background run state reconciliation', () => {
 
     await expect(action).rejects.toThrow('workspace changed');
     expect(useWorkbenchStore.getState().state).toEqual(workspaceB);
+    expect(useWorkbenchStore.getState().error).toBeNull();
   });
 
   it.each([
@@ -267,6 +268,7 @@ describe('background run state reconciliation', () => {
 
     await expect(action).rejects.toThrow('workspace changed');
     expect(useWorkbenchStore.getState().state).toEqual(workspaceB);
+    expect(useWorkbenchStore.getState().error).toBeNull();
   });
 
   it('does not append a stale A request failure to B', async () => {
@@ -284,6 +286,7 @@ describe('background run state reconciliation', () => {
     await expect(queueing).rejects.toThrow('workspace changed');
     expect(useWorkbenchStore.getState().state).toEqual(workspaceB);
     expect(useWorkbenchStore.getState().state?.chat.messages).toHaveLength(0);
+    expect(useWorkbenchStore.getState().error).toBeNull();
   });
 
   it('does not revive an old A action generation after A to B to A', async () => {
@@ -438,10 +441,8 @@ describe('background run state reconciliation', () => {
     expect(vi.mocked(fetch).mock.calls.map((call) => String(call[0]))).not.toContain(
       '/api/workspaces/ws_a/messages',
     );
-    expect(useWorkbenchStore.getState().state?.chat.messages.at(-1)).toMatchObject({
-      role: 'system',
-      kind: 'run_failed',
-    });
+    expect(useWorkbenchStore.getState().state?.chat.messages).toHaveLength(0);
+    expect(useWorkbenchStore.getState().error).toBeNull();
 
     responses.resolve('ws_b', stateForWorkspace('ws_b'));
     await hydrateB;
@@ -471,7 +472,7 @@ describe('background run state reconciliation', () => {
     expect(urls).not.toContain('/api/workspaces/ws_a/canvas/comments/ops');
     expect(urls).not.toContain('/api/workspaces/ws_a/provider');
     expect(useWorkbenchStore.getState().presenceByActor).toEqual({});
-    expect(useWorkbenchStore.getState().error).toContain('workspace changed');
+    expect(useWorkbenchStore.getState().error).toBeNull();
 
     responses.resolve('ws_b', stateForWorkspace('ws_b'));
     await hydrateB;
