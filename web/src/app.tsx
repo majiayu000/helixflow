@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { connectWorkspaceEvents, fetchWorkspaces } from './api';
+import { useEffect, useMemo, useState } from 'react';
+import { connectWorkspaceEvents } from './api';
 import { ArtifactStage, hasPreviewArtifact } from './components/artifact-stage';
 import { ChatPane } from './components/chat-pane';
 import { DirtyNavigationDialog } from './components/dirty-navigation-dialog';
@@ -7,19 +7,13 @@ import { GraphCanvas } from './components/graph-canvas';
 import { ManualProposalPanel } from './components/manual-proposal-panel';
 import { ConfirmModal, HistoryPanel, OutputsStrip, RunDock } from './components/run-panels';
 import { TopBar } from './components/top-bar';
-import {
-  planNavigationRequest,
-  resolveDirtyNavigation,
-  type DirtyNavigationDecision,
-  type PendingNavigation,
-} from './dirty-navigation';
 import { useWorkbenchStore } from './store';
 import {
   graphStateFromCanvasDocument,
   type ManualEditSession,
   type WorkbenchState,
-  type WorkspaceSummary,
 } from './types';
+import { useWorkbenchNavigation, workspaceIdFromUrl } from './use-workbench-navigation';
 import {
   buildSetParamEditInput,
   deriveQueueLockReason,
@@ -41,15 +35,8 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
     () => workspaceId ?? workspaceIdFromUrl(),
     [workspaceId],
   );
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(initialWorkspaceId);
-  const [busy, setBusy] = useState(false);
   const [forceRerun, setForceRerun] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [pendingNavigation, setPendingNavigation] = useState<PendingNavigation | null>(null);
-  const [navigationBusy, setNavigationBusy] = useState(false);
   const [selectedCanvasNodeIds, setSelectedCanvasNodeIds] = useState<string[]>([]);
-  const [workspaceList, setWorkspaceList] = useState<WorkspaceSummary[]>([]);
-  const [workspaceListError, setWorkspaceListError] = useState<string | null>(null);
   const status = useWorkbenchStore((store) => store.status);
   const error = useWorkbenchStore((store) => store.error);
   const connection = useWorkbenchStore((store) => store.connection);
@@ -87,17 +74,33 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const rejectOutput = useWorkbenchStore((store) => store.rejectOutput);
   const selectProvider = useWorkbenchStore((store) => store.selectProvider);
   const activeState = initialState ?? state;
-
-  const refreshWorkspaces = useCallback(async () => {
-    try {
-      setWorkspaceList(await fetchWorkspaces());
-      setWorkspaceListError(null);
-    } catch (error) {
-      setWorkspaceListError(
-        error instanceof Error ? error.message : 'workspace list request failed',
-      );
-    }
-  }, []);
+  const dirtyEditCount = editSession?.ops.length ?? 0;
+  const {
+    busy,
+    decideDirtyNavigation,
+    exportCurrentWorkflow,
+    historyOpen,
+    navigationBusy,
+    navigationLocked,
+    pendingNavigation,
+    refreshWorkspaces,
+    requestNavigation,
+    runAction,
+    selectedWorkspaceId,
+    setHistoryOpen,
+    workspaceList,
+    workspaceListError,
+  } = useWorkbenchNavigation({
+    activeState,
+    commitManualEdits,
+    createWorkspace: createWorkspaceAction,
+    dirtyEditCount,
+    discardManualEdits,
+    exportWorkflow,
+    initialWorkspaceId,
+    restoreVersion,
+    undoVersion,
+  });
 
   useEffect(() => {
     if (initialState) {
@@ -106,10 +109,6 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
     }
     void bootstrap(selectedWorkspaceId).then(refreshWorkspaces);
   }, [bootstrap, initialState, refreshWorkspaces, selectedWorkspaceId, setInitialState]);
-
-  useEffect(() => {
-    setSelectedWorkspaceId(initialWorkspaceId);
-  }, [initialWorkspaceId]);
 
   useEffect(() => {
     setSelectedCanvasNodeIds([]);
@@ -146,7 +145,6 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   }
 
   const previewState = previewWorkbenchStateWithManualEdits(activeState, editSession);
-  const dirtyEditCount = editSession?.ops.length ?? 0;
   const canvasGraph =
     dirtyEditCount === 0 && canvas && canvas.versionId === activeState.workspace.versionId
       ? graphStateFromCanvasDocument(canvas, activeState.graph)
@@ -189,99 +187,8 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   });
   const queueDisabled = queueLockReason.kind !== 'none';
   const versionHistoryCount = activeState.history.filter((item) => item.kind === 'version').length;
-  const navigationLocked = busy || navigationBusy || Boolean(pendingNavigation);
   const undoDisabled = navigationLocked || versionHistoryCount < 2;
   const showArtifactPreview = hasPreviewArtifact(activeState.outputs) && dirtyEditCount === 0;
-
-  const runAction = async (action: () => Promise<void>, propagateError = false) => {
-    setBusy(true);
-    try {
-      await action();
-      await refreshWorkspaces();
-    } catch (error) {
-      if (propagateError) throw error;
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const performNavigation = async (target: PendingNavigation) => {
-    if (target.kind === 'workspace') {
-      setHistoryOpen(false);
-      setSelectedWorkspaceId(target.workspaceId);
-      updateWorkspaceUrl(target.workspaceId);
-      return;
-    }
-    if (target.kind === 'undo') {
-      await runAction(() => undoVersion(), true);
-      return;
-    }
-    if (target.kind === 'restore') {
-      await runAction(() => restoreVersion(target.versionId), true);
-      return;
-    }
-    await runAction(
-      async () => {
-        await createWorkspaceAction();
-        const workspaceId = useWorkbenchStore.getState().state?.workspace.id;
-        if (!workspaceId) throw new Error('workspace create did not return an active workspace');
-        setHistoryOpen(false);
-        setSelectedWorkspaceId(workspaceId);
-        updateWorkspaceUrl(workspaceId);
-      },
-      true,
-    );
-  };
-
-  const requestNavigation = (target: PendingNavigation) => {
-    const plan = planNavigationRequest({
-      hasDirtyEdits: dirtyEditCount > 0,
-      isCurrentWorkspace:
-        target.kind === 'workspace' && target.workspaceId === activeState.workspace.id,
-      locked: navigationLocked,
-    });
-    if (plan === 'ignore') return;
-    if (plan === 'prompt') {
-      setPendingNavigation(target);
-      return;
-    }
-    void performNavigation(target).catch(() => undefined);
-  };
-
-  const decideDirtyNavigation = (decision: DirtyNavigationDecision) => {
-    const target = pendingNavigation;
-    if (!target || navigationBusy) return;
-    if (decision === 'cancel') {
-      setPendingNavigation(null);
-      return;
-    }
-    setNavigationBusy(true);
-    void resolveDirtyNavigation(decision, {
-      commit: () => runAction(() => commitManualEdits(), true),
-      discard: discardManualEdits,
-      isDirty: () => Boolean(useWorkbenchStore.getState().editSession?.ops.length),
-      navigate: () => performNavigation(target),
-    })
-      .then(() => setPendingNavigation(null))
-      .catch(() => undefined)
-      .finally(() => setNavigationBusy(false));
-  };
-
-  const exportCurrentWorkflow = () => {
-    if (!activeState?.workspace.versionId) return;
-    setBusy(true);
-    void exportWorkflow()
-      .then((graph) => {
-        if (graph) {
-          downloadWorkflowJson(
-            graph,
-            `${activeState.workspace.name}-${activeState.workspace.versionId}.json`,
-          );
-        }
-      })
-      .catch(() => undefined)
-      .finally(() => setBusy(false));
-  };
 
   return (
     <main className="wb">
@@ -468,39 +375,4 @@ function emptyRunSnapshot(): RunSnapshot {
       currency: 'USD',
     },
   };
-}
-
-function downloadWorkflowJson(graph: WorkbenchState['workflowGraph'], filename: string) {
-  if (!graph || typeof document === 'undefined') return;
-  const blob = new Blob([`${JSON.stringify(graph, null, 2)}\n`], {
-    type: 'application/json',
-  });
-  const link = document.createElement('a');
-  link.href = URL.createObjectURL(blob);
-  link.download = safeDownloadName(filename);
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(link.href);
-}
-
-function safeDownloadName(filename: string): string {
-  const sanitized = filename
-    .trim()
-    .replace(/\.json$/i, '')
-    .replace(/[^a-z0-9._-]+/gi, '-')
-    .replace(/^-+|-+$/g, '');
-  return `${sanitized || 'helixflow-workflow'}.json`;
-}
-
-function workspaceIdFromUrl(): string | null {
-  if (typeof window === 'undefined') return null;
-  return new URLSearchParams(window.location.search).get('workspace_id');
-}
-
-function updateWorkspaceUrl(workspaceId: string) {
-  if (typeof window === 'undefined') return;
-  const url = new URL(window.location.href);
-  url.searchParams.set('workspace_id', workspaceId);
-  window.history.pushState(null, '', url);
 }
