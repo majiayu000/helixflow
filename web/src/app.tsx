@@ -56,6 +56,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const setCanvasSelection = useWorkbenchStore((store) => store.setCanvasSelection);
   const applyCanvasPresence = useWorkbenchStore((store) => store.applyCanvasPresence);
   const applyEvent = useWorkbenchStore((store) => store.applyEvent);
+  const workspaceGeneration = useWorkbenchStore((store) => store.workspaceGeneration);
   const sendCanvasPresence = useWorkbenchStore((store) => store.sendCanvasPresence);
   const sendMessage = useWorkbenchStore((store) => store.sendMessage);
   const submitCanvasCommentOp = useWorkbenchStore((store) => store.submitCanvasCommentOp);
@@ -102,13 +103,20 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
 
   useEffect(() => {
     if (!activeState?.workspace.id) return;
+    const generation = workspaceGeneration();
     return connectWorkspaceEvents(activeState.workspace.id, {
       getLastSeq: () => useWorkbenchStore.getState().state?.eventSeq ?? 0,
-      onEvent: applyEvent,
+      onEvent: (event) => applyEvent(event, generation),
       onPresence: applyCanvasPresence,
       onStatus: setConnection,
     });
-  }, [activeState?.workspace.id, applyCanvasPresence, applyEvent, setConnection]);
+  }, [
+    activeState?.workspace.id,
+    applyCanvasPresence,
+    applyEvent,
+    setConnection,
+    workspaceGeneration,
+  ]);
 
   if (!activeState) {
     return <LoadingShell status={status} error={error} />;

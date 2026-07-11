@@ -31,7 +31,10 @@ describe('background run state reconciliation', () => {
     useWorkbenchStore.getState().applyEvent(runEvent('run_1', 2, 'run.succeeded'));
 
     await waitUntil(() => useWorkbenchStore.getState().state?.outputs.length === 1);
-    expect(fetch).toHaveBeenCalledWith('/api/workspaces/ws_test/state');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/workspaces/ws_test/state',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
     expect(useWorkbenchStore.getState().state?.run?.status).toBe('succeeded');
   });
 
@@ -74,9 +77,93 @@ describe('background run state reconciliation', () => {
     useWorkbenchStore.getState().setConnection('live');
 
     await waitUntil(() => useWorkbenchStore.getState().state?.run?.status === 'interrupted');
-    expect(fetch).toHaveBeenCalledWith('/api/workspaces/ws_test/state');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/workspaces/ws_test/state',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it('ignores a delayed workspace A snapshot after workspace B becomes active', async () => {
+    const responses = delayedSnapshotFetch();
+    const hydrateA = useWorkbenchStore.getState().hydrate('ws_a');
+    const hydrateB = useWorkbenchStore.getState().hydrate('ws_b');
+
+    responses.resolve('ws_b', stateForWorkspace('ws_b'));
+    await hydrateB;
+    responses.resolve('ws_a', stateForWorkspace('ws_a'));
+    await hydrateA;
+
+    expect(useWorkbenchStore.getState().state?.workspace.id).toBe('ws_b');
+  });
+
+  it('ignores a delayed workspace A message response after switching to B', async () => {
+    let resolveMessage!: (response: Response) => void;
+    const messageResponse = new Promise<Response>((resolve) => {
+      resolveMessage = resolve;
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => messageResponse),
+    );
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
+    const sending = useWorkbenchStore.getState().sendMessage('hello');
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_b'));
+    resolveMessage(
+      jsonResponse({
+        turnMode: 'chat',
+        messages: [
+          {
+            id: 'msg_late_a',
+            role: 'agent',
+            kind: 'chat',
+            text: 'late A response',
+            time: 'unix:1',
+          },
+        ],
+        proposal: null,
+      }),
+    );
+    await sending;
+
+    expect(useWorkbenchStore.getState().state?.workspace.id).toBe('ws_b');
+    expect(useWorkbenchStore.getState().state?.chat.messages).toHaveLength(0);
   });
 });
+
+function stateForWorkspace(workspaceId: string): WorkbenchState {
+  const state = stateWithRun(`run_${workspaceId}`, 'running', 0);
+  return {
+    ...state,
+    workspace: {
+      ...state.workspace,
+      id: workspaceId,
+      versionId: `ver_${workspaceId}`,
+    },
+  };
+}
+
+function delayedSnapshotFetch() {
+  const pending = new Map<string, Array<(response: Response) => void>>();
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      return new Promise<Response>((resolve) => {
+        const queue = pending.get(url) ?? [];
+        queue.push(resolve);
+        pending.set(url, queue);
+      });
+    }),
+  );
+  return {
+    resolve(workspaceId: string, state: WorkbenchState) {
+      const stateUrl = `/api/workspaces/${workspaceId}/state`;
+      const canvasUrl = `/api/workspaces/${workspaceId}/canvas`;
+      pending.get(stateUrl)?.shift()?.(jsonResponse(state));
+      pending.get(canvasUrl)?.shift()?.(jsonResponse(canvasForState(state)));
+    },
+  };
+}
 
 function stateWithRun(
   runId: string,

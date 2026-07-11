@@ -37,8 +37,13 @@ type EventHandlers = {
 
 const RECONNECT_DELAY_MS = 1000;
 
-export async function fetchWorkspaceState(workspaceId: string): Promise<WorkbenchState> {
-  const response = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/state`);
+export async function fetchWorkspaceState(
+  workspaceId: string,
+  signal?: AbortSignal,
+): Promise<WorkbenchState> {
+  const response = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/state`, {
+    signal,
+  });
   if (!response.ok) {
     throw new Error(`workspace state request failed: ${response.status}`);
   }
@@ -46,8 +51,13 @@ export async function fetchWorkspaceState(workspaceId: string): Promise<Workbenc
   return WorkbenchStateSchema.parse(await response.json());
 }
 
-export async function fetchWorkspaceCanvas(workspaceId: string): Promise<CanvasDocument> {
-  const response = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/canvas`);
+export async function fetchWorkspaceCanvas(
+  workspaceId: string,
+  signal?: AbortSignal,
+): Promise<CanvasDocument> {
+  const response = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/canvas`, {
+    signal,
+  });
   if (!response.ok) {
     throw new Error(`workspace canvas request failed: ${response.status}`);
   }
@@ -130,8 +140,8 @@ export async function sendCanvasPresence(
   }
 }
 
-export async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
-  const response = await fetch('/api/workspaces');
+export async function fetchWorkspaces(signal?: AbortSignal): Promise<WorkspaceSummary[]> {
+  const response = await fetch('/api/workspaces', { signal });
   if (!response.ok) {
     throw new Error(`workspace list request failed: ${response.status}`);
   }

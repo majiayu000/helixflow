@@ -590,7 +590,7 @@ describe('App', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
-        if (url === '/api/workspaces' && !init) {
+        if (url === '/api/workspaces' && !init?.method) {
           return jsonResponse([]);
         }
         if (url === '/api/workspaces' && init?.method === 'POST') {

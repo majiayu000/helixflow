@@ -55,6 +55,7 @@ import {
   appendManualEditInput,
   manualEditInputFromSession,
 } from './workbench-edit-session';
+import { isAbortError, WorkspaceRequestScope } from './workspace-request-scope';
 
 export { applyRunEvent } from './store-events';
 
@@ -84,7 +85,8 @@ type WorkbenchStore = {
   applyCanvasPresence: (presence: CanvasPresence) => void;
   sendCanvasPresence: (presence: CanvasPresence) => Promise<void>;
   submitCanvasCommentOp: (input: CanvasCommentOpInput) => Promise<void>;
-  applyEvent: (event: RunEventEnvelope) => void;
+  workspaceGeneration: () => number;
+  applyEvent: (event: RunEventEnvelope, generation?: number) => void;
   sendMessage: (text: string, canvasContext?: CanvasMessageContext) => Promise<void>;
   queueRun: (options?: QueueRunOptions) => Promise<void>;
   interruptRun: (runId?: string) => Promise<void>;
@@ -107,15 +109,17 @@ type WorkbenchStore = {
 };
 
 export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
-  let snapshotRefresh: Promise<void> | null = null;
+  const requestScope = new WorkspaceRequestScope();
+  let snapshotRefresh: { generation: number; promise: Promise<void> } | null = null;
   const refreshSnapshot = (workspaceId: string) => {
-    if (snapshotRefresh) {
-      return;
-    }
-    snapshotRefresh = fetchWorkspaceSnapshot(workspaceId)
+    const generation = requestScope.currentGeneration();
+    if (requestScope.currentWorkspaceId() !== workspaceId || requestScope.signal()?.aborted) return;
+    if (snapshotRefresh?.generation === generation) return;
+    const promise = fetchWorkspaceSnapshot(workspaceId, requestScope.signal())
       .then(({ state, canvas }) =>
         set((current) =>
-          current.state?.workspace.id === workspaceId
+          requestScope.isActive(generation, workspaceId) &&
+            current.state?.workspace.id === workspaceId
             ? {
                 status: 'ready',
                 canvasStatus: 'ready',
@@ -129,6 +133,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
         ),
       )
       .catch((error) => {
+        if (isAbortError(error) || !requestScope.isActive(generation, workspaceId)) return;
         const message =
           error instanceof Error ? error.message : 'workspace state request failed';
         set((current) =>
@@ -138,8 +143,9 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
         );
       })
       .finally(() => {
-        snapshotRefresh = null;
+        if (snapshotRefresh?.generation === generation) snapshotRefresh = null;
       });
+    snapshotRefresh = { generation, promise };
   };
 
   return {
@@ -160,36 +166,52 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       return;
     }
 
+    const activation = requestScope.begin(null);
+    snapshotRefresh = null;
     set({ status: 'loading', error: null });
     try {
-      const workspaces = await fetchWorkspaces();
+      const workspaces = await fetchWorkspaces(activation.signal);
       const workspace = workspaces[0] ?? (await createWorkspace());
-      const snapshot = await fetchWorkspaceSnapshot(workspace.id);
+      if (!requestScope.adopt(activation.generation, workspace.id)) return;
+      const snapshot = await fetchWorkspaceSnapshot(workspace.id, activation.signal);
+      if (!requestScope.isActive(activation.generation, workspace.id)) return;
       set(snapshotReady(snapshot));
     } catch (error) {
+      if (isAbortError(error) || !requestScope.isActive(activation.generation)) return;
       set(snapshotError(error, 'workspace bootstrap request failed'));
     }
   },
   hydrate: async (workspaceId) => {
+    const activation = requestScope.begin(workspaceId);
+    snapshotRefresh = null;
     set({ status: 'loading', canvasStatus: 'loading', error: null, canvasError: null });
     try {
-      const snapshot = await fetchWorkspaceSnapshot(workspaceId);
+      const snapshot = await fetchWorkspaceSnapshot(workspaceId, activation.signal);
+      if (!requestScope.isActive(activation.generation, workspaceId)) return;
       set(snapshotReady(snapshot));
     } catch (error) {
+      if (isAbortError(error) || !requestScope.isActive(activation.generation, workspaceId)) return;
       set(snapshotError(error, 'workspace state request failed'));
     }
   },
   createWorkspace: async () => {
+    const activation = requestScope.begin(null);
+    snapshotRefresh = null;
     set({ status: 'loading', canvasStatus: 'loading', error: null, canvasError: null });
     try {
       const workspace = await createWorkspace();
-      const snapshot = await fetchWorkspaceSnapshot(workspace.id);
+      if (!requestScope.adopt(activation.generation, workspace.id)) return;
+      const snapshot = await fetchWorkspaceSnapshot(workspace.id, activation.signal);
+      if (!requestScope.isActive(activation.generation, workspace.id)) return;
       set(snapshotReady(snapshot));
     } catch (error) {
+      if (isAbortError(error) || !requestScope.isActive(activation.generation)) return;
       set(snapshotError(error, 'workspace create request failed'));
     }
   },
-  setInitialState: (state) =>
+  setInitialState: (state) => {
+    requestScope.begin(state.workspace.id);
+    snapshotRefresh = null;
     set({
       status: 'ready',
       canvasStatus: 'idle',
@@ -198,7 +220,8 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       error: null,
       canvasError: null,
       editSession: null,
-    }),
+    });
+  },
   setConnection: (connection) => {
     set({ connection, canvasConnection: connection });
     const state = get().state;
@@ -269,6 +292,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       baseVersionId: state.workspace.versionId,
       graph: workflowGraphFromState(state),
     };
+    const generation = requestScope.currentGeneration();
 
     set({
       state: appendChatMessages(state, [
@@ -289,8 +313,10 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
         userMessage: trimmed,
         graph: request.graph,
       });
+      if (!requestScope.isActive(generation, request.workspaceId)) return;
       if (response.messages.some((message) => message.kind === 'proposal_applied')) {
-        const next = await fetchWorkspaceState(request.workspaceId);
+        const next = await fetchWorkspaceState(request.workspaceId, requestScope.signal());
+        if (!requestScope.isActive(generation, request.workspaceId)) return;
         set({ state: next, status: 'ready', error: null, editSession: null });
         return;
       }
@@ -298,6 +324,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
         state: current.state ? applyMessageResponse(current.state, response) : current.state,
       }));
     } catch (error) {
+      if (isAbortError(error) || !requestScope.isActive(generation, request.workspaceId)) return;
       const message = error instanceof Error ? error.message : 'workspace message request failed';
       set((current) => ({
         state: current.state
@@ -314,7 +341,9 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       }));
     }
   },
-  applyEvent: (event) => {
+  workspaceGeneration: () => requestScope.currentGeneration(),
+  applyEvent: (event, generation = requestScope.currentGeneration()) => {
+    if (!requestScope.isActive(generation, event.workspace_id)) return;
     const state = get().state;
     if (!state) {
       return;
@@ -707,10 +736,13 @@ function hasDirtyEdits(session: ManualEditSession | null): session is ManualEdit
   return Boolean(session && session.ops.length > 0);
 }
 
-async function fetchWorkspaceSnapshot(workspaceId: string): Promise<WorkspaceSnapshot> {
+async function fetchWorkspaceSnapshot(
+  workspaceId: string,
+  signal?: AbortSignal,
+): Promise<WorkspaceSnapshot> {
   const [state, canvas] = await Promise.all([
-    fetchWorkspaceState(workspaceId),
-    fetchWorkspaceCanvas(workspaceId),
+    fetchWorkspaceState(workspaceId, signal),
+    fetchWorkspaceCanvas(workspaceId, signal),
   ]);
   return { state, canvas };
 }
