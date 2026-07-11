@@ -630,6 +630,8 @@ export function GraphCanvas({
           onClose={() => setSelectedIds(new Set())}
           onRequestProposal={capabilities.move ? onRequestNodeProposal : undefined}
           onSetParam={capabilities.move ? onSetParam : undefined}
+          view={view}
+          viewportSize={viewportSize}
           workflowNode={selectedWorkflowNode}
         />
       )}

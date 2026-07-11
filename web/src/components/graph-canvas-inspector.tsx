@@ -18,6 +18,8 @@ type GraphInspectorProps = {
   onClose: () => void;
   onRequestProposal?: (nodeId: string) => Promise<void>;
   onSetParam?: (nodeId: string, key: string, value: unknown) => Promise<void>;
+  view?: ViewState;
+  viewportSize?: ViewportSize;
 };
 
 export function GraphInspector({
@@ -28,6 +30,8 @@ export function GraphInspector({
   onClose,
   onRequestProposal,
   onSetParam,
+  view,
+  viewportSize,
 }: GraphInspectorProps) {
   const paramObject = useMemo(() => paramsObject(workflowNode), [workflowNode]);
   const fields = useMemo(
@@ -79,8 +83,18 @@ export function GraphInspector({
     }
   };
 
+  const style = nodeInspectorStyle(
+    node,
+    view ?? { x: 0, y: 0, z: 1 },
+    viewportSize ?? { width: 900, height: 640 },
+  );
+
   return (
-    <div className="inspector p-inspector" onClick={(event) => event.stopPropagation()}>
+    <div
+      className="inspector p-inspector inspector-floating"
+      onClick={(event) => event.stopPropagation()}
+      style={style}
+    >
       <div className="inspector-head">
         <div className="kicker">选中节点 · {node.id}</div>
         <div className="title">
@@ -106,7 +120,9 @@ export function GraphInspector({
             className="inspector-agent-request"
             onClick={() => void onRequestProposal(node.id).catch(() => undefined)}
           >
-            Ask Agent for node proposal
+            <Icon n="spark" s={13} />
+            节点对话
+            <span className="selection-summary-accessible">Ask Agent for node proposal</span>
           </button>
         )}
         {fields.length === 0 && (
@@ -200,6 +216,13 @@ function InspectorParamField({
           />
         ) : kind === 'readonly' ? (
           <span className="field-input field-area">{displayParamValue(field.value)}</span>
+        ) : kind === 'text' && multilineParam(field.key, draft) ? (
+          <textarea
+            className="field-input inspector-control inspector-textarea"
+            disabled={disabled}
+            onChange={(event) => onChange(event.currentTarget.value)}
+            value={draft}
+          />
         ) : (
           <input
             className="field-input inspector-control"
@@ -341,6 +364,11 @@ function randomSeed(): number {
   return Math.floor(Math.random() * 1_000_000);
 }
 
+function multilineParam(key: string, draft: string): boolean {
+  const normalized = key.toLowerCase();
+  return normalized.includes('prompt') || normalized.includes('brief') || draft.length > 56;
+}
+
 export function GraphSelectionInspector({
   nodes,
   onCopy,
@@ -412,5 +440,26 @@ function selectionToolbarStyle(
     left: Math.min(Math.max(14, x), viewportSize.width - 14),
     top: Math.min(Math.max(108, y), viewportSize.height - 84),
     transform: 'translateX(-50%)',
+  };
+}
+
+function nodeInspectorStyle(
+  node: GraphNodeState,
+  view: ViewState,
+  viewportSize: ViewportSize,
+): CSSProperties {
+  const panelWidth = 320;
+  const gap = 18;
+  const nodeLeft = node.position.x * view.z + view.x;
+  const nodeTop = node.position.y * view.z + view.y;
+  const nodeRight = nodeLeft + graphNodeWidth(node) * view.z;
+  const rightSide = nodeRight + gap;
+  const leftSide = nodeLeft - panelWidth - gap;
+  const left = rightSide + panelWidth < viewportSize.width - 14 ? rightSide : leftSide;
+  const maxLeft = Math.max(14, viewportSize.width - panelWidth - 14);
+  const maxTop = Math.max(92, viewportSize.height - 420);
+  return {
+    left: Math.min(Math.max(14, left), maxLeft),
+    top: Math.min(Math.max(92, nodeTop), maxTop),
   };
 }
