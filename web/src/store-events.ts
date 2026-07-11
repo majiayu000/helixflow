@@ -47,6 +47,32 @@ export function applyRunEvent(state: WorkbenchState, event: RunEventEnvelope): W
     };
   }
 
+  if (event.ev === 'run.retry') {
+    const childRunId = stringData(event, 'child_run_id');
+    const attempt = numberData(event, 'attempt');
+    const requiresConfirmation = booleanData(event, 'requires_confirmation');
+    const messageId = `run-retry-${childRunId ?? event.seq}`;
+    const message = {
+      id: messageId,
+      role: 'system' as const,
+      kind: 'run_requested' as const,
+      text: requiresConfirmation
+        ? `Retry ${attempt ?? ''} is waiting for cost confirmation.`.replace('  ', ' ')
+        : `Retry ${attempt ?? ''} started automatically.`.replace('  ', ' '),
+      time: event.server_time,
+    };
+    return {
+      ...state,
+      eventSeq: event.seq,
+      chat: {
+        ...state.chat,
+        messages: state.chat.messages.some((item) => item.id === messageId)
+          ? state.chat.messages
+          : [...state.chat.messages, message],
+      },
+    };
+  }
+
   const nextRunStatus = runStatusFromEvent(event.ev);
   if (nextRunStatus) {
     return {
@@ -72,6 +98,8 @@ export function shouldRefetchWorkspaceState(
     !isAgentStatusEvent(event.ev) &&
     (!state.run ||
       event.run_id !== state.run.id ||
+      event.ev === 'run.retry' ||
+      event.ev === 'run.retry_pending' ||
       event.ev === 'run.succeeded' ||
       event.ev === 'run.failed' ||
       event.ev === 'run.interrupted')
@@ -160,6 +188,11 @@ function stringData(event: RunEventEnvelope, key: string): string | null {
 function booleanData(event: RunEventEnvelope, key: string): boolean {
   const value = event.data[key];
   return typeof value === 'boolean' ? value : false;
+}
+
+function numberData(event: RunEventEnvelope, key: string): number | null {
+  const value = event.data[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 function stepStateData(event: RunEventEnvelope, key: string): RunStepState | null {

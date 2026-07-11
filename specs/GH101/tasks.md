@@ -39,5 +39,5 @@ GH-101 (#101)
 
 - 本 spec 是**人工审批 gate**：批准并把 issue #101 置 `ready_to_implement` 后才开始实现。
 - 反转 GH91 非目标已在 tech.md 记录，实现时须在 docs 留痕。
-- 已实现的自动应用+成本闸门（77 测试通过）不在本 spec 改动范围，只在其上补两块。
-- issue #101 尚未创建；若创建后号不同，重命名 `specs/GH101/` 并同步文内 token。
+- 前置 GH102 的自动应用+成本闸门已由 PR #103 合并，不在本 spec 改动范围。
+- issue #101 已创建并处于 `ready_to_implement`。

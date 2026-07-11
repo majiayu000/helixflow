@@ -4,6 +4,7 @@
 -- error_json is preserved for audit (never overwritten).
 ALTER TABLE runs ADD COLUMN parent_run_id TEXT REFERENCES runs(id) ON DELETE SET NULL;
 ALTER TABLE runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE runs ADD COLUMN force_rerun INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX idx_runs_parent_run_id ON runs(parent_run_id);
 
 -- Artifact review state: outputs start pending and require accept/reject.

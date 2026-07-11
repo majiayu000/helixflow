@@ -15,6 +15,7 @@ mod artifacts;
 mod background;
 mod cache;
 mod cost_gate;
+mod cost_types;
 mod error;
 mod executor;
 mod run_policy;
@@ -22,7 +23,7 @@ mod self_heal;
 mod sweep_background;
 
 use artifacts::default_artifact_root;
-pub use cost_gate::{
+pub use cost_types::{
     AgentRunRequest, CostSummary, PendingRun, PendingSweep, SweepOutcome, SweepPlan, SweepVariant,
 };
 pub use error::{RunError, RunResult};

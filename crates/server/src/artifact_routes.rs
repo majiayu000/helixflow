@@ -71,9 +71,14 @@ pub(crate) async fn reject_output(
 ) -> Result<Json<Value>, ApiError> {
     let artifact = artifact_by_id(&state, &output_id).await?;
     latest_output_scope(&state, &artifact).await?;
+    let allowed_states: &[&str] = if request.rerun {
+        &["pending"]
+    } else {
+        &["pending", "rejected"]
+    };
     let updated = state
         .store
-        .set_artifact_review_state(&artifact.id, &["pending", "rejected"], "rejected")
+        .set_artifact_review_state(&artifact.id, allowed_states, "rejected")
         .await
         .map_err(ApiError::store)?
         .ok_or_else(|| ApiError::conflict("output cannot be rejected"))?;
@@ -84,7 +89,7 @@ pub(crate) async fn reject_output(
             .ok_or_else(|| ApiError::conflict("output is not attached to a run to rerun"))?;
         let retry = state
             .store
-            .create_retry_run(run_id)
+            .create_retry_run(run_id, true)
             .await
             .map_err(ApiError::store)?;
         // Reuse the self-repair cost gate: within budget it starts now,
@@ -387,19 +392,29 @@ mod tests {
     async fn accept_reject_transitions_review_state() {
         let (state, first_id, second_id, _dir) = state_with_two_latest_outputs().await;
         assert_eq!(
-            state.store.artifact(&first_id).await.expect("a").review_state,
+            state
+                .store
+                .artifact(&first_id)
+                .await
+                .expect("a")
+                .review_state,
             "pending"
         );
 
-        accept_output(Path(first_id.clone()), State(state.clone()))
+        let _ = accept_output(Path(first_id.clone()), State(state.clone()))
             .await
             .expect("accept");
         assert_eq!(
-            state.store.artifact(&first_id).await.expect("a").review_state,
+            state
+                .store
+                .artifact(&first_id)
+                .await
+                .expect("a")
+                .review_state,
             "accepted"
         );
 
-        reject_output(
+        let _ = reject_output(
             Path(second_id.clone()),
             State(state.clone()),
             axum::Json(RejectOutputRequest::default()),
@@ -420,7 +435,7 @@ mod tests {
     #[tokio::test]
     async fn accept_then_reject_returns_conflict() {
         let (state, first_id, _second_id, _dir) = state_with_two_latest_outputs().await;
-        accept_output(Path(first_id.clone()), State(state.clone()))
+        let _ = accept_output(Path(first_id.clone()), State(state.clone()))
             .await
             .expect("accept");
 
@@ -449,7 +464,7 @@ mod tests {
         let artifact = state.store.artifact(&first_id).await.expect("artifact");
         let parent_run_id = artifact.run_id.clone().expect("run id");
 
-        reject_output(
+        let _ = reject_output(
             Path(first_id.clone()),
             State(state.clone()),
             axum::Json(RejectOutputRequest { rerun: true }),
@@ -463,8 +478,22 @@ mod tests {
             .await
             .expect("latest")
             .expect("run");
-        assert_eq!(latest.parent_run_id.as_deref(), Some(parent_run_id.as_str()));
+        assert_eq!(
+            latest.parent_run_id.as_deref(),
+            Some(parent_run_id.as_str())
+        );
         assert_eq!(latest.attempt, 1);
+        assert!(latest.force_rerun);
+        assert!(latest.group_id.is_none());
+
+        let err = reject_output(
+            Path(first_id),
+            State(state),
+            axum::Json(RejectOutputRequest { rerun: true }),
+        )
+        .await
+        .expect_err("repeated reject must not derive another run");
+        assert_eq!(err.status, axum::http::StatusCode::CONFLICT);
     }
 
     async fn state_with_two_latest_outputs() -> (AppState, String, String, tempfile::TempDir) {

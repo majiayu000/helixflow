@@ -61,6 +61,7 @@ where
                 Err(err) => return Err(err.into()),
             };
             if source.workspace_id != workspace_id
+                || source.review_state == "rejected"
                 || !self.cached_artifact_available(&source).await?
             {
                 return Ok(None);

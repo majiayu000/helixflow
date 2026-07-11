@@ -3,7 +3,7 @@ use helixflow_graph::ExecutionPlan;
 use helixflow_store::RunRecord;
 use serde_json::json;
 
-use super::cost_gate::CostSummary;
+use super::cost_types::CostSummary;
 use super::run_policy::{max_run_retries, run_requires_confirmation};
 use super::{RunInterrupt, RunResult, RunService, RunStatus};
 
@@ -30,16 +30,8 @@ where
             let attempt = run.attempt;
 
             let result = self
-                .execute_created_run(&run, &workspace_id, &plan, interrupt, false)
+                .execute_created_run(&run, &workspace_id, &plan, interrupt, run.force_rerun)
                 .await;
-            match self.outcome(&run_id).await {
-                Ok(outcome) => {
-                    if let Err(err) = self.record_actual_costs(&outcome).await {
-                        eprintln!("background run `{run_id}` failed to record costs: {err}");
-                    }
-                }
-                Err(err) => eprintln!("background run `{run_id}` failed to load outcome: {err}"),
-            }
             if let Err(err) = result {
                 eprintln!("background run `{run_id}` failed: {err}");
             }
@@ -101,7 +93,7 @@ where
         };
         let estimate: CostSummary = serde_json::from_str(estimate_json)?;
 
-        let child = self.store.create_retry_run(run_id).await?;
+        let child = self.store.create_retry_run(run_id, false).await?;
         let requires_confirmation = run_requires_confirmation(&estimate);
         self.emit(
             workspace_id,
@@ -111,6 +103,7 @@ where
                 "child_run_id": child.id,
                 "attempt": child.attempt,
                 "requires_confirmation": requires_confirmation,
+                "previous_error": run.error_json,
             }),
         )
         .await?;

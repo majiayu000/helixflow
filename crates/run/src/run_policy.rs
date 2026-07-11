@@ -1,4 +1,4 @@
-use super::cost_gate::CostSummary;
+use super::cost_types::CostSummary;
 
 /// Reads `HELIXFLOW_AGENT_RUN_CONFIRMATION_THRESHOLD_USD` (default 0.0).
 pub fn run_confirmation_threshold_usd() -> f64 {

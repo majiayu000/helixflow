@@ -598,7 +598,10 @@ async fn self_heal_retries_failed_run_within_budget_and_bounded() {
 
     let retry = wait_for_retry_run(&store, &workspace_id).await;
     assert_eq!(retry.attempt, 1);
-    assert_eq!(retry.parent_run_id.as_deref(), Some(pending.run.id.as_str()));
+    assert_eq!(
+        retry.parent_run_id.as_deref(),
+        Some(pending.run.id.as_str())
+    );
 
     wait_for_run_status(&store, &retry.id, "failed").await;
 

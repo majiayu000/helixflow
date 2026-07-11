@@ -8,7 +8,7 @@ GH-101 (#101)
 
 ## 用户问题
 
-HelixFlow 的 AI 视频产线目标是「用户说需求 → agent 出图 → 自动跑 → 看结果」的顺滑主流程。当前已把 agent 提案从「审批制」改成「自动应用成新 version + 成本阈值闸门」（本地已实现，`workbench_message_proposals.rs` / `sweep_support.rs`，77 后端测试通过）。但这条主流程还差两块，导致体验断裂：
+HelixFlow 的 AI 视频产线目标是「用户说需求 → agent 出图 → 自动跑 → 看结果」的顺滑主流程。前置 GH102 已通过 PR #103 合并 agent 提案自动应用与成本阈值闸门（merge commit `4355a2a`）。但这条主流程还差两块，导致体验断裂：
 
 1. **run 执行失败后无任何自愈**——provider 调用失败 / step 失败时，run 直接标 `failed` 并 `return Err`（`crates/run/src/executor.rs:234-245`），后台 spawn 仅 `eprintln!`（`crates/run/src/cost_gate.rs:116`）。用户只能看到「失败」，得手动重来。
 2. **输出无法审查**——artifact 产生即终态，只有 `selected: bool`（`crates/store/src/run_records.rs:113`），没有「接受 / 打回」语义。自动应用+自动起跑后，用户失去了对最终产物的把关点。

@@ -69,19 +69,50 @@ async fn create_retry_run_derives_child_and_preserves_parent() {
         .update_run_status(&parent.id, "failed", Some(r#"{"error":"boom"}"#))
         .await
         .expect("fail parent");
+    sqlx::query("UPDATE runs SET trigger = 'sweep', group_id = 'group_old' WHERE id = ?")
+        .bind(&parent.id)
+        .execute(store.pool())
+        .await
+        .expect("mark sweep parent");
+    store
+        .create_cost_ledger(NewCostLedger {
+            workspace_id: &workspace_id,
+            run_id: Some(&parent.id),
+            run_step_id: None,
+            provider: "mock",
+            amount: 0.42,
+            currency: "USD",
+            estimated: true,
+        })
+        .await
+        .expect("parent estimate");
 
-    let retry = store.create_retry_run(&parent.id).await.expect("retry");
+    let retry = store
+        .create_retry_run(&parent.id, false)
+        .await
+        .expect("retry");
     assert_eq!(retry.parent_run_id.as_deref(), Some(parent.id.as_str()));
     assert_eq!(retry.attempt, 1);
     assert_eq!(retry.status, "waiting_confirmation");
     assert_eq!(retry.version_id, version_id);
     assert_eq!(retry.workspace_id, workspace_id);
+    assert_eq!(retry.trigger, "agent");
+    assert!(retry.group_id.is_none());
+    let retry_costs = store
+        .cost_ledger_for_run(&retry.id)
+        .await
+        .expect("retry costs");
+    assert_eq!(retry_costs.len(), 1);
+    assert_eq!(retry_costs[0].amount, 0.42);
 
     let reloaded = store.run(&parent.id).await.expect("parent preserved");
     assert_eq!(reloaded.status, "failed");
     assert_eq!(reloaded.error_json.as_deref(), Some(r#"{"error":"boom"}"#));
 
-    let retry2 = store.create_retry_run(&retry.id).await.expect("retry2");
+    let retry2 = store
+        .create_retry_run(&retry.id, false)
+        .await
+        .expect("retry2");
     assert_eq!(retry2.attempt, 2);
     assert_eq!(retry2.parent_run_id.as_deref(), Some(retry.id.as_str()));
 }

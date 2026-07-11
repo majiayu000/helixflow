@@ -21,7 +21,7 @@ GH-101 (#101)
 - 状态流转 store 方法 `update_run_status` / `update_run_status_if_current`：`crates/store/src/run_records.rs:206-264`。
 - **重试/自愈：当前零实现**（`crates/run/` 无 retry/self_heal/refeed 命中）。
 
-**成本闸门（已实现）**
+**成本闸门（前置 GH102 / PR #103 已合并）**
 - `requires_run_confirmation`：`crates/server/src/sweep_support.rs:185-193`；阈值 `run_confirmation_threshold_usd()`（env `HELIXFLOW_AGENT_RUN_CONFIRMATION_THRESHOLD_USD`，默认 0）`:195`。
 
 **Artifact / 输出**
@@ -39,7 +39,7 @@ GH-101 (#101)
 
 ### 一、失败自愈（run 执行失败后有界自动重跑）
 
-- **触发点**：`start_confirmed_run` 的后台 spawn（`cost_gate.rs:108-125`）中，`execute_created_run` 返回 `Err` 时，进入自愈循环，替换现有 `eprintln!`。
+- **触发点**：`start_confirmed_run` 的后台 spawn 中，`execute_created_run` 返回 `Err` 时进入自愈循环。
 - **策略（默认）**：**同图有界重跑**——针对 transient provider/step 失败，用同一 graph 派生新 run 重试。不做 agent 改图（那是备选，见下）。
 - **有界**：新增 env `HELIXFLOW_RUN_MAX_RETRIES`（默认 1，即失败后最多再试 1 次；0 = 关闭自愈）。解析仿 `run_confirmation_threshold_usd()`。
 - **成本闸门复用**：每次重跑前用现有 `requires_run_confirmation(&estimate)` 判定；超阈值则不自动重跑，run 挂 `waiting_confirmation`（不静默吞）。

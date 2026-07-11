@@ -129,6 +129,31 @@ async fn start_manual_run_returns_before_provider_finishes() {
 }
 
 #[tokio::test]
+async fn prepare_manual_run_persists_force_rerun_and_estimate() {
+    let (store, _dir) = open_background_store().await;
+    let (workspace_id, version_id) = background_workspace_version(&store).await;
+    let service = RunService::new(store.clone());
+
+    let pending = service
+        .prepare_manual_run(ManualRunRequest {
+            workspace_id,
+            version_id,
+            group_id: None,
+            label: "Manual cost gate".to_owned(),
+            provider: "mock".to_owned(),
+            graph: background_graph(),
+            force_rerun: true,
+        })
+        .await
+        .expect("prepare manual run");
+
+    assert_eq!(pending.run.status, "waiting_confirmation");
+    assert!(pending.run.force_rerun);
+    assert!(!pending.ledger.is_empty());
+    assert!(pending.ledger.iter().all(|entry| entry.estimated));
+}
+
+#[tokio::test]
 async fn start_confirmed_run_returns_before_provider_finishes() {
     let (store, _dir) = open_background_store().await;
     let (workspace_id, version_id) = background_workspace_version(&store).await;

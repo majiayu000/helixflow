@@ -73,6 +73,9 @@ pub struct RunRecord {
     /// Retry attempt index; 0 for the original run, 1+ for self-repair reruns.
     #[sqlx(default)]
     pub attempt: i64,
+    /// Bypass node cache for this run. Persisted across confirmation.
+    #[sqlx(default)]
+    pub force_rerun: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -161,9 +164,9 @@ impl Store {
             r#"
             INSERT INTO runs (
                 id, workspace_id, version_id, group_id, label, trigger, plan_json,
-                estimate_json, status, created_at
+                estimate_json, status, force_rerun, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)
             "#,
         )
         .bind(&id)
@@ -175,39 +178,7 @@ impl Store {
         .bind(input.plan_json)
         .bind(input.estimate_json)
         .bind(input.status)
-        .execute(self.pool())
-        .await?;
-
-        self.run(&id).await
-    }
-
-    /// Derive a fresh retry run from a failed run for failure self-repair.
-    /// Copies the parent's plan/estimate and starts in `waiting_confirmation`
-    /// so it can be auto-started (within budget) or confirmed by the user
-    /// (over budget). The parent run (and its `error_json`) is left untouched
-    /// for audit.
-    pub async fn create_retry_run(&self, parent_run_id: &str) -> StoreResult<RunRecord> {
-        let parent = self.run(parent_run_id).await?;
-        let id = new_id("run");
-        sqlx::query(
-            r#"
-            INSERT INTO runs (
-                id, workspace_id, version_id, group_id, label, trigger, plan_json,
-                estimate_json, status, parent_run_id, attempt, created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'waiting_confirmation', ?, ?, current_timestamp)
-            "#,
-        )
-        .bind(&id)
-        .bind(&parent.workspace_id)
-        .bind(&parent.version_id)
-        .bind(parent.group_id.as_deref())
-        .bind(&parent.label)
-        .bind(&parent.trigger)
-        .bind(parent.plan_json.as_deref())
-        .bind(parent.estimate_json.as_deref())
-        .bind(&parent.id)
-        .bind(parent.attempt + 1)
+        .bind(0_i64)
         .execute(self.pool())
         .await?;
 
@@ -219,7 +190,7 @@ impl Store {
             r#"
             SELECT id, workspace_id, version_id, group_id, label, trigger, plan_json,
                    estimate_json, status, error_json, started_at, ended_at, created_at,
-                   parent_run_id, attempt
+                   parent_run_id, attempt, force_rerun
             FROM runs
             WHERE id = ?
             "#,
@@ -234,7 +205,7 @@ impl Store {
             r#"
             SELECT id, workspace_id, version_id, group_id, label, trigger, plan_json,
                    estimate_json, status, error_json, started_at, ended_at, created_at,
-                   parent_run_id, attempt
+                   parent_run_id, attempt, force_rerun
             FROM runs
             WHERE workspace_id = ?
             ORDER BY created_at DESC, id DESC
@@ -244,6 +215,19 @@ impl Store {
         .bind(workspace_id)
         .fetch_optional(self.pool())
         .await?)
+    }
+
+    pub async fn set_run_force_rerun(
+        &self,
+        run_id: &str,
+        force_rerun: bool,
+    ) -> StoreResult<RunRecord> {
+        sqlx::query("UPDATE runs SET force_rerun = ? WHERE id = ?")
+            .bind(if force_rerun { 1_i64 } else { 0_i64 })
+            .bind(run_id)
+            .execute(self.pool())
+            .await?;
+        self.run(run_id).await
     }
 
     pub async fn update_run_status(
