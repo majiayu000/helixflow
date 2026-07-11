@@ -281,6 +281,11 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
         userMessage: trimmed,
         graph: request.graph,
       });
+      if (response.messages.some((message) => message.kind === 'proposal_applied')) {
+        const next = await fetchWorkspaceState(request.workspaceId);
+        set({ state: next, status: 'ready', error: null, editSession: null });
+        return;
+      }
       set((current) => ({
         state: current.state ? applyMessageResponse(current.state, response) : current.state,
       }));

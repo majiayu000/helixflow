@@ -7,7 +7,7 @@ Related work: PR #18 proposes the companion prompt design.
 
 ## 1. Decision
 
-Helixflow should use a chat-first agent runtime that designs and modifies workflow graphs through reviewed proposals, while actual execution is handled by backend-owned runtime providers and API connectors.
+Helixflow should use a chat-first agent runtime that designs and modifies workflow graphs through backend-validated version transactions, while actual execution is handled by backend-owned runtime providers and API connectors.
 
 The agent is always called for user turns, but the prompt mode controls whether it may use tools, read workflow context, write a graph proposal, ask a structured clarification, or request a backend-managed run.
 
@@ -24,9 +24,9 @@ Atlas must not be hardcoded as the product boundary. It can be the first real co
 1. Let users create workflows from chat in an empty workspace.
 2. Let users modify existing workflows through natural language.
 3. Keep ordinary chat fast and agent-backed without pointless tool calls.
-4. Keep user-approved external provider execution real, backend-mediated, and auditable.
+4. Keep external provider execution real, backend-mediated, cost-gated, and auditable.
 5. Keep prompt construction inspectable through section telemetry.
-6. Keep workflow graph changes reviewable through proposal diff cards.
+6. Keep workflow graph changes traceable through version history, rollback, and optional diff details.
 7. Keep tool/runtime logs visible only as nested evidence, not as primary chat content.
 8. Make the first Atlas integration a connector implementation, not a special-case prompt behavior.
 
@@ -52,9 +52,8 @@ Atlas must not be hardcoded as the product boundary. It can be the first real co
 3. Backend classifies the turn as `CreateWorkflow`.
 4. Agent receives graph, node catalog, workflow backend catalog, runtime provider catalog, API connector catalog, and output contract.
 5. Agent writes `out/proposal.json`.
-6. Backend validates the proposal and creates a pending proposal record.
-7. UI shows a chat reply with a proposal review card and graph preview.
-8. User applies or dismisses the proposal.
+6. Backend validates the proposal and atomically commits the applied proposal, immutable version, workspace current-version pointer, and `proposal_applied` message.
+7. UI refreshes to the new graph version and keeps rollback available in history.
 
 ### 4.2 Existing Workflow Modification
 
@@ -62,18 +61,23 @@ Atlas must not be hardcoded as the product boundary. It can be the first real co
 2. Backend classifies the turn as `ModifyWorkflow`.
 3. Agent receives current graph and catalogs.
 4. Agent writes the smallest valid proposal diff.
-5. Backend validates and previews the diff.
-6. UI renders the proposal card and graph diff.
+5. Backend validates and atomically applies the diff as a new immutable version; it does not create a run implicitly.
+6. UI refreshes the graph and leaves detailed diff evidence in history/debug surfaces.
 
 ### 4.3 Run Request
 
 1. User asks to run the workflow.
 2. Backend classifies the turn as `RunRequest`.
 3. Backend validates graph executability against runtime provider and API connector catalogs.
-4. If paid or external execution is required, backend creates a run confirmation request.
-5. User approves.
-6. Backend executes through runtime provider connectors.
+4. Backend estimates cost before execution.
+5. If the estimate exceeds `HELIXFLOW_AGENT_RUN_CONFIRMATION_THRESHOLD_USD`, backend creates a run confirmation request.
+6. If the estimate is within threshold, backend starts the run automatically.
 7. UI shows run status, node state, artifacts, and errors.
+
+The threshold defaults to `0` USD when unset. It must parse as a finite,
+non-negative number; an invalid configured value fails the request before a run
+record is created. Seed sweeps use the same policy against the group estimate.
+Both automatic and user-confirmed starts use the same run service entrypoints.
 
 ### 4.4 Ordinary Chat
 
@@ -524,7 +528,8 @@ Proposal rules:
 - backend validates node types, params, ports, and edges;
 - backend rejects unknown fields;
 - backend rejects stale `base_version_id`;
-- backend persists a preview graph before showing it.
+- backend writes proposal evidence and the applied graph before an atomic database transaction;
+- a failed transaction leaves no blocking pending proposal and does not change the workspace current version.
 
 ### 10.3 Clarification Form
 
@@ -549,21 +554,15 @@ Proposal rules:
 
 ```json
 {
-  "base_version_id": "ver_...",
-  "kind": "run",
-  "label": "Generate image",
-  "runtime_provider_id": "atlas",
-  "connector_id": "atlas_image",
-  "capability_id": "image.generate",
-  "graph_scope": "current",
-  "requires_confirmation": true,
+  "action": "request_confirmation",
   "summary": "Requests a backend-managed image generation run for the current graph."
 }
 ```
 
 The agent-written `out/run_request.json` is only a request. The backend validates
-the graph and catalog ids, estimates cost, creates the pending run, and owns
-execution or confirmation.
+the current graph and selected catalogs, estimates cost, and owns automatic
+execution or confirmation. The stable `request_confirmation` action name does
+not force a confirmation when the estimate is within the configured threshold.
 
 ## 11. Data Model Additions
 
@@ -646,7 +645,7 @@ GET /api/workspaces/{workspace_id}/state
 State should include:
 
 - current graph;
-- pending proposal;
+- pending proposal, when loading historical or non-Agent compatibility flows;
 - run status;
 - chat messages;
 - prompt debug availability;
@@ -682,7 +681,8 @@ UI rules:
 
 - user messages render as user chat bubbles;
 - assistant replies render as assistant chat bubbles;
-- pending proposals render as assistant proposal cards;
+- historical pending proposals render as assistant proposal cards;
+- new Agent proposals render as applied transactions and refresh the current version;
 - tool logs are nested under the assistant turn;
 - lifecycle events are hidden by default;
 - expected file writes are hidden by default;

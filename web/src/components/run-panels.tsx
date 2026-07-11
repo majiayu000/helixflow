@@ -108,7 +108,7 @@ export function ConfirmModal({ confirmation, busy, onApprove, onHold }: ConfirmM
           <span className="ic">
             <Icon n="warn" s={14} />
           </span>
-          Agent 请求运行生成
+          成本确认
         </div>
         <div className="confirm-list">
           <div className="confirm-item">
@@ -122,7 +122,7 @@ export function ConfirmModal({ confirmation, busy, onApprove, onHold }: ConfirmM
           <div className="confirm-item">
             <span className="k">费用估算</span>
             <span className="v">
-              {confirmation.cost.amount.toFixed(2)} {confirmation.cost.currency}
+              {formatCostAmount(confirmation.cost.amount)} {confirmation.cost.currency}
             </span>
           </div>
           {confirmation.runCount ? (
@@ -149,7 +149,7 @@ export function ConfirmModal({ confirmation, busy, onApprove, onHold }: ConfirmM
           ) : null}
           <div className="confirm-item">
             <span className="k">真实执行</span>
-            <span className="v">确认后才会调用运行服务</span>
+            <span className="v">超过阈值才需要确认，确认后调用运行服务</span>
           </div>
         </div>
         <div className="confirm-foot">
@@ -164,6 +164,12 @@ export function ConfirmModal({ confirmation, busy, onApprove, onHold }: ConfirmM
       </div>
     </div>
   );
+}
+
+function formatCostAmount(amount: number): string {
+  if (amount === 0 || Math.abs(amount) >= 0.01) return amount.toFixed(2);
+  if (Math.abs(amount) < 0.000001) return amount.toExponential(2);
+  return amount.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
 }
 
 export function HistoryPanel({

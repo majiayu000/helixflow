@@ -31,14 +31,17 @@ Status: companion validation and rollout plan for
 - runtime catalog exposes arbitrary provider ids;
 - Atlas connector works without special prompt code;
 - disabled connector is not exposed to agent;
-- missing credentials prevent run request approval;
-- cost gate blocks paid run until user approval;
+- missing credentials prevent provider execution;
+- ordinary Agent runs and seed sweeps auto-start at or below the configured threshold;
+- cost gate blocks over-threshold paid runs until user approval;
+- invalid threshold configuration fails before a run record is created;
 - backend rejects invented provider ids.
 
 ### 1.4 UI Tests
 
 - plain chat renders without tool group when no visible tools ran;
-- proposal renders as chat review card;
+- applied graph transaction refreshes the canvas and leaves rollback history;
+- historical pending proposal cards remain compatible;
 - lifecycle JSON is hidden by default;
 - prompt debug opens redacted section list;
 - selected node comment scopes modification to target node/subgraph.
@@ -64,7 +67,8 @@ Status: companion validation and rollout plan for
 
 - add capability grant model;
 - route provider execution through backend;
-- require confirmation for paid/external runs;
+- require confirmation only when estimated cost exceeds the configured threshold;
+- use the same confirmed-run entrypoints for automatic and approved starts;
 - log provider run evidence.
 
 ### Phase 4: Workflow Atoms
@@ -83,7 +87,7 @@ Status: companion validation and rollout plan for
 
 1. Empty workspace has no graph until chat creates one.
 2. Plain chat still calls the agent but does not read ctx or run shell.
-3. Workflow creation produces a validated pending proposal.
+3. Workflow creation produces a validated applied graph transaction.
 4. Workflow modification preserves existing graph unless change is required.
 5. ComfyUI is represented as workflow backend/adapter.
 6. Atlas is represented as runtime provider and/or API connector data.
@@ -91,4 +95,6 @@ Status: companion validation and rollout plan for
 8. User-approved external provider execution never uses unlabeled mock output.
 9. Provider execution never exposes credentials to the agent.
 10. Prompt sections are stored with redacted telemetry.
-11. UI shows chat first, proposals as cards, and logs as nested evidence.
+11. UI shows chat first, applied changes in history, rollback controls, and logs as nested evidence.
+12. Proposal apply conflicts leave no pending proposal and do not change current version.
+13. Invalid run-confirmation threshold configuration is visible and creates no run.

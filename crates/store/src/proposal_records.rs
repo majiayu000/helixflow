@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::{NewVersion, Store, StoreError, StoreResult, VersionRecord, new_id};
+use super::{MessageRecord, NewVersion, Store, StoreError, StoreResult, VersionRecord, new_id};
 
 #[derive(Debug, Clone)]
 pub struct NewProposal<'a> {
@@ -46,6 +46,20 @@ pub struct ApplyProposalVersionRecord<'a> {
     pub proposal_id: &'a str,
     pub expected_current_version_id: &'a str,
     pub version: NewVersion<'a>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AutoApplyProposalVersionRecord<'a> {
+    pub proposal: NewProposal<'a>,
+    pub version: NewVersion<'a>,
+    pub message_text: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct AutoApplyProposalVersionResult {
+    pub proposal: ProposalRecord,
+    pub version: VersionRecord,
+    pub message: MessageRecord,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, sqlx::FromRow)]
@@ -312,6 +326,161 @@ impl Store {
 
         tx.commit().await?;
         self.version(&version_id).await
+    }
+
+    pub async fn auto_apply_proposal_version(
+        &self,
+        input: AutoApplyProposalVersionRecord<'_>,
+    ) -> StoreResult<AutoApplyProposalVersionResult> {
+        let proposal_id = new_id("proposal");
+        let version_id = new_id("ver");
+        let message_id = new_id("msg");
+        let message_attachment_ids_json = format!(r#"{{"versionId":"{version_id}"}}"#);
+        if input.proposal.workspace_id != input.version.workspace_id {
+            return Err(StoreError::ProposalWorkspaceMismatch {
+                proposal_id,
+                workspace_id: input.version.workspace_id.to_owned(),
+            });
+        }
+        if input.version.parent_id != Some(input.proposal.base_version_id) {
+            return Err(StoreError::VersionConflict {
+                workspace_id: input.version.workspace_id.to_owned(),
+                expected_version_id: input.proposal.base_version_id.to_owned(),
+                actual_version_id: input.version.parent_id.map(str::to_owned),
+            });
+        }
+
+        let mut tx = self.pool().begin().await?;
+        sqlx::query(
+            r#"
+            INSERT INTO versions (
+                id, workspace_id, idx, label, source, graph_path, graph_hash, parent_id, created_at
+            )
+            VALUES (
+                ?, ?,
+                (SELECT COALESCE(MAX(idx), 0) + 1 FROM versions WHERE workspace_id = ?),
+                ?, ?, ?, ?, ?, current_timestamp
+            )
+            "#,
+        )
+        .bind(&version_id)
+        .bind(input.version.workspace_id)
+        .bind(input.version.workspace_id)
+        .bind(input.version.label)
+        .bind(input.version.source.as_str())
+        .bind(input.version.graph_path)
+        .bind(input.version.graph_hash)
+        .bind(input.version.parent_id)
+        .execute(&mut *tx)
+        .await?;
+
+        let current_update = sqlx::query(
+            r#"
+            UPDATE workspaces
+            SET cur_version_id = ?, updated_at = current_timestamp
+            WHERE id = ? AND cur_version_id = ?
+            "#,
+        )
+        .bind(&version_id)
+        .bind(input.version.workspace_id)
+        .bind(input.proposal.base_version_id)
+        .execute(&mut *tx)
+        .await?;
+        if current_update.rows_affected() != 1 {
+            let actual_version_id: Option<String> = sqlx::query_scalar(
+                r#"
+                SELECT cur_version_id
+                FROM workspaces
+                WHERE id = ?
+                "#,
+            )
+            .bind(input.version.workspace_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            return Err(StoreError::VersionConflict {
+                workspace_id: input.version.workspace_id.to_owned(),
+                expected_version_id: input.proposal.base_version_id.to_owned(),
+                actual_version_id,
+            });
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO messages (
+                id, workspace_id, role, text, kind, ref_id, attachment_ids_json, created_at
+            )
+            VALUES (?, ?, 'agent', ?, 'proposal_applied', ?, ?, current_timestamp)
+            "#,
+        )
+        .bind(&message_id)
+        .bind(input.proposal.workspace_id)
+        .bind(input.message_text)
+        .bind(&proposal_id)
+        .bind(&message_attachment_ids_json)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO proposals (
+                id, workspace_id, base_version_id, kind, title, summary,
+                ops_path, preview_graph_path, state, result_version_id, message_id,
+                created_at, resolved_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'applied', ?, ?, current_timestamp, current_timestamp)
+            "#,
+        )
+        .bind(&proposal_id)
+        .bind(input.proposal.workspace_id)
+        .bind(input.proposal.base_version_id)
+        .bind(input.proposal.kind)
+        .bind(input.proposal.title)
+        .bind(input.proposal.summary)
+        .bind(input.proposal.ops_path)
+        .bind(input.proposal.preview_graph_path)
+        .bind(&version_id)
+        .bind(&message_id)
+        .execute(&mut *tx)
+        .await?;
+
+        let proposal = sqlx::query_as::<_, ProposalRecord>(
+            r#"
+            SELECT id, workspace_id, base_version_id, kind, title, summary,
+                   ops_path, preview_graph_path, state, result_version_id, message_id,
+                   created_at, resolved_at
+            FROM proposals
+            WHERE id = ?
+            "#,
+        )
+        .bind(&proposal_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let version = sqlx::query_as::<_, VersionRecord>(
+            r#"
+            SELECT id, workspace_id, idx, label, source, graph_path, graph_hash, parent_id, created_at
+            FROM versions
+            WHERE id = ?
+            "#,
+        )
+        .bind(&version_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let message = sqlx::query_as::<_, MessageRecord>(
+            r#"
+            SELECT id, workspace_id, role, text, kind, ref_id, attachment_ids_json, created_at
+            FROM messages
+            WHERE id = ?
+            "#,
+        )
+        .bind(&message_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(AutoApplyProposalVersionResult {
+            proposal,
+            version,
+            message,
+        })
     }
 }
 

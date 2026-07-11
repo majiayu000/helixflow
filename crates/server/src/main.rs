@@ -30,6 +30,7 @@ mod version_routes;
 mod workbench_message;
 mod workbench_message_canvas;
 mod workbench_message_metadata;
+mod workbench_message_proposals;
 mod workbench_payload;
 mod workspace_canvas;
 mod workspace_events;

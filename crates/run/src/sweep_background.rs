@@ -113,7 +113,6 @@ where
                 .await;
             self.interrupts.lock().await.remove(&run.id);
             let outcome = self.outcome(&run.id).await?;
-            self.record_actual_costs(&outcome).await?;
             if result.is_err() || outcome.run.status == RunStatus::Interrupted.as_str() {
                 self.interrupt_queued_sweep_runs(&run_ids[(index + 1)..])
                     .await?;

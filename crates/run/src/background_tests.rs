@@ -164,6 +164,44 @@ async fn start_confirmed_run_returns_before_provider_finishes() {
 }
 
 #[tokio::test]
+async fn background_success_event_is_emitted_after_actual_cost_ledger() {
+    let (store, _dir) = open_background_store().await;
+    let (workspace_id, version_id) = background_workspace_version(&store).await;
+    let service = RunService::new(store.clone());
+    let mut events = service.events().subscribe();
+    let pending = service
+        .request_agent_run(AgentRunRequest {
+            workspace_id,
+            version_id,
+            group_id: None,
+            label: "Cost-before-success".to_owned(),
+            provider: "mock".to_owned(),
+            graph: background_graph(),
+        })
+        .await
+        .expect("request run");
+
+    service
+        .start_confirmed_run(&pending.run.id)
+        .await
+        .expect("start confirmed run");
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .expect("terminal event timeout")
+            .expect("run event");
+        if event.run_id == pending.run.id && event.ev == "run.succeeded" {
+            let ledger = store
+                .cost_ledger_for_run(&pending.run.id)
+                .await
+                .expect("cost ledger at success event");
+            assert!(ledger.iter().any(|entry| !entry.estimated));
+            break;
+        }
+    }
+}
+
+#[tokio::test]
 async fn start_confirmed_sweep_returns_queued_members_before_provider_finishes() {
     let (store, _dir) = open_background_store().await;
     let (workspace_id, version_id) = background_workspace_version(&store).await;

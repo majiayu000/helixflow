@@ -420,7 +420,11 @@ async fn agent_requested_run_waits_for_confirmation_and_records_costs() {
     while let Ok(event) = receiver.try_recv() {
         events.push(event);
     }
-    assert!(events.iter().any(|event| event.ev == "run.requested"));
+    let requested = events
+        .iter()
+        .find(|event| event.ev == "run.requested")
+        .expect("run.requested event");
+    assert_eq!(requested.data["requires_confirmation"], true);
     assert!(!events.iter().any(|event| event.ev == "run.started"));
 
     let outcome = service

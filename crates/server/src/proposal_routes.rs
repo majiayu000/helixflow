@@ -1,3 +1,4 @@
+#[cfg(test)]
 use std::path::PathBuf;
 
 use axum::{
@@ -15,6 +16,7 @@ use serde_json::{Value, json};
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
 use crate::graph_files::{read_graph_file, read_json_file, write_json_file};
+use crate::workbench_message_proposals::applied_graph_path;
 use crate::workbench_payload::proposal_kind_from_str;
 use crate::workspace_state::workspace_state_value;
 
@@ -175,14 +177,7 @@ async fn prepared_proposal(
     })
 }
 
-fn applied_graph_path(proposal: &ProposalRecord) -> PathBuf {
-    PathBuf::from("workspaces")
-        .join(&proposal.workspace_id)
-        .join("graphs")
-        .join(format!("{}.json", proposal.id))
-}
-
-fn graph_apply_error(err: GraphError) -> ApiError {
+pub(crate) fn graph_apply_error(err: GraphError) -> ApiError {
     match err {
         GraphError::ProposalSuperseded { .. } => ApiError::conflict(err.to_string()),
         _ => ApiError::bad_request(err.to_string()),
