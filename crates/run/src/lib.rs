@@ -30,8 +30,8 @@ pub use cost_types::{
 };
 pub use error::{RunError, RunResult};
 pub use run_policy::{
-    max_run_retries, parse_run_confirmation_threshold_usd, run_confirmation_threshold_usd,
-    run_requires_confirmation,
+    max_run_retries, parse_max_run_retries, parse_run_confirmation_threshold_usd,
+    run_confirmation_threshold_usd, run_requires_confirmation,
 };
 
 pub fn module_name() -> &'static str {
