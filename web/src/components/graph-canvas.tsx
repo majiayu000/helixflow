@@ -36,6 +36,7 @@ import {
   CanvasCommentsPanel,
 } from './graph-canvas-collaboration';
 import { outputsByCanvasNode } from './graph-canvas-artifacts';
+import { canvasCapabilities } from './graph-canvas-capabilities';
 import { createCanvasEditActions } from './graph-canvas-edit-actions';
 import { GraphEdges } from './graph-canvas-edges';
 import { GraphInspector, GraphSelectionInspector } from './graph-canvas-inspector';
@@ -95,18 +96,9 @@ import type {
 } from './graph-canvas-types';
 import { NodeLibrary } from './node-library';
 
-export {
-  DEFAULT_GRAPH_VIEW,
-  GRAPH_CANVAS_VIEW_STORAGE_PREFIX,
-  clampZoom,
-  computeMinimapLayout,
-  loadGraphCanvasView,
-  minimapViewportRect,
-  normalizeView,
-  saveGraphCanvasView,
-  viewForMinimapPoint,
-  viewStorageKey,
-  zoomViewAtPoint,
+export { DEFAULT_GRAPH_VIEW, GRAPH_CANVAS_VIEW_STORAGE_PREFIX, clampZoom,
+  computeMinimapLayout, loadGraphCanvasView, minimapViewportRect, normalizeView,
+  saveGraphCanvasView, viewForMinimapPoint, viewStorageKey, zoomViewAtPoint,
 } from './graph-canvas-navigation';
 export type { MinimapLayout, ViewState, ViewportSize } from './graph-canvas-navigation';
 
@@ -153,7 +145,8 @@ export function GraphCanvas({
   const sourceGraph = canvasGraph ?? graph;
   const drawGraph = pendingProposal?.previewGraph ?? sourceGraph;
   const activeMode = pendingProposal ? 'review' : mode;
-  const connectionDisabled = !onCreateProposal || activeMode === 'review';
+  const capabilities = canvasCapabilities(activeMode, Boolean(onCreateProposal));
+  const connectionDisabled = !capabilities.connect;
   const displayNodes = useMemo(
     () => applySizeDrafts(applyPositionDrafts(drawGraph.nodes, draftPositions), draftSizes),
     [drawGraph.nodes, draftPositions, draftSizes],
@@ -196,7 +189,7 @@ export function GraphCanvas({
     [displayNodes],
   );
   const editActions = createCanvasEditActions({
-    disabled: connectionDisabled,
+    capabilities,
     drawGraph,
     onCreateProposal,
     setClipboardStatus,
@@ -211,7 +204,7 @@ export function GraphCanvas({
     startNodeResize,
     stopNodeResize,
   } = useNodeResizeController({
-    connectionDisabled,
+    connectionDisabled: !capabilities.resize,
     onCreateProposal,
     pendingProposal: Boolean(pendingProposal),
     setConnectionStatus,
@@ -245,6 +238,12 @@ export function GraphCanvas({
     nodeDrag.current = null;
     resetNodeResize();
   }, [pendingProposal?.id, resetNodeResize, versionId]);
+
+  useEffect(() => {
+    if (!capabilities.move) { nodeDrag.current = null; setDraftPositions({}); }
+    if (!capabilities.connect) setConnectionDrag(null);
+    if (!capabilities.resize) { resetNodeResize(); setDraftSizes({}); }
+  }, [capabilities.connect, capabilities.move, capabilities.resize, resetNodeResize]);
 
   useEffect(() => {
     onSelectionChange?.(selectedIdList);
@@ -309,6 +308,7 @@ export function GraphCanvas({
   }, []);
 
   const handleWheel = (event: WheelEvent<HTMLElement>) => {
+    if (!capabilities.zoom) return;
     const target = event.target instanceof Element ? event.target : null;
     if (target?.closest('.canvas-toolbar,.zoom-ctl,.inspector,.canvas-minimap')) return;
     event.preventDefault();
@@ -356,7 +356,8 @@ export function GraphCanvas({
   };
 
   const shouldStartSelectionDrag = (event: PointerEvent<HTMLElement>) =>
-    activeMode === 'edit' || event.shiftKey || event.metaKey || event.ctrlKey;
+    capabilities.select &&
+    (activeMode === 'edit' || event.shiftKey || event.metaKey || event.ctrlKey);
 
   const startConnectionDrag = (
     node: GraphNodeState,
@@ -382,6 +383,7 @@ export function GraphCanvas({
     if (!current || current.pointerId !== event.pointerId) return false;
     releaseConnectionCapture(event);
     setConnectionDrag(null);
+    if (!capabilities.connect) return true;
     setConnectionStatus('连线已取消');
     return true;
   };
@@ -393,6 +395,7 @@ export function GraphCanvas({
     event.stopPropagation();
     releaseConnectionCapture(event);
     setConnectionDrag(null);
+    if (!capabilities.connect) return true;
 
     const target = portDropTargetFromPoint(event.clientX, event.clientY);
     if (!target || target.direction !== 'input') {
@@ -444,12 +447,12 @@ export function GraphCanvas({
   };
 
   const handleNodePointerDown = (node: GraphNodeState, event: PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || !capabilities.select) return;
     event.stopPropagation();
     const additive = event.shiftKey || event.metaKey || event.ctrlKey;
     const nextSelection = selectionForNodePointer(selectedIds, node.id, additive);
     setSelectedIds(nextSelection);
-    if (pendingProposal) return;
+    if (!capabilities.move) return;
 
     const starts = [...nextSelection]
       .map((nodeId) => nodeById.get(nodeId))
@@ -472,6 +475,10 @@ export function GraphCanvas({
   const handleNodePointerMove = (event: PointerEvent<HTMLDivElement>) => {
     const currentDrag = nodeDrag.current;
     if (!currentDrag || currentDrag.pointerId !== event.pointerId) return;
+    if (!capabilities.move) {
+      nodeDrag.current = null;
+      return;
+    }
     event.stopPropagation();
     const moved = moveNodeDrafts(currentDrag.starts, {
       x: (event.clientX - currentDrag.sx) / view.z,
@@ -483,6 +490,10 @@ export function GraphCanvas({
   const stopNodeDrag = (event: PointerEvent<HTMLDivElement>) => {
     const currentDrag = nodeDrag.current;
     if (!currentDrag || currentDrag.pointerId !== event.pointerId) return;
+    if (!capabilities.move) {
+      nodeDrag.current = null;
+      return;
+    }
     event.stopPropagation();
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
@@ -507,7 +518,7 @@ export function GraphCanvas({
   };
 
   const saveLayout = async () => {
-    if (!onSaveLayout || !hasDirtyLayout || pendingProposal || layoutSaving) return;
+    if (!capabilities.move || !onSaveLayout || !hasDirtyLayout || pendingProposal || layoutSaving) return;
     setLayoutSaving(true);
     try {
       await onSaveLayout(layoutUpdates);
@@ -602,6 +613,7 @@ export function GraphCanvas({
           drag.current = null;
           return;
         }
+        if (!capabilities.pan) return;
         drag.current = {
           pointerId: event.pointerId,
           sx: event.clientX,
@@ -613,6 +625,10 @@ export function GraphCanvas({
       onPointerMove={(event) => {
         setLocalCursor(worldPointFromClient(event.clientX, event.clientY));
         if (connectionDrag?.pointerId === event.pointerId) {
+          if (!capabilities.connect) {
+            setConnectionDrag(null);
+            return;
+          }
           event.preventDefault();
           event.stopPropagation();
           setConnectionDrag((current) =>
@@ -674,7 +690,7 @@ export function GraphCanvas({
         pendingProposal={Boolean(pendingProposal)}
         queueRunDisabled={queueRunDisabled}
         runStatusLabel={runStatusLabel(run.status)}
-        saveLayoutDisabled={layoutSaving || !onSaveLayout}
+        saveLayoutDisabled={!capabilities.move || layoutSaving || !onSaveLayout}
         setMode={setMode}
       />
       <div
@@ -719,7 +735,7 @@ export function GraphCanvas({
             node={node}
             artifactOutputs={outputsByNodeId.get(node.id) ?? []}
             portHighlights={portHighlights}
-            resizable={!connectionDisabled && !pendingProposal}
+            resizable={capabilities.resize}
             selected={selectedIds.has(node.id)}
             stepState={stepStateByNodeId.get(node.id) ?? node.status}
             onSelectOutput={onSelectOutput}
@@ -765,8 +781,8 @@ export function GraphCanvas({
           definition={definitionByType.get(selectedNode.nodeType)}
           node={selectedNode}
           onClose={() => setSelectedIds(new Set())}
-          onRequestProposal={pendingProposal ? undefined : onRequestNodeProposal}
-          onSetParam={pendingProposal ? undefined : onSetParam}
+          onRequestProposal={capabilities.move ? onRequestNodeProposal : undefined}
+          onSetParam={capabilities.move ? onSetParam : undefined}
           workflowNode={selectedWorkflowNode}
         />
       )}
@@ -774,7 +790,7 @@ export function GraphCanvas({
         comments={comments}
         edges={drawGraph.edges}
         nodes={displayNodes}
-        onCommentOp={pendingProposal ? undefined : onCommentOp}
+        onCommentOp={capabilities.move ? onCommentOp : undefined}
         selectedNodeId={selectedNodeId}
         view={view}
         viewportSize={viewportSize}

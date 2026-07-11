@@ -27,3 +27,8 @@ export async function waitUntil(predicate: () => boolean): Promise<void> {
   }
   throw new Error('condition was not met');
 }
+
+export async function flushActions(): Promise<void> {
+  await Promise.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}

@@ -75,6 +75,10 @@ export function useNodeResizeController({
     (event: PointerEvent<HTMLSpanElement>) => {
       const current = nodeResize.current;
       if (!current || current.pointerId !== event.pointerId) return;
+      if (connectionDisabled) {
+        nodeResize.current = null;
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       setDraftSizes((drafts) => ({
@@ -85,13 +89,17 @@ export function useNodeResizeController({
         }),
       }));
     },
-    [setDraftSizes, viewZoom],
+    [connectionDisabled, setDraftSizes, viewZoom],
   );
 
   const stopNodeResize = useCallback(
     (event: PointerEvent<HTMLSpanElement>) => {
       const current = nodeResize.current;
       if (!current || current.pointerId !== event.pointerId) return;
+      if (connectionDisabled) {
+        nodeResize.current = null;
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
@@ -117,7 +125,7 @@ export function useNodeResizeController({
       }
       nodeResize.current = null;
     },
-    [onCreateProposal, pendingProposal, setConnectionStatus, setDraftSizes, sourceNodes, versionId, viewZoom],
+    [connectionDisabled, onCreateProposal, pendingProposal, setConnectionStatus, setDraftSizes, sourceNodes, versionId, viewZoom],
   );
 
   return { handleNodeResizeMove, resetNodeResize, startNodeResize, stopNodeResize };

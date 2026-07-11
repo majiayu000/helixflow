@@ -628,7 +628,6 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       const message = '手动编辑基于旧版本，请刷新后重试。';
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
-        editSession: null,
       }));
       throw new Error(message);
     }

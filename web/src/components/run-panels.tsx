@@ -241,6 +241,7 @@ export function HistoryPanel({
               className={`workspace-history-row ${
                 workspace.id === currentWorkspaceId ? 'is-current' : ''
               }`}
+              disabled={busy || workspace.id === currentWorkspaceId}
               key={workspace.id}
               onClick={() => onOpenWorkspace(workspace.id)}
             >

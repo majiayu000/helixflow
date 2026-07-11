@@ -175,6 +175,29 @@ describe('manual edit session workbench flow', () => {
     expect(editSession?.ops).toHaveLength(2);
   });
 
+  it('preserves dirty ops when commit rejects a stale base version', async () => {
+    vi.stubGlobal('fetch', vi.fn());
+    useWorkbenchStore.getState().setInitialState(state);
+    const editSession = {
+      baseVersionId: 'ver_stale',
+      idempotencyKey: 'canvas_op_stale',
+      source: 'user' as const,
+      startedAt: '2026-07-11T00:00:00Z',
+      ops: [{ op: 'move_node' as const, id: 'video', pos: [620, 210] as [number, number] }],
+    };
+    useWorkbenchStore.setState({ editSession });
+
+    await expect(useWorkbenchStore.getState().commitManualEdits()).rejects.toThrow(
+      '手动编辑基于旧版本',
+    );
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(useWorkbenchStore.getState().editSession).toEqual(editSession);
+    expect(useWorkbenchStore.getState().state?.chat.messages.at(-1)?.text).toContain(
+      '手动编辑基于旧版本',
+    );
+  });
+
   it('discards manual edits without writing a new version', async () => {
     vi.stubGlobal('fetch', vi.fn());
     useWorkbenchStore.getState().setInitialState(state);

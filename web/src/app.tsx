@@ -2,10 +2,17 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { connectWorkspaceEvents, fetchWorkspaces } from './api';
 import { ArtifactStage, hasPreviewArtifact } from './components/artifact-stage';
 import { ChatPane } from './components/chat-pane';
+import { DirtyNavigationDialog } from './components/dirty-navigation-dialog';
 import { GraphCanvas } from './components/graph-canvas';
 import { ManualProposalPanel } from './components/manual-proposal-panel';
 import { ConfirmModal, HistoryPanel, OutputsStrip, RunDock } from './components/run-panels';
 import { TopBar } from './components/top-bar';
+import {
+  planNavigationRequest,
+  resolveDirtyNavigation,
+  type DirtyNavigationDecision,
+  type PendingNavigation,
+} from './dirty-navigation';
 import { useWorkbenchStore } from './store';
 import {
   graphStateFromCanvasDocument,
@@ -38,6 +45,8 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const [busy, setBusy] = useState(false);
   const [forceRerun, setForceRerun] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [pendingNavigation, setPendingNavigation] = useState<PendingNavigation | null>(null);
+  const [navigationBusy, setNavigationBusy] = useState(false);
   const [selectedCanvasNodeIds, setSelectedCanvasNodeIds] = useState<string[]>([]);
   const [workspaceList, setWorkspaceList] = useState<WorkspaceSummary[]>([]);
   const [workspaceListError, setWorkspaceListError] = useState<string | null>(null);
@@ -180,7 +189,8 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   });
   const queueDisabled = queueLockReason.kind !== 'none';
   const versionHistoryCount = activeState.history.filter((item) => item.kind === 'version').length;
-  const undoDisabled = busy || versionHistoryCount < 2;
+  const navigationLocked = busy || navigationBusy || Boolean(pendingNavigation);
+  const undoDisabled = navigationLocked || versionHistoryCount < 2;
   const showArtifactPreview = hasPreviewArtifact(activeState.outputs) && dirtyEditCount === 0;
 
   const runAction = async (action: () => Promise<void>, propagateError = false) => {
@@ -195,22 +205,66 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
     }
   };
 
-  const openWorkspace = (id: string) => {
-    setHistoryOpen(false);
-    setSelectedWorkspaceId(id);
-    updateWorkspaceUrl(id);
-  };
-
-  const createWorkspace = () => {
-    void runAction(async () => {
-      await createWorkspaceAction();
-      const workspaceId = useWorkbenchStore.getState().state?.workspace.id;
-      if (workspaceId) {
+  const performNavigation = async (target: PendingNavigation) => {
+    if (target.kind === 'workspace') {
+      setHistoryOpen(false);
+      setSelectedWorkspaceId(target.workspaceId);
+      updateWorkspaceUrl(target.workspaceId);
+      return;
+    }
+    if (target.kind === 'undo') {
+      await runAction(() => undoVersion(), true);
+      return;
+    }
+    if (target.kind === 'restore') {
+      await runAction(() => restoreVersion(target.versionId), true);
+      return;
+    }
+    await runAction(
+      async () => {
+        await createWorkspaceAction();
+        const workspaceId = useWorkbenchStore.getState().state?.workspace.id;
+        if (!workspaceId) throw new Error('workspace create did not return an active workspace');
         setHistoryOpen(false);
         setSelectedWorkspaceId(workspaceId);
         updateWorkspaceUrl(workspaceId);
-      }
+      },
+      true,
+    );
+  };
+
+  const requestNavigation = (target: PendingNavigation) => {
+    const plan = planNavigationRequest({
+      hasDirtyEdits: dirtyEditCount > 0,
+      isCurrentWorkspace:
+        target.kind === 'workspace' && target.workspaceId === activeState.workspace.id,
+      locked: navigationLocked,
     });
+    if (plan === 'ignore') return;
+    if (plan === 'prompt') {
+      setPendingNavigation(target);
+      return;
+    }
+    void performNavigation(target).catch(() => undefined);
+  };
+
+  const decideDirtyNavigation = (decision: DirtyNavigationDecision) => {
+    const target = pendingNavigation;
+    if (!target || navigationBusy) return;
+    if (decision === 'cancel') {
+      setPendingNavigation(null);
+      return;
+    }
+    setNavigationBusy(true);
+    void resolveDirtyNavigation(decision, {
+      commit: () => runAction(() => commitManualEdits(), true),
+      discard: discardManualEdits,
+      isDirty: () => Boolean(useWorkbenchStore.getState().editSession?.ops.length),
+      navigate: () => performNavigation(target),
+    })
+      .then(() => setPendingNavigation(null))
+      .catch(() => undefined)
+      .finally(() => setNavigationBusy(false));
   };
 
   const exportCurrentWorkflow = () => {
@@ -233,14 +287,14 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
     <main className="wb">
       <TopBar
         agentRunDisabled={queueDisabled}
-        busy={busy}
+        busy={navigationLocked}
         connection={connection}
         exportDisabled={busy || !activeState.workspace.versionId}
         historyOpen={historyOpen}
         onAgentRun={() => void runAction(() => sendMessage('运行当前 workflow'))}
         onExport={exportCurrentWorkflow}
         onHistory={() => setHistoryOpen((open) => !open)}
-        onNewWorkspace={createWorkspace}
+        onNewWorkspace={() => requestNavigation({ kind: 'create_workspace' })}
         onProviderSelect={(providerId) => void runAction(() => selectProvider(providerId))}
         onQueue={() => {
           if (activeRun) {
@@ -249,7 +303,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
             void runAction(() => queueRun({ forceRerun }));
           }
         }}
-        onUndo={() => void runAction(() => undoVersion())}
+        onUndo={() => requestNavigation({ kind: 'undo' })}
         runDisabled={activeRun ? false : queueDisabled}
         forceRerun={forceRerun}
         onForceRerunChange={setForceRerun}
@@ -262,7 +316,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
       <div className="wb-body">
         <div className="chat-column">
           <ChatPane
-            busy={busy}
+            busy={navigationLocked}
             messages={activeState.chat.messages}
             onApplyProposal={(id) => runAction(() => applyProposal(id))}
             onDismissProposal={(id) => runAction(() => dismissProposal(id))}
@@ -342,31 +396,31 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
             </div>
           )}
           <ManualProposalPanel
-            busy={busy}
+            busy={navigationLocked}
             state={previewState}
             onCreateProposal={(input) => runAction(() => appendManualEdit(input), true)}
           />
           <HistoryPanel
-            busy={busy}
+            busy={navigationLocked}
             history={activeState.history}
             currentWorkspaceId={activeState.workspace.id}
             currentVersionId={activeState.workspace.versionId}
             onClose={() => setHistoryOpen(false)}
-            onOpenWorkspace={openWorkspace}
-            onRestoreVersion={(id) => void runAction(() => restoreVersion(id))}
+            onOpenWorkspace={(workspaceId) => requestNavigation({ kind: 'workspace', workspaceId })}
+            onRestoreVersion={(versionId) => requestNavigation({ kind: 'restore', versionId })}
             open={historyOpen}
             workspaceListError={workspaceListError}
             workspaces={workspaceList}
           />
           <ConfirmModal
-            busy={busy}
+            busy={navigationLocked}
             confirmation={activeState.pendingConfirmation}
             onApprove={(id) => runAction(() => confirmRun(id))}
             onHold={(id) => runAction(() => holdRun(id))}
           />
           <RunDock run={uiState.run} />
           <OutputsStrip
-            busy={busy}
+            busy={navigationLocked}
             outputs={activeState.outputs}
             onSelect={(id) => void runAction(() => selectOutput(id))}
             onAccept={(id) => void runAction(() => acceptOutput(id))}
@@ -374,6 +428,11 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
           />
         </section>
       </div>
+      <DirtyNavigationDialog
+        busy={busy || navigationBusy}
+        target={pendingNavigation}
+        onDecision={decideDirtyNavigation}
+      />
     </main>
   );
 }

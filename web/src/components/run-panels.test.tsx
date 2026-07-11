@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { OutputsStrip } from './run-panels';
+import { HistoryPanel, OutputsStrip } from './run-panels';
 import type { WorkbenchState } from '../types';
 
 type Output = WorkbenchState['outputs'][number];
@@ -60,5 +60,29 @@ describe('OutputsStrip review controls', () => {
       />,
     );
     expect(markup).toContain('output-review-accept');
+  });
+});
+
+describe('HistoryPanel navigation lock', () => {
+  it('disables workspace navigation while a guarded action is pending', () => {
+    const markup = renderToStaticMarkup(
+      <HistoryPanel
+        busy
+        currentVersionId="ver_a"
+        currentWorkspaceId="ws_a"
+        history={[]}
+        onClose={noop}
+        onOpenWorkspace={noop}
+        onRestoreVersion={noop}
+        open
+        workspaceListError={null}
+        workspaces={[
+          { id: 'ws_a', name: 'A', versionId: 'ver_a', createdAt: '', updatedAt: 'unix:1', firstMessage: null, messageCount: 0 },
+          { id: 'ws_b', name: 'B', versionId: 'ver_b', createdAt: '', updatedAt: 'unix:2', firstMessage: null, messageCount: 0 },
+        ]}
+      />,
+    );
+
+    expect(markup.match(/class="workspace-history-row[^"]*" disabled=""/g)).toHaveLength(2);
   });
 });

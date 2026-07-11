@@ -6,6 +6,7 @@ import type {
   WorkflowGraph,
 } from '../types';
 import type { ViewState, ViewportSize } from './graph-canvas-navigation';
+import type { CanvasCapabilities } from './graph-canvas-capabilities';
 import {
   buildAddNodeProposalInput,
   buildDeleteNodesProposalInput,
@@ -15,7 +16,7 @@ import {
 import type { Point } from './graph-canvas-selection';
 
 type CanvasEditActionsInput = {
-  disabled: boolean;
+  capabilities: CanvasCapabilities;
   drawGraph: WorkbenchState['graph'];
   onCreateProposal?: (input: ManualProposalInput) => Promise<void>;
   setClipboardStatus: (value: string | null) => void;
@@ -32,7 +33,7 @@ export function createCanvasEditActions(input: CanvasEditActionsInput) {
   });
 
   const submit = (proposal: ManualProposalInput | null, success: string, failure: string) => {
-    if (!proposal || !input.onCreateProposal || input.disabled) return;
+    if (!proposal || !input.onCreateProposal) return;
     void input.onCreateProposal(proposal)
       .then(() => input.setClipboardStatus(success))
       .catch((error) => {
@@ -41,6 +42,10 @@ export function createCanvasEditActions(input: CanvasEditActionsInput) {
   };
 
   const addNode = (definition: NodeDefinition, position = viewportCenterWorld()) => {
+    if (!input.capabilities.paste) {
+      input.setClipboardStatus('当前模式不允许添加节点');
+      return;
+    }
     submit(
       buildAddNodeProposalInput({
         baseVersionId: input.versionId,
@@ -73,6 +78,10 @@ export function createCanvasEditActions(input: CanvasEditActionsInput) {
   };
 
   const pasteSelection = async () => {
+    if (!input.capabilities.paste) {
+      input.setClipboardStatus('当前模式不允许粘贴');
+      return;
+    }
     if (!navigator.clipboard?.readText) {
       input.setClipboardStatus('粘贴失败：浏览器不支持 clipboard');
       return;
@@ -95,6 +104,10 @@ export function createCanvasEditActions(input: CanvasEditActionsInput) {
   };
 
   const deleteSelection = (selectedNodeIds: Iterable<string>) => {
+    if (!input.capabilities.delete) {
+      input.setClipboardStatus('当前模式不允许删除');
+      return;
+    }
     const ids = [...selectedNodeIds];
     submit(
       buildDeleteNodesProposalInput({ baseVersionId: input.versionId, selectedNodeIds: ids }),
