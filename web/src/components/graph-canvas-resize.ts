@@ -110,7 +110,6 @@ export function useNodeResizeController({
             setConnectionStatus(`已加入编辑会话 · ${updates.length} 个 resize`);
           })
           .catch((error) => {
-            setDraftSizes({});
             setConnectionStatus(error instanceof Error ? error.message : '调整节点大小失败');
           });
       } else {

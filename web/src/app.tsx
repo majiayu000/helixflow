@@ -294,17 +294,18 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
             graph={previewState.graph}
             canvasGraph={canvasGraph}
             comments={canvas?.comments ?? []}
-            onCreateProposal={(input) => runAction(() => appendManualEdit(input))}
+            onCreateProposal={(input) => runAction(() => appendManualEdit(input), true)}
             onCommentOp={(input) => runAction(() => submitCanvasCommentOp(input), true)}
             onPresenceChange={(presence) => void sendCanvasPresence(presence)}
             onQueueRun={() => {
               if (!queueDisabled) void runAction(() => queueRun({ forceRerun }));
             }}
             onRequestNodeProposal={(nodeId) =>
-              runAction(() =>
-                sendMessage(`围绕选中节点 ${nodeId} 生成最小修改 proposal。`, {
+              runAction(
+                () => sendMessage(`围绕选中节点 ${nodeId} 生成最小修改 proposal。`, {
                   selection: { nodeIds: [nodeId] },
                 }),
+                true,
               )
             }
             onSelectionChange={(nodeIds) => {
@@ -312,16 +313,17 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
               setCanvasSelection(nodeIds);
             }}
             onSetParam={(nodeId, key, value) => {
-              return runAction(() =>
-                appendManualEdit(
-                  buildSetParamEditInput(
-                    activeState.workspace.versionId,
-                    previewState.workflowGraph,
-                    nodeId,
-                    key,
-                    value,
+              return runAction(
+                () => appendManualEdit(
+                    buildSetParamEditInput(
+                      activeState.workspace.versionId,
+                      previewState.workflowGraph,
+                      nodeId,
+                      key,
+                      value,
+                    ),
                   ),
-                ),
+                true,
               );
             }}
             onSelectOutput={(id) => void runAction(() => selectOutput(id))}
@@ -342,7 +344,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
           <ManualProposalPanel
             busy={busy}
             state={previewState}
-            onCreateProposal={(input) => runAction(() => appendManualEdit(input))}
+            onCreateProposal={(input) => runAction(() => appendManualEdit(input), true)}
           />
           <HistoryPanel
             busy={busy}
