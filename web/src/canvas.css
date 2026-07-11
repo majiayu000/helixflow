@@ -105,6 +105,103 @@
   pointer-events: none;
 }
 
+.canvas-guide-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.guide-pill {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  max-width: min(420px, calc(100% - 28px));
+  border-radius: 999px;
+  background: rgb(5 5 7 / 88%);
+  color: var(--text);
+  padding: 4px 12px 4px 5px;
+  box-shadow: 0 12px 30px rgb(0 0 0 / 34%);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.guide-pill b {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 2px solid color-mix(in srgb, var(--accent) 72%, #111);
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent-soft) 58%, transparent);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.guide-pill span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.guide-selection-frame {
+  position: absolute;
+  border: 1.5px dashed color-mix(in srgb, var(--accent) 84%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent-soft) 18%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-soft) 45%, transparent);
+}
+
+.guide-selection-count {
+  position: absolute;
+  left: 0;
+  bottom: -24px;
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  padding: 0 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.guide-drop-zone {
+  position: absolute;
+  width: 232px;
+  height: 76px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1.5px dashed color-mix(in srgb, var(--accent) 86%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent-soft) 28%, transparent);
+  box-shadow: 0 16px 34px rgb(0 0 0 / 24%);
+  color: var(--accent);
+}
+
+.guide-drop-zone strong {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.guide-drop-zone small {
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .canvas-grid {
   position: absolute;
   inset: 0;

@@ -43,7 +43,7 @@ import {
 import { CanvasMinimap } from './graph-canvas-minimap';
 import { WorkflowNode } from './graph-canvas-node';
 import { useCanvasNodeDragController } from './graph-canvas-node-drag-controller';
-import { EmptyCanvas, ZoomControls } from './graph-canvas-overlays';
+import { CanvasGuides, EmptyCanvas, ZoomControls } from './graph-canvas-overlays';
 import { GraphCanvasToolbar } from './graph-canvas-toolbar';
 import {
   buildComparableNodeMap,
@@ -590,6 +590,12 @@ export function GraphCanvas({
           presenceByActor={presenceByActor}
         />
       </div>
+      <CanvasGuides
+        nodes={displayNodes}
+        selectedNodes={selectedNodes}
+        view={view}
+        viewportSize={viewportSize}
+      />
       {nodeCount === 0 && <EmptyCanvas />}
       {selectionDrag && (
         <span
