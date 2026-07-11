@@ -203,6 +203,40 @@ describe('background run state reconciliation', () => {
     expect(useWorkbenchStore.getState().state?.workspace.id).toBe('ws_b');
     expect(useWorkbenchStore.getState().canvas).toBeNull();
   });
+
+  it('clears old presence and selection when a new workspace activates', () => {
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
+    useWorkbenchStore.getState().setCanvasSelection(['video']);
+    useWorkbenchStore.getState().applyCanvasPresence({
+      actor: { actorId: 'actor_a', displayName: 'A' },
+      selection: { nodeIds: ['video'], edgeIds: [] },
+    });
+
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_b'));
+
+    expect(useWorkbenchStore.getState().selectedCanvasNodeIds).toEqual([]);
+    expect(useWorkbenchStore.getState().presenceByActor).toEqual({});
+  });
+
+  it('ignores a delayed presence failure from the prior workspace', async () => {
+    let rejectPresence!: (error: Error) => void;
+    const presenceResponse = new Promise<Response>((_resolve, reject) => {
+      rejectPresence = reject;
+    });
+    vi.stubGlobal('fetch', vi.fn(() => presenceResponse));
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
+    useWorkbenchStore.setState({ canvasConnection: 'live' });
+    const sending = useWorkbenchStore.getState().sendCanvasPresence({
+      actor: { actorId: 'actor_a', displayName: 'A' },
+      cursor: { x: 1, y: 2 },
+    });
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_b'));
+    rejectPresence(new Error('late A failure'));
+    await sending;
+
+    expect(useWorkbenchStore.getState().canvasConnection).toBe('live');
+    expect(useWorkbenchStore.getState().presenceByActor).toEqual({});
+  });
 });
 
 function stateForWorkspace(workspaceId: string): WorkbenchState {

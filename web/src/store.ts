@@ -233,6 +233,8 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       error: null,
       canvasError: null,
       editSession: null,
+      selectedCanvasNodeIds: [],
+      presenceByActor: {},
     });
   },
   setConnection: (connection) => {
@@ -253,6 +255,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
   sendCanvasPresence: async (presence) => {
     const state = get().state;
     if (!state) return;
+    const generation = requestScope.currentGeneration();
     set((current) => ({
       presenceByActor: {
         ...current.presenceByActor,
@@ -260,8 +263,9 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       },
     }));
     try {
-      await sendCanvasPresenceRequest(state.workspace.id, presence);
-    } catch {
+      await sendCanvasPresenceRequest(state.workspace.id, presence, requestScope.signal());
+    } catch (error) {
+      if (isAbortError(error) || !requestScope.isActive(generation, state.workspace.id)) return;
       set({ canvasConnection: 'offline' });
     }
   },

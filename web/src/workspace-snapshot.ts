@@ -26,6 +26,8 @@ export function snapshotReady(snapshot: WorkspaceSnapshot) {
     error: null,
     canvasError: null,
     editSession: null,
+    selectedCanvasNodeIds: [],
+    presenceByActor: {},
   };
 }
 

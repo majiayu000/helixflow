@@ -134,6 +134,7 @@ export async function submitCanvasCommentOp(
 export async function sendCanvasPresence(
   workspaceId: string,
   input: CanvasPresence,
+  signal?: AbortSignal,
 ): Promise<void> {
   const response = await fetch(
     `/api/workspaces/${encodeURIComponent(workspaceId)}/canvas/presence`,
@@ -141,6 +142,7 @@ export async function sendCanvasPresence(
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(input),
+      signal,
     },
   );
   if (!response.ok) {
