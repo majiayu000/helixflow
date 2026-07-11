@@ -72,6 +72,8 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const undoVersion = useWorkbenchStore((store) => store.undoVersion);
   const restoreVersion = useWorkbenchStore((store) => store.restoreVersion);
   const selectOutput = useWorkbenchStore((store) => store.selectOutput);
+  const acceptOutput = useWorkbenchStore((store) => store.acceptOutput);
+  const rejectOutput = useWorkbenchStore((store) => store.rejectOutput);
   const selectProvider = useWorkbenchStore((store) => store.selectProvider);
   const activeState = initialState ?? state;
 
@@ -339,6 +341,8 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
             busy={busy}
             outputs={activeState.outputs}
             onSelect={(id) => void runAction(() => selectOutput(id))}
+            onAccept={(id) => void runAction(() => acceptOutput(id))}
+            onReject={(id, rerun) => void runAction(() => rejectOutput(id, rerun))}
           />
         </section>
       </div>

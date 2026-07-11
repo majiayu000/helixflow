@@ -15,15 +15,24 @@ mod artifacts;
 mod background;
 mod cache;
 mod cost_gate;
+mod cost_types;
 mod error;
 mod executor;
+mod run_policy;
+mod self_heal;
+#[cfg(test)]
+mod self_heal_tests;
 mod sweep_background;
 
 use artifacts::default_artifact_root;
-pub use cost_gate::{
+pub use cost_types::{
     AgentRunRequest, CostSummary, PendingRun, PendingSweep, SweepOutcome, SweepPlan, SweepVariant,
 };
 pub use error::{RunError, RunResult};
+pub use run_policy::{
+    max_run_retries, parse_run_confirmation_threshold_usd, run_confirmation_threshold_usd,
+    run_requires_confirmation,
+};
 
 pub fn module_name() -> &'static str {
     "run"

@@ -6,7 +6,8 @@ impl Store {
         let stale_runs = sqlx::query_as::<_, RunRecord>(
             r#"
             SELECT id, workspace_id, version_id, group_id, label, trigger, plan_json,
-                   estimate_json, status, error_json, started_at, ended_at, created_at
+                   estimate_json, status, error_json, started_at, ended_at, created_at,
+                   parent_run_id, attempt, force_rerun
             FROM runs
             WHERE status IN ('queued', 'estimating', 'running')
             ORDER BY created_at, id
@@ -46,7 +47,8 @@ impl Store {
                 sqlx::query_as::<_, RunRecord>(
                     r#"
                     SELECT id, workspace_id, version_id, group_id, label, trigger, plan_json,
-                           estimate_json, status, error_json, started_at, ended_at, created_at
+                           estimate_json, status, error_json, started_at, ended_at, created_at,
+                           parent_run_id, attempt, force_rerun
                     FROM runs
                     WHERE id = ?
                     "#,

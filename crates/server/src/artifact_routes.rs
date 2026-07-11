@@ -39,6 +39,65 @@ pub(crate) async fn select_output(
     ))
 }
 
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RejectOutputRequest {
+    #[serde(default)]
+    pub rerun: bool,
+}
+
+pub(crate) async fn accept_output(
+    Path(output_id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<Value>, ApiError> {
+    let artifact = artifact_by_id(&state, &output_id).await?;
+    // Only outputs from the latest run are reviewable.
+    latest_output_scope(&state, &artifact).await?;
+    let updated = state
+        .store
+        .set_artifact_review_state(&artifact.id, &["pending"], "accepted")
+        .await
+        .map_err(ApiError::store)?
+        .ok_or_else(|| ApiError::conflict("output is not pending review"))?;
+    Ok(Json(
+        workspace_state_value(&state, &updated.workspace_id).await?,
+    ))
+}
+
+pub(crate) async fn reject_output(
+    Path(output_id): Path<String>,
+    State(state): State<AppState>,
+    Json(request): Json<RejectOutputRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let artifact = artifact_by_id(&state, &output_id).await?;
+    latest_output_scope(&state, &artifact).await?;
+    let allowed_states: &[&str] = if request.rerun {
+        &["pending"]
+    } else {
+        &["pending", "rejected"]
+    };
+    let updated = state
+        .store
+        .set_artifact_review_state(&artifact.id, allowed_states, "rejected")
+        .await
+        .map_err(ApiError::store)?
+        .ok_or_else(|| ApiError::conflict("output cannot be rejected"))?;
+    if request.rerun {
+        let run_id = updated
+            .run_id
+            .as_deref()
+            .ok_or_else(|| ApiError::conflict("output is not attached to a run to rerun"))?;
+        state
+            .runner
+            .retry_rejected_run(run_id)
+            .await
+            .map_err(ApiError::run)?;
+    }
+    Ok(Json(
+        workspace_state_value(&state, &updated.workspace_id).await?,
+    ))
+}
+
 pub(crate) async fn preview_output(
     Path(output_id): Path<String>,
     State(state): State<AppState>,
@@ -320,6 +379,114 @@ mod tests {
             format!("/api/artifacts/{second_id}/content")
         );
         assert!(!download_json.to_string().contains("/Users/"));
+    }
+
+    #[tokio::test]
+    async fn accept_reject_transitions_review_state() {
+        let (state, first_id, second_id, _dir) = state_with_two_latest_outputs().await;
+        assert_eq!(
+            state
+                .store
+                .artifact(&first_id)
+                .await
+                .expect("a")
+                .review_state,
+            "pending"
+        );
+
+        let _ = accept_output(Path(first_id.clone()), State(state.clone()))
+            .await
+            .expect("accept");
+        assert_eq!(
+            state
+                .store
+                .artifact(&first_id)
+                .await
+                .expect("a")
+                .review_state,
+            "accepted"
+        );
+
+        let _ = reject_output(
+            Path(second_id.clone()),
+            State(state.clone()),
+            axum::Json(RejectOutputRequest::default()),
+        )
+        .await
+        .expect("reject");
+        assert_eq!(
+            state
+                .store
+                .artifact(&second_id)
+                .await
+                .expect("b")
+                .review_state,
+            "rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn accept_then_reject_returns_conflict() {
+        let (state, first_id, _second_id, _dir) = state_with_two_latest_outputs().await;
+        let _ = accept_output(Path(first_id.clone()), State(state.clone()))
+            .await
+            .expect("accept");
+
+        let err = reject_output(
+            Path(first_id.clone()),
+            State(state.clone()),
+            axum::Json(RejectOutputRequest::default()),
+        )
+        .await
+        .expect_err("accepted output is terminal");
+        assert_eq!(err.status, axum::http::StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn review_stale_run_returns_conflict() {
+        let (state, old_artifact_id, _dir) = state_with_old_and_latest_outputs().await;
+        let err = accept_output(Path(old_artifact_id), State(state))
+            .await
+            .expect_err("stale output is not reviewable");
+        assert_eq!(err.status, axum::http::StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn reject_with_rerun_derives_retry_run() {
+        let (state, first_id, _second_id, _dir) = state_with_two_latest_outputs().await;
+        let artifact = state.store.artifact(&first_id).await.expect("artifact");
+        let parent_run_id = artifact.run_id.clone().expect("run id");
+
+        let _ = reject_output(
+            Path(first_id.clone()),
+            State(state.clone()),
+            axum::Json(RejectOutputRequest { rerun: true }),
+        )
+        .await
+        .expect("reject with rerun");
+
+        let latest = state
+            .store
+            .latest_workspace_run(&artifact.workspace_id)
+            .await
+            .expect("latest")
+            .expect("run");
+        assert_eq!(
+            latest.parent_run_id.as_deref(),
+            Some(parent_run_id.as_str())
+        );
+        assert_eq!(latest.attempt, 1);
+        assert!(latest.force_rerun);
+        assert!(latest.group_id.is_none());
+
+        let err = reject_output(
+            Path(first_id),
+            State(state),
+            axum::Json(RejectOutputRequest { rerun: true }),
+        )
+        .await
+        .expect_err("repeated reject must not derive another run");
+        assert_eq!(err.status, axum::http::StatusCode::CONFLICT);
     }
 
     async fn state_with_two_latest_outputs() -> (AppState, String, String, tempfile::TempDir) {

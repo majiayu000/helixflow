@@ -11,10 +11,13 @@ use serde::{Deserialize, Serialize};
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
 use crate::graph_files::read_graph_file;
-use crate::sweep_support::interrupt_target_run;
+use crate::sweep_support::{
+    interrupt_target_run, parse_run_confirmation_threshold_usd, requires_run_confirmation,
+    run_confirmation_threshold_config,
+};
 use crate::workbench_payload::{
     OutputPayload, PendingConfirmationPayload, RunPayload, output_payload_from_artifact,
-    run_payload_from_outcome,
+    pending_confirmation_from_pending, run_payload_from_outcome, run_payload_from_pending,
 };
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
@@ -61,9 +64,12 @@ pub(crate) async fn queue_workspace_run(
     let graph = read_graph_file(&state.data_dir, &version.graph_path).await?;
     let force_rerun = body.map(|Json(body)| body.force_rerun).unwrap_or(false);
 
-    let outcome = state
+    let threshold =
+        parse_run_confirmation_threshold_usd(run_confirmation_threshold_config()?.as_deref())
+            .map_err(ApiError::server_error)?;
+    let pending = state
         .runner
-        .start_manual_run(ManualRunRequest {
+        .prepare_manual_run(ManualRunRequest {
             workspace_id,
             version_id,
             group_id: None,
@@ -72,6 +78,26 @@ pub(crate) async fn queue_workspace_run(
             graph,
             force_rerun,
         })
+        .await
+        .map_err(ApiError::run)?;
+    let requires_confirmation = requires_run_confirmation(&pending.estimate, threshold);
+    state
+        .runner
+        .announce_run_requested(&pending, requires_confirmation)
+        .await
+        .map_err(ApiError::run)?;
+
+    if requires_confirmation {
+        return Ok(Json(RunConfirmationResponse {
+            run: run_payload_from_pending(&pending),
+            outputs: Vec::new(),
+            pending_confirmation: Some(pending_confirmation_from_pending(&pending)),
+        }));
+    }
+
+    let outcome = state
+        .runner
+        .start_confirmed_run(&pending.run.id)
         .await
         .map_err(ApiError::run)?;
 
@@ -560,7 +586,7 @@ mod tests {
             .expect("queue response")
             .0;
 
-        assert_eq!(response.run.status, "queued");
+        assert_eq!(response.run.status, "running");
         assert_eq!(response.pending_confirmation, None);
         assert_eq!(response.run.steps.len(), 1);
         let run = wait_for_run_status(&state.store, &response.run.id, "succeeded").await;

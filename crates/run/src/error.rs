@@ -13,6 +13,7 @@ pub enum RunError {
     Store(StoreError),
     Json(serde_json::Error),
     ArtifactPersistence(String),
+    InvalidConfiguration(String),
     InvalidRunStatus {
         run_id: String,
         expected: &'static str,
@@ -48,6 +49,7 @@ impl fmt::Display for RunError {
             Self::ArtifactPersistence(message) => {
                 write!(f, "artifact persistence failed: {message}")
             }
+            Self::InvalidConfiguration(message) => write!(f, "invalid configuration: {message}"),
             Self::InvalidRunStatus {
                 run_id,
                 expected,

@@ -79,6 +79,35 @@ non-negative number; an invalid configured value fails the request before a run
 record is created. Seed sweeps use the same policy against the group estimate.
 Both automatic and user-confirmed starts use the same run service entrypoints.
 
+### 4.3.1 Failure Self-Repair (GH101)
+
+1. When a background run ends in `failed`, backend derives a retry run
+   (`runs.parent_run_id` / `runs.attempt`) so the failed run and its
+   `error_json` are preserved for audit.
+2. The retry is bounded by `HELIXFLOW_RUN_MAX_RETRIES` (default `1`;
+   `0` disables self-repair).
+3. Each retry reuses the same cost gate as the initial run: within
+   `HELIXFLOW_AGENT_RUN_CONFIRMATION_THRESHOLD_USD` it auto-starts, otherwise
+   it waits in `waiting_confirmation` for explicit user confirmation.
+4. Each retry emits a `run.retry` event; the failed run stays `failed` once the
+   attempt cap is reached (no silent degradation).
+
+### 4.3.2 Output Review (GH101)
+
+1. Every artifact starts with `review_state = pending` (historical artifacts
+   are backfilled to `accepted`).
+2. `POST /api/outputs/{id}/accept` marks an output `accepted` (terminal).
+3. `POST /api/outputs/{id}/reject` marks an output `rejected`; with body
+   `{ "rerun": true }` it derives a retry run through the shared cost gate.
+4. Only outputs from the latest run are reviewable; stale-run review returns
+   `409`.
+
+> Note: 4.3.1/4.3.2 intentionally supersede GH91's earlier non-goal of
+> "keep the existing cost gate and confirmation modal". Agent proposals now
+> auto-apply and cheap runs auto-start; the confirmation gate is retained only
+> above the cost threshold, and human control shifts to output review + version
+> rollback.
+
 ### 4.4 Ordinary Chat
 
 1. User asks "你是谁" or "这个工具能干嘛".

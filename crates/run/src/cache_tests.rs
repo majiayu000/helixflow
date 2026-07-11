@@ -180,6 +180,44 @@ async fn node_cache_reuses_clean_graph_without_provider_invokes() {
 }
 
 #[tokio::test]
+async fn rejected_cached_artifact_forces_provider_execution() {
+    let (store, _dir) = open_temp_store().await;
+    let (workspace_id, version_id) = workspace_version(&store).await;
+    let provider = CountingProvider::default();
+    let service = RunService::with_provider(store.clone(), provider.clone());
+    let first = service
+        .execute_manual_run(manual_request(
+            &workspace_id,
+            &version_id,
+            "mock",
+            executable_graph(),
+            false,
+        ))
+        .await
+        .expect("first run");
+    let first_count = provider.invoke_count();
+    for artifact in first.artifacts {
+        store
+            .set_artifact_review_state(&artifact.id, &["pending"], "rejected")
+            .await
+            .expect("reject cached artifact");
+    }
+
+    service
+        .execute_manual_run(manual_request(
+            &workspace_id,
+            &version_id,
+            "mock",
+            executable_graph(),
+            false,
+        ))
+        .await
+        .expect("rerun after rejection");
+
+    assert!(provider.invoke_count() > first_count);
+}
+
+#[tokio::test]
 async fn node_cache_reruns_terminal_dirty_subgraph_only() {
     let (store, _dir) = open_temp_store().await;
     let (workspace_id, version_id) = workspace_version(&store).await;

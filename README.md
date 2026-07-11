@@ -64,6 +64,11 @@ non-negative USD amount:
 - an unset value defaults to `0`, while an invalid value fails the request
   explicitly before a run record is created.
 
+Failed confirmed runs use the same cost gate for bounded self-repair. Set
+`HELIXFLOW_RUN_MAX_RETRIES` to the maximum number of derived retry runs
+(default `1`; `0` disables automatic retries). Every retry is emitted as a
+run event, and an over-threshold retry remains in `waiting_confirmation`.
+
 The implementation workspace is:
 
 ```text

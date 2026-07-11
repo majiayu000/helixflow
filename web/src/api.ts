@@ -367,6 +367,40 @@ export async function selectOutput(outputId: string): Promise<WorkbenchState> {
   return WorkbenchStateSchema.parse(body);
 }
 
+export async function acceptOutput(outputId: string): Promise<WorkbenchState> {
+  const response = await fetch(`/api/outputs/${encodeURIComponent(outputId)}/accept`, {
+    method: 'POST',
+  });
+  const body = await response.json();
+  if (!response.ok) {
+    const message =
+      body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+        ? body.error
+        : `output accept request failed: ${response.status}`;
+    throw new Error(message);
+  }
+
+  return WorkbenchStateSchema.parse(body);
+}
+
+export async function rejectOutput(outputId: string, rerun = false): Promise<WorkbenchState> {
+  const response = await fetch(`/api/outputs/${encodeURIComponent(outputId)}/reject`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ rerun }),
+  });
+  const body = await response.json();
+  if (!response.ok) {
+    const message =
+      body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+        ? body.error
+        : `output reject request failed: ${response.status}`;
+    throw new Error(message);
+  }
+
+  return WorkbenchStateSchema.parse(body);
+}
+
 export async function holdWorkspaceRun(
   workspaceId: string,
   runId: string,

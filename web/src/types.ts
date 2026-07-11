@@ -331,6 +331,7 @@ const OutputSchema = z.object({
   nodeId: z.string().nullable().optional(),
   storageUri: z.string(),
   selected: z.boolean(),
+  reviewState: z.enum(['pending', 'accepted', 'rejected']).optional(),
   meta: z.string(),
   mime: z.string().nullable().optional(),
   preview: OutputPreviewSchema.optional(),

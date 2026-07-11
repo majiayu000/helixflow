@@ -8,6 +8,8 @@ use serde_json::{Value, json};
 
 mod api_error;
 mod app_state;
+#[cfg(test)]
+mod artifact_retry_tests;
 mod artifact_routes;
 mod canvas_collaboration;
 mod canvas_ticket;
@@ -40,7 +42,9 @@ mod workspace_state_run;
 mod ws;
 
 use app_state::AppState;
-use artifact_routes::{artifact_content, download_output, preview_output, select_output};
+use artifact_routes::{
+    accept_output, artifact_content, download_output, preview_output, reject_output, select_output,
+};
 use canvas_collaboration::{apply_canvas_comment_op, update_canvas_presence};
 use canvas_ticket::create_canvas_ticket;
 use layout_routes::save_workspace_layout;
@@ -136,6 +140,8 @@ fn app(state: AppState) -> Router {
         )
         .route("/api/runs/{run_id}/interrupt", post(interrupt_active_run))
         .route("/api/outputs/{output_id}/select", post(select_output))
+        .route("/api/outputs/{output_id}/accept", post(accept_output))
+        .route("/api/outputs/{output_id}/reject", post(reject_output))
         .route("/api/outputs/{output_id}/preview", get(preview_output))
         .route("/api/outputs/{output_id}/download", get(download_output))
         .route("/api/artifacts/{output_id}/content", get(artifact_content))

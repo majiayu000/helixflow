@@ -249,7 +249,10 @@ async fn persist_run_request_message(
         .map_err(ApiError::store)
 }
 
-fn requires_run_confirmation(cost: &CostSummary, confirmation_threshold_usd: f64) -> bool {
+pub(crate) fn requires_run_confirmation(
+    cost: &CostSummary,
+    confirmation_threshold_usd: f64,
+) -> bool {
     if !cost.amount.is_finite() || cost.amount < 0.0 {
         return true;
     }
@@ -259,7 +262,7 @@ fn requires_run_confirmation(cost: &CostSummary, confirmation_threshold_usd: f64
     cost.amount > confirmation_threshold_usd
 }
 
-fn run_confirmation_threshold_config() -> Result<Option<String>, ApiError> {
+pub(crate) fn run_confirmation_threshold_config() -> Result<Option<String>, ApiError> {
     match std::env::var("HELIXFLOW_AGENT_RUN_CONFIRMATION_THRESHOLD_USD") {
         Ok(value) => Ok(Some(value)),
         Err(std::env::VarError::NotPresent) => Ok(None),
@@ -269,23 +272,9 @@ fn run_confirmation_threshold_config() -> Result<Option<String>, ApiError> {
     }
 }
 
-fn parse_run_confirmation_threshold_usd(raw: Option<&str>) -> Result<f64, String> {
-    let Some(raw) = raw else {
-        return Ok(0.0);
-    };
-    let value = raw.parse::<f64>().map_err(|_| {
-        "HELIXFLOW_AGENT_RUN_CONFIRMATION_THRESHOLD_USD must be a finite non-negative number"
-            .to_owned()
-    })?;
-    if !value.is_finite() || value < 0.0 {
-        return Err(
-            "HELIXFLOW_AGENT_RUN_CONFIRMATION_THRESHOLD_USD must be a finite non-negative number"
-                .to_owned(),
-        );
-    }
-    Ok(value)
+pub(crate) fn parse_run_confirmation_threshold_usd(raw: Option<&str>) -> Result<f64, String> {
+    helixflow_run::parse_run_confirmation_threshold_usd(raw).map_err(|err| err.to_string())
 }
-
 fn format_cost(cost: &CostSummary) -> String {
     format!("{} {}", format_cost_amount(cost.amount), cost.currency)
 }

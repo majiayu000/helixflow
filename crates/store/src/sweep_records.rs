@@ -6,7 +6,8 @@ impl Store {
         Ok(sqlx::query_as::<_, RunRecord>(
             r#"
             SELECT id, workspace_id, version_id, group_id, label, trigger, plan_json,
-                   estimate_json, status, error_json, started_at, ended_at, created_at
+                   estimate_json, status, error_json, started_at, ended_at, created_at,
+                   parent_run_id, attempt, force_rerun
             FROM runs
             WHERE group_id = ?
             ORDER BY created_at, id
@@ -22,7 +23,7 @@ impl Store {
             r#"
             SELECT a.id, a.workspace_id, a.run_id, a.run_step_id, a.node_id, a.kind,
                    a.storage_uri, a.sha256, a.mime, a.width, a.height, a.duration_ms,
-                   a.selected, a.meta_json, a.created_at
+                   a.selected, a.meta_json, a.created_at, a.review_state
             FROM artifacts a
             INNER JOIN runs r ON r.id = a.run_id
             WHERE r.group_id = ?

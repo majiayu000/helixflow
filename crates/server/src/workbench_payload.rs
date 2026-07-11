@@ -41,6 +41,8 @@ pub(crate) struct OutputPayload {
     #[serde(rename = "storageUri")]
     pub(crate) storage_uri: String,
     pub(crate) selected: bool,
+    #[serde(rename = "reviewState")]
+    pub(crate) review_state: String,
     pub(crate) meta: String,
     pub(crate) mime: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -217,6 +219,7 @@ pub(crate) fn output_payload_from_artifact(artifact: &ArtifactRecord) -> OutputP
         node_id: artifact.node_id.clone(),
         storage_uri: safe_download_uri(&artifact.id),
         selected: artifact.selected,
+        review_state: artifact.review_state.clone(),
         meta: output_meta_summary(artifact),
         mime: artifact.mime.clone(),
         preview: output_preview_from_artifact(artifact, &title),

@@ -1,81 +1,54 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use helixflow_gateway::{ArtifactRef, CostEstimate, Provider, ProviderRequest};
-use helixflow_graph::WorkflowGraph;
-use helixflow_store::{
-    ArtifactRecord, CostLedgerRecord, NewCostLedger, NewRun, RunRecord, RunStepRecord,
-};
-use serde::{Deserialize, Serialize};
+use helixflow_store::{NewCostLedger, NewRun, RunRecord, RunStepRecord};
 use serde_json::json;
 use uuid::Uuid;
 
-use super::{RunError, RunInterrupt, RunOutcome, RunResult, RunService, RunStatus};
+use super::cost_types::{
+    AgentRunRequest, CostSummary, PendingRun, PendingSweep, SweepOutcome, SweepPlan,
+};
+use super::{
+    ManualRunRequest, RunError, RunInterrupt, RunOutcome, RunResult, RunService, RunStatus,
+};
 
-#[derive(Debug, Clone)]
-pub struct AgentRunRequest {
-    pub workspace_id: String,
-    pub version_id: String,
-    pub group_id: Option<String>,
-    pub label: String,
-    pub provider: String,
-    pub graph: WorkflowGraph,
-}
-
-#[derive(Debug, Clone)]
-pub struct SweepPlan {
-    pub workspace_id: String,
-    pub version_id: String,
-    pub label: String,
-    pub provider: String,
-    pub variants: Vec<SweepVariant>,
-}
-
-#[derive(Debug, Clone)]
-pub struct SweepVariant {
-    pub label: String,
-    pub graph: WorkflowGraph,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CostSummary {
-    pub amount: f64,
-    pub currency: String,
-    pub estimated: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct PendingRun {
-    pub run: RunRecord,
-    pub steps: Vec<RunStepRecord>,
-    pub estimate: CostSummary,
-    pub ledger: Vec<CostLedgerRecord>,
-}
-
-#[derive(Debug, Clone)]
-pub struct PendingSweep {
-    pub group_id: String,
-    pub runs: Vec<PendingRun>,
-    pub estimate: CostSummary,
-}
-
-#[derive(Debug, Clone)]
-pub struct SweepOutcome {
-    pub group_id: String,
-    pub runs: Vec<RunOutcome>,
-    pub artifacts: Vec<ArtifactRecord>,
-    pub recommendation: Option<ArtifactRecord>,
-}
-
+/// USD cost threshold above which a run requires explicit confirmation.
 impl<P> RunService<P>
 where
     P: Provider + Clone + Send + Sync + 'static,
 {
     pub async fn request_agent_run(&self, request: AgentRunRequest) -> RunResult<PendingRun> {
-        self.request_confirmed_run("agent", request, true).await
+        self.request_confirmed_run("agent", request, true, false)
+            .await
     }
 
     pub async fn prepare_agent_run(&self, request: AgentRunRequest) -> RunResult<PendingRun> {
-        self.request_confirmed_run("agent", request, false).await
+        self.request_confirmed_run("agent", request, false, false)
+            .await
+    }
+
+    pub async fn prepare_manual_run(&self, request: ManualRunRequest) -> RunResult<PendingRun> {
+        let plan =
+            self.graph
+                .compile_plan(&request.graph, &request.version_id, &request.provider)?;
+        if plan.steps.is_empty() {
+            return Err(RunError::NoExecutableSteps);
+        }
+        let force_rerun = request.force_rerun;
+        self.request_confirmed_run(
+            "manual",
+            AgentRunRequest {
+                workspace_id: request.workspace_id,
+                version_id: request.version_id,
+                group_id: request.group_id,
+                label: request.label,
+                provider: request.provider,
+                graph: request.graph,
+            },
+            false,
+            force_rerun,
+        )
+        .await
     }
 
     pub async fn announce_run_requested(
@@ -128,14 +101,7 @@ where
         };
         let runner = self.clone();
         tokio::spawn(async move {
-            let run_id = run.id.clone();
-            let result = runner
-                .execute_created_run(&run, &run.workspace_id, &plan, interrupt, false)
-                .await;
-            if let Err(err) = result {
-                eprintln!("background run `{run_id}` failed: {err}");
-            }
-            runner.interrupts.lock().await.remove(&run_id);
+            runner.run_with_self_heal(run, plan, interrupt).await;
         });
 
         Ok(outcome)
@@ -211,7 +177,7 @@ where
         Ok((run, plan))
     }
 
-    async fn claim_run_for_background(
+    pub(crate) async fn claim_run_for_background(
         &self,
         run_id: &str,
     ) -> RunResult<(RunRecord, helixflow_graph::ExecutionPlan, RunInterrupt)> {
@@ -267,7 +233,7 @@ where
             .insert(run.id.clone(), interrupt.clone());
 
         let result = self
-            .execute_created_run(&run, &run.workspace_id, &plan, interrupt, false)
+            .execute_created_run(&run, &run.workspace_id, &plan, interrupt, run.force_rerun)
             .await;
         self.interrupts.lock().await.remove(&run.id);
 
@@ -304,6 +270,7 @@ where
                         provider: plan.provider.clone(),
                         graph: variant.graph,
                     },
+                    false,
                     false,
                 )
                 .await?;
@@ -494,6 +461,7 @@ where
         trigger: &str,
         request: AgentRunRequest,
         emit_requested: bool,
+        force_rerun: bool,
     ) -> RunResult<PendingRun> {
         let plan =
             self.graph
@@ -512,6 +480,11 @@ where
                 status: RunStatus::Estimating.as_str(),
             })
             .await?;
+        let run = if force_rerun {
+            self.store.set_run_force_rerun(&run.id, true).await?
+        } else {
+            run
+        };
         let steps = self.ensure_run_steps(&run.id, &plan).await?;
         let interrupt = RunInterrupt::default();
         self.interrupts

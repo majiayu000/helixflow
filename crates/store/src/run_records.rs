@@ -67,6 +67,15 @@ pub struct RunRecord {
     pub started_at: Option<String>,
     pub ended_at: Option<String>,
     pub created_at: String,
+    /// Set when this run was derived by failure self-repair from a prior run.
+    #[sqlx(default)]
+    pub parent_run_id: Option<String>,
+    /// Retry attempt index; 0 for the original run, 1+ for self-repair reruns.
+    #[sqlx(default)]
+    pub attempt: i64,
+    /// Bypass node cache for this run. Persisted across confirmation.
+    #[sqlx(default)]
+    pub force_rerun: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -113,6 +122,8 @@ pub struct ArtifactRecord {
     pub selected: bool,
     pub meta_json: Option<String>,
     pub created_at: String,
+    /// Output review state: `pending` (default), `accepted`, or `rejected`.
+    pub review_state: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -153,9 +164,9 @@ impl Store {
             r#"
             INSERT INTO runs (
                 id, workspace_id, version_id, group_id, label, trigger, plan_json,
-                estimate_json, status, created_at
+                estimate_json, status, force_rerun, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)
             "#,
         )
         .bind(&id)
@@ -167,6 +178,7 @@ impl Store {
         .bind(input.plan_json)
         .bind(input.estimate_json)
         .bind(input.status)
+        .bind(0_i64)
         .execute(self.pool())
         .await?;
 
@@ -177,7 +189,8 @@ impl Store {
         Ok(sqlx::query_as::<_, RunRecord>(
             r#"
             SELECT id, workspace_id, version_id, group_id, label, trigger, plan_json,
-                   estimate_json, status, error_json, started_at, ended_at, created_at
+                   estimate_json, status, error_json, started_at, ended_at, created_at,
+                   parent_run_id, attempt, force_rerun
             FROM runs
             WHERE id = ?
             "#,
@@ -191,7 +204,8 @@ impl Store {
         Ok(sqlx::query_as::<_, RunRecord>(
             r#"
             SELECT id, workspace_id, version_id, group_id, label, trigger, plan_json,
-                   estimate_json, status, error_json, started_at, ended_at, created_at
+                   estimate_json, status, error_json, started_at, ended_at, created_at,
+                   parent_run_id, attempt, force_rerun
             FROM runs
             WHERE workspace_id = ?
             ORDER BY created_at DESC, id DESC
@@ -201,6 +215,19 @@ impl Store {
         .bind(workspace_id)
         .fetch_optional(self.pool())
         .await?)
+    }
+
+    pub async fn set_run_force_rerun(
+        &self,
+        run_id: &str,
+        force_rerun: bool,
+    ) -> StoreResult<RunRecord> {
+        sqlx::query("UPDATE runs SET force_rerun = ? WHERE id = ?")
+            .bind(if force_rerun { 1_i64 } else { 0_i64 })
+            .bind(run_id)
+            .execute(self.pool())
+            .await?;
+        self.run(run_id).await
     }
 
     pub async fn update_run_status(
@@ -478,9 +505,9 @@ impl Store {
             r#"
             INSERT INTO artifacts (
                 id, workspace_id, run_id, run_step_id, node_id, kind, storage_uri, sha256, mime,
-                width, height, duration_ms, selected, meta_json, created_at
+                width, height, duration_ms, selected, meta_json, review_state, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', current_timestamp)
             "#,
         )
         .bind(&id)
@@ -523,6 +550,34 @@ impl Store {
         self.artifact(artifact_id).await
     }
 
+    /// Transition an artifact's review state. `expected_from` guards the
+    /// transition (e.g. only `pending` -> `accepted`); returns `None` when the
+    /// current state does not match, so callers can surface a 409.
+    pub async fn set_artifact_review_state(
+        &self,
+        artifact_id: &str,
+        expected_from: &[&str],
+        next: &str,
+    ) -> StoreResult<Option<ArtifactRecord>> {
+        let placeholders = expected_from
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "UPDATE artifacts SET review_state = ? WHERE id = ? AND review_state IN ({placeholders})"
+        );
+        let mut query = sqlx::query(&sql).bind(next).bind(artifact_id);
+        for state in expected_from {
+            query = query.bind(*state);
+        }
+        let result = query.execute(self.pool()).await?;
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
+        self.artifact(artifact_id).await.map(Some)
+    }
+
     pub async fn select_run_artifact(&self, artifact_id: &str) -> StoreResult<ArtifactRecord> {
         let artifact = self.artifact(artifact_id).await?;
         let Some(run_id) = artifact.run_id.as_deref() else {
@@ -550,7 +605,7 @@ impl Store {
         let row = sqlx::query(
             r#"
             SELECT id, workspace_id, run_id, run_step_id, node_id, kind, storage_uri, sha256,
-                   mime, width, height, duration_ms, selected, meta_json, created_at
+                   mime, width, height, duration_ms, selected, meta_json, created_at, review_state
             FROM artifacts
             WHERE id = ?
             "#,
@@ -566,7 +621,7 @@ impl Store {
         let rows = sqlx::query(
             r#"
             SELECT id, workspace_id, run_id, run_step_id, node_id, kind, storage_uri, sha256,
-                   mime, width, height, duration_ms, selected, meta_json, created_at
+                   mime, width, height, duration_ms, selected, meta_json, created_at, review_state
             FROM artifacts
             WHERE run_id = ?
             ORDER BY created_at, id
@@ -583,7 +638,7 @@ impl Store {
         let rows = sqlx::query(
             r#"
             SELECT id, workspace_id, run_id, run_step_id, node_id, kind, storage_uri, sha256,
-                   mime, width, height, duration_ms, selected, meta_json, created_at
+                   mime, width, height, duration_ms, selected, meta_json, created_at, review_state
             FROM artifacts
             WHERE run_step_id = ?
             ORDER BY created_at, id
@@ -691,6 +746,7 @@ pub(crate) fn artifact_from_row(row: sqlx::sqlite::SqliteRow) -> StoreResult<Art
         selected: selected != 0,
         meta_json: row.try_get("meta_json")?,
         created_at: row.try_get("created_at")?,
+        review_state: row.try_get("review_state")?,
     })
 }
 
