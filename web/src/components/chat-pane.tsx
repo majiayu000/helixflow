@@ -268,7 +268,7 @@ function RunErrorCard({
         onClick={() =>
           void onRequestFix(
             `读取当前失败节点 ${failedNodeText} 和运行错误，生成最小修复并自动应用到工作流。`,
-          )
+          ).catch(() => undefined)
         }
       >
         Auto fix workflow
