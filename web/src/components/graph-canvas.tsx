@@ -395,6 +395,7 @@ export function GraphCanvas({
     event.stopPropagation();
     releaseConnectionCapture(event);
     setConnectionDrag(null);
+    if (!capabilities.connect) return true;
 
     const target = portDropTargetFromPoint(event.clientX, event.clientY);
     if (!target || target.direction !== 'input') {
