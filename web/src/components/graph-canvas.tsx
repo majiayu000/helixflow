@@ -240,9 +240,9 @@ export function GraphCanvas({
   }, [pendingProposal?.id, resetNodeResize, versionId]);
 
   useEffect(() => {
-    if (!capabilities.move) nodeDrag.current = null;
+    if (!capabilities.move) { nodeDrag.current = null; setDraftPositions({}); }
     if (!capabilities.connect) setConnectionDrag(null);
-    if (!capabilities.resize) resetNodeResize();
+    if (!capabilities.resize) { resetNodeResize(); setDraftSizes({}); }
   }, [capabilities.connect, capabilities.move, capabilities.resize, resetNodeResize]);
 
   useEffect(() => {

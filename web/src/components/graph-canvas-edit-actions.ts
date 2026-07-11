@@ -42,7 +42,10 @@ export function createCanvasEditActions(input: CanvasEditActionsInput) {
   };
 
   const addNode = (definition: NodeDefinition, position = viewportCenterWorld()) => {
-    if (!input.capabilities.paste) return;
+    if (!input.capabilities.paste) {
+      input.setClipboardStatus('当前模式不允许添加节点');
+      return;
+    }
     submit(
       buildAddNodeProposalInput({
         baseVersionId: input.versionId,
@@ -75,7 +78,10 @@ export function createCanvasEditActions(input: CanvasEditActionsInput) {
   };
 
   const pasteSelection = async () => {
-    if (!input.capabilities.paste) return;
+    if (!input.capabilities.paste) {
+      input.setClipboardStatus('当前模式不允许粘贴');
+      return;
+    }
     if (!navigator.clipboard?.readText) {
       input.setClipboardStatus('粘贴失败：浏览器不支持 clipboard');
       return;
@@ -98,7 +104,10 @@ export function createCanvasEditActions(input: CanvasEditActionsInput) {
   };
 
   const deleteSelection = (selectedNodeIds: Iterable<string>) => {
-    if (!input.capabilities.delete) return;
+    if (!input.capabilities.delete) {
+      input.setClipboardStatus('当前模式不允许删除');
+      return;
+    }
     const ids = [...selectedNodeIds];
     submit(
       buildDeleteNodesProposalInput({ baseVersionId: input.versionId, selectedNodeIds: ids }),

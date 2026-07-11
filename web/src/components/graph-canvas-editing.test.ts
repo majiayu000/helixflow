@@ -98,6 +98,7 @@ describe('graph canvas editing helpers', () => {
 
   it('does not dispatch add, delete, or paste mutations in view mode', async () => {
     const onCreateProposal = vi.fn(async () => undefined);
+    const setClipboardStatus = vi.fn();
     const readText = vi.fn(async () => buildSelectionClipboardText({
       sourceVersionId: 'ver_1',
       nodes: [textNode()],
@@ -109,7 +110,7 @@ describe('graph canvas editing helpers', () => {
       capabilities: canvasCapabilities('view', true),
       drawGraph: { nodes: [textNode(), videoNode()], edges: [textToVideoEdge()] },
       onCreateProposal,
-      setClipboardStatus: vi.fn(),
+      setClipboardStatus,
       versionId: 'ver_1',
       view: { x: 0, y: 0, z: 1 },
       viewportSize: { width: 800, height: 600 },
@@ -122,6 +123,11 @@ describe('graph canvas editing helpers', () => {
 
     expect(onCreateProposal).not.toHaveBeenCalled();
     expect(readText).not.toHaveBeenCalled();
+    expect(setClipboardStatus.mock.calls.map(([message]) => message)).toEqual([
+      '当前模式不允许添加节点',
+      '当前模式不允许删除',
+      '当前模式不允许粘贴',
+    ]);
   });
 });
 
