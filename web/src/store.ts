@@ -156,6 +156,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
   },
   hydrate: async (workspaceId) => {
+    const previousWorkspaceId = get().state?.workspace.id ?? null;
     const activation = activateWorkspace(workspaceId);
     set({ status: 'loading', canvasStatus: 'loading', error: null, canvasError: null });
     try {
@@ -164,10 +165,12 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       set(snapshotReady(snapshot));
     } catch (error) {
       if (isAbortError(error) || !requestScope.isActive(activation.generation, workspaceId)) return;
+      if (previousWorkspaceId) activateWorkspace(previousWorkspaceId);
       set(snapshotError(error, 'workspace state request failed'));
     }
   },
   createWorkspace: async () => {
+    const previousWorkspaceId = get().state?.workspace.id ?? null;
     const activation = activateWorkspace(null);
     set({ status: 'loading', canvasStatus: 'loading', error: null, canvasError: null });
     try {
@@ -178,6 +181,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       set(snapshotReady(snapshot));
     } catch (error) {
       if (isAbortError(error) || !requestScope.isActive(activation.generation)) return;
+      if (previousWorkspaceId) activateWorkspace(previousWorkspaceId);
       set(snapshotError(error, 'workspace create request failed'));
     }
   },

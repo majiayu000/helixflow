@@ -97,6 +97,21 @@ describe('background run state reconciliation', () => {
     expect(useWorkbenchStore.getState().state?.workspace.id).toBe('ws_b');
   });
 
+  it('reactivates the rendered workspace when the next workspace fails to load', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'B unavailable' }), {
+      status: 503,
+      headers: { 'content-type': 'application/json' },
+    })));
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
+
+    await useWorkbenchStore.getState().hydrate('ws_b');
+
+    expect(useWorkbenchStore.getState().state?.workspace.id).toBe('ws_a');
+    expect(useWorkbenchStore.getState().activeWorkspaceId).toBe('ws_a');
+    expect(useWorkbenchStore.getState().status).toBe('error');
+    expect(useWorkbenchStore.getState().error).toContain('workspace state request failed: 503');
+  });
+
   it('does not revive the first A generation after A to B to A', async () => {
     const responses = delayedSnapshotFetch();
     const firstA = useWorkbenchStore.getState().hydrate('ws_a');
