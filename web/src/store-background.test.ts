@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { composerDraftAfterSubmit } from './components/chat-pane';
 import { useWorkbenchStore } from './store';
 import { jsonResponse, runEvent, waitUntil } from './test-utils';
 import type { WorkbenchState } from './types';
@@ -115,7 +116,7 @@ describe('background run state reconciliation', () => {
     expect(useWorkbenchStore.getState().state?.run?.id).toBe('run_current_a');
   });
 
-  it('ignores a delayed workspace A message response after switching to B', async () => {
+  it('rejects a delayed workspace A message response without modifying B', async () => {
     let resolveMessage!: (response: Response) => void;
     const messageResponse = new Promise<Response>((resolve) => {
       resolveMessage = resolve;
@@ -125,7 +126,9 @@ describe('background run state reconciliation', () => {
       vi.fn(() => messageResponse),
     );
     useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
-    const sending = useWorkbenchStore.getState().sendMessage('hello');
+    const sending = composerDraftAfterSubmit('hello', 'hello', (text) =>
+      useWorkbenchStore.getState().sendMessage(text),
+    );
     useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_b'));
     resolveMessage(
       jsonResponse({
@@ -142,13 +145,75 @@ describe('background run state reconciliation', () => {
         proposal: null,
       }),
     );
-    await sending;
+    await expect(sending).resolves.toBe('hello');
 
     expect(useWorkbenchStore.getState().state?.workspace.id).toBe('ws_b');
     expect(useWorkbenchStore.getState().state?.chat.messages).toHaveLength(0);
+    expect(useWorkbenchStore.getState().error).toContain('workspace changed');
   });
 
-  it('ignores a delayed workspace A provider response after switching to B', async () => {
+  it('preserves the composer draft when the message request fails', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ error: 'provider unavailable' }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' },
+      })),
+    );
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
+
+    await expect(
+      composerDraftAfterSubmit('retry me', 'retry me', (text) =>
+        useWorkbenchStore.getState().sendMessage(text),
+      ),
+    ).resolves.toBe('retry me');
+    expect(useWorkbenchStore.getState().state?.chat.messages.at(-1)).toMatchObject({
+      role: 'system',
+      kind: 'run_failed',
+      text: 'provider unavailable',
+    });
+  });
+
+  it('rejects a stale proposal refresh without modifying B or clearing the draft', async () => {
+    let resolveSnapshot!: (response: Response) => void;
+    const snapshotResponse = new Promise<Response>((resolve) => {
+      resolveSnapshot = resolve;
+    });
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      if (String(input).endsWith('/messages')) {
+        return Promise.resolve(jsonResponse({
+          turnMode: 'create_workflow',
+          messages: [{
+            id: 'msg_applied_a',
+            role: 'agent',
+            kind: 'proposal_applied',
+            text: 'applied A',
+            time: 'unix:2',
+          }],
+          proposal: null,
+          run: null,
+          pendingConfirmation: null,
+        }));
+      }
+      return snapshotResponse;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
+    const sending = composerDraftAfterSubmit('apply it', 'apply it', (text) =>
+      useWorkbenchStore.getState().sendMessage(text),
+    );
+    await waitUntil(() => fetchMock.mock.calls.some(([input]) => String(input).endsWith('/state')));
+
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_b'));
+    resolveSnapshot(jsonResponse(stateForWorkspace('ws_a')));
+
+    await expect(sending).resolves.toBe('apply it');
+    expect(useWorkbenchStore.getState().state?.workspace.id).toBe('ws_b');
+    expect(useWorkbenchStore.getState().state?.chat.messages).toHaveLength(0);
+    expect(useWorkbenchStore.getState().error).toContain('workspace changed');
+  });
+
+  it('rejects a delayed workspace A provider response without modifying B', async () => {
     let resolveProvider!: (response: Response) => void;
     const providerResponse = new Promise<Response>((resolve) => {
       resolveProvider = resolve;
@@ -160,7 +225,7 @@ describe('background run state reconciliation', () => {
     const staleA = stateForWorkspace('ws_a');
     staleA.providers.selectedProvider = 'atlas';
     resolveProvider(jsonResponse(staleA));
-    await selecting;
+    await expect(selecting).rejects.toThrow('workspace changed');
 
     expect(useWorkbenchStore.getState().state?.workspace.id).toBe('ws_b');
     expect(useWorkbenchStore.getState().state?.providers.selectedProvider).toBe('mock');
@@ -181,7 +246,7 @@ describe('background run state reconciliation', () => {
     expect(fetch).toHaveBeenCalledTimes(4);
   });
 
-  it('ignores a delayed canvas comment response after switching workspaces', async () => {
+  it('rejects a delayed canvas comment response without modifying B', async () => {
     let resolveCanvas!: (response: Response) => void;
     const canvasResponse = new Promise<Response>((resolve) => {
       resolveCanvas = resolve;
@@ -198,7 +263,7 @@ describe('background run state reconciliation', () => {
     });
     useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_b'));
     resolveCanvas(jsonResponse(canvasForState(stateForWorkspace('ws_a'))));
-    await submitting;
+    await expect(submitting).rejects.toThrow('workspace changed');
 
     expect(useWorkbenchStore.getState().state?.workspace.id).toBe('ws_b');
     expect(useWorkbenchStore.getState().canvas).toBeNull();
@@ -287,19 +352,22 @@ describe('background run state reconciliation', () => {
       actor: { actorId: 'actor_a', displayName: 'A' },
       cursor: { x: 1, y: 2 },
     });
-    await useWorkbenchStore.getState().submitCanvasCommentOp({
+    await expect(useWorkbenchStore.getState().submitCanvasCommentOp({
       op: {
         op: 'comment_add',
         target: { kind: 'position', x: 1, y: 2 },
         body: 'stale A',
       },
-    });
-    await useWorkbenchStore.getState().selectProvider('atlas');
+    })).rejects.toThrow('workspace changed');
+    await expect(useWorkbenchStore.getState().selectProvider('atlas')).rejects.toThrow(
+      'workspace changed',
+    );
     const urls = vi.mocked(fetch).mock.calls.map((call) => String(call[0]));
     expect(urls).not.toContain('/api/workspaces/ws_a/canvas/presence');
     expect(urls).not.toContain('/api/workspaces/ws_a/canvas/comments/ops');
     expect(urls).not.toContain('/api/workspaces/ws_a/provider');
     expect(useWorkbenchStore.getState().presenceByActor).toEqual({});
+    expect(useWorkbenchStore.getState().error).toContain('workspace changed');
 
     responses.resolve('ws_b', stateForWorkspace('ws_b'));
     await hydrateB;

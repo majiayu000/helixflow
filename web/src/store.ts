@@ -21,20 +21,7 @@ import {
   sendWorkspaceMessage,
   submitCanvasCommentOp as submitCanvasCommentOpRequest,
   undoWorkspaceVersion,
-  type ConnectionStatus,
 } from './api';
-import type {
-  CanvasDocument,
-  CanvasCommentOpInput,
-  CanvasMessageContext,
-  CanvasPresence,
-  LayoutPositionUpdate,
-  ManualEditSession,
-  ManualProposalInput,
-  RunEventEnvelope,
-  WorkflowGraph,
-  WorkbenchState,
-} from './types';
 import {
   applyRunEvent,
   preserveRetryNotices,
@@ -52,6 +39,7 @@ import {
 } from './store-model';
 import {
   appendManualEditInput,
+  hasDirtyEdits,
   manualEditInputFromSession,
 } from './workbench-edit-session';
 import { isAbortError, WorkspaceRequestScope } from './workspace-request-scope';
@@ -60,62 +48,18 @@ import {
   snapshotError,
   snapshotReady,
 } from './workspace-snapshot';
+import type { WorkbenchStore } from './store-types';
 
 export { applyRunEvent } from './store-events';
-
-type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
-type QueueRunOptions = { forceRerun?: boolean };
-type PresenceByActor = Record<string, CanvasPresence>;
-
-type WorkbenchStore = {
-  status: LoadStatus;
-  error: string | null;
-  connection: ConnectionStatus;
-  canvasStatus: LoadStatus;
-  canvasError: string | null;
-  canvasConnection: ConnectionStatus;
-  canvas: CanvasDocument | null;
-  selectedCanvasNodeIds: string[];
-  presenceByActor: PresenceByActor;
-  state: WorkbenchState | null;
-  editSession: ManualEditSession | null;
-  workspaceGeneration: number;
-  activeWorkspaceId: string | null;
-  bootstrap: (workspaceId?: string | null) => Promise<void>;
-  hydrate: (workspaceId: string) => Promise<void>;
-  createWorkspace: () => Promise<void>;
-  setInitialState: (state: WorkbenchState) => void;
-  setConnection: (status: ConnectionStatus) => void;
-  setCanvasSelection: (nodeIds: string[]) => void;
-  applyCanvasPresence: (presence: CanvasPresence) => void;
-  sendCanvasPresence: (presence: CanvasPresence) => Promise<void>;
-  submitCanvasCommentOp: (input: CanvasCommentOpInput) => Promise<void>;
-  applyEvent: (event: RunEventEnvelope, generation?: number) => void;
-  sendMessage: (text: string, canvasContext?: CanvasMessageContext) => Promise<void>;
-  queueRun: (options?: QueueRunOptions) => Promise<void>;
-  interruptRun: (runId?: string) => Promise<void>;
-  exportWorkflow: () => Promise<WorkflowGraph | null>;
-  undoVersion: () => Promise<void>;
-  restoreVersion: (versionId: string) => Promise<void>;
-  saveLayout: (positions: LayoutPositionUpdate[]) => Promise<void>;
-  selectOutput: (outputId: string) => Promise<void>;
-  acceptOutput: (outputId: string) => Promise<void>;
-  rejectOutput: (outputId: string, rerun?: boolean) => Promise<void>;
-  selectProvider: (providerId: string) => Promise<void>;
-  appendManualEdit: (input: ManualProposalInput) => Promise<void>;
-  commitManualEdits: () => Promise<void>;
-  discardManualEdits: () => void;
-  confirmRun: (runId: string) => Promise<void>;
-  holdRun: (runId: string) => Promise<void>;
-  createManualProposal: (input: ManualProposalInput) => Promise<void>;
-  applyProposal: (proposalId: string) => Promise<void>;
-  dismissProposal: (proposalId: string) => Promise<void>;
-};
 
 export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
   const requestScope = new WorkspaceRequestScope();
   let snapshotRefresh: { generation: number; promise: Promise<void> } | null = null;
   let trailingSnapshotGeneration: number | null = null;
+  const failWorkspaceAction = (message: string): never => {
+    set({ error: message });
+    throw new Error(message);
+  };
   const activateWorkspace = (workspaceId: string | null) => {
     const activation = requestScope.begin(workspaceId);
     snapshotRefresh = null;
@@ -290,17 +234,23 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     const state = get().state;
     if (!state) return;
     const generation = requestScope.currentGeneration();
-    if (!requestScope.isActive(generation, state.workspace.id)) return;
+    if (!requestScope.isActive(generation, state.workspace.id)) {
+      failWorkspaceAction('workspace changed before the canvas comment could be sent');
+    }
     try {
       const canvas = await submitCanvasCommentOpRequest(
         state.workspace.id,
         input,
         requestScope.signal(),
       );
-      if (!requestScope.isActive(generation, state.workspace.id)) return;
+      if (!requestScope.isActive(generation, state.workspace.id)) {
+        failWorkspaceAction('workspace changed while the canvas comment was sending');
+      }
       set({ canvas, canvasStatus: 'ready', canvasError: null });
     } catch (error) {
-      if (isAbortError(error) || !requestScope.isActive(generation, state.workspace.id)) return;
+      if (isAbortError(error) || !requestScope.isActive(generation, state.workspace.id)) {
+        failWorkspaceAction('workspace changed while the canvas comment was sending');
+      }
       const normalized =
         error instanceof Error ? error : new Error('canvas comment request failed');
       set((current) => ({
@@ -362,10 +312,14 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
         userMessage: trimmed,
         graph: request.graph,
       }, requestScope.signal());
-      if (!requestScope.isActive(generation, request.workspaceId)) return;
+      if (!requestScope.isActive(generation, request.workspaceId)) {
+        failWorkspaceAction('workspace changed while the message was sending');
+      }
       if (response.messages.some((message) => message.kind === 'proposal_applied')) {
         const next = await fetchWorkspaceState(request.workspaceId, requestScope.signal());
-        if (!requestScope.isActive(generation, request.workspaceId)) return;
+        if (!requestScope.isActive(generation, request.workspaceId)) {
+          failWorkspaceAction('workspace changed while the message was sending');
+        }
         set({ state: next, status: 'ready', error: null, editSession: null });
         return;
       }
@@ -373,8 +327,10 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
         state: current.state ? applyMessageResponse(current.state, response) : current.state,
       }));
     } catch (error) {
-      if (isAbortError(error) || !requestScope.isActive(generation, request.workspaceId)) return;
-      const message = error instanceof Error ? error.message : 'workspace message request failed';
+      if (isAbortError(error) || !requestScope.isActive(generation, request.workspaceId)) {
+        failWorkspaceAction('workspace changed while the message was sending');
+      }
+      const normalized = error instanceof Error ? error : new Error('workspace message request failed');
       set((current) => ({
         state: current.state
           ? appendChatMessages(current.state, [
@@ -382,12 +338,13 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
                 id: `msg_system_${Date.now()}`,
                 role: 'system',
                 kind: 'run_failed',
-                text: message,
+                text: normalized.message,
                 time: messageTime(),
               },
             ])
           : current.state,
       }));
+      throw normalized;
     }
   },
   applyEvent: (event, generation = requestScope.currentGeneration()) => {
@@ -581,14 +538,18 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
 
     const generation = requestScope.currentGeneration();
-    if (!requestScope.isActive(generation, state.workspace.id)) return;
+    if (!requestScope.isActive(generation, state.workspace.id)) {
+      failWorkspaceAction('workspace changed before the provider could be selected');
+    }
     try {
       const next = await selectWorkspaceProvider(
         state.workspace.id,
         providerId,
         requestScope.signal(),
       );
-      if (!requestScope.isActive(generation, state.workspace.id)) return;
+      if (!requestScope.isActive(generation, state.workspace.id)) {
+        failWorkspaceAction('workspace changed while the provider was being selected');
+      }
       set((current) => ({
         state: next,
         status: 'ready',
@@ -596,11 +557,14 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
         editSession: compatibleEditSession(current.editSession, next),
       }));
     } catch (error) {
-      if (isAbortError(error) || !requestScope.isActive(generation, state.workspace.id)) return;
+      if (isAbortError(error) || !requestScope.isActive(generation, state.workspace.id)) {
+        failWorkspaceAction('workspace changed while the provider was being selected');
+      }
       const message = error instanceof Error ? error.message : 'workspace provider request failed';
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
       }));
+      throw error instanceof Error ? error : new Error(message);
     }
   },
   appendManualEdit: async (input) => {
@@ -787,7 +751,3 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
   },
   };
 });
-
-function hasDirtyEdits(session: ManualEditSession | null): session is ManualEditSession {
-  return Boolean(session && session.ops.length > 0);
-}

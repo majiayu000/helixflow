@@ -18,6 +18,10 @@ export type QueueLockReason =
   | { kind: 'pending_proposal' }
   | { kind: 'dirty_edits'; count: number };
 
+export function hasDirtyEdits(session: ManualEditSession | null): session is ManualEditSession {
+  return Boolean(session && session.ops.length > 0);
+}
+
 export function appendManualEditInput(
   session: ManualEditSession | null,
   baseVersionId: string,
