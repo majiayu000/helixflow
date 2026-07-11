@@ -66,8 +66,10 @@ non-negative USD amount:
 
 Failed confirmed runs use the same cost gate for bounded self-repair. Set
 `HELIXFLOW_RUN_MAX_RETRIES` to the maximum number of derived retry runs
-(default `1`; `0` disables automatic retries). Every retry is emitted as a
-run event, and an over-threshold retry remains in `waiting_confirmation`.
+(default `1`; `0` disables automatic retries). Invalid configured values fail
+the retry decision explicitly instead of falling back to the default. Every
+retry is emitted as a run event, and an over-threshold retry remains in
+`waiting_confirmation`.
 
 The implementation workspace is:
 

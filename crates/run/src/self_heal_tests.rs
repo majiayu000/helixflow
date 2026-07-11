@@ -12,6 +12,8 @@ use serde_json::json;
 
 use super::{AgentRunRequest, RunService, SweepPlan, SweepVariant};
 
+const INVALID_RETRY_ENV_CHILD: &str = "HELIXFLOW_TEST_INVALID_RETRY_ENV_CHILD";
+
 #[tokio::test]
 async fn failed_paid_run_derives_retry_waiting_for_confirmation() {
     let (store, _dir) = open_self_heal_store().await;
@@ -151,6 +153,81 @@ async fn retry_infrastructure_failure_emits_persisted_error_event() {
             .expect("persisted events")
             .iter()
             .any(|event| event.ev == "run.retry_failed")
+    );
+}
+
+#[tokio::test]
+async fn invalid_retry_environment_fails_before_creating_child_run() {
+    if std::env::var_os(INVALID_RETRY_ENV_CHILD).is_none() {
+        let mut command = std::process::Command::new(
+            std::env::current_exe().expect("locate helixflow-run test executable"),
+        );
+        command
+            .arg("--exact")
+            .arg("self_heal_tests::invalid_retry_environment_fails_before_creating_child_run")
+            .arg("--nocapture")
+            .env(INVALID_RETRY_ENV_CHILD, "1");
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            command.env(
+                "HELIXFLOW_RUN_MAX_RETRIES",
+                std::ffi::OsString::from_vec(vec![0xff]),
+            );
+        }
+        #[cfg(not(unix))]
+        command.env("HELIXFLOW_RUN_MAX_RETRIES", "not-a-number");
+
+        let output = command.output().expect("run isolated retry config test");
+        assert!(
+            output.status.success(),
+            "isolated retry config test failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
+    let (store, _dir) = open_self_heal_store().await;
+    let (workspace_id, version_id) = self_heal_workspace_version(&store).await;
+    let service = RunService::new(store.clone());
+    let run = store
+        .create_run(NewRun {
+            workspace_id: &workspace_id,
+            version_id: &version_id,
+            group_id: None,
+            label: "Invalid retry config",
+            trigger: "agent",
+            plan_json: None,
+            estimate_json: Some(r#"{"amount":0.0,"currency":"USD","lines":[]}"#),
+            status: "failed",
+        })
+        .await
+        .expect("failed parent run");
+
+    let error = service
+        .continue_self_heal_from_failed(&run)
+        .await
+        .expect_err("invalid retry configuration must fail closed");
+    assert!(error.to_string().contains("HELIXFLOW_RUN_MAX_RETRIES"));
+
+    let latest = store
+        .latest_workspace_run(&workspace_id)
+        .await
+        .expect("latest run")
+        .expect("parent run remains latest");
+    assert_eq!(
+        latest.id, run.id,
+        "invalid config must not create a child run"
+    );
+    assert!(
+        store
+            .run_events(&run.id)
+            .await
+            .expect("persisted retry events")
+            .iter()
+            .any(|event| event.ev == "run.retry_failed"),
+        "invalid config must be visible as a persisted retry failure"
     );
 }
 

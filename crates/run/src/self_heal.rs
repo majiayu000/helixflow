@@ -168,7 +168,7 @@ where
         if run.status != RunStatus::Failed.as_str() {
             return Ok(None);
         }
-        if attempt < 0 || attempt as u32 >= max_run_retries() {
+        if attempt < 0 || attempt as u32 >= max_run_retries()? {
             return Ok(None);
         }
         // Without an estimate we cannot budget-check the retry; leave failed.

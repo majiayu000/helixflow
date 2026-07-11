@@ -42,11 +42,25 @@ fn threshold_error() -> RunError {
 }
 
 /// Maximum automatic retries for failure self-repair.
-pub fn max_run_retries() -> u32 {
-    std::env::var("HELIXFLOW_RUN_MAX_RETRIES")
-        .ok()
-        .and_then(|value| value.parse::<u32>().ok())
-        .unwrap_or(1)
+pub fn max_run_retries() -> RunResult<u32> {
+    match std::env::var("HELIXFLOW_RUN_MAX_RETRIES") {
+        Ok(value) => parse_max_run_retries(Some(&value)),
+        Err(std::env::VarError::NotPresent) => parse_max_run_retries(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(retry_limit_error()),
+    }
+}
+
+pub fn parse_max_run_retries(raw: Option<&str>) -> RunResult<u32> {
+    let Some(raw) = raw else {
+        return Ok(1);
+    };
+    raw.parse::<u32>().map_err(|_| retry_limit_error())
+}
+
+fn retry_limit_error() -> RunError {
+    RunError::InvalidConfiguration(
+        "HELIXFLOW_RUN_MAX_RETRIES must be a non-negative integer".to_owned(),
+    )
 }
 
 #[cfg(test)]
@@ -67,6 +81,26 @@ mod tests {
             assert!(
                 parse_run_confirmation_threshold_usd(Some(invalid)).is_err(),
                 "invalid threshold `{invalid}` must fail closed"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_retry_limit_parser_distinguishes_missing_and_invalid_values() {
+        assert_eq!(parse_max_run_retries(None).expect("default retry limit"), 1);
+        assert_eq!(
+            parse_max_run_retries(Some("0")).expect("disabled retries"),
+            0
+        );
+        assert_eq!(parse_max_run_retries(Some("7")).expect("retry limit"), 7);
+        assert_eq!(
+            parse_max_run_retries(Some(&u32::MAX.to_string())).expect("u32 max retry limit"),
+            u32::MAX
+        );
+        for invalid in ["", "-1", "1.5", "not-a-number", "4294967296"] {
+            assert!(
+                parse_max_run_retries(Some(invalid)).is_err(),
+                "invalid retry limit `{invalid}` must fail closed"
             );
         }
     }
