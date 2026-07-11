@@ -80,6 +80,7 @@ type WorkbenchStore = {
   state: WorkbenchState | null;
   editSession: ManualEditSession | null;
   workspaceGeneration: number;
+  activeWorkspaceId: string | null;
   bootstrap: (workspaceId?: string | null) => Promise<void>;
   hydrate: (workspaceId: string) => Promise<void>;
   createWorkspace: () => Promise<void>;
@@ -121,10 +122,16 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     trailingSnapshotGeneration = null;
     set({
       workspaceGeneration: activation.generation,
+      activeWorkspaceId: workspaceId,
       selectedCanvasNodeIds: [],
       presenceByActor: {},
     });
     return activation;
+  };
+  const adoptWorkspace = (generation: number, workspaceId: string) => {
+    if (!requestScope.adopt(generation, workspaceId)) return false;
+    set({ activeWorkspaceId: workspaceId });
+    return true;
   };
   const refreshSnapshot = (workspaceId: string) => {
     const generation = requestScope.currentGeneration();
@@ -185,6 +192,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
   state: null,
   editSession: null,
   workspaceGeneration: 0,
+  activeWorkspaceId: null,
   bootstrap: async (workspaceId) => {
     if (workspaceId) {
       await get().hydrate(workspaceId);
@@ -196,7 +204,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     try {
       const workspaces = await fetchWorkspaces(activation.signal);
       const workspace = workspaces[0] ?? (await createWorkspace());
-      if (!requestScope.adopt(activation.generation, workspace.id)) return;
+      if (!adoptWorkspace(activation.generation, workspace.id)) return;
       const snapshot = await fetchWorkspaceSnapshot(workspace.id, activation.signal);
       if (!requestScope.isActive(activation.generation, workspace.id)) return;
       set(snapshotReady(snapshot));
@@ -222,7 +230,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     set({ status: 'loading', canvasStatus: 'loading', error: null, canvasError: null });
     try {
       const workspace = await createWorkspace();
-      if (!requestScope.adopt(activation.generation, workspace.id)) return;
+      if (!adoptWorkspace(activation.generation, workspace.id)) return;
       const snapshot = await fetchWorkspaceSnapshot(workspace.id, activation.signal);
       if (!requestScope.isActive(activation.generation, workspace.id)) return;
       set(snapshotReady(snapshot));
@@ -325,7 +333,13 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       graph: workflowGraphFromState(state),
     };
     const generation = requestScope.currentGeneration();
-    if (!requestScope.isActive(generation, request.workspaceId)) return;
+    if (!requestScope.isActive(generation, request.workspaceId)) {
+      const error = new Error('workspace changed before the message could be sent');
+      set((current) => ({
+        state: current.state ? appendSystemError(current.state, error.message) : current.state,
+      }));
+      throw error;
+    }
 
     set({
       state: appendChatMessages(state, [

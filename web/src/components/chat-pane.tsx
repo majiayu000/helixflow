@@ -85,8 +85,9 @@ export function ChatPane({
   const submit = async (text = draft) => {
     const trimmed = text.trim();
     if (!trimmed || busy) return;
-    setDraft('');
-    await onSend(trimmed);
+    const submittedDraft = draft;
+    const nextDraft = await composerDraftAfterSubmit(submittedDraft, trimmed, onSend);
+    setDraft((current) => (current === submittedDraft ? nextDraft : current));
   };
 
   return (
@@ -180,6 +181,19 @@ export function ChatPane({
       </div>
     </aside>
   );
+}
+
+export async function composerDraftAfterSubmit(
+  draft: string,
+  submittedText: string,
+  onSend: (text: string) => Promise<void>,
+): Promise<string> {
+  try {
+    await onSend(submittedText);
+    return submittedText === draft.trim() ? '' : draft;
+  } catch {
+    return draft;
+  }
 }
 
 function EditSessionCard({

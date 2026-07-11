@@ -57,6 +57,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const applyCanvasPresence = useWorkbenchStore((store) => store.applyCanvasPresence);
   const applyEvent = useWorkbenchStore((store) => store.applyEvent);
   const workspaceGeneration = useWorkbenchStore((store) => store.workspaceGeneration);
+  const activeWorkspaceId = useWorkbenchStore((store) => store.activeWorkspaceId);
   const sendCanvasPresence = useWorkbenchStore((store) => store.sendCanvasPresence);
   const sendMessage = useWorkbenchStore((store) => store.sendMessage);
   const submitCanvasCommentOp = useWorkbenchStore((store) => store.submitCanvasCommentOp);
@@ -103,6 +104,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
 
   useEffect(() => {
     if (!activeState?.workspace.id) return;
+    if (activeWorkspaceId !== activeState.workspace.id) return;
     const generation = workspaceGeneration;
     const isCurrentSubscription = () =>
       useWorkbenchStore.getState().workspaceGeneration === generation &&
@@ -119,6 +121,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
     });
   }, [
     activeState?.workspace.id,
+    activeWorkspaceId,
     applyCanvasPresence,
     applyEvent,
     setConnection,

@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './app';
 import { ArtifactStage } from './components/artifact-stage';
-import { shouldSubmitComposerKey } from './components/chat-pane';
+import { composerDraftAfterSubmit, shouldSubmitComposerKey } from './components/chat-pane';
 import {
   DEFAULT_GRAPH_VIEW,
   GraphCanvas,
@@ -2094,6 +2094,17 @@ describe('ManualProposalPanel', () => {
 });
 
 describe('chat composer keyboard handling', () => {
+  it('clears only after success and preserves the draft after rejection', async () => {
+    await expect(
+      composerDraftAfterSubmit('keep me', 'keep me', async () => {
+        throw new Error('workspace changed');
+      }),
+    ).resolves.toBe('keep me');
+    await expect(composerDraftAfterSubmit('clear me', 'clear me', async () => undefined)).resolves.toBe(
+      '',
+    );
+  });
+
   it('does not submit Enter while IME composition is active', () => {
     expect(shouldSubmitComposerKey({
       key: 'Enter',

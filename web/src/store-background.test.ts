@@ -263,11 +263,16 @@ describe('background run state reconciliation', () => {
     useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
     const hydrateB = useWorkbenchStore.getState().hydrate('ws_b');
 
-    await useWorkbenchStore.getState().sendMessage('must not post to A');
+    await expect(
+      useWorkbenchStore.getState().sendMessage('must not post to A'),
+    ).rejects.toThrow('workspace changed');
     expect(vi.mocked(fetch).mock.calls.map((call) => String(call[0]))).not.toContain(
       '/api/workspaces/ws_a/messages',
     );
-    expect(useWorkbenchStore.getState().state?.chat.messages).toHaveLength(0);
+    expect(useWorkbenchStore.getState().state?.chat.messages.at(-1)).toMatchObject({
+      role: 'system',
+      kind: 'run_failed',
+    });
 
     responses.resolve('ws_b', stateForWorkspace('ws_b'));
     await hydrateB;
