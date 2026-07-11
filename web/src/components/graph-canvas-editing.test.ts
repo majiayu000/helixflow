@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { canvasCapabilities } from './graph-canvas-capabilities';
+import { createCanvasEditActions } from './graph-canvas-edit-actions';
 import type { NodeDefinition, WorkbenchState, WorkflowGraph } from '../types';
 import {
   buildAddNodeProposalInput,
@@ -10,6 +12,8 @@ import {
 } from './graph-canvas-editing';
 
 describe('graph canvas editing helpers', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
   it('builds add-node inputs with default params and unique ids', () => {
     const input = buildAddNodeProposalInput({
       baseVersionId: 'ver_1',
@@ -90,6 +94,34 @@ describe('graph canvas editing helpers', () => {
 
   it('generates deterministic unique ids from existing ids', () => {
     expect(uniqueNodeId(['node', 'node_2'], 'node')).toBe('node_3');
+  });
+
+  it('does not dispatch add, delete, or paste mutations in view mode', async () => {
+    const onCreateProposal = vi.fn(async () => undefined);
+    const readText = vi.fn(async () => buildSelectionClipboardText({
+      sourceVersionId: 'ver_1',
+      nodes: [textNode()],
+      edges: [],
+      workflowGraph: workflowGraph(),
+    }));
+    vi.stubGlobal('navigator', { clipboard: { readText } });
+    const actions = createCanvasEditActions({
+      capabilities: canvasCapabilities('view', true),
+      drawGraph: { nodes: [textNode(), videoNode()], edges: [textToVideoEdge()] },
+      onCreateProposal,
+      setClipboardStatus: vi.fn(),
+      versionId: 'ver_1',
+      view: { x: 0, y: 0, z: 1 },
+      viewportSize: { width: 800, height: 600 },
+      workflowGraph: workflowGraph(),
+    });
+
+    actions.addNode(videoDefinition());
+    actions.deleteSelection(new Set(['video']));
+    await actions.pasteSelection();
+
+    expect(onCreateProposal).not.toHaveBeenCalled();
+    expect(readText).not.toHaveBeenCalled();
   });
 });
 

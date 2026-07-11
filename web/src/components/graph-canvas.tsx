@@ -36,6 +36,7 @@ import {
   CanvasCommentsPanel,
 } from './graph-canvas-collaboration';
 import { outputsByCanvasNode } from './graph-canvas-artifacts';
+import { canvasCapabilities } from './graph-canvas-capabilities';
 import { createCanvasEditActions } from './graph-canvas-edit-actions';
 import { GraphEdges } from './graph-canvas-edges';
 import { GraphInspector, GraphSelectionInspector } from './graph-canvas-inspector';
@@ -153,7 +154,8 @@ export function GraphCanvas({
   const sourceGraph = canvasGraph ?? graph;
   const drawGraph = pendingProposal?.previewGraph ?? sourceGraph;
   const activeMode = pendingProposal ? 'review' : mode;
-  const connectionDisabled = !onCreateProposal || activeMode === 'review';
+  const capabilities = canvasCapabilities(activeMode, Boolean(onCreateProposal));
+  const connectionDisabled = !capabilities.connect;
   const displayNodes = useMemo(
     () => applySizeDrafts(applyPositionDrafts(drawGraph.nodes, draftPositions), draftSizes),
     [drawGraph.nodes, draftPositions, draftSizes],
@@ -196,7 +198,7 @@ export function GraphCanvas({
     [displayNodes],
   );
   const editActions = createCanvasEditActions({
-    disabled: connectionDisabled,
+    capabilities,
     drawGraph,
     onCreateProposal,
     setClipboardStatus,
@@ -211,7 +213,7 @@ export function GraphCanvas({
     startNodeResize,
     stopNodeResize,
   } = useNodeResizeController({
-    connectionDisabled,
+    connectionDisabled: !capabilities.resize,
     onCreateProposal,
     pendingProposal: Boolean(pendingProposal),
     setConnectionStatus,
@@ -309,6 +311,7 @@ export function GraphCanvas({
   }, []);
 
   const handleWheel = (event: WheelEvent<HTMLElement>) => {
+    if (!capabilities.zoom) return;
     const target = event.target instanceof Element ? event.target : null;
     if (target?.closest('.canvas-toolbar,.zoom-ctl,.inspector,.canvas-minimap')) return;
     event.preventDefault();
@@ -356,7 +359,8 @@ export function GraphCanvas({
   };
 
   const shouldStartSelectionDrag = (event: PointerEvent<HTMLElement>) =>
-    activeMode === 'edit' || event.shiftKey || event.metaKey || event.ctrlKey;
+    capabilities.select &&
+    (activeMode === 'edit' || event.shiftKey || event.metaKey || event.ctrlKey);
 
   const startConnectionDrag = (
     node: GraphNodeState,
@@ -444,12 +448,12 @@ export function GraphCanvas({
   };
 
   const handleNodePointerDown = (node: GraphNodeState, event: PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || !capabilities.select) return;
     event.stopPropagation();
     const additive = event.shiftKey || event.metaKey || event.ctrlKey;
     const nextSelection = selectionForNodePointer(selectedIds, node.id, additive);
     setSelectedIds(nextSelection);
-    if (pendingProposal) return;
+    if (!capabilities.move) return;
 
     const starts = [...nextSelection]
       .map((nodeId) => nodeById.get(nodeId))
@@ -602,6 +606,7 @@ export function GraphCanvas({
           drag.current = null;
           return;
         }
+        if (!capabilities.pan) return;
         drag.current = {
           pointerId: event.pointerId,
           sx: event.clientX,
@@ -719,7 +724,7 @@ export function GraphCanvas({
             node={node}
             artifactOutputs={outputsByNodeId.get(node.id) ?? []}
             portHighlights={portHighlights}
-            resizable={!connectionDisabled && !pendingProposal}
+            resizable={capabilities.resize}
             selected={selectedIds.has(node.id)}
             stepState={stepStateByNodeId.get(node.id) ?? node.status}
             onSelectOutput={onSelectOutput}
@@ -765,8 +770,8 @@ export function GraphCanvas({
           definition={definitionByType.get(selectedNode.nodeType)}
           node={selectedNode}
           onClose={() => setSelectedIds(new Set())}
-          onRequestProposal={pendingProposal ? undefined : onRequestNodeProposal}
-          onSetParam={pendingProposal ? undefined : onSetParam}
+          onRequestProposal={capabilities.move ? onRequestNodeProposal : undefined}
+          onSetParam={capabilities.move ? onSetParam : undefined}
           workflowNode={selectedWorkflowNode}
         />
       )}
@@ -774,7 +779,7 @@ export function GraphCanvas({
         comments={comments}
         edges={drawGraph.edges}
         nodes={displayNodes}
-        onCommentOp={pendingProposal ? undefined : onCommentOp}
+        onCommentOp={capabilities.move ? onCommentOp : undefined}
         selectedNodeId={selectedNodeId}
         view={view}
         viewportSize={viewportSize}
