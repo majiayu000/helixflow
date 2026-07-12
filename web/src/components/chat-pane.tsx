@@ -52,7 +52,6 @@ export function ChatPane({
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const isComposingRef = useRef(false);
-  const entries = chatEntries(messages);
   const selectedSummary = selectedNodeIds.length > 0
     ? `@选中 ${selectedNodeIds.join(', ')}`
     : '@未选中';
@@ -81,30 +80,15 @@ export function ChatPane({
       <div className="session-brief">
         你在手动改图 — 我不会打断。提交编辑后，我的下一个提案会基于它。
       </div>
-      {editSessionSummary && (
-        <EditSessionCard
+      <div className="chat-msgs chat-msgs--session" ref={scrollRef}>
+        <EditSessionWorkspace
           busy={busy}
+          messages={messages}
+          selectedNodeIds={selectedNodeIds}
           summary={editSessionSummary}
           onCommit={onCommitEdits}
           onDiscard={onDiscardEdits}
         />
-      )}
-      <div className="chat-msgs" ref={scrollRef}>
-        {messages.length === 0 ? (
-          <div className="empty-chat">
-            还没有消息。
-            <br />
-            描述你想设计的界面、应用或工作流，Agent 会调用真实 Codex 后端处理。
-          </div>
-        ) : (
-          entries.map((entry) =>
-            entry.type === 'message' ? (
-              <MessageRow key={entry.message.id} message={entry.message} />
-            ) : (
-              <AssistantTurn key={entry.id} logs={entry.logs} message={entry.message} />
-            ),
-          )
-        )}
         <RunErrorCard busy={busy} run={run} onRequestFix={onSend} />
         {pendingProposal && <ProposalMessage
           busy={busy}
@@ -172,6 +156,63 @@ export async function composerDraftAfterSubmit(
   }
 }
 
+function EditSessionWorkspace({
+  summary,
+  selectedNodeIds,
+  messages,
+  busy,
+  onCommit,
+  onDiscard,
+}: {
+  summary: EditSessionSummary | null;
+  selectedNodeIds: string[];
+  messages: ChatMessage[];
+  busy: boolean;
+  onCommit: () => Promise<void>;
+  onDiscard: () => void;
+}) {
+  const latestUserText = latestUserMessage(messages)?.text;
+  const logEntries = chatEntries(messages).filter(isToolLogEntry);
+
+  return (
+    <div className="edit-session-workspace">
+      {summary ? (
+        <EditSessionCard
+          busy={busy}
+          summary={summary}
+          onCommit={onCommit}
+          onDiscard={onDiscard}
+        />
+      ) : (
+        <EditSessionIdleCard />
+      )}
+      <div className="edit-session-request">
+        {latestUserText ?? '围绕当前画布继续编辑；我会在你提交后再基于新版本工作。'}
+      </div>
+      <div className="edit-session-note">
+        好 — 会围绕
+        <span>{selectedNodeIds.length > 0 ? selectedNodeIds.join(' + ') : '当前工作流'}</span>
+        的内容改写，结果回填到节点对话框。
+      </div>
+      <div className="edit-session-chips">
+        <span>@选中 {selectedNodeIds.length > 0 ? selectedNodeIds.join(', ') : '无'}</span>
+        <span>含上游 ×{Math.max(1, selectedNodeIds.length || 1)}</span>
+      </div>
+      {logEntries.length > 0 && (
+        <div className="session-tool-log">
+          {logEntries.slice(-2).map((entry) => (
+            <AssistantTurn
+              key={entry.id}
+              logs={entry.logs}
+              message={entry.message}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function EditSessionCard({
   summary,
   busy,
@@ -191,16 +232,44 @@ function EditSessionCard({
       </div>
       <div className="edit-session-list">
         {summary.items.map((item, index) => (
-          <span key={`${index}-${item}`}>{item}</span>
+          <span className="edit-op-row" key={`${index}-${item}`}>
+            <b className={`edit-op-sign edit-op-sign--${editOpTone(item)}`}>
+              {editOpSign(item)}
+            </b>
+            {item}
+          </span>
         ))}
       </div>
       <div className="edit-session-actions">
-        <button className="btn btn--ghost btn--sm" disabled={busy} onClick={onDiscard}>
-          放弃
-        </button>
         <button className="btn btn--primary btn--sm" disabled={busy} onClick={() => void onCommit()}>
           <Icon n="check" s={13} />
           提交编辑
+        </button>
+        <button className="btn btn--ghost btn--sm" disabled={busy} onClick={onDiscard}>
+          放弃
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function EditSessionIdleCard() {
+  return (
+    <div className="edit-session-card edit-session-card--idle">
+      <div className="edit-session-head">
+        <span>UNCOMMITTED · 等待编辑</span>
+        <em>idle</em>
+      </div>
+      <div className="edit-session-empty">
+        在画布移动节点、连线、改参数后，这里会列出待提交操作。
+      </div>
+      <div className="edit-session-actions">
+        <button className="btn btn--primary btn--sm" disabled>
+          <Icon n="check" s={13} />
+          提交编辑
+        </button>
+        <button className="btn btn--ghost btn--sm" disabled>
+          放弃
         </button>
       </div>
     </div>
@@ -259,6 +328,29 @@ function RunErrorCard({
       )}
     </div>
   );
+}
+
+function latestUserMessage(messages: ChatMessage[]): ChatMessage | undefined {
+  return [...messages].reverse().find((message) => message.role === 'user');
+}
+
+function isToolLogEntry(
+  entry: ChatEntry,
+): entry is Extract<ChatEntry, { type: 'assistantTurn' }> {
+  return entry.type === 'assistantTurn' && entry.logs.length > 0;
+}
+
+function editOpSign(item: string): '+' | '~' | '-' {
+  if (/^(Add|Connect)/.test(item)) return '+';
+  if (/^(Remove|Disconnect)/.test(item)) return '-';
+  return '~';
+}
+
+function editOpTone(item: string): 'add' | 'upd' | 'del' {
+  const sign = editOpSign(item);
+  if (sign === '+') return 'add';
+  if (sign === '-') return 'del';
+  return 'upd';
 }
 
 export function shouldSubmitComposerKey(event: ComposerKeyEvent, isComposing = false): boolean {
