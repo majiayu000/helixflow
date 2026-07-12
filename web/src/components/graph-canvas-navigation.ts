@@ -34,13 +34,13 @@ export type MinimapLayout = {
   }>;
 };
 
-export const DEFAULT_GRAPH_VIEW: ViewState = { x: 20, y: 18, z: 0.78 };
-export const GRAPH_CANVAS_VIEW_STORAGE_PREFIX = 'helixflow:graph-canvas-view:';
-export const GRAPH_NODE_WIDTH = 188;
-export const GRAPH_NODE_HEAD_HEIGHT = 31;
-export const GRAPH_NODE_ROW_HEIGHT = 26;
-export const GRAPH_NODE_MIN_WIDTH = 140;
-export const GRAPH_NODE_MIN_HEIGHT = 96;
+export const DEFAULT_GRAPH_VIEW: ViewState = { x: 72, y: 98, z: 0.78 };
+export const GRAPH_CANVAS_VIEW_STORAGE_PREFIX = 'helixflow:graph-canvas-view:v2:';
+export const GRAPH_NODE_WIDTH = 240;
+export const GRAPH_NODE_HEAD_HEIGHT = 43;
+export const GRAPH_NODE_ROW_HEIGHT = 32;
+export const GRAPH_NODE_MIN_WIDTH = 180;
+export const GRAPH_NODE_MIN_HEIGHT = 116;
 export const GRAPH_NODE_MAX_WIDTH = 420;
 export const GRAPH_NODE_MAX_HEIGHT = 360;
 export const MINIMAP_WIDTH = 188;

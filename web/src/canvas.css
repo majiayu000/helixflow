@@ -401,13 +401,13 @@
 
 .node {
   position: absolute;
-  width: 188px;
+  width: 240px;
   border: 1px solid var(--border-2);
   border-radius: var(--r-md);
   background: var(--surface);
   box-shadow: var(--sh-md);
   cursor: grab;
-  font-size: 11.5px;
+  font-size: 12px;
   touch-action: none;
   user-select: none;
 }
@@ -430,13 +430,15 @@
 .node-title {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   border-radius: var(--r-md) var(--r-md) 0 0;
   border-bottom: 1px solid var(--border);
-  background: #1b1b21;
+  background: color-mix(in srgb, var(--surface-3) 78%, #050507);
   color: var(--text);
-  padding: 7px 10px;
-  font-weight: 600;
+  padding: 10px 12px;
+  font-size: 13.5px;
+  font-weight: 800;
+  line-height: 1.15;
 }
 
 .node-title .swatch,
@@ -452,23 +454,25 @@
   margin-left: auto;
   color: var(--text-4);
   font-family: var(--font-mono);
-  font-size: 9.5px;
-  font-weight: 500;
+  font-size: 10px;
+  font-weight: 800;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-transform: uppercase;
 }
 
 .node-body {
   position: relative;
-  padding: 8px 0;
+  padding: 8px 0 10px;
 }
 
 .io-row {
-  min-height: 20px;
+  min-height: 28px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 3px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  padding: 4px 12px 8px;
 }
 
 .io-in,
@@ -487,8 +491,8 @@
 }
 
 .port {
-  width: 9px;
-  height: 9px;
+  width: 10px;
+  height: 10px;
   flex-shrink: 0;
   border: 2px solid var(--bg);
   border-radius: 50%;
@@ -499,17 +503,18 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  margin: 3px 10px;
+  gap: 10px;
+  margin: 7px 12px 0;
   border: 1px solid var(--border);
   border-radius: var(--r-xs);
-  background: var(--surface-2);
-  padding: 4px 8px;
+  background: color-mix(in srgb, var(--surface-2) 82%, var(--surface-3));
+  padding: 7px 10px;
 }
 
 .param-k {
   color: var(--text-3);
-  font-size: 11px;
+  font-size: 11.5px;
+  font-weight: 800;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -518,7 +523,8 @@
   min-width: 0;
   color: var(--text);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 11.5px;
+  font-weight: 700;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
