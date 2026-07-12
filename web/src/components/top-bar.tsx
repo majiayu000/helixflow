@@ -66,9 +66,11 @@ export function TopBar({
   const versionNumber = versionOrdinal(state);
   const dirtyEditCount = queueLockReason.kind === 'dirty_edits' ? queueLockReason.count : 0;
   const nextVersionLabel = `v${versionNumber + (dirtyEditCount > 0 ? 1 : 0)}`;
+  const queueIcon = running ? 'stop' : dirtyEditCount > 0 ? 'lock' : 'play';
+  const queueLabel = running ? '中断' : dirtyEditCount > 0 ? 'QUEUE' : '运行 Queue';
 
   return (
-    <div className="wb-top">
+    <div className={dirtyEditCount > 0 ? 'wb-top wb-top--editing' : 'wb-top'}>
       <div className="top-left">
         <div className="brand" aria-label="helixflow">
           <span className="brand-mark" aria-hidden="true">
@@ -152,6 +154,12 @@ export function TopBar({
           <Icon n="export" />
         </button>
         <span className="divider-v" />
+        {dirtyEditCount > 0 && onCommitEdits && (
+          <button className="btn btn--commit btn--sm" disabled={busy} onClick={onCommitEdits}>
+            <Icon n="check" s={13} />
+            提交编辑 → {nextVersionLabel}
+          </button>
+        )}
         <button className="btn btn--soft btn--sm top-agent-run" disabled={agentRunDisabled || busy} onClick={onAgentRun}>
           <Icon n="spark" s={13} fill />
           Agent 运行
@@ -165,11 +173,6 @@ export function TopBar({
           />
           强制重跑
         </label>
-        {dirtyEditCount > 0 && onCommitEdits && (
-          <button className="btn btn--commit btn--sm" disabled={busy} onClick={onCommitEdits}>
-            ✓ 提交编辑 → {nextVersionLabel}
-          </button>
-        )}
         <button
           className={running ? 'btn btn--danger btn--sm' : 'btn btn--queue btn--sm'}
           disabled={runDisabled || (!running && busy)}
@@ -180,8 +183,8 @@ export function TopBar({
           }
           onClick={onQueue}
         >
-          <Icon n={running ? 'stop' : 'play'} s={13} fill />
-          {running ? '中断' : '运行 Queue'}
+          <Icon n={queueIcon} s={13} fill={queueIcon !== 'lock'} />
+          {queueLabel}
         </button>
       </div>
     </div>

@@ -164,6 +164,10 @@ textarea:disabled {
   flex-shrink: 0;
 }
 
+.wb-top--editing {
+  background: color-mix(in srgb, var(--surface) 88%, #070708);
+}
+
 .top-left {
   min-width: 0;
   display: flex;
@@ -492,12 +496,25 @@ textarea:disabled {
 }
 
 .btn--commit {
-  min-width: 164px;
-  border-color: var(--accent-line);
-  background: color-mix(in srgb, var(--accent-soft) 72%, transparent);
+  min-width: 174px;
+  border-color: color-mix(in srgb, var(--accent) 76%, var(--border-2));
+  background: color-mix(in srgb, var(--accent-soft) 84%, transparent);
   color: var(--accent);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.05),
+    0 0 28px color-mix(in srgb, var(--accent-line) 24%, transparent);
   font-weight: 800;
+}
+
+.wb-top--editing .top-agent-run,
+.wb-top--editing .force-rerun-toggle {
+  display: none;
+}
+
+.wb-top--editing .btn--queue {
+  min-width: 132px;
+  background: color-mix(in srgb, var(--surface-3) 82%, transparent);
+  color: var(--text-3);
 }
 
 .btn--queue {
