@@ -43,6 +43,7 @@ export function GraphInspector({
   );
   const [errors, setErrors] = useState<InspectorErrorMap>({});
   const [savingKey, setSavingKey] = useState<string | null>(null);
+  const [fieldScale, setFieldScale] = useState(1);
   const readonlyReason = !workflowNode
     ? '当前 workflow graph 不可用'
     : !definition
@@ -83,67 +84,103 @@ export function GraphInspector({
     }
   };
 
+  const nudgeFieldScale = (delta: number) => {
+    setFieldScale((current) => Math.min(1.16, Math.max(0.92, Number((current + delta).toFixed(2)))));
+  };
+
   const style = nodeInspectorStyle(
     node,
     view ?? { x: 0, y: 0, z: 1 },
     viewportSize ?? { width: 900, height: 640 },
   );
+  const detailsStyle = { '--inspector-field-scale': fieldScale } as CSSProperties;
 
   return (
     <div
-      className="inspector p-inspector inspector-floating"
+      className="inspector p-inspector inspector-floating inspector-compact"
       onClick={(event) => event.stopPropagation()}
       style={style}
     >
-      <div className="inspector-head">
-        <div className="kicker">选中节点 · {node.id}</div>
-        <div className="title">
-          <span style={{ background: categorySwatch(node.category) }} />
-          {node.title}
-        </div>
-        <button className="p-close" onClick={onClose}>
+      <span className="selection-summary-accessible">
+        选中节点 · {node.id} · {node.title}
+      </span>
+      <div className="inspector-node-actions">
+        <details className="inspector-edit-details">
+          <summary className="inspector-tool inspector-tool-icon" title="编辑参数">
+            <Icon n="sliders" s={14} />
+            <span className="selection-summary-accessible">编辑参数</span>
+          </summary>
+          <div className="inspector-details-panel" style={detailsStyle}>
+            <div className="inspector-head">
+              <div className="kicker">选中节点 · {node.id}</div>
+              <div className="title">
+                <span style={{ background: categorySwatch(node.category) }} />
+                {node.title}
+              </div>
+              <button className="p-close" onClick={onClose} type="button">
+                x
+              </button>
+            </div>
+            <div className="inspector-body">
+              {catalogError && <div className="inspector-error">{catalogError}</div>}
+              <div className="field">
+                <span className="field-label">node type</span>
+                <span className="field-input">{node.nodeType}</span>
+              </div>
+              <div className="field">
+                <span className="field-label">provider</span>
+                <span className="field-input">{node.provider ?? 'local/builtin'}</span>
+              </div>
+              {fields.length === 0 && (
+                <div className="field">
+                  <span className="field-label">params</span>
+                  <span className="field-input field-area">{node.summary}</span>
+                </div>
+              )}
+              {fields.map((field) => (
+                <InspectorParamField
+                  disabledReason={readonlyReason}
+                  draft={drafts[field.key] ?? ''}
+                  error={errors[field.key]}
+                  field={field}
+                  key={field.key}
+                  onChange={(value) => updateDraft(field.key, value)}
+                  onRandomSeed={() => updateDraft(field.key, String(randomSeed()))}
+                  onSave={() => void saveParam(field)}
+                  saving={savingKey === field.key}
+                />
+              ))}
+            </div>
+          </div>
+        </details>
+        <button className="inspector-tool inspector-font-tool" onClick={() => nudgeFieldScale(-0.06)} type="button">
+          A-
+        </button>
+        <button className="inspector-tool inspector-font-tool" onClick={() => nudgeFieldScale(0.06)} type="button">
+          A+
+        </button>
+        <button
+          className="inspector-tool inspector-tool-primary"
+          disabled={!onRequestProposal}
+          onClick={() => void onRequestProposal?.(node.id).catch(() => undefined)}
+          type="button"
+        >
+          <Icon n="play" s={13} fill />
+          生成
+        </button>
+        <button
+          className="inspector-tool"
+          disabled={!onRequestProposal}
+          onClick={() => void onRequestProposal?.(node.id).catch(() => undefined)}
+          type="button"
+        >
+          <Icon n="spark" s={13} />
+          对话
+          <span className="selection-summary-accessible">Ask Agent for node proposal</span>
+        </button>
+        <button className="inspector-tool inspector-tool-close" onClick={onClose} title="取消选择" type="button">
           x
         </button>
-      </div>
-      <div className="inspector-body">
-        {catalogError && <div className="inspector-error">{catalogError}</div>}
-        <div className="field">
-          <span className="field-label">node type</span>
-          <span className="field-input">{node.nodeType}</span>
-        </div>
-        <div className="field">
-          <span className="field-label">provider</span>
-          <span className="field-input">{node.provider ?? 'local/builtin'}</span>
-        </div>
-        {onRequestProposal && (
-          <button
-            className="inspector-agent-request"
-            onClick={() => void onRequestProposal(node.id).catch(() => undefined)}
-          >
-            <Icon n="spark" s={13} />
-            节点对话
-            <span className="selection-summary-accessible">Ask Agent for node proposal</span>
-          </button>
-        )}
-        {fields.length === 0 && (
-          <div className="field">
-            <span className="field-label">params</span>
-            <span className="field-input field-area">{node.summary}</span>
-          </div>
-        )}
-        {fields.map((field) => (
-          <InspectorParamField
-            disabledReason={readonlyReason}
-            draft={drafts[field.key] ?? ''}
-            error={errors[field.key]}
-            field={field}
-            key={field.key}
-            onChange={(value) => updateDraft(field.key, value)}
-            onRandomSeed={() => updateDraft(field.key, String(randomSeed()))}
-            onSave={() => void saveParam(field)}
-            saving={savingKey === field.key}
-          />
-        ))}
       </div>
     </div>
   );
@@ -448,18 +485,18 @@ function nodeInspectorStyle(
   view: ViewState,
   viewportSize: ViewportSize,
 ): CSSProperties {
-  const panelWidth = 320;
-  const gap = 18;
+  const panelWidth = 316;
+  const gap = 12;
   const nodeLeft = node.position.x * view.z + view.x;
   const nodeTop = node.position.y * view.z + view.y;
   const nodeRight = nodeLeft + graphNodeWidth(node) * view.z;
-  const rightSide = nodeRight + gap;
-  const leftSide = nodeLeft - panelWidth - gap;
-  const left = rightSide + panelWidth < viewportSize.width - 14 ? rightSide : leftSide;
+  const nodeCenter = nodeLeft + (graphNodeWidth(node) * view.z) / 2;
+  const topSide = nodeTop - 46 - gap;
+  const left = Math.min(nodeRight - panelWidth, nodeCenter - panelWidth / 2);
   const maxLeft = Math.max(14, viewportSize.width - panelWidth - 14);
-  const maxTop = Math.max(92, viewportSize.height - 420);
+  const maxTop = Math.max(92, viewportSize.height - 96);
   return {
     left: Math.min(Math.max(14, left), maxLeft),
-    top: Math.min(Math.max(92, nodeTop), maxTop),
+    top: Math.min(Math.max(92, topSide), maxTop),
   };
 }

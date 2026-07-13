@@ -859,6 +859,113 @@
   backdrop-filter: blur(16px);
 }
 
+.inspector.inspector-compact {
+  width: auto;
+  max-height: none;
+  overflow: visible;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent-soft) 34%, transparent),
+    0 16px 42px rgb(0 0 0 / 34%);
+}
+
+.inspector-node-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  pointer-events: auto;
+}
+
+.inspector-edit-details {
+  position: relative;
+}
+
+.inspector-edit-details > summary {
+  list-style: none;
+}
+
+.inspector-edit-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.inspector-tool {
+  height: 32px;
+  min-width: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text-2);
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.inspector-tool-icon,
+.inspector-tool-close {
+  padding: 0;
+}
+
+.inspector-font-tool {
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.inspector-tool-primary {
+  border-color: color-mix(in srgb, var(--accent-line) 68%, var(--border-2));
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.inspector-tool:hover:not(:disabled),
+.inspector-edit-details[open] > .inspector-tool {
+  border-color: color-mix(in srgb, var(--accent-line) 62%, var(--border-2));
+  background: color-mix(in srgb, var(--surface-3) 60%, var(--accent-soft));
+  color: var(--text);
+}
+
+.inspector-tool-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent-soft) 72%, var(--surface-3));
+  color: var(--accent);
+}
+
+.inspector-tool:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.inspector-details-panel {
+  position: absolute;
+  top: 42px;
+  right: 0;
+  width: 320px;
+  max-height: min(520px, calc(100vh - 170px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--accent-line) 62%, var(--border-2));
+  border-radius: var(--r-lg);
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent-soft) 48%, transparent),
+    0 22px 56px rgb(0 0 0 / 42%);
+  backdrop-filter: blur(16px);
+}
+
+.inspector-details-panel .field-label {
+  font-size: calc(11px * var(--inspector-field-scale, 1));
+}
+
+.inspector-details-panel .field-input {
+  font-size: calc(11.5px * var(--inspector-field-scale, 1));
+}
+
 .selection-actionbar {
   position: absolute;
   z-index: 8;
