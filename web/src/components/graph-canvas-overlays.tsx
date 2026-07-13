@@ -82,19 +82,19 @@ export function CanvasGuides({
   const rightNode = guideNodes.reduce((best, item) =>
     item.rect.left + item.rect.width > best.rect.left + best.rect.width ? item : best,
   );
-  const multiNodes = selectedNodes.length > 1 ? selectedNodes : nodes.slice(0, 2);
-  const multiRect = multiNodes.length > 1 ? nodesScreenBounds(multiNodes, view, 14) : null;
-  const multiLabel =
-    selectedNodes.length > 1 ? `${selectedNodes.length} selected` : '框选示例';
+  const multiRect = selectedNodes.length > 1 ? nodesScreenBounds(selectedNodes, view, 14) : null;
+  const multiLabel = `${selectedNodes.length} selected`;
   const dropStyle = dropZoneStyle(viewportSize);
 
   return (
     <div className="canvas-guide-overlay" aria-hidden="true">
-      <GuidePill
-        index="1"
-        label="工具条：新建文本/图片/视频节点、导入素材"
-        style={{ left: 46, top: 162 }}
-      />
+      {selectedNodes.length === 0 && (
+        <GuidePill
+          index="1"
+          label="工具条：新建文本/图片/视频节点、导入素材"
+          style={{ left: 46, top: 98 }}
+        />
+      )}
       {multiRect && (
         <span className="guide-selection-frame" style={clampRect(multiRect, viewportSize)}>
           <span className="guide-selection-count">{multiLabel}</span>
