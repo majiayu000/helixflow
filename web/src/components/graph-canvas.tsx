@@ -565,6 +565,7 @@ export function GraphCanvas({
             dirty={Boolean(draftPositions[node.id]) && !pendingProposal}
             locked={Boolean(pendingProposal)}
             node={node}
+            workflowNode={workflowGraph?.nodes[node.id]}
             artifactOutputs={outputsByNodeId.get(node.id) ?? []}
             portHighlights={connection.portHighlights}
             resizable={capabilities.resize}
@@ -590,12 +591,7 @@ export function GraphCanvas({
           presenceByActor={presenceByActor}
         />
       </div>
-      <CanvasGuides
-        nodes={displayNodes}
-        selectedNodes={selectedNodes}
-        view={view}
-        viewportSize={viewportSize}
-      />
+      <CanvasGuides nodes={displayNodes} selectedNodes={selectedNodes} view={view} viewportSize={viewportSize} />
       {nodeCount === 0 && <EmptyCanvas />}
       {selectionDrag && (
         <span
