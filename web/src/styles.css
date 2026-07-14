@@ -507,6 +507,8 @@ textarea:disabled {
 }
 
 .wb-top--editing .top-agent-run,
+.wb-top--editing .top-export,
+.wb-top--editing .top-status-strip,
 .wb-top--editing .force-rerun-toggle {
   display: none;
 }

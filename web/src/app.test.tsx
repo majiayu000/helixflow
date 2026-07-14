@@ -293,6 +293,42 @@ describe('App', () => {
     expect(markup).not.toContain('title="中断当前运行" disabled=""');
   });
 
+  it('keeps editing mode top bar focused on commit and queue actions', () => {
+    const markup = renderToStaticMarkup(
+      <TopBar
+        agentRunDisabled={true}
+        busy={false}
+        connection="live"
+        exportDisabled={false}
+        forceRerun={false}
+        historyOpen={false}
+        onAgentRun={() => {}}
+        onCommitEdits={() => {}}
+        onExport={() => {}}
+        onHistory={() => {}}
+        onNewWorkspace={() => {}}
+        onProviderSelect={() => {}}
+        onForceRerunChange={() => {}}
+        onQueue={() => {}}
+        onUndo={() => {}}
+        queueLockReason={{ kind: 'dirty_edits', count: 3 }}
+        runDisabled={true}
+        running={false}
+        state={state}
+        undoDisabled={false}
+      />,
+    );
+
+    expect(markup).toContain('wb-top--editing');
+    expect(markup).toContain('提交编辑 → v2');
+    expect(markup).toContain('QUEUE');
+    expect(markup).toContain('版本与运行历史');
+    expect(markup).not.toContain('aria-label="Runtime provider"');
+    expect(markup).not.toContain('导出 API workflow JSON');
+    expect(markup).not.toContain('Agent 运行');
+    expect(markup).not.toContain('强制重跑');
+  });
+
   it('renders unavailable provider status without Atlas fallback copy', () => {
     const markup = renderToStaticMarkup(
       <TopBar
