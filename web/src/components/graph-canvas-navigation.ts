@@ -34,6 +34,8 @@ export type MinimapLayout = {
   }>;
 };
 
+type CanvasViewStorage = Pick<Storage, 'getItem' | 'setItem'>;
+
 export const DEFAULT_GRAPH_VIEW: ViewState = { x: 72, y: 98, z: 0.78 };
 export const GRAPH_CANVAS_VIEW_STORAGE_PREFIX = 'helixflow:graph-canvas-view:v2:';
 export const GRAPH_NODE_WIDTH = 240;
@@ -220,9 +222,14 @@ function summaryParamCount(summary: string): number {
   }
 }
 
-function safeLocalStorage(): Storage | null {
+function safeLocalStorage(): CanvasViewStorage | null {
   try {
-    return typeof globalThis.localStorage === 'undefined' ? null : globalThis.localStorage;
+    const storage = globalThis.localStorage as Partial<Storage> | undefined;
+    return storage &&
+      typeof storage.getItem === 'function' &&
+      typeof storage.setItem === 'function'
+      ? (storage as CanvasViewStorage)
+      : null;
   } catch {
     return null;
   }
