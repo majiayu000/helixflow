@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GraphNodeState, WorkbenchState } from '../types';
 import { flushActions } from '../test-utils';
 import { GraphCanvas } from './graph-canvas';
-import { GraphCanvasToolbar } from './graph-canvas-toolbar';
 import { WorkflowNode } from './graph-canvas-node';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -24,7 +23,7 @@ describe('GraphCanvas view-mode integration', () => {
   });
 
   it('does not dispatch move, resize, or connection mutations in view mode', async () => {
-    renderer = await renderCanvas();
+    renderer = await renderCanvas(false);
     const workflowNode = renderer.root.findByType(WorkflowNode);
     const nodeEvent = pointerEvent();
 
@@ -51,28 +50,23 @@ describe('GraphCanvas view-mode integration', () => {
   });
 
   it('rejects view-mode delete and paste shortcuts with visible status', async () => {
-    renderer = await renderCanvas();
+    renderer = await renderCanvas(false);
 
     await act(async () => {
       section().props.onKeyDown(keyEvent('Delete'));
     });
-    expect(renderer.root.findByType(GraphCanvasToolbar).props.clipboardStatus).toBe(
-      '当前模式不允许删除',
-    );
+    expect(statusToastText()).toBe('当前模式不允许删除');
 
     await act(async () => {
       section().props.onKeyDown(keyEvent('v', { metaKey: true }));
       await flushActions();
     });
-    expect(renderer.root.findByType(GraphCanvasToolbar).props.clipboardStatus).toBe(
-      '当前模式不允许粘贴',
-    );
+    expect(statusToastText()).toBe('当前模式不允许粘贴');
     expect(onCreateProposal).not.toHaveBeenCalled();
   });
 
   it('cancels an in-flight edit connection before a view-mode pointer completion', async () => {
-    renderer = await renderCanvas();
-    await act(async () => renderer?.root.findByType(GraphCanvasToolbar).props.setMode('edit'));
+    renderer = await renderCanvas(true);
     const workflowNode = renderer.root.findByType(WorkflowNode);
     const event = pointerEvent();
     await act(async () => workflowNode.props.onOutputPortPointerDown(
@@ -82,7 +76,7 @@ describe('GraphCanvas view-mode integration', () => {
       event,
     ));
 
-    await act(async () => renderer?.root.findByType(GraphCanvasToolbar).props.setMode('view'));
+    await act(async () => renderer?.update(canvasElement(false)));
     await act(async () => section().props.onPointerUp(event));
 
     expect(onCreateProposal).not.toHaveBeenCalled();
@@ -90,8 +84,7 @@ describe('GraphCanvas view-mode integration', () => {
   });
 
   it('dispatches an edit-mode node move through the extracted drag controller', async () => {
-    renderer = await renderCanvas();
-    await act(async () => renderer?.root.findByType(GraphCanvasToolbar).props.setMode('edit'));
+    renderer = await renderCanvas(true);
     const workflowNode = renderer.root.findByType(WorkflowNode);
     const start = pointerEvent();
 
@@ -109,8 +102,7 @@ describe('GraphCanvas view-mode integration', () => {
   });
 
   it('keeps an edit-mode connection rejection visible through the extracted controller', async () => {
-    renderer = await renderCanvas();
-    await act(async () => renderer?.root.findByType(GraphCanvasToolbar).props.setMode('edit'));
+    renderer = await renderCanvas(true);
     class TestElement {}
     vi.stubGlobal('HTMLElement', TestElement);
     vi.stubGlobal('document', {
@@ -147,29 +139,36 @@ describe('GraphCanvas view-mode integration', () => {
       baseVersionId: 'ver_a',
       ops: [expect.objectContaining({ op: 'add_edge' })],
     }));
-    expect(renderer.root.findByType(GraphCanvasToolbar).props.connectionStatus).toBe(
-      'connection failed',
-    );
+    expect(statusToastText()).toBe('connection failed');
   });
 
-  async function renderCanvas(): Promise<ReactTestRenderer> {
+  async function renderCanvas(editable: boolean): Promise<ReactTestRenderer> {
     let next!: ReactTestRenderer;
     await act(async () => {
-      next = create(
-        <GraphCanvas
-          graph={{ nodes: [viewModeNode()], edges: [] }}
-          onCreateProposal={onCreateProposal}
-          outputs={[]}
-          pendingProposal={null}
-          run={run()}
-          versionId="ver_a"
-          workflowGraph={{ schema_version: 1, nodes: {}, edges: [] }}
-          workspaceId="ws_a"
-        />,
-      );
+      next = create(canvasElement(editable));
       await flushActions();
     });
     return next;
+  }
+
+  function canvasElement(editable: boolean) {
+    return (
+      <GraphCanvas
+        graph={{ nodes: [viewModeNode()], edges: [] }}
+        onCreateProposal={editable ? onCreateProposal : undefined}
+        outputs={[]}
+        pendingProposal={null}
+        run={run()}
+        versionId="ver_a"
+        workflowGraph={{ schema_version: 1, nodes: {}, edges: [] }}
+        workspaceId="ws_a"
+      />
+    );
+  }
+
+  function statusToastText(): string {
+    if (!renderer) throw new Error('renderer is not mounted');
+    return renderer.root.findByProps({ className: 'canvas-status-toast' }).children.join('');
   }
 
   function section() {

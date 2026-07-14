@@ -213,54 +213,26 @@
   background-size: 100% 100%, 22px 22px;
 }
 
-.canvas-toolbar {
+.canvas-status-toast {
   position: absolute;
-  top: 94px;
-  left: 28px;
-  z-index: 5;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.mode-seg {
-  display: flex;
+  left: 50%;
+  bottom: 18px;
+  z-index: 7;
+  max-width: min(520px, calc(100% - 320px));
+  overflow: hidden;
+  transform: translateX(-50%);
   border: 1px solid var(--border-2);
-  border-radius: var(--r-sm);
-  background: var(--surface);
-  box-shadow: var(--sh-sm);
-  padding: 2px;
-}
-
-.mode-seg button {
-  height: 26px;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
+  border-radius: 999px;
+  background: rgb(5 5 7 / 88%);
   color: var(--text-2);
-  padding: 0 12px;
+  box-shadow: 0 16px 42px rgb(0 0 0 / 34%);
+  padding: 7px 13px;
   font-size: 12px;
-  font-weight: 500;
-}
-
-.mode-seg button.on {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
-.canvas-pill {
-  height: 30px;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  border: 1px solid var(--border-2);
-  border-radius: var(--r-sm);
-  background: var(--surface);
-  color: var(--text-2);
-  padding: 0 10px;
-  box-shadow: var(--sh-sm);
-  font-size: 12px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+  backdrop-filter: blur(14px);
 }
 
 .manual-proposal-panel {
@@ -360,23 +332,6 @@
   width: 100%;
   justify-content: center;
   margin-top: 9px;
-}
-
-.layout-save {
-  height: 30px;
-  border: 1px solid var(--green);
-  border-radius: var(--r-sm);
-  background: var(--green);
-  color: var(--bg);
-  padding: 0 11px;
-  box-shadow: var(--sh-sm);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.layout-save:disabled {
-  opacity: 0.6;
-  cursor: progress;
 }
 
 .world {

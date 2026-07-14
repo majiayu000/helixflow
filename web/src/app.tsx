@@ -261,9 +261,6 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
             onCreateProposal={(input) => runAction(() => appendManualEdit(input), true)}
             onCommentOp={(input) => runAction(() => submitCanvasCommentOp(input), true)}
             onPresenceChange={(presence) => void sendCanvasPresence(presence)}
-            onQueueRun={() => {
-              if (!queueDisabled) void runAction(() => queueRun({ forceRerun }));
-            }}
             onRequestNodeProposal={(nodeId) =>
               runAction(
                 () => sendMessage(`围绕选中节点 ${nodeId} 生成最小修改 proposal。`, {
@@ -294,7 +291,6 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
             outputs={activeState.outputs}
             pendingProposal={activeState.pendingProposal}
             presenceByActor={presenceByActor}
-            queueRunDisabled={queueDisabled}
             run={uiState.run}
             versionId={activeState.workspace.versionId}
             workflowGraph={previewState.workflowGraph}

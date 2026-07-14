@@ -555,7 +555,8 @@ describe('App', () => {
   it('renders workspace state without a run record', () => {
     const markup = renderToStaticMarkup(<App initialState={{ ...state, run: null }} />);
 
-    expect(markup).toContain('未运行');
+    expect(markup).toContain('node-library-bar');
+    expect(markup).not.toContain('canvas-toolbar');
   });
 
   it('renders failed run diagnosis card without raw error by default', () => {
@@ -1678,7 +1679,7 @@ describe('GraphCanvas navigation', () => {
     expect(viewport.width).toBeGreaterThan(0);
   });
 
-  it('keeps pending proposal preview graph and diff styling while navigation UI is present', () => {
+  it('keeps pending proposal preview graph and diff styling without the legacy canvas toolbar', () => {
     const markup = renderToStaticMarkup(
       <GraphCanvas
         graph={state.graph}
@@ -1693,6 +1694,7 @@ describe('GraphCanvas navigation', () => {
     expect(markup).toContain('node--upd');
     expect(markup).toContain('node--locked');
     expect(markup).toContain('canvas-minimap');
+    expect(markup).not.toContain('canvas-toolbar');
     expect(markup).not.toContain('保存布局');
   });
 
@@ -1714,11 +1716,10 @@ describe('GraphCanvas navigation', () => {
     expect(canvasGraph.nodes[0]?.size).toEqual({ width: 260, height: 180 });
   });
 
-  it('renders canvas run control and node-attached artifacts', () => {
+  it('renders node-attached artifacts without the legacy canvas run control', () => {
     const markup = renderToStaticMarkup(
       <GraphCanvas
         graph={state.graph}
-        onQueueRun={() => undefined}
         onSelectOutput={() => undefined}
         outputs={[
           {
@@ -1733,7 +1734,7 @@ describe('GraphCanvas navigation', () => {
       />,
     );
 
-    expect(markup).toContain('Run');
+    expect(markup).not.toContain('canvas-toolbar');
     expect(markup).toContain('node-artifact');
     expect(markup).toContain('node-artifact--selected');
   });
@@ -1836,7 +1837,6 @@ describe('GraphCanvas navigation', () => {
         graph={state.graph}
         canvasGraph={storyGraph}
         comments={storyCanvas.comments}
-        onQueueRun={() => undefined}
         onSelectOutput={() => undefined}
         outputs={[
           {
@@ -1881,7 +1881,7 @@ describe('GraphCanvas navigation', () => {
     expect(markup).toContain('Approved result after reload');
     expect(markup).toContain('comment-marker');
     expect(markup).toContain('node-artifact--selected');
-    expect(markup).toContain('Run');
+    expect(markup).not.toContain('canvas-toolbar');
     expect(storyGraph.nodes.find((node) => node.id === 'canvas_video')?.position).toEqual({
       x: 520,
       y: 180,
