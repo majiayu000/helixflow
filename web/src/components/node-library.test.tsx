@@ -14,7 +14,7 @@ describe('NodeLibrary', () => {
     expect(filterNodeDefinitions(definitions, 'missing', 'all')).toEqual([]);
   });
 
-  it('renders catalog items and disables editing while pending', () => {
+  it('renders compact toolbar and disables editing while pending', () => {
     const markup = renderToStaticMarkup(
       <NodeLibrary
         catalog={catalog()}
@@ -24,9 +24,9 @@ describe('NodeLibrary', () => {
       />,
     );
 
-    expect(markup).toContain('节点库');
-    expect(markup).toContain('待处理变更');
-    expect(markup).toContain('Text To Video');
+    expect(markup).toContain('aria-label="节点工具条"');
+    expect(markup).toContain('title="文本节点"');
+    expect(markup).toContain('title="视频节点"');
     expect(markup).toContain('disabled=""');
   });
 });

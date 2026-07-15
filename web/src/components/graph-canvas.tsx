@@ -24,7 +24,6 @@ import { GraphEdges } from './graph-canvas-edges';
 import { GraphInspector, GraphSelectionInspector } from './graph-canvas-inspector';
 import {
   applyPositionDrafts,
-  positionUpdatesFromDrafts,
   type PositionDrafts,
 } from './graph-canvas-layout';
 import {
@@ -43,15 +42,13 @@ import {
 import { CanvasMinimap } from './graph-canvas-minimap';
 import { WorkflowNode } from './graph-canvas-node';
 import { useCanvasNodeDragController } from './graph-canvas-node-drag-controller';
-import { EmptyCanvas, ZoomControls } from './graph-canvas-overlays';
-import { GraphCanvasToolbar } from './graph-canvas-toolbar';
+import { CanvasGuides, EmptyCanvas, ZoomControls } from './graph-canvas-overlays';
 import {
   buildComparableNodeMap,
   buildEdgeSignatureSet,
   buildNodeMap,
   buildRunStepStateMap,
   nodeDiffState,
-  runStatusLabel,
 } from './graph-canvas-rendering';
 import {
   applySizeDrafts,
@@ -92,25 +89,20 @@ export function GraphCanvas({
   run,
   workflowGraph,
   onCommentOp,
-  onSaveLayout,
   onCreateProposal,
   onPresenceChange,
-  onQueueRun,
   onRequestNodeProposal,
   onSelectOutput,
   onSelectionChange,
   onSetParam,
   outputs,
-  queueRunDisabled,
 }: GraphCanvasProps) {
   const canvasRef = useRef<HTMLElement | null>(null);
   const [view, setView] = useState<ViewState>(DEFAULT_GRAPH_VIEW);
   const [viewportSize, setViewportSize] = useState<ViewportSize>({ width: 900, height: 640 });
-  const [mode, setMode] = useState<'view' | 'edit' | 'review'>('view');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [draftPositions, setDraftPositions] = useState<PositionDrafts>({});
   const [draftSizes, setDraftSizes] = useState<SizeDrafts>({});
-  const [layoutSaving, setLayoutSaving] = useState(false);
   const [catalog, setCatalog] = useState<NodeCatalog | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [selectionDrag, setSelectionDrag] = useState<SelectionDragState | null>(null);
@@ -120,7 +112,7 @@ export function GraphCanvas({
   const suppressNextClick = useRef(false);
   const sourceGraph = canvasGraph ?? graph;
   const drawGraph = pendingProposal?.previewGraph ?? sourceGraph;
-  const activeMode = pendingProposal ? 'review' : mode;
+  const activeMode = pendingProposal ? 'review' : onCreateProposal ? 'edit' : 'view';
   const capabilities = canvasCapabilities(activeMode, Boolean(onCreateProposal));
   const connectionDisabled = !capabilities.connect;
   const displayNodes = useMemo(
@@ -148,11 +140,6 @@ export function GraphCanvas({
   );
   const selectedIdList = useMemo(() => [...selectedIds], [selectedIds]);
   const nodeCount = displayNodes.length;
-  const layoutUpdates = useMemo(
-    () => (pendingProposal ? [] : positionUpdatesFromDrafts(sourceGraph.nodes, draftPositions)),
-    [draftPositions, pendingProposal, sourceGraph.nodes],
-  );
-  const hasDirtyLayout = layoutUpdates.length > 0;
   const minimapLayout = useMemo(
     () => computeMinimapLayout(displayNodes, { width: MINIMAP_WIDTH, height: MINIMAP_HEIGHT }),
     [displayNodes],
@@ -309,7 +296,7 @@ export function GraphCanvas({
   const handleWheel = (event: WheelEvent<HTMLElement>) => {
     if (!capabilities.zoom) return;
     const target = event.target instanceof Element ? event.target : null;
-    if (target?.closest('.canvas-toolbar,.zoom-ctl,.inspector,.canvas-minimap')) return;
+    if (target?.closest('.zoom-ctl,.inspector,.canvas-minimap')) return;
     event.preventDefault();
     const rect = event.currentTarget.getBoundingClientRect();
     updateView((current) =>
@@ -348,17 +335,6 @@ export function GraphCanvas({
   const shouldStartSelectionDrag = (event: PointerEvent<HTMLElement>) =>
     capabilities.select &&
     (activeMode === 'edit' || event.shiftKey || event.metaKey || event.ctrlKey);
-
-  const saveLayout = async () => {
-    if (!capabilities.move || !onSaveLayout || !hasDirtyLayout || pendingProposal || layoutSaving) return;
-    setLayoutSaving(true);
-    try {
-      await onSaveLayout(layoutUpdates);
-      setDraftPositions({});
-    } finally {
-      setLayoutSaving(false);
-    }
-  };
 
   const completeSelectionDrag = (event: PointerEvent<HTMLElement>) => {
     const current = selectionDrag;
@@ -508,22 +484,10 @@ export function GraphCanvas({
         error={catalogError}
         onAddNode={editActions.addNode}
       />
-      <GraphCanvasToolbar
-        activeMode={activeMode}
+      <CanvasStatusToast
         clipboardStatus={clipboardStatus}
         connectionStatus={connection.status}
-        edgeCount={drawGraph.edges.length}
-        hasDirtyLayout={hasDirtyLayout}
-        layoutSaving={layoutSaving}
-        layoutUpdateCount={layoutUpdates.length}
-        nodeCount={nodeCount}
-        onSaveLayout={() => void saveLayout()}
-        onQueueRun={onQueueRun}
         pendingProposal={Boolean(pendingProposal)}
-        queueRunDisabled={queueRunDisabled}
-        runStatusLabel={runStatusLabel(run.status)}
-        saveLayoutDisabled={!capabilities.move || layoutSaving || !onSaveLayout}
-        setMode={setMode}
       />
       <div
         className="world"
@@ -565,6 +529,7 @@ export function GraphCanvas({
             dirty={Boolean(draftPositions[node.id]) && !pendingProposal}
             locked={Boolean(pendingProposal)}
             node={node}
+            workflowNode={workflowGraph?.nodes[node.id]}
             artifactOutputs={outputsByNodeId.get(node.id) ?? []}
             portHighlights={connection.portHighlights}
             resizable={capabilities.resize}
@@ -590,6 +555,7 @@ export function GraphCanvas({
           presenceByActor={presenceByActor}
         />
       </div>
+      <CanvasGuides nodes={displayNodes} selectedNodes={selectedNodes} view={view} viewportSize={viewportSize} />
       {nodeCount === 0 && <EmptyCanvas />}
       {selectionDrag && (
         <span
@@ -607,7 +573,14 @@ export function GraphCanvas({
         />
       )}
       {selectedNodes.length > 1 && (
-        <GraphSelectionInspector nodes={selectedNodes} onClose={() => setSelectedIds(new Set())} />
+        <GraphSelectionInspector
+          nodes={selectedNodes}
+          onClose={() => setSelectedIds(new Set())}
+          onCopy={() => void editActions.copySelection(selectedNodes)}
+          onDelete={() => editActions.deleteSelection(selectedIds)}
+          view={view}
+          viewportSize={viewportSize}
+        />
       )}
       {selectedNodes.length === 1 && selectedNode && (
         <GraphInspector
@@ -617,6 +590,8 @@ export function GraphCanvas({
           onClose={() => setSelectedIds(new Set())}
           onRequestProposal={capabilities.move ? onRequestNodeProposal : undefined}
           onSetParam={capabilities.move ? onSetParam : undefined}
+          view={view}
+          viewportSize={viewportSize}
           workflowNode={selectedWorkflowNode}
         />
       )}
@@ -631,4 +606,20 @@ export function GraphCanvas({
       />
     </section>
   );
+}
+
+function CanvasStatusToast({
+  clipboardStatus,
+  connectionStatus,
+  pendingProposal,
+}: {
+  clipboardStatus: string | null;
+  connectionStatus: string | null;
+  pendingProposal: boolean;
+}) {
+  const message = pendingProposal
+    ? '待确认的图变更 · 预览中'
+    : connectionStatus ?? clipboardStatus;
+  if (!message) return null;
+  return <div className="canvas-status-toast">{message}</div>;
 }

@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { Icon } from '../icons';
 import type { GraphNodeState, NodeDefinition, WorkflowGraph } from '../types';
+import { graphNodeHeight, graphNodeWidth, type ViewState, type ViewportSize } from './graph-canvas-navigation';
 import { categorySwatch } from './graph-canvas-rendering';
 
 type WorkflowNode = WorkflowGraph['nodes'][string];
@@ -16,6 +18,8 @@ type GraphInspectorProps = {
   onClose: () => void;
   onRequestProposal?: (nodeId: string) => Promise<void>;
   onSetParam?: (nodeId: string, key: string, value: unknown) => Promise<void>;
+  view?: ViewState;
+  viewportSize?: ViewportSize;
 };
 
 export function GraphInspector({
@@ -26,6 +30,8 @@ export function GraphInspector({
   onClose,
   onRequestProposal,
   onSetParam,
+  view,
+  viewportSize,
 }: GraphInspectorProps) {
   const paramObject = useMemo(() => paramsObject(workflowNode), [workflowNode]);
   const fields = useMemo(
@@ -37,6 +43,7 @@ export function GraphInspector({
   );
   const [errors, setErrors] = useState<InspectorErrorMap>({});
   const [savingKey, setSavingKey] = useState<string | null>(null);
+  const [fieldScale, setFieldScale] = useState(1);
   const readonlyReason = !workflowNode
     ? '当前 workflow graph 不可用'
     : !definition
@@ -77,55 +84,103 @@ export function GraphInspector({
     }
   };
 
+  const nudgeFieldScale = (delta: number) => {
+    setFieldScale((current) => Math.min(1.16, Math.max(0.92, Number((current + delta).toFixed(2)))));
+  };
+
+  const style = nodeInspectorStyle(
+    node,
+    view ?? { x: 0, y: 0, z: 1 },
+    viewportSize ?? { width: 900, height: 640 },
+  );
+  const detailsStyle = { '--inspector-field-scale': fieldScale } as CSSProperties;
+
   return (
-    <div className="inspector p-inspector" onClick={(event) => event.stopPropagation()}>
-      <div className="inspector-head">
-        <div className="kicker">选中节点 · {node.id}</div>
-        <div className="title">
-          <span style={{ background: categorySwatch(node.category) }} />
-          {node.title}
-        </div>
-        <button className="p-close" onClick={onClose}>
+    <div
+      className="inspector p-inspector inspector-floating inspector-compact"
+      onClick={(event) => event.stopPropagation()}
+      style={style}
+    >
+      <span className="selection-summary-accessible">
+        选中节点 · {node.id} · {node.title}
+      </span>
+      <div className="inspector-node-actions">
+        <details className="inspector-edit-details">
+          <summary className="inspector-tool inspector-tool-icon" title="编辑参数">
+            <Icon n="sliders" s={14} />
+            <span className="selection-summary-accessible">编辑参数</span>
+          </summary>
+          <div className="inspector-details-panel" style={detailsStyle}>
+            <div className="inspector-head">
+              <div className="kicker">选中节点 · {node.id}</div>
+              <div className="title">
+                <span style={{ background: categorySwatch(node.category) }} />
+                {node.title}
+              </div>
+              <button className="p-close" onClick={onClose} type="button">
+                x
+              </button>
+            </div>
+            <div className="inspector-body">
+              {catalogError && <div className="inspector-error">{catalogError}</div>}
+              <div className="field">
+                <span className="field-label">node type</span>
+                <span className="field-input">{node.nodeType}</span>
+              </div>
+              <div className="field">
+                <span className="field-label">provider</span>
+                <span className="field-input">{node.provider ?? 'local/builtin'}</span>
+              </div>
+              {fields.length === 0 && (
+                <div className="field">
+                  <span className="field-label">params</span>
+                  <span className="field-input field-area">{node.summary}</span>
+                </div>
+              )}
+              {fields.map((field) => (
+                <InspectorParamField
+                  disabledReason={readonlyReason}
+                  draft={drafts[field.key] ?? ''}
+                  error={errors[field.key]}
+                  field={field}
+                  key={field.key}
+                  onChange={(value) => updateDraft(field.key, value)}
+                  onRandomSeed={() => updateDraft(field.key, String(randomSeed()))}
+                  onSave={() => void saveParam(field)}
+                  saving={savingKey === field.key}
+                />
+              ))}
+            </div>
+          </div>
+        </details>
+        <button className="inspector-tool inspector-font-tool" onClick={() => nudgeFieldScale(-0.06)} type="button">
+          A-
+        </button>
+        <button className="inspector-tool inspector-font-tool" onClick={() => nudgeFieldScale(0.06)} type="button">
+          A+
+        </button>
+        <button
+          className="inspector-tool inspector-tool-primary"
+          disabled={!onRequestProposal}
+          onClick={() => void onRequestProposal?.(node.id).catch(() => undefined)}
+          type="button"
+        >
+          <Icon n="play" s={13} fill />
+          生成
+        </button>
+        <button
+          className="inspector-tool"
+          disabled={!onRequestProposal}
+          onClick={() => void onRequestProposal?.(node.id).catch(() => undefined)}
+          type="button"
+        >
+          <Icon n="spark" s={13} />
+          对话
+          <span className="selection-summary-accessible">Ask Agent for node proposal</span>
+        </button>
+        <button className="inspector-tool inspector-tool-close" onClick={onClose} title="取消选择" type="button">
           x
         </button>
-      </div>
-      <div className="inspector-body">
-        {catalogError && <div className="inspector-error">{catalogError}</div>}
-        <div className="field">
-          <span className="field-label">node type</span>
-          <span className="field-input">{node.nodeType}</span>
-        </div>
-        <div className="field">
-          <span className="field-label">provider</span>
-          <span className="field-input">{node.provider ?? 'local/builtin'}</span>
-        </div>
-        {onRequestProposal && (
-          <button
-            className="inspector-agent-request"
-            onClick={() => void onRequestProposal(node.id).catch(() => undefined)}
-          >
-            Ask Agent for node proposal
-          </button>
-        )}
-        {fields.length === 0 && (
-          <div className="field">
-            <span className="field-label">params</span>
-            <span className="field-input field-area">{node.summary}</span>
-          </div>
-        )}
-        {fields.map((field) => (
-          <InspectorParamField
-            disabledReason={readonlyReason}
-            draft={drafts[field.key] ?? ''}
-            error={errors[field.key]}
-            field={field}
-            key={field.key}
-            onChange={(value) => updateDraft(field.key, value)}
-            onRandomSeed={() => updateDraft(field.key, String(randomSeed()))}
-            onSave={() => void saveParam(field)}
-            saving={savingKey === field.key}
-          />
-        ))}
       </div>
     </div>
   );
@@ -198,6 +253,13 @@ function InspectorParamField({
           />
         ) : kind === 'readonly' ? (
           <span className="field-input field-area">{displayParamValue(field.value)}</span>
+        ) : kind === 'text' && multilineParam(field.key, draft) ? (
+          <textarea
+            className="field-input inspector-control inspector-textarea"
+            disabled={disabled}
+            onChange={(event) => onChange(event.currentTarget.value)}
+            value={draft}
+          />
         ) : (
           <input
             className="field-input inspector-control"
@@ -339,43 +401,102 @@ function randomSeed(): number {
   return Math.floor(Math.random() * 1_000_000);
 }
 
+function multilineParam(key: string, draft: string): boolean {
+  const normalized = key.toLowerCase();
+  return normalized.includes('prompt') || normalized.includes('brief') || draft.length > 56;
+}
+
 export function GraphSelectionInspector({
   nodes,
+  onCopy,
+  onDelete,
   onClose,
+  view,
+  viewportSize,
 }: {
   nodes: GraphNodeState[];
+  onCopy?: () => void;
+  onDelete?: () => void;
   onClose: () => void;
+  view?: ViewState;
+  viewportSize?: ViewportSize;
 }) {
   const categories = [...new Set(nodes.map((node) => node.category))].sort();
+  const style = selectionToolbarStyle(
+    nodes,
+    view ?? { x: 0, y: 0, z: 1 },
+    viewportSize ?? { width: 900, height: 640 },
+  );
   return (
-    <div className="inspector p-inspector" onClick={(event) => event.stopPropagation()}>
-      <div className="inspector-head">
-        <div className="kicker">多选 · {nodes.length} 个节点</div>
-        <div className="title">
-          <span />
-          Selection summary
-        </div>
-        <button className="p-close" onClick={onClose}>
-          x
-        </button>
-      </div>
-      <div className="inspector-body">
-        <div className="field">
-          <span className="field-label">categories</span>
-          <span className="field-input">{categories.join(', ')}</span>
-        </div>
-        <div className="selection-summary-list">
-          {nodes.map((node) => (
-            <div className="selection-summary-row" key={node.id}>
-              <span style={{ background: categorySwatch(node.category) }} />
-              <div>
-                <strong>{node.title}</strong>
-                <small>{node.id}</small>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
+    <div className="selection-actionbar" onClick={(event) => event.stopPropagation()} style={style}>
+      <span className="selection-summary-accessible">
+        多选 · {nodes.length} 个节点 · Selection summary · {nodes.map((node) => node.title).join(', ')}
+      </span>
+      <span className="selection-count">{nodes.length} selected</span>
+      <span className="selection-categories" title={categories.join(', ')}>
+        {categories.join(' · ')}
+      </span>
+      <button onClick={onCopy} type="button">
+        <Icon n="paperclip" s={13} />
+        复制
+      </button>
+      <button onClick={onDelete} type="button">
+        <Icon n="eraser" s={13} />
+        删除
+      </button>
+      <button onClick={onClose} type="button">
+        取消
+      </button>
     </div>
   );
+}
+
+function selectionToolbarStyle(
+  nodes: GraphNodeState[],
+  view: ViewState,
+  viewportSize: ViewportSize,
+): CSSProperties {
+  const bounds = nodes.reduce(
+    (current, node) => {
+      const left = node.position.x;
+      const top = node.position.y;
+      const right = left + graphNodeWidth(node);
+      const bottom = top + graphNodeHeight(node);
+      return {
+        minX: Math.min(current.minX, left),
+        minY: Math.min(current.minY, top),
+        maxX: Math.max(current.maxX, right),
+        maxY: Math.max(current.maxY, bottom),
+      };
+    },
+    { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity },
+  );
+  const x = (bounds.minX + (bounds.maxX - bounds.minX) / 2) * view.z + view.x;
+  const y = bounds.maxY * view.z + view.y + 14;
+  return {
+    left: Math.min(Math.max(14, x), viewportSize.width - 14),
+    top: Math.min(Math.max(108, y), viewportSize.height - 84),
+    transform: 'translateX(-50%)',
+  };
+}
+
+function nodeInspectorStyle(
+  node: GraphNodeState,
+  view: ViewState,
+  viewportSize: ViewportSize,
+): CSSProperties {
+  const panelWidth = 316;
+  const gap = 12;
+  const nodeLeft = node.position.x * view.z + view.x;
+  const nodeTop = node.position.y * view.z + view.y;
+  const nodeRight = nodeLeft + graphNodeWidth(node) * view.z;
+  const nodeCenter = nodeLeft + (graphNodeWidth(node) * view.z) / 2;
+  const topSide = nodeTop - 46 - gap;
+  const left = Math.min(nodeRight - panelWidth, nodeCenter - panelWidth / 2);
+  const maxLeft = Math.max(14, viewportSize.width - panelWidth - 14);
+  const maxTop = Math.max(92, viewportSize.height - 96);
+  return {
+    left: Math.min(Math.max(14, left), maxLeft),
+    top: Math.min(Math.max(92, topSide), maxTop),
+  };
 }

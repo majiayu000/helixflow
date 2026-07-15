@@ -35,6 +35,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
     () => workspaceId ?? workspaceIdFromUrl(),
     [workspaceId],
   );
+  const showAdvancedEditPanel = useMemo(() => advancedEditPanelEnabledFromUrl(), []);
   const [forceRerun, setForceRerun] = useState(false);
   const [selectedCanvasNodeIds, setSelectedCanvasNodeIds] = useState<string[]>([]);
   const status = useWorkbenchStore((store) => store.status);
@@ -199,6 +200,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
         exportDisabled={busy || !activeState.workspace.versionId}
         historyOpen={historyOpen}
         onAgentRun={() => void runAction(() => sendMessage('运行当前 workflow'))}
+        onCommitEdits={() => void runAction(() => commitManualEdits())}
         onExport={exportCurrentWorkflow}
         onHistory={() => setHistoryOpen((open) => !open)}
         onNewWorkspace={() => requestNavigation({ kind: 'create_workspace' })}
@@ -236,6 +238,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
                   }
                 : null
             }
+            selectedNodeIds={selectedCanvasNodeIds}
             onCommitEdits={() => runAction(() => commitManualEdits())}
             onDiscardEdits={discardManualEdits}
             onSend={(text) =>
@@ -258,9 +261,6 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
             onCreateProposal={(input) => runAction(() => appendManualEdit(input), true)}
             onCommentOp={(input) => runAction(() => submitCanvasCommentOp(input), true)}
             onPresenceChange={(presence) => void sendCanvasPresence(presence)}
-            onQueueRun={() => {
-              if (!queueDisabled) void runAction(() => queueRun({ forceRerun }));
-            }}
             onRequestNodeProposal={(nodeId) =>
               runAction(
                 () => sendMessage(`围绕选中节点 ${nodeId} 生成最小修改 proposal。`, {
@@ -291,7 +291,6 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
             outputs={activeState.outputs}
             pendingProposal={activeState.pendingProposal}
             presenceByActor={presenceByActor}
-            queueRunDisabled={queueDisabled}
             run={uiState.run}
             versionId={activeState.workspace.versionId}
             workflowGraph={previewState.workflowGraph}
@@ -302,11 +301,13 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
               <ArtifactStage outputs={activeState.outputs} />
             </div>
           )}
-          <ManualProposalPanel
-            busy={navigationLocked}
-            state={previewState}
-            onCreateProposal={(input) => runAction(() => appendManualEdit(input), true)}
-          />
+          {showAdvancedEditPanel && (
+            <ManualProposalPanel
+              busy={navigationLocked}
+              state={previewState}
+              onCreateProposal={(input) => runAction(() => appendManualEdit(input), true)}
+            />
+          )}
           <HistoryPanel
             busy={navigationLocked}
             history={activeState.history}
@@ -375,4 +376,9 @@ function emptyRunSnapshot(): RunSnapshot {
       currency: 'USD',
     },
   };
+}
+
+function advancedEditPanelEnabledFromUrl(): boolean {
+  if (typeof window === 'undefined') return false;
+  return new URLSearchParams(window.location.search).get('advanced_edit') === '1';
 }

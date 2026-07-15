@@ -22,6 +22,7 @@ type TopBarProps = {
   onHistory: () => void;
   onNewWorkspace: () => void;
   onAgentRun: () => void;
+  onCommitEdits?: () => void;
   onExport: () => void;
   onUndo: () => void;
   onProviderSelect: (providerId: string) => void;
@@ -44,6 +45,7 @@ export function TopBar({
   onHistory,
   onNewWorkspace,
   onAgentRun,
+  onCommitEdits,
   onExport,
   onUndo,
   onProviderSelect,
@@ -61,69 +63,76 @@ export function TopBar({
   const providerOk = Boolean(selectedProvider?.enabled && selectedProvider.status === 'healthy');
   const providerLabel = selectedProvider?.label ?? selectedProviderId;
   const providerMessage = selectedProvider?.message ?? providerStatusLabel(selectedProvider);
+  const versionNumber = versionOrdinal(state);
+  const dirtyEditCount = queueLockReason.kind === 'dirty_edits' ? queueLockReason.count : 0;
+  const editing = dirtyEditCount > 0;
+  const nextVersionLabel = `v${versionNumber + (dirtyEditCount > 0 ? 1 : 0)}`;
+  const queueIcon = running ? 'stop' : dirtyEditCount > 0 ? 'lock' : 'play';
+  const queueLabel = running ? '中断' : dirtyEditCount > 0 ? 'QUEUE' : '运行 Queue';
 
   return (
-    <div className="wb-top">
-      <div className="brand">
-        <span className="brand-mark">h</span>
-        helixflow
-      </div>
-      <span className="divider-v" />
-      <div className="workflow-tabs">
-        <span className="workflow-tab workflow-tab--active">{state.workspace.name}</span>
-        <button className="workflow-tab" disabled={busy} onClick={onNewWorkspace}>
+    <div className={editing ? 'wb-top wb-top--editing' : 'wb-top'}>
+      <div className="top-left">
+        <div className="brand" aria-label="helixflow">
+          <span className="brand-mark" aria-hidden="true">
+            <span />
+          </span>
+          <strong>helixflow</strong>
+        </div>
+        <span className="divider-v" />
+        <div className="project-chip" title={state.workspace.name}>
+          <strong>{workspaceTitle(state.workspace.name)}</strong>
+          <span>v{versionNumber}</span>
+        </div>
+        {editing ? (
+          <span className="edit-state edit-state--dirty">EDITING · {dirtyEditCount} CHANGES</span>
+        ) : (
+          <span className="edit-state">READY · v{versionNumber}</span>
+        )}
+        <button className="new-workspace-link" disabled={busy} onClick={onNewWorkspace}>
           + 新建
         </button>
       </div>
       <div className="top-actions">
-        <div className="endpoint-box">
-          <span className="endpoint">
-            <Icon n="lock" s={11} />
-            <select
-              aria-label="Runtime provider"
-              className="provider-select"
-              disabled={busy || state.providers.runtimeProviders.length === 0}
-              onChange={(event) => onProviderSelect(event.target.value)}
-              title={providerMessage}
-              value={selectedProviderId}
-            >
-              {state.providers.runtimeProviders.map((provider) => (
-                <option key={provider.id} value={provider.id}>
-                  {provider.label} · {providerStatusLabel(provider)}
-                </option>
-              ))}
-            </select>
-          </span>
-          <span className="endpoint endpoint--provider">{providerLabel}</span>
-          <span className="pill pill--ok">
-            <span className="led" />
-            {nodeCount} 节点
-          </span>
-          <span className="pill pill--off">
-            <span className="led" />
-            {state.workspace.versionId}
-          </span>
-          {queueLockReason.kind === 'dirty_edits' && (
-            <span className="pill pill--warn">
-              <span className="led" />
-              {queueLockReasonLabel(queueLockReason)}
+        {!editing && (
+          <div className="status-strip top-status-strip">
+            <span className="endpoint">
+              <Icon n="lock" s={11} />
+              <select
+                aria-label="Runtime provider"
+                className="provider-select"
+                disabled={busy || state.providers.runtimeProviders.length === 0}
+                onChange={(event) => onProviderSelect(event.target.value)}
+                title={providerMessage}
+                value={selectedProviderId}
+              >
+                {state.providers.runtimeProviders.map((provider) => (
+                  <option key={provider.id} value={provider.id}>
+                    {provider.label} · {providerStatusLabel(provider)}
+                  </option>
+                ))}
+              </select>
             </span>
-          )}
-          {queueLockReason.kind !== 'none' && queueLockReason.kind !== 'dirty_edits' && !running && (
-            <span className="pill pill--warn">
+            <span className="pill pill--ok">
               <span className="led" />
-              {queueLockReasonLabel(queueLockReason)}
+              {nodeCount} 节点
             </span>
-          )}
-          <span className={connection === 'live' ? 'pill pill--live' : 'pill pill--off'}>
-            <span className="led" />
-            Codex {connectionLabel(connection)}
-          </span>
-          <span className={providerOk ? 'pill pill--live' : 'pill pill--off'}>
-            <span className="led" />
-            {providerStatusLabel(selectedProvider)}
-          </span>
-        </div>
+            {queueLockReason.kind !== 'none' && !running && (
+              <span className="pill pill--warn">
+                <span className="led" />
+                {queueLockReasonLabel(queueLockReason)}
+              </span>
+            )}
+            <span className={connection === 'live' ? 'pill pill--live' : 'pill pill--off'}>
+              <span className="led" />
+              Codex {connectionLabel(connection)}
+            </span>
+            <span className={providerOk ? 'pill pill--live' : 'pill pill--off'}>
+              <span className="led" />
+              {providerLabel} · {providerStatusLabel(selectedProvider)}
+            </span>
+          </div>
+        )}
         <button
           className="ibtn ibtn--icon"
           title="撤销上次应用"
@@ -139,30 +148,42 @@ export function TopBar({
         >
           <HistoryIcon />
         </button>
-        <button
-          className="ibtn ibtn--icon"
-          title="导出 API workflow JSON"
-          disabled={exportDisabled}
-          onClick={onExport}
-        >
-          <Icon n="export" />
-        </button>
+        {!editing && (
+          <button
+            className="ibtn ibtn--icon top-export"
+            title="导出 API workflow JSON"
+            disabled={exportDisabled}
+            onClick={onExport}
+          >
+            <Icon n="export" />
+          </button>
+        )}
         <span className="divider-v" />
-        <button className="btn btn--soft btn--sm" disabled={agentRunDisabled || busy} onClick={onAgentRun}>
-          <Icon n="spark" s={13} fill />
-          Agent 运行
-        </button>
-        <label className="force-rerun-toggle" title="本次运行绕过节点缓存">
-          <input
-            checked={forceRerun}
-            disabled={busy || running}
-            onChange={(event) => onForceRerunChange(event.target.checked)}
-            type="checkbox"
-          />
-          强制重跑
-        </label>
+        {editing && onCommitEdits && (
+          <button className="btn btn--commit btn--sm" disabled={busy} onClick={onCommitEdits}>
+            <Icon n="check" s={13} />
+            提交编辑 → {nextVersionLabel}
+          </button>
+        )}
+        {!editing && (
+          <button className="btn btn--soft btn--sm top-agent-run" disabled={agentRunDisabled || busy} onClick={onAgentRun}>
+            <Icon n="spark" s={13} fill />
+            Agent 运行
+          </button>
+        )}
+        {!editing && (
+          <label className="force-rerun-toggle" title="本次运行绕过节点缓存">
+            <input
+              checked={forceRerun}
+              disabled={busy || running}
+              onChange={(event) => onForceRerunChange(event.target.checked)}
+              type="checkbox"
+            />
+            强制重跑
+          </label>
+        )}
         <button
-          className={running ? 'btn btn--danger btn--sm' : 'btn btn--primary btn--sm'}
+          className={running ? 'btn btn--danger btn--sm' : 'btn btn--queue btn--sm'}
           disabled={runDisabled || (!running && busy)}
           title={
             running
@@ -171,12 +192,23 @@ export function TopBar({
           }
           onClick={onQueue}
         >
-          <Icon n={running ? 'stop' : 'play'} s={13} fill />
-          {running ? '中断' : '运行 Queue'}
+          <Icon n={queueIcon} s={13} fill={queueIcon !== 'lock'} />
+          {queueLabel}
         </button>
       </div>
     </div>
   );
+}
+
+function workspaceTitle(name: string): string {
+  return name
+    .replace(/^Helixflow Workspace\s*[-·]\s*/i, '')
+    .trim() || 'Untitled Workspace';
+}
+
+function versionOrdinal(state: WorkbenchState): number {
+  const versionCount = state.history.filter((item) => item.kind === 'version').length;
+  return Math.max(1, versionCount);
 }
 
 function connectionLabel(connection: ConnectionStatus): string {

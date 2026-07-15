@@ -1,6 +1,6 @@
 import type { CSSProperties, PointerEvent } from 'react';
 import { Icon, Port } from '../icons';
-import type { GraphNodeState, NodeDefinition, RunStepState } from '../types';
+import type { GraphNodeState, NodeDefinition, RunStepState, WorkflowGraph } from '../types';
 import type { CanvasNodeArtifact } from './graph-canvas-artifacts';
 import { portKey, type PortHighlight } from './graph-canvas-connections';
 import { graphNodeHeight, graphNodeWidth } from './graph-canvas-navigation';
@@ -13,6 +13,7 @@ import {
 type WorkflowNodeProps = {
   node: GraphNodeState;
   definition?: NodeDefinition;
+  workflowNode?: WorkflowGraph['nodes'][string];
   diffState: DiffState;
   dirty: boolean;
   locked: boolean;
@@ -42,6 +43,7 @@ type WorkflowNodeProps = {
 export function WorkflowNode({
   node,
   definition,
+  workflowNode,
   diffState,
   dirty,
   locked,
@@ -69,6 +71,7 @@ export function WorkflowNode({
   const cached = done && node.cached;
   const inputs = definition?.inputs ?? [];
   const outputs = definition?.outputs ?? [];
+  const primaryTextParam = selected ? primaryNodeTextParam(workflowNode?.params) : null;
   const classes = [
     'node',
     diffState === 'add' ? 'node--add' : '',
@@ -108,6 +111,7 @@ export function WorkflowNode({
       {diffState === 'upd' && <span className="node-flag upd">~ 修改</span>}
       {cached && <span className="node-flag cache">缓存</span>}
       {failed && <span className="node-flag err">失败</span>}
+      {selected && <span className="node-flag selected">SELECTED</span>}
       <div className="node-title">
         <span className="swatch" />
         {node.title}
@@ -171,6 +175,12 @@ export function WorkflowNode({
             )}
           </span>
         </div>
+        {primaryTextParam && (
+          <div className="node-inline-editor">
+            <span className="node-inline-label">{primaryTextParam.key}</span>
+            <pre>{primaryTextParam.value}</pre>
+          </div>
+        )}
         {params.length === 0 ? (
           <div className="param-row">
             <span className="param-k">type</span>
@@ -220,6 +230,21 @@ export function WorkflowNode({
       )}
     </div>
   );
+}
+
+function primaryNodeTextParam(params: unknown): { key: string; value: string } | null {
+  if (!params || typeof params !== 'object' || Array.isArray(params)) return null;
+  const entries = Object.entries(params as Record<string, unknown>);
+  const preferred = ['brief', 'prompt', 'caption', 'text', 'style', 'directive'];
+  const found = preferred
+    .map((key) => entries.find(([entryKey]) => entryKey.toLowerCase() === key))
+    .find((entry): entry is [string, unknown] => Boolean(entry));
+  const fallback = found ?? entries.find(([, value]) => typeof value === 'string');
+  if (!fallback) return null;
+  const [key, value] = fallback;
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  const text = String(value).trim();
+  return text.length > 0 ? { key, value: text } : null;
 }
 
 function artifactIcon(kind: string): 'export' | 'image' | 'layers' | 'play' {

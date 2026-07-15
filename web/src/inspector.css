@@ -44,7 +44,7 @@
   border: 1px solid var(--accent-line);
   border-radius: var(--r-sm);
   background: var(--accent-soft);
-  color: var(--accent-ink);
+  color: var(--accent);
   font-size: 12px;
   font-weight: 700;
 }

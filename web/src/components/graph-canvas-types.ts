@@ -2,7 +2,6 @@ import type {
   CanvasComment,
   CanvasCommentOpInput,
   CanvasPresence,
-  LayoutPositionUpdate,
   ManualProposalInput,
   WorkbenchState,
 } from '../types';
@@ -21,16 +20,13 @@ export type GraphCanvasProps = {
   run: NonNullable<WorkbenchState['run']>;
   workflowGraph?: WorkbenchState['workflowGraph'];
   onCommentOp?: (input: CanvasCommentOpInput) => Promise<void>;
-  onSaveLayout?: (positions: LayoutPositionUpdate[]) => Promise<void>;
   onCreateProposal?: (input: ManualProposalInput) => Promise<void>;
   onPresenceChange?: (presence: CanvasPresence) => void;
-  onQueueRun?: () => void;
   onRequestNodeProposal?: (nodeId: string) => Promise<void>;
   onSelectOutput?: (outputId: string) => void;
   onSelectionChange?: (nodeIds: string[]) => void;
   onSetParam?: (nodeId: string, key: string, value: unknown) => Promise<void>;
   outputs?: WorkbenchState['outputs'];
-  queueRunDisabled?: boolean;
 };
 
 export type DragState = {

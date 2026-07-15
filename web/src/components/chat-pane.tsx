@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Icon, type IconName } from '../icons';
+import { Icon } from '../icons';
 import type { WorkbenchState } from '../types';
 
 type ChatMessage = WorkbenchState['chat']['messages'][number];
@@ -22,35 +22,13 @@ type ComposerKeyEvent = {
   };
 };
 
-const presets: Array<{ icon: IconName; label: string; text: string }> = [
-  {
-    icon: 'bolt',
-    label: '做界面',
-    text: '设计一个用于图片生成任务的工作台界面，包含左侧对话、右侧预览和历史记录。',
-  },
-  {
-    icon: 'layers',
-    label: 'ControlNet',
-    text: '在当前工作流基础上加入 ControlNet depth 分支，并保留已有节点连接。',
-  },
-  {
-    icon: 'dice',
-    label: 'Seed 试验',
-    text: '为当前工作流设计 4 个不同 seed 的真实运行计划，先让我确认再执行。',
-  },
-  {
-    icon: 'refresh',
-    label: '修复报错',
-    text: '读取当前失败节点和运行记录，给出最小修复方案并应用到工作流。',
-  },
-];
-
 type ChatPaneProps = {
   messages: ChatMessage[];
   pendingProposal: WorkbenchState['pendingProposal'];
   run: WorkbenchState['run'];
   busy: boolean;
   editSessionSummary: EditSessionSummary | null;
+  selectedNodeIds?: string[];
   onSend: (text: string) => Promise<void>;
   onCommitEdits: () => Promise<void>;
   onDiscardEdits: () => void;
@@ -64,6 +42,7 @@ export function ChatPane({
   run,
   busy,
   editSessionSummary,
+  selectedNodeIds = [],
   onSend,
   onCommitEdits,
   onDiscardEdits,
@@ -73,7 +52,9 @@ export function ChatPane({
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const isComposingRef = useRef(false);
-  const entries = chatEntries(messages);
+  const selectedSummary = selectedNodeIds.length > 0
+    ? `@选中 ${selectedNodeIds.join(', ')}`
+    : '@未选中';
 
   useEffect(() => {
     const element = scrollRef.current;
@@ -93,47 +74,21 @@ export function ChatPane({
   return (
     <aside className="wb-chat">
       <div className="chat-head">
-        <Icon n="spark" s={14} c="var(--accent)" fill />
-        对话
-        <span className="sub">Codex CLI · 真实执行</span>
+        <span>SESSION · CODEX</span>
+        <span className="sub">{busy ? 'busy · 执行中' : 'idle · 观察中'}</span>
       </div>
-      <div className="preset-row">
-        {presets.map((preset) => (
-          <button
-            className="chip"
-            disabled={busy}
-            key={preset.label}
-            onClick={() => submit(preset.text)}
-          >
-            <Icon n={preset.icon} s={13} />
-            {preset.label}
-          </button>
-        ))}
+      <div className="session-brief">
+        你在手动改图 — 我不会打断。提交编辑后，我的下一个提案会基于它。
       </div>
-      {editSessionSummary && (
-        <EditSessionCard
+      <div className="chat-msgs chat-msgs--session" ref={scrollRef}>
+        <EditSessionWorkspace
           busy={busy}
+          messages={messages}
+          selectedNodeIds={selectedNodeIds}
           summary={editSessionSummary}
           onCommit={onCommitEdits}
           onDiscard={onDiscardEdits}
         />
-      )}
-      <div className="chat-msgs" ref={scrollRef}>
-        {messages.length === 0 ? (
-          <div className="empty-chat">
-            还没有消息。
-            <br />
-            描述你想设计的界面、应用或工作流，Agent 会调用真实 Codex 后端处理。
-          </div>
-        ) : (
-          entries.map((entry) =>
-            entry.type === 'message' ? (
-              <MessageRow key={entry.message.id} message={entry.message} />
-            ) : (
-              <AssistantTurn key={entry.id} logs={entry.logs} message={entry.message} />
-            ),
-          )
-        )}
         <RunErrorCard busy={busy} run={run} onRequestFix={onSend} />
         {pendingProposal && <ProposalMessage
           busy={busy}
@@ -143,6 +98,11 @@ export function ChatPane({
         />}
       </div>
       <div className="composer">
+        <div className="composer-context">
+          <span>节点对话</span>
+          <span>{selectedSummary}</span>
+          {selectedNodeIds.length > 1 && <span>含上游 · {selectedNodeIds.length} 个节点</span>}
+        </div>
         <div className="composer-box">
           <textarea
             aria-label="message composer"
@@ -160,7 +120,7 @@ export function ChatPane({
                 void submit();
               }
             }}
-            placeholder="描述想要的界面、应用，或对当前工作流提出修改..."
+            placeholder={selectedNodeIds.length > 0 ? '围绕选中节点提问...' : '围绕当前工作流提问...'}
             rows={2}
             value={draft}
           />
@@ -196,6 +156,63 @@ export async function composerDraftAfterSubmit(
   }
 }
 
+function EditSessionWorkspace({
+  summary,
+  selectedNodeIds,
+  messages,
+  busy,
+  onCommit,
+  onDiscard,
+}: {
+  summary: EditSessionSummary | null;
+  selectedNodeIds: string[];
+  messages: ChatMessage[];
+  busy: boolean;
+  onCommit: () => Promise<void>;
+  onDiscard: () => void;
+}) {
+  const latestUserText = latestUserMessage(messages)?.text;
+  const logEntries = chatEntries(messages).filter(isToolLogEntry);
+
+  return (
+    <div className="edit-session-workspace">
+      {summary ? (
+        <EditSessionCard
+          busy={busy}
+          summary={summary}
+          onCommit={onCommit}
+          onDiscard={onDiscard}
+        />
+      ) : (
+        <EditSessionIdleCard />
+      )}
+      <div className="edit-session-request">
+        {latestUserText ?? '围绕当前画布继续编辑；我会在你提交后再基于新版本工作。'}
+      </div>
+      <div className="edit-session-note">
+        好 — 会围绕
+        <span>{selectedNodeIds.length > 0 ? selectedNodeIds.join(' + ') : '当前工作流'}</span>
+        的内容改写，结果回填到节点对话框。
+      </div>
+      <div className="edit-session-chips">
+        <span>@选中 {selectedNodeIds.length > 0 ? selectedNodeIds.join(', ') : '无'}</span>
+        <span>含上游 ×{Math.max(1, selectedNodeIds.length || 1)}</span>
+      </div>
+      {logEntries.length > 0 && (
+        <div className="session-tool-log">
+          {logEntries.slice(-2).map((entry) => (
+            <AssistantTurn
+              key={entry.id}
+              logs={entry.logs}
+              message={entry.message}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function EditSessionCard({
   summary,
   busy,
@@ -210,21 +227,49 @@ function EditSessionCard({
   return (
     <div className="edit-session-card">
       <div className="edit-session-head">
-        <span>EDITING · {summary.count} CHANGES</span>
+        <span>UNCOMMITTED · 手动编辑</span>
         <em>{summary.baseVersionId}</em>
       </div>
       <div className="edit-session-list">
         {summary.items.map((item, index) => (
-          <span key={`${index}-${item}`}>{item}</span>
+          <span className="edit-op-row" key={`${index}-${item}`}>
+            <b className={`edit-op-sign edit-op-sign--${editOpTone(item)}`}>
+              {editOpSign(item)}
+            </b>
+            {item}
+          </span>
         ))}
       </div>
       <div className="edit-session-actions">
-        <button className="btn btn--ghost btn--sm" disabled={busy} onClick={onDiscard}>
-          Discard
-        </button>
         <button className="btn btn--primary btn--sm" disabled={busy} onClick={() => void onCommit()}>
           <Icon n="check" s={13} />
-          Commit
+          提交编辑
+        </button>
+        <button className="btn btn--ghost btn--sm" disabled={busy} onClick={onDiscard}>
+          放弃
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function EditSessionIdleCard() {
+  return (
+    <div className="edit-session-card edit-session-card--idle">
+      <div className="edit-session-head">
+        <span>UNCOMMITTED · 等待编辑</span>
+        <em>idle</em>
+      </div>
+      <div className="edit-session-empty">
+        在画布移动节点、连线、改参数后，这里会列出待提交操作。
+      </div>
+      <div className="edit-session-actions">
+        <button className="btn btn--primary btn--sm" disabled>
+          <Icon n="check" s={13} />
+          提交编辑
+        </button>
+        <button className="btn btn--ghost btn--sm" disabled>
+          放弃
         </button>
       </div>
     </div>
@@ -283,6 +328,29 @@ function RunErrorCard({
       )}
     </div>
   );
+}
+
+function latestUserMessage(messages: ChatMessage[]): ChatMessage | undefined {
+  return [...messages].reverse().find((message) => message.role === 'user');
+}
+
+function isToolLogEntry(
+  entry: ChatEntry,
+): entry is Extract<ChatEntry, { type: 'assistantTurn' }> {
+  return entry.type === 'assistantTurn' && entry.logs.length > 0;
+}
+
+function editOpSign(item: string): '+' | '~' | '-' {
+  if (/^(Add|Connect)/.test(item)) return '+';
+  if (/^(Remove|Disconnect)/.test(item)) return '-';
+  return '~';
+}
+
+function editOpTone(item: string): 'add' | 'upd' | 'del' {
+  const sign = editOpSign(item);
+  if (sign === '+') return 'add';
+  if (sign === '-') return 'del';
+  return 'upd';
 }
 
 export function shouldSubmitComposerKey(event: ComposerKeyEvent, isComposing = false): boolean {

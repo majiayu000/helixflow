@@ -254,8 +254,8 @@ describe('manual edit session workbench flow', () => {
     expect(markup).toContain('EDITING · 1 CHANGES');
     expect(markup).toContain('Move video to 620, 210');
     expect(markup).toContain('title="先提交或放弃 1 个手动编辑"');
-    expect(markup).toContain('Commit');
-    expect(markup).toContain('Discard');
+    expect(markup).toContain('提交编辑');
+    expect(markup).toContain('放弃');
   });
 
   it('previews manual edit ops without mutating the committed state', () => {
