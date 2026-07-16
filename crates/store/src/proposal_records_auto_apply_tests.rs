@@ -27,6 +27,17 @@ async fn proposal_test_store() -> (Store, tempfile::TempDir) {
     (store, dir)
 }
 
+async fn concurrent_proposal_test_store() -> (Store, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let database_url = format!("sqlite://{}", dir.path().join("helixflow.sqlite").display());
+    let store = Store::open(&database_url).await.expect("open WAL store");
+    assert_eq!(store.journal_mode().await.expect("journal mode"), "wal");
+    let first_connection = store.pool().acquire().await.expect("first connection");
+    let second_connection = store.pool().acquire().await.expect("second connection");
+    drop((first_connection, second_connection));
+    (store, dir)
+}
+
 #[tokio::test]
 async fn auto_apply_commits_proposal_version_workspace_and_message_together() {
     let (store, _dir) = proposal_test_store().await;
@@ -225,7 +236,7 @@ async fn auto_apply_version_conflict_rolls_back_all_database_records() {
 
 #[tokio::test]
 async fn concurrent_same_base_auto_apply_has_one_winner_and_one_explicit_version_conflict() {
-    let (store, _dir) = proposal_test_store().await;
+    let (store, _dir) = concurrent_proposal_test_store().await;
     let workspace = store
         .create_workspace("Concurrent proposals")
         .await
