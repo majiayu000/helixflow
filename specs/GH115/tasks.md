@@ -18,7 +18,7 @@ GH-115：<https://github.com/majiayu000/helixflow/issues/115>
 - [x] `SP115-T5` — Owner: GH-115 provider lane。Dependencies: `SP115-T4`。把 mock image/video fixtures 改成可通过同一 validator 的确定性 synthetic media，并强化 catalog non-production 文案。Done when: 既有 mock run 回归成功且 P3/P7 断言通过。Verify: `cargo test -p helixflow-gateway`; `cargo test -p helixflow-run manual_run_persists_steps_events_and_artifacts`。
 - [x] `SP115-T6` — Owner: GH-115 provider lane。Dependencies: `SP115-T2`。更新 server workspace/provider tests，证明生产默认 unavailable、显式 test mock 注入仍可用。Done when: server focused tests 通过，不修改 `web/**`。Verify: `cargo test -p helixflow-server provider`; `cargo test -p helixflow-server workspace_state`。
 - [x] `SP115-T7` — Owner: GH-115 provider lane。Dependencies: `SP115-T1`–`SP115-T6`。运行完整验证并把原始日志写入 `artifacts/logs/gh115/`。Done when: focused tests、workspace check/test、SpecRail spec/all-spec gates 全部为 0 exit。Verify: 见“验证”。
-- [ ] `SP115-T8` — Owner: GH-115 provider lane。Dependencies: `SP115-T7`。提交、push 并创建 final-slice mixed implementation PR。Done when: PR 中文正文含 `Fixes #115`、`pr_kind: mixed_impl`、auto-applied label 来源、测试证据；不合并、不自审。Verify: `gh pr view --json number,url,headRefName,body`。
+- [x] `SP115-T8` — Owner: GH-115 provider lane。Dependencies: `SP115-T7`。提交、push 并创建 final-slice mixed implementation PR。Done when: PR 中文正文含 `Fixes #115`、`pr_kind: mixed_impl`、auto-applied label 来源、测试证据；不合并、不自审。Verify: `gh pr view --json number,url,headRefName,body`。
 
 ## 并行拆分
 
