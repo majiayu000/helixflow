@@ -19,6 +19,8 @@ use crate::api_error::ApiError;
 use crate::app_state::AppState;
 use crate::workspace_canvas::workspace_canvas_value;
 
+const MAX_COMPATIBILITY_CAS_RETRIES: usize = 8;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CanvasComment {
@@ -165,8 +167,17 @@ pub(crate) async fn apply_canvas_comment_op(
         return replay_or_conflict(&state, &workspace_id, &operation_fingerprint, existing).await;
     }
 
+    let mut compatibility_cas_retries = 0;
     loop {
         let current = read_comment_store(&state.store, &workspace_id).await?;
+        if let Some(base_seq) = input.base_seq
+            && base_seq != current.seq
+        {
+            return Err(comment_conflict(
+                "canvas comment base sequence is stale",
+                current.seq,
+            ));
+        }
         let expected_seq = input.base_seq.unwrap_or(current.seq);
         let mut next = current;
         apply_comment_op(&mut next, op.clone())?;
@@ -189,6 +200,7 @@ pub(crate) async fn apply_canvas_comment_op(
             }
             CanvasCommentCommitResult::Stale { current_seq } => {
                 if input.base_seq.is_none() {
+                    prepare_compatibility_cas_retry(&mut compatibility_cas_retries, current_seq)?;
                     continue;
                 }
                 return Err(comment_conflict(
@@ -385,6 +397,20 @@ fn comment_conflict(message: &str, current_seq: i64) -> ApiError {
     ApiError::conflict_with_details(message, json!({ "currentSeq": current_seq }))
 }
 
+fn prepare_compatibility_cas_retry(
+    completed_retries: &mut usize,
+    current_seq: i64,
+) -> Result<(), ApiError> {
+    if *completed_retries >= MAX_COMPATIBILITY_CAS_RETRIES {
+        return Err(comment_conflict(
+            "canvas comment changed repeatedly; refresh and retry",
+            current_seq,
+        ));
+    }
+    *completed_retries += 1;
+    Ok(())
+}
+
 fn normalize_operation_id(operation_id: Option<String>) -> Result<String, ApiError> {
     let Some(operation_id) = operation_id else {
         return Ok(format!("operation_{}", Uuid::now_v7()));
@@ -510,7 +536,6 @@ fn apply_comment_op(store: &mut CanvasCommentStore, op: CanvasCommentOp) -> Resu
             }
         }
     }
-    store.seq += 1;
     Ok(())
 }
 

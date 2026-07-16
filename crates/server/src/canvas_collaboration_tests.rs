@@ -116,6 +116,138 @@ async fn stale_base_returns_409_with_current_seq_without_partial_write() {
 }
 
 #[tokio::test]
+async fn stale_delete_returns_current_seq_before_applying_the_operation() {
+    let (_dir, state, workspace_id) = comment_test_state().await;
+    let _response = submit_add(&state, &workspace_id, 0, 0)
+        .await
+        .expect("seed target comment");
+    let _response = submit_add(&state, &workspace_id, 1, 1)
+        .await
+        .expect("advance comment sequence");
+
+    let error = apply_canvas_comment_op(
+        AxumPath(workspace_id.clone()),
+        State(state.clone()),
+        Json(CanvasCommentOpRequest {
+            base_seq: Some(1),
+            operation_id: Some("stale_delete".to_owned()),
+            op: CanvasCommentOp::CommentDelete {
+                id: "comment_0".to_owned(),
+            },
+        }),
+    )
+    .await
+    .expect_err("stale delete must conflict");
+    assert_current_seq_conflict(error, 2).await;
+
+    let snapshot = read_comment_store(&state.store, &workspace_id)
+        .await
+        .expect("read comments after stale delete");
+    assert_eq!(snapshot.comments.len(), 2);
+}
+
+#[tokio::test]
+async fn stale_patch_returns_current_seq_before_applying_the_operation() {
+    let (_dir, state, workspace_id) = comment_test_state().await;
+    let _response = submit_add(&state, &workspace_id, 0, 0)
+        .await
+        .expect("seed target comment");
+    let _response = submit_add(&state, &workspace_id, 1, 1)
+        .await
+        .expect("advance comment sequence");
+
+    let error = apply_canvas_comment_op(
+        AxumPath(workspace_id.clone()),
+        State(state.clone()),
+        Json(CanvasCommentOpRequest {
+            base_seq: Some(1),
+            operation_id: Some("stale_patch".to_owned()),
+            op: CanvasCommentOp::CommentPatch {
+                id: "comment_0".to_owned(),
+                body: Some("must not be applied".to_owned()),
+                status: None,
+            },
+        }),
+    )
+    .await
+    .expect_err("stale patch must conflict");
+    assert_current_seq_conflict(error, 2).await;
+
+    let snapshot = read_comment_store(&state.store, &workspace_id)
+        .await
+        .expect("read comments after stale patch");
+    assert_eq!(snapshot.comments[0].body, "Concurrent comment 0");
+}
+
+#[tokio::test]
+async fn stale_duplicate_add_returns_current_seq_instead_of_duplicate_id_error() {
+    let (_dir, state, workspace_id) = comment_test_state().await;
+    let _response = submit_add(&state, &workspace_id, 0, 0)
+        .await
+        .expect("seed duplicate comment id");
+
+    let error = apply_canvas_comment_op(
+        AxumPath(workspace_id.clone()),
+        State(state.clone()),
+        Json(CanvasCommentOpRequest {
+            base_seq: Some(0),
+            operation_id: Some("stale_duplicate_add".to_owned()),
+            op: CanvasCommentOp::CommentAdd {
+                id: Some("comment_0".to_owned()),
+                target: CanvasCommentTarget::Position { x: 0.0, y: 0.0 },
+                body: "duplicate".to_owned(),
+                actor: None,
+            },
+        }),
+    )
+    .await
+    .expect_err("stale duplicate add must report sequence conflict");
+    assert_current_seq_conflict(error, 1).await;
+}
+
+#[tokio::test]
+async fn legacy_json_request_may_omit_operation_id() {
+    let (_dir, state, workspace_id) = comment_test_state().await;
+    let input: CanvasCommentOpRequest = serde_json::from_value(json!({
+        "op": {
+            "op": "comment_add",
+            "id": "legacy_without_operation_id",
+            "target": { "kind": "position", "x": 1.0, "y": 2.0 },
+            "body": "Legacy request"
+        }
+    }))
+    .expect("deserialize legacy request without operationId");
+    assert!(input.operation_id.is_none());
+
+    let _response = apply_canvas_comment_op(
+        AxumPath(workspace_id.clone()),
+        State(state.clone()),
+        Json(input),
+    )
+    .await
+    .expect("apply legacy request without operationId");
+
+    let snapshot = read_comment_store(&state.store, &workspace_id)
+        .await
+        .expect("read legacy request result");
+    assert_eq!(snapshot.seq, 1);
+    assert_eq!(snapshot.comments[0].id, "legacy_without_operation_id");
+}
+
+#[tokio::test]
+async fn compatibility_retry_limit_returns_conflict_with_latest_current_seq() {
+    let mut completed_retries = 0;
+    for current_seq in 1..=MAX_COMPATIBILITY_CAS_RETRIES as i64 {
+        prepare_compatibility_cas_retry(&mut completed_retries, current_seq)
+            .expect("retry remains within compatibility budget");
+    }
+
+    let error = prepare_compatibility_cas_retry(&mut completed_retries, 41)
+        .expect_err("compatibility retry budget must be bounded");
+    assert_current_seq_conflict(error, 41).await;
+}
+
+#[tokio::test]
 async fn stable_operation_id_replay_does_not_duplicate_or_increment_seq() {
     let (_dir, state, workspace_id) = comment_test_state().await;
     let _first_response = submit_add(&state, &workspace_id, 0, 0)
@@ -248,6 +380,44 @@ async fn legacy_json_imports_once_and_never_becomes_truth_again() {
 }
 
 #[tokio::test]
+async fn concurrent_legacy_json_initialization_imports_exactly_once() {
+    let (_dir, state, workspace_id) = comment_test_state().await;
+    let relative = comments_relative_path(&workspace_id).expect("comments path");
+    write_json_file(
+        &state.data_dir,
+        &relative,
+        &json!({
+            "schemaVersion": 1,
+            "seq": 1,
+            "comments": [comment_json("legacy_concurrent")]
+        }),
+        "write concurrent legacy comments",
+    )
+    .await
+    .expect("write concurrent legacy comments");
+
+    let initializers =
+        (0..20).map(|_| ensure_comment_store(&state.store, &state.data_dir, &workspace_id));
+    for result in join_all(initializers).await {
+        result.expect("concurrent legacy initialization");
+    }
+
+    let snapshot = read_comment_store(&state.store, &workspace_id)
+        .await
+        .expect("read concurrently imported comments");
+    assert_eq!(snapshot.seq, 1);
+    assert_eq!(snapshot.comments.len(), 1);
+    assert_eq!(snapshot.comments[0].id, "legacy_concurrent");
+    let persisted = state
+        .store
+        .canvas_comment_state(&workspace_id)
+        .await
+        .expect("read persisted legacy state")
+        .expect("legacy state exists");
+    assert_eq!(persisted.migration_source, "legacy_json");
+}
+
+#[tokio::test]
 async fn invalid_legacy_json_fails_closed_without_initializing_empty_state() {
     let (_dir, state, workspace_id) = comment_test_state().await;
     let relative = comments_relative_path(&workspace_id).expect("comments path");
@@ -342,6 +512,16 @@ async fn submit_add(
         }),
     )
     .await
+}
+
+async fn assert_current_seq_conflict(error: ApiError, expected_current_seq: i64) {
+    assert_eq!(error.status, StatusCode::CONFLICT);
+    let response = error.into_response();
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read conflict response");
+    let body: serde_json::Value = serde_json::from_slice(&bytes).expect("parse conflict response");
+    assert_eq!(body["currentSeq"], expected_current_seq);
 }
 
 fn comment_json(id: &str) -> serde_json::Value {
