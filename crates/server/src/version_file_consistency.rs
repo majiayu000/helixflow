@@ -115,6 +115,11 @@ pub(crate) enum VersionFileConsistencyError {
         operation: &'static str,
         kind: Option<io::ErrorKind>,
     },
+    CleanupBatchDeferred {
+        failure_count: usize,
+        first_operation: &'static str,
+        first_kind: Option<io::ErrorKind>,
+    },
     PrimaryAndCleanup {
         primary_operation: &'static str,
         primary_kind: Option<io::ErrorKind>,
@@ -167,6 +172,14 @@ impl std::fmt::Display for VersionFileConsistencyError {
             Self::CleanupDeferred { operation, kind } => write!(
                 f,
                 "candidate cleanup deferred during `{operation}` ({kind:?})"
+            ),
+            Self::CleanupBatchDeferred {
+                failure_count,
+                first_operation,
+                first_kind,
+            } => write!(
+                f,
+                "candidate cleanup deferred for {failure_count} candidate(s); first failure was `{first_operation}` ({first_kind:?})"
             ),
             Self::PrimaryAndCleanup {
                 primary_operation,
@@ -303,6 +316,7 @@ impl CandidateIo for FsCandidateIo {
     }
 }
 
+#[must_use = "candidate ownership requires explicit publish and store commit/cleanup coordination"]
 #[derive(Debug)]
 pub(crate) struct VersionFileCandidate {
     workspace_id: String,
@@ -629,6 +643,11 @@ fn error_descriptor(error: &VersionFileConsistencyError) -> (&'static str, Optio
     match error {
         VersionFileConsistencyError::Io { operation, kind } => (operation, Some(*kind)),
         VersionFileConsistencyError::CleanupDeferred { operation, kind } => (*operation, *kind),
+        VersionFileConsistencyError::CleanupBatchDeferred {
+            first_operation,
+            first_kind,
+            ..
+        } => (*first_operation, *first_kind),
         VersionFileConsistencyError::CandidateState { operation } => (operation, None),
         VersionFileConsistencyError::PrimaryAndCleanup {
             primary_operation,
@@ -641,12 +660,16 @@ fn error_descriptor(error: &VersionFileConsistencyError) -> (&'static str, Optio
 
 impl Drop for VersionFileCandidate {
     fn drop(&mut self) {
+        // This is only a best-effort safety net for an abandoned temporary file. Coordinators
+        // must call cleanup_after_store_error so durable references are checked and failures are
+        // returned; Drop cannot safely remove published files or report cleanup errors.
         if let Some(temp) = self.owned_temp.take() {
             let _ = std::fs::remove_file(temp);
         }
     }
 }
 
+#[must_use = "candidate sets require explicit store commit/cleanup coordination"]
 #[derive(Debug, Default)]
 pub(crate) struct VersionFileCandidateSet {
     candidates: Vec<VersionFileCandidate>,
@@ -701,9 +724,33 @@ impl VersionFileCandidateSet {
         &mut self,
         store: &Store,
     ) -> Result<Vec<CandidateCleanupOutcome>, VersionFileConsistencyError> {
+        self.cleanup_after_store_error_with_io(store, &FsCandidateIo)
+            .await
+    }
+
+    pub(crate) async fn cleanup_after_store_error_with_io<I: CandidateIo>(
+        &mut self,
+        store: &Store,
+        io: &I,
+    ) -> Result<Vec<CandidateCleanupOutcome>, VersionFileConsistencyError> {
         let mut outcomes = Vec::with_capacity(self.candidates.len());
+        let mut failure_count = 0;
+        let mut first_failure = None;
         for candidate in &mut self.candidates {
-            outcomes.push(candidate.cleanup_after_store_error(store).await?);
+            match candidate.cleanup_after_store_error_with_io(store, io).await {
+                Ok(outcome) => outcomes.push(outcome),
+                Err(error) => {
+                    failure_count += 1;
+                    first_failure.get_or_insert_with(|| error_descriptor(&error));
+                }
+            }
+        }
+        if let Some((first_operation, first_kind)) = first_failure {
+            return Err(VersionFileConsistencyError::CleanupBatchDeferred {
+                failure_count,
+                first_operation,
+                first_kind,
+            });
         }
         Ok(outcomes)
     }

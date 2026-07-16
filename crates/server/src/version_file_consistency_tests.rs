@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use helixflow_graph::WorkflowGraph;
 use helixflow_store::{NewProposal, NewVersion, Store, VersionRecord, VersionSource};
@@ -637,6 +638,56 @@ async fn cleanup_candidate_set_removes_each_unreferenced_publication() {
     assert_eq!(graph_directory_entries(dir.path(), "ws_set_cleanup"), 0);
 }
 
+#[tokio::test]
+async fn cleanup_candidate_set_continues_after_earlier_removal_failure() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (store, _db_dir) = open_store().await;
+    let mut set = VersionFileCandidateSet::default();
+    set.push(
+        VersionFileCandidate::from_graph(
+            "ws_set_partial_cleanup",
+            CandidateKind::ProposalOps,
+            &sample_graph(),
+        )
+        .expect("first candidate"),
+    );
+    set.push(
+        VersionFileCandidate::from_graph(
+            "ws_set_partial_cleanup",
+            CandidateKind::ProposalPreview,
+            &sample_graph(),
+        )
+        .expect("later candidate"),
+    );
+    set.publish_all(dir.path()).expect("publish set");
+    let paths: Vec<_> = set
+        .candidates()
+        .iter()
+        .map(|candidate| dir.path().join(candidate.relative_path()))
+        .collect();
+    let io = FailFirstRemoveIo::default();
+
+    let error = set
+        .cleanup_after_store_error_with_io(&store, &io)
+        .await
+        .expect_err("first removal failure must be aggregated");
+
+    assert!(matches!(
+        error,
+        VersionFileConsistencyError::CleanupBatchDeferred {
+            failure_count: 1,
+            first_operation: "remove_owned_candidate",
+            first_kind: Some(io::ErrorKind::PermissionDenied),
+        }
+    ));
+    assert!(paths[0].exists(), "failed candidate remains owned");
+    assert!(
+        !paths[1].exists(),
+        "later unreferenced candidate was still inspected and removed"
+    );
+    assert_eq!(io.remove_calls.load(Ordering::SeqCst), 2);
+}
+
 #[test]
 fn candidate_set_marks_every_published_candidate_committed() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -660,6 +711,44 @@ fn candidate_set_marks_every_published_candidate_committed() {
 
     set.publish_all(dir.path()).expect("publish set");
     set.mark_all_committed().expect("mark set committed");
+}
+
+#[derive(Default)]
+struct FailFirstRemoveIo {
+    remove_calls: AtomicUsize,
+}
+
+impl CandidateIo for FailFirstRemoveIo {
+    fn create_new(&self, path: &std::path::Path) -> io::Result<File> {
+        FsCandidateIo.create_new(path)
+    }
+
+    fn write_all(&self, file: &mut File, bytes: &[u8]) -> io::Result<()> {
+        FsCandidateIo.write_all(file, bytes)
+    }
+
+    fn sync_file(&self, file: &File) -> io::Result<()> {
+        FsCandidateIo.sync_file(file)
+    }
+
+    fn publish_no_replace(
+        &self,
+        temp: &std::path::Path,
+        final_path: &std::path::Path,
+    ) -> io::Result<()> {
+        FsCandidateIo.publish_no_replace(temp, final_path)
+    }
+
+    fn sync_parent(&self, parent: &std::path::Path) -> io::Result<()> {
+        FsCandidateIo.sync_parent(parent)
+    }
+
+    fn remove_file(&self, path: &std::path::Path) -> io::Result<()> {
+        if self.remove_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Err(io::Error::from(io::ErrorKind::PermissionDenied));
+        }
+        FsCandidateIo.remove_file(path)
+    }
 }
 
 async fn open_store() -> (Store, tempfile::TempDir) {
