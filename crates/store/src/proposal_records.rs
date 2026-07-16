@@ -315,11 +315,14 @@ impl Store {
                     .fetch_optional(&mut *tx)
                     .await?
                     .flatten();
-            return Err(StoreError::VersionConflict {
-                workspace_id: input.version.workspace_id.to_owned(),
-                expected_version_id: input.expected_current_version_id.to_owned(),
-                actual_version_id,
-            });
+            if actual_version_id.as_deref() != Some(input.expected_current_version_id) {
+                return Err(StoreError::VersionConflict {
+                    workspace_id: input.version.workspace_id.to_owned(),
+                    expected_version_id: input.expected_current_version_id.to_owned(),
+                    actual_version_id,
+                });
+            }
+            return Err(statement_invariant("advance_applied_proposal_current", 0));
         }
         require_one_write(
             "advance_applied_proposal_current",
@@ -343,11 +346,14 @@ impl Store {
                 .bind(input.proposal_id)
                 .fetch_optional(&mut *tx)
                 .await?;
-            return Err(StoreError::ProposalStateConflict {
-                proposal_id: input.proposal_id.to_owned(),
-                expected_state: "pending".to_owned(),
-                actual_state,
-            });
+            if actual_state.as_deref() != Some("pending") {
+                return Err(StoreError::ProposalStateConflict {
+                    proposal_id: input.proposal_id.to_owned(),
+                    expected_state: "pending".to_owned(),
+                    actual_state,
+                });
+            }
+            return Err(statement_invariant("mark_applied_proposal", 0));
         }
         require_one_write("mark_applied_proposal", proposal_update.rows_affected())?;
 
@@ -472,11 +478,14 @@ impl Store {
                     .fetch_optional(&mut *tx)
                     .await?
                     .flatten();
-            return Err(StoreError::VersionConflict {
-                workspace_id: input.version.workspace_id.to_owned(),
-                expected_version_id: input.proposal.base_version_id.to_owned(),
-                actual_version_id,
-            });
+            if actual_version_id.as_deref() != Some(input.proposal.base_version_id) {
+                return Err(StoreError::VersionConflict {
+                    workspace_id: input.version.workspace_id.to_owned(),
+                    expected_version_id: input.proposal.base_version_id.to_owned(),
+                    actual_version_id,
+                });
+            }
+            return Err(statement_invariant("advance_auto_applied_current", 0));
         }
         require_one_write(
             "advance_auto_applied_current",
@@ -618,9 +627,13 @@ fn require_one_write(operation: &'static str, actual_rows: u64) -> StoreResult<(
     if actual_rows == 1 {
         return Ok(());
     }
-    Err(StoreError::StatementInvariant {
+    Err(statement_invariant(operation, actual_rows))
+}
+
+fn statement_invariant(operation: &'static str, actual_rows: u64) -> StoreError {
+    StoreError::StatementInvariant {
         operation,
         expected_rows: 1,
         actual_rows,
-    })
+    }
 }

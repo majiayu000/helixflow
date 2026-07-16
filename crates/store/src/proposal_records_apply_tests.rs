@@ -250,6 +250,13 @@ async fn applying_proposal_rejects_proposal_base_mismatch_before_writes() {
     .await
     .expect_err("proposal base must equal expected current");
 
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "proposal `{proposal_id}` expected base version `{}` but found `{base_id}`",
+            newer.id
+        )
+    );
     assert!(matches!(
         error,
         StoreError::ProposalBaseMismatch {
@@ -341,6 +348,159 @@ async fn applying_proposal_rejects_non_pending_state_without_partial_writes() {
         "dismissed",
     )
     .await;
+}
+
+#[tokio::test]
+async fn suppressed_proposal_update_is_classified_and_rolls_back() {
+    let (store, workspace_id, base_id, proposal_id, _dir) = apply_fixture().await;
+    sqlx::query(
+        r#"
+        CREATE TEMP TRIGGER ignore_applied_proposal_update
+        BEFORE UPDATE OF state ON proposals
+        WHEN NEW.state = 'applied'
+        BEGIN
+          SELECT RAISE(IGNORE);
+        END
+        "#,
+    )
+    .execute(store.pool())
+    .await
+    .expect("install ignored-update trigger");
+
+    let error = apply_proposal(
+        &store,
+        &workspace_id,
+        &base_id,
+        &proposal_id,
+        Some(&base_id),
+    )
+    .await
+    .expect_err("ignored proposal update must be classified");
+
+    assert!(matches!(
+        error,
+        StoreError::StatementInvariant {
+            operation: "mark_applied_proposal",
+            expected_rows: 1,
+            actual_rows: 0,
+        }
+    ));
+    assert_manual_state(&store, &workspace_id, &base_id, &proposal_id, 1, "pending").await;
+}
+
+#[tokio::test]
+async fn diverged_proposal_after_suppressed_update_is_state_conflict_and_rolls_back() {
+    let (store, workspace_id, base_id, proposal_id, _dir) = apply_fixture().await;
+    sqlx::query(
+        r#"
+        CREATE TEMP TRIGGER diverge_applied_proposal_update
+        BEFORE UPDATE OF state ON proposals
+        WHEN NEW.state = 'applied'
+        BEGIN
+          UPDATE proposals SET state = 'dismissed' WHERE id = OLD.id;
+          SELECT RAISE(IGNORE);
+        END
+        "#,
+    )
+    .execute(store.pool())
+    .await
+    .expect("install diverging-update trigger");
+
+    let error = apply_proposal(
+        &store,
+        &workspace_id,
+        &base_id,
+        &proposal_id,
+        Some(&base_id),
+    )
+    .await
+    .expect_err("diverged proposal state must conflict");
+
+    assert!(matches!(
+        error,
+        StoreError::ProposalStateConflict {
+            actual_state: Some(actual_state),
+            ..
+        } if actual_state == "dismissed"
+    ));
+    assert_manual_state(&store, &workspace_id, &base_id, &proposal_id, 1, "pending").await;
+}
+
+#[tokio::test]
+async fn suppressed_current_update_is_classified_and_rolls_back() {
+    let (store, workspace_id, base_id, proposal_id, _dir) = apply_fixture().await;
+    sqlx::query(
+        r#"
+        CREATE TEMP TRIGGER ignore_applied_current_update
+        BEFORE UPDATE OF cur_version_id ON workspaces
+        WHEN NEW.cur_version_id != OLD.cur_version_id
+        BEGIN
+          SELECT RAISE(IGNORE);
+        END
+        "#,
+    )
+    .execute(store.pool())
+    .await
+    .expect("install ignored-update trigger");
+
+    let error = apply_proposal(
+        &store,
+        &workspace_id,
+        &base_id,
+        &proposal_id,
+        Some(&base_id),
+    )
+    .await
+    .expect_err("ignored current update must be classified");
+
+    assert!(matches!(
+        error,
+        StoreError::StatementInvariant {
+            operation: "advance_applied_proposal_current",
+            expected_rows: 1,
+            actual_rows: 0,
+        }
+    ));
+    assert_manual_state(&store, &workspace_id, &base_id, &proposal_id, 1, "pending").await;
+}
+
+#[tokio::test]
+async fn diverged_current_after_suppressed_update_is_version_conflict_and_rolls_back() {
+    let (store, workspace_id, base_id, proposal_id, _dir) = apply_fixture().await;
+    sqlx::query(
+        r#"
+        CREATE TEMP TRIGGER diverge_applied_current_update
+        BEFORE UPDATE OF cur_version_id ON workspaces
+        WHEN NEW.cur_version_id != OLD.cur_version_id
+        BEGIN
+          UPDATE workspaces SET cur_version_id = NULL WHERE id = OLD.id;
+          SELECT RAISE(IGNORE);
+        END
+        "#,
+    )
+    .execute(store.pool())
+    .await
+    .expect("install diverging-update trigger");
+
+    let error = apply_proposal(
+        &store,
+        &workspace_id,
+        &base_id,
+        &proposal_id,
+        Some(&base_id),
+    )
+    .await
+    .expect_err("diverged current must conflict");
+
+    assert!(matches!(
+        error,
+        StoreError::VersionConflict {
+            expected_version_id,
+            actual_version_id: None,
+            ..
+        } if expected_version_id == base_id
+    ));
+    assert_manual_state(&store, &workspace_id, &base_id, &proposal_id, 1, "pending").await;
 }
 
 #[tokio::test]

@@ -278,6 +278,171 @@ async fn concurrent_auto_apply_has_one_winner_and_one_explicit_version_conflict(
 }
 
 #[tokio::test]
+async fn suppressed_current_update_is_classified_and_rolls_back() {
+    let (store, _dir) = proposal_test_store().await;
+    let workspace = store
+        .create_workspace("Suppressed current update")
+        .await
+        .expect("create workspace");
+    let base = store
+        .create_version(NewVersion {
+            workspace_id: &workspace.id,
+            label: "Base",
+            source: VersionSource::Manual,
+            graph_path: "graphs/base-suppressed.json",
+            graph_hash: "sha256:base-suppressed",
+            parent_id: None,
+        })
+        .await
+        .expect("create base");
+    sqlx::query(
+        r#"
+        CREATE TEMP TRIGGER ignore_auto_current_update
+        BEFORE UPDATE OF cur_version_id ON workspaces
+        WHEN NEW.cur_version_id != OLD.cur_version_id
+        BEGIN
+          SELECT RAISE(IGNORE);
+        END
+        "#,
+    )
+    .execute(store.pool())
+    .await
+    .expect("install ignored-update trigger");
+
+    let error = submit_auto_apply(
+        store.clone(),
+        workspace.id.clone(),
+        base.id.clone(),
+        "suppressed",
+    )
+    .await
+    .expect_err("ignored current update must be classified");
+
+    assert!(matches!(
+        error,
+        StoreError::StatementInvariant {
+            operation: "advance_auto_applied_current",
+            expected_rows: 1,
+            actual_rows: 0,
+        }
+    ));
+    assert_eq!(
+        store
+            .workspace(&workspace.id)
+            .await
+            .expect("workspace")
+            .cur_version_id
+            .as_deref(),
+        Some(base.id.as_str())
+    );
+    assert_eq!(
+        store
+            .versions_for_workspace(&workspace.id)
+            .await
+            .expect("versions")
+            .len(),
+        1
+    );
+    assert!(
+        store
+            .workspace_messages(&workspace.id)
+            .await
+            .expect("messages")
+            .is_empty()
+    );
+    assert!(
+        store
+            .workspace_proposals(&workspace.id)
+            .await
+            .expect("proposals")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn diverged_current_after_suppressed_update_is_version_conflict_and_rolls_back() {
+    let (store, _dir) = proposal_test_store().await;
+    let workspace = store
+        .create_workspace("Diverged current update")
+        .await
+        .expect("create workspace");
+    let base = store
+        .create_version(NewVersion {
+            workspace_id: &workspace.id,
+            label: "Base",
+            source: VersionSource::Manual,
+            graph_path: "graphs/base-diverged.json",
+            graph_hash: "sha256:base-diverged",
+            parent_id: None,
+        })
+        .await
+        .expect("create base");
+    sqlx::query(
+        r#"
+        CREATE TEMP TRIGGER diverge_auto_current_update
+        BEFORE UPDATE OF cur_version_id ON workspaces
+        WHEN NEW.cur_version_id != OLD.cur_version_id
+        BEGIN
+          UPDATE workspaces SET cur_version_id = NULL WHERE id = OLD.id;
+          SELECT RAISE(IGNORE);
+        END
+        "#,
+    )
+    .execute(store.pool())
+    .await
+    .expect("install diverging-update trigger");
+
+    let error = submit_auto_apply(
+        store.clone(),
+        workspace.id.clone(),
+        base.id.clone(),
+        "diverged",
+    )
+    .await
+    .expect_err("diverged current must conflict");
+
+    assert!(matches!(
+        error,
+        StoreError::VersionConflict {
+            expected_version_id,
+            actual_version_id: None,
+            ..
+        } if expected_version_id == base.id
+    ));
+    assert_eq!(
+        store
+            .workspace(&workspace.id)
+            .await
+            .expect("workspace")
+            .cur_version_id
+            .as_deref(),
+        Some(base.id.as_str())
+    );
+    assert_eq!(
+        store
+            .versions_for_workspace(&workspace.id)
+            .await
+            .expect("versions")
+            .len(),
+        1
+    );
+    assert!(
+        store
+            .workspace_messages(&workspace.id)
+            .await
+            .expect("messages")
+            .is_empty()
+    );
+    assert!(
+        store
+            .workspace_proposals(&workspace.id)
+            .await
+            .expect("proposals")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn auto_apply_version_insert_fault_rolls_back_all_database_records() {
     assert_auto_apply_fault_rolls_back(
         r#"
