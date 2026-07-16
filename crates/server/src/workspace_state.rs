@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
 use crate::graph_files::{blank_graph, read_graph_file, read_json_file};
+use crate::version_file_consistency::read_version_graph;
 use crate::workbench_payload::{
     ProposalPayload, output_payload_from_artifact, pending_confirmation_from_run,
     pending_proposal_payload_from_record,
@@ -44,7 +45,9 @@ pub(crate) async fn workspace_state_value(
         .map_err(ApiError::store)?;
     let current_version = current_version(&state, &workspace).await?;
     let graph = match &current_version {
-        Some(version) => read_graph_file(&state.data_dir, &version.graph_path).await?,
+        Some(version) => read_version_graph(&state.data_dir, version)
+            .await
+            .map_err(|error| ApiError::server_error(error.to_string()))?,
         None => blank_graph(),
     };
     let messages = state

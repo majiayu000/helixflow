@@ -10,11 +10,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
-use crate::graph_files::read_graph_file;
 use crate::sweep_support::{
     interrupt_target_run, parse_run_confirmation_threshold_usd, requires_run_confirmation,
     run_confirmation_threshold_config,
 };
+use crate::version_file_consistency::read_version_graph;
 use crate::workbench_payload::{
     OutputPayload, PendingConfirmationPayload, RunPayload, output_payload_from_artifact,
     pending_confirmation_from_pending, run_payload_from_outcome, run_payload_from_pending,
@@ -61,7 +61,9 @@ pub(crate) async fn queue_workspace_run(
         .version(&version_id)
         .await
         .map_err(ApiError::store)?;
-    let graph = read_graph_file(&state.data_dir, &version.graph_path).await?;
+    let graph = read_version_graph(&state.data_dir, &version)
+        .await
+        .map_err(|error| ApiError::server_error(error.to_string()))?;
     let force_rerun = body.map(|Json(body)| body.force_rerun).unwrap_or(false);
 
     let threshold =

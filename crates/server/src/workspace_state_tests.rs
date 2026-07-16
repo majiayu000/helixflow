@@ -12,6 +12,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use crate::app_state::AppState;
+use crate::graph_files::graph_hash;
 use crate::test_support::FailingWorkbenchAgent;
 use crate::workspace_state::*;
 
@@ -285,35 +286,86 @@ async fn workspace_state_marks_cached_run_steps_and_graph_nodes() {
 }
 
 #[tokio::test]
-async fn workspace_state_rejects_missing_current_graph_file() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let store = open_store(dir.path()).await;
-    let workspace = store
-        .create_workspace("Broken workspace")
-        .await
-        .expect("create workspace");
-    store
-        .create_version(NewVersion {
-            workspace_id: &workspace.id,
-            label: "Missing graph",
-            source: VersionSource::Manual,
-            graph_path: "graphs/missing.json",
-            graph_hash: "sha256:missing",
-            parent_id: None,
-        })
-        .await
-        .expect("create version");
-    let state = test_state(store, dir.path().to_path_buf());
+async fn verified_read_workspace_state_rejects_corrupt_graph_without_side_effects() {
+    for payload in [
+        StoredStateGraph::Missing,
+        StoredStateGraph::InvalidStoredHash,
+        StoredStateGraph::HashMismatch,
+        StoredStateGraph::InvalidJson,
+    ] {
+        let (state, workspace_id, version_id, _dir) = state_with_state_payload(payload).await;
+        let error = workspace_state(AxumPath(workspace_id.clone()), State(state.clone()))
+            .await
+            .expect_err("corrupt current graph must fail closed");
 
-    let err = workspace_state(AxumPath(workspace.id), State(state))
-        .await
-        .expect_err("missing graph file should error");
-
-    assert_eq!(err.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-    assert!(err.message.contains("graphs/missing.json"));
+        assert_eq!(error.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(
+            !error
+                .message
+                .contains(state.data_dir.to_string_lossy().as_ref())
+        );
+        assert!(
+            state
+                .store
+                .workspace_messages(&workspace_id)
+                .await
+                .expect("messages")
+                .is_empty()
+        );
+        assert!(
+            state
+                .store
+                .workspace_proposals(&workspace_id)
+                .await
+                .expect("proposals")
+                .is_empty()
+        );
+        assert!(
+            state
+                .store
+                .latest_workspace_run(&workspace_id)
+                .await
+                .expect("latest run")
+                .is_none()
+        );
+        let versions = state
+            .store
+            .versions_for_workspace(&workspace_id)
+            .await
+            .expect("versions");
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].id, version_id);
+        assert_eq!(
+            state
+                .store
+                .workspace(&workspace_id)
+                .await
+                .expect("workspace")
+                .cur_version_id
+                .as_deref(),
+            Some(version_id.as_str())
+        );
+    }
 }
 
 async fn state_with_workspace() -> (AppState, String, tempfile::TempDir) {
+    let (state, workspace_id, _version_id, dir) =
+        state_with_state_payload(StoredStateGraph::Valid).await;
+    (state, workspace_id, dir)
+}
+
+#[derive(Clone, Copy)]
+enum StoredStateGraph {
+    Valid,
+    Missing,
+    InvalidStoredHash,
+    HashMismatch,
+    InvalidJson,
+}
+
+async fn state_with_state_payload(
+    payload: StoredStateGraph,
+) -> (AppState, String, String, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("temp dir");
     let data_dir = dir.path().to_path_buf();
     let store = open_store(&data_dir).await;
@@ -325,26 +377,39 @@ async fn state_with_workspace() -> (AppState, String, tempfile::TempDir) {
         .await
         .expect("create graph dir");
     let graph_path = "graphs/current.json";
-    tokio::fs::write(
-        data_dir.join(graph_path),
-        serde_json::to_vec(&sample_graph()).expect("graph json"),
-    )
-    .await
-    .expect("write graph");
-    store
+    let canonical_bytes = serde_json::to_vec(&sample_graph()).expect("graph json");
+    let (file_bytes, stored_graph_hash) = match payload {
+        StoredStateGraph::Valid => (Some(canonical_bytes.clone()), graph_hash(&canonical_bytes)),
+        StoredStateGraph::Missing => (None, graph_hash(&canonical_bytes)),
+        StoredStateGraph::InvalidStoredHash => {
+            (Some(canonical_bytes), "sha256:not-canonical".to_owned())
+        }
+        StoredStateGraph::HashMismatch => (Some(b"{}".to_vec()), graph_hash(&canonical_bytes)),
+        StoredStateGraph::InvalidJson => {
+            let bytes = b"invalid workspace graph json".to_vec();
+            let hash = graph_hash(&bytes);
+            (Some(bytes), hash)
+        }
+    };
+    if let Some(file_bytes) = file_bytes {
+        tokio::fs::write(data_dir.join(graph_path), file_bytes)
+            .await
+            .expect("write graph");
+    }
+    let version = store
         .create_version(NewVersion {
             workspace_id: &workspace.id,
             label: "Current graph",
             source: VersionSource::Manual,
             graph_path,
-            graph_hash: "sha256:current",
+            graph_hash: &stored_graph_hash,
             parent_id: None,
         })
         .await
         .expect("create version");
 
     let state = test_state(store, data_dir);
-    (state, workspace.id, dir)
+    (state, workspace.id, version.id, dir)
 }
 
 async fn open_store(data_dir: &Path) -> Store {

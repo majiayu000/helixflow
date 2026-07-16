@@ -9,6 +9,7 @@ use helixflow_store::{NewVersion, Store, VersionSource};
 use serde_json::json;
 
 use crate::app_state::AppState;
+use crate::graph_files::graph_hash;
 use crate::run_routes::*;
 use crate::test_support::FailingWorkbenchAgent;
 use crate::test_wait::{wait_for_actual_cost, wait_for_run_status};
@@ -198,7 +199,6 @@ async fn hold_route_interrupts_all_waiting_sweep_runs() {
 #[tokio::test]
 async fn queue_route_executes_current_workspace_graph() {
     let (state, workspace_id, _version_id, _dir) = state_with_workspace().await;
-    write_current_graph(&state).await;
 
     let response = queue_workspace_run(Path(workspace_id.clone()), State(state.clone()), None)
         .await
@@ -214,8 +214,7 @@ async fn queue_route_executes_current_workspace_graph() {
 
 #[tokio::test]
 async fn queue_route_rejects_empty_current_graph() {
-    let (state, workspace_id, _version_id, _dir) = state_with_workspace().await;
-    write_graph(&state, &empty_graph()).await;
+    let (state, workspace_id, _version_id, _dir) = state_with_graph(&empty_graph()).await;
 
     let err = queue_workspace_run(Path(workspace_id), State(state), None)
         .await
@@ -223,6 +222,69 @@ async fn queue_route_rejects_empty_current_graph() {
 
     assert_eq!(err.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert!(err.message.contains("no executable steps"));
+}
+
+#[tokio::test]
+async fn verified_read_queue_route_rejects_corrupt_graph_without_side_effects() {
+    for payload in [
+        StoredRunGraph::Missing,
+        StoredRunGraph::InvalidStoredHash,
+        StoredRunGraph::HashMismatch,
+        StoredRunGraph::InvalidJson,
+    ] {
+        let (state, workspace_id, version_id, _dir) = state_with_run_payload(payload).await;
+        let error = queue_workspace_run(Path(workspace_id.clone()), State(state.clone()), None)
+            .await
+            .expect_err("corrupt current graph must fail closed");
+
+        assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(
+            !error
+                .message
+                .contains(state.data_dir.to_string_lossy().as_ref())
+        );
+        assert!(
+            state
+                .store
+                .latest_workspace_run(&workspace_id)
+                .await
+                .expect("latest run")
+                .is_none()
+        );
+        assert!(
+            state
+                .store
+                .workspace_messages(&workspace_id)
+                .await
+                .expect("messages")
+                .is_empty()
+        );
+        assert!(
+            state
+                .store
+                .workspace_proposals(&workspace_id)
+                .await
+                .expect("proposals")
+                .is_empty()
+        );
+        let versions = state
+            .store
+            .versions_for_workspace(&workspace_id)
+            .await
+            .expect("versions");
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].id, version_id);
+        assert_eq!(
+            state
+                .store
+                .workspace(&workspace_id)
+                .await
+                .expect("workspace")
+                .cur_version_id
+                .as_deref(),
+            Some(version_id.as_str())
+        );
+    }
 }
 
 #[tokio::test]
@@ -290,6 +352,25 @@ async fn interrupt_route_rejects_waiting_confirmation_run() {
 }
 
 async fn state_with_workspace() -> (AppState, String, String, tempfile::TempDir) {
+    state_with_graph(&sample_graph()).await
+}
+
+async fn state_with_graph(graph: &WorkflowGraph) -> (AppState, String, String, tempfile::TempDir) {
+    state_with_run_payload(StoredRunGraph::Valid(graph)).await
+}
+
+#[derive(Clone, Copy)]
+enum StoredRunGraph<'a> {
+    Valid(&'a WorkflowGraph),
+    Missing,
+    InvalidStoredHash,
+    HashMismatch,
+    InvalidJson,
+}
+
+async fn state_with_run_payload(
+    payload: StoredRunGraph<'_>,
+) -> (AppState, String, String, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("temp dir");
     let data_dir = dir.path().to_path_buf();
     let database_url = format!("sqlite://{}", data_dir.join("helixflow.sqlite").display());
@@ -298,13 +379,42 @@ async fn state_with_workspace() -> (AppState, String, String, tempfile::TempDir)
         .create_workspace("Run route workspace")
         .await
         .expect("create workspace");
+    let canonical_bytes = serde_json::to_vec_pretty(&sample_graph()).expect("encode graph");
+    let (file_bytes, stored_graph_hash) = match payload {
+        StoredRunGraph::Valid(graph) => {
+            let bytes = serde_json::to_vec_pretty(graph).expect("encode graph");
+            let hash = graph_hash(&bytes);
+            (Some(bytes), hash)
+        }
+        StoredRunGraph::Missing => (None, graph_hash(&canonical_bytes)),
+        StoredRunGraph::InvalidStoredHash => {
+            (Some(canonical_bytes), "sha256:not-canonical".to_owned())
+        }
+        StoredRunGraph::HashMismatch => (
+            Some(serde_json::to_vec_pretty(&empty_graph()).expect("mismatch graph")),
+            graph_hash(&canonical_bytes),
+        ),
+        StoredRunGraph::InvalidJson => {
+            let bytes = b"invalid run graph json".to_vec();
+            let hash = graph_hash(&bytes);
+            (Some(bytes), hash)
+        }
+    };
+    tokio::fs::create_dir_all(data_dir.join("graphs"))
+        .await
+        .expect("create graph dir");
+    if let Some(file_bytes) = file_bytes {
+        tokio::fs::write(data_dir.join("graphs/run.json"), file_bytes)
+            .await
+            .expect("write graph");
+    }
     let version = store
         .create_version(NewVersion {
             workspace_id: &workspace.id,
             label: "Run graph",
             source: VersionSource::Manual,
             graph_path: "graphs/run.json",
-            graph_hash: "sha256:run",
+            graph_hash: &stored_graph_hash,
             parent_id: None,
         })
         .await

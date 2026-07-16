@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
-use crate::graph_files::read_graph_file;
+use crate::version_file_consistency::read_version_graph;
 use crate::workspace_state::workspace_state_value;
 
 pub(crate) async fn export_workflow_version(
@@ -20,7 +20,9 @@ pub(crate) async fn export_workflow_version(
         Err(err) if err.is_not_found() => return Err(ApiError::not_found("version was not found")),
         Err(err) => return Err(ApiError::store(err)),
     };
-    let graph = read_graph_file(&state.data_dir, &version.graph_path).await?;
+    let graph = read_version_graph(&state.data_dir, &version)
+        .await
+        .map_err(|error| ApiError::server_error(error.to_string()))?;
     ensure_exportable_graph(&graph)?;
     Ok(Json(graph))
 }
@@ -115,6 +117,9 @@ async fn create_restore_version(
     target: &VersionRecord,
     action: RestoreAction,
 ) -> Result<VersionRecord, ApiError> {
+    read_version_graph(&state.data_dir, target)
+        .await
+        .map_err(|error| ApiError::server_error(error.to_string()))?;
     let label = match action {
         RestoreAction::Undo => format!("Undo to {}", target.label),
         RestoreAction::Restore => format!("Restore {}", target.label),
@@ -237,6 +242,7 @@ mod tests {
 
     use super::*;
     use crate::app_state::{AppState, WorkbenchAgent};
+    use crate::graph_files::graph_hash;
 
     #[tokio::test]
     async fn export_workflow_version_returns_current_graph_when_proposal_is_pending() {
@@ -358,6 +364,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restore_rejects_corrupt_target_verified_read_without_side_effects() {
+        for payload in [
+            StoredTargetGraph::Missing,
+            StoredTargetGraph::InvalidStoredHash,
+            StoredTargetGraph::HashMismatch,
+            StoredTargetGraph::InvalidJson,
+        ] {
+            let (state, workspace_id, target_id, current_id, _dir) =
+                state_with_target_payload(payload).await;
+            let version_ids_before: Vec<_> = state
+                .store
+                .versions_for_workspace(&workspace_id)
+                .await
+                .expect("versions before")
+                .into_iter()
+                .map(|version| version.id)
+                .collect();
+
+            let export_error =
+                export_workflow_version(Path(target_id.clone()), State(state.clone()))
+                    .await
+                    .expect_err("corrupt target must not be exported");
+            let restore_error = restore_workspace_version(
+                Path((workspace_id.clone(), target_id)),
+                State(state.clone()),
+            )
+            .await
+            .expect_err("corrupt target must not be restored");
+
+            assert_eq!(
+                export_error.status,
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR
+            );
+            assert_eq!(
+                restore_error.status,
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR
+            );
+            assert!([&export_error, &restore_error].iter().all(|error| {
+                !error
+                    .message
+                    .contains(state.data_dir.to_string_lossy().as_ref())
+            }));
+            assert_eq!(
+                state
+                    .store
+                    .versions_for_workspace(&workspace_id)
+                    .await
+                    .expect("versions after")
+                    .into_iter()
+                    .map(|version| version.id)
+                    .collect::<Vec<_>>(),
+                version_ids_before
+            );
+            assert_eq!(
+                state
+                    .store
+                    .workspace(&workspace_id)
+                    .await
+                    .expect("workspace")
+                    .cur_version_id
+                    .as_deref(),
+                Some(current_id.as_str())
+            );
+            assert!(
+                state
+                    .store
+                    .workspace_messages(&workspace_id)
+                    .await
+                    .expect("messages")
+                    .is_empty()
+            );
+            assert!(
+                state
+                    .store
+                    .latest_workspace_run(&workspace_id)
+                    .await
+                    .expect("latest run")
+                    .is_none()
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn undo_workspace_version_rejects_initial_version() {
         let (state, version_id, _dir) = state_with_graph(current_graph()).await;
         let workspace_id = state
@@ -464,6 +553,21 @@ mod tests {
     }
 
     async fn state_with_two_versions() -> (AppState, String, String, String, tempfile::TempDir) {
+        state_with_target_payload(StoredTargetGraph::Valid).await
+    }
+
+    #[derive(Clone, Copy)]
+    enum StoredTargetGraph {
+        Valid,
+        Missing,
+        InvalidStoredHash,
+        HashMismatch,
+        InvalidJson,
+    }
+
+    async fn state_with_target_payload(
+        payload: StoredTargetGraph,
+    ) -> (AppState, String, String, String, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
         let data_dir = dir.path().to_path_buf();
         let database_url = format!("sqlite://{}", data_dir.join("helixflow.sqlite").display());
@@ -480,18 +584,31 @@ mod tests {
             .expect("create graph dir");
         let base_path = graph_dir.join("base.json");
         let current_path = graph_dir.join("current.json");
-        tokio::fs::write(
-            data_dir.join(&base_path),
-            serde_json::to_vec_pretty(&current_graph()).expect("base graph json"),
-        )
-        .await
-        .expect("write base graph");
-        tokio::fs::write(
-            data_dir.join(&current_path),
-            serde_json::to_vec_pretty(&preview_graph()).expect("current graph json"),
-        )
-        .await
-        .expect("write current graph");
+        let canonical_base = serde_json::to_vec_pretty(&current_graph()).expect("base graph json");
+        let (base_bytes, base_hash) = match payload {
+            StoredTargetGraph::Valid => (Some(canonical_base.clone()), graph_hash(&canonical_base)),
+            StoredTargetGraph::Missing => (None, graph_hash(&canonical_base)),
+            StoredTargetGraph::InvalidStoredHash => {
+                (Some(canonical_base), "sha256:not-canonical".to_owned())
+            }
+            StoredTargetGraph::HashMismatch => (Some(b"{}".to_vec()), graph_hash(&canonical_base)),
+            StoredTargetGraph::InvalidJson => {
+                let bytes = b"invalid restore graph json".to_vec();
+                let hash = graph_hash(&bytes);
+                (Some(bytes), hash)
+            }
+        };
+        if let Some(base_bytes) = base_bytes {
+            tokio::fs::write(data_dir.join(&base_path), base_bytes)
+                .await
+                .expect("write base graph");
+        }
+        let current_bytes =
+            serde_json::to_vec_pretty(&preview_graph()).expect("current graph json");
+        let current_hash = graph_hash(&current_bytes);
+        tokio::fs::write(data_dir.join(&current_path), current_bytes)
+            .await
+            .expect("write current graph");
         let base_path_string = base_path.to_string_lossy().into_owned();
         let current_path_string = current_path.to_string_lossy().into_owned();
         let base = store
@@ -500,7 +617,7 @@ mod tests {
                 label: "Base graph",
                 source: VersionSource::Manual,
                 graph_path: &base_path_string,
-                graph_hash: "sha256:base",
+                graph_hash: &base_hash,
                 parent_id: None,
             })
             .await
@@ -512,7 +629,7 @@ mod tests {
                     label: "Shorter clip",
                     source: VersionSource::Proposal,
                     graph_path: &current_path_string,
-                    graph_hash: "sha256:current",
+                    graph_hash: &current_hash,
                     parent_id: Some(&base.id),
                 },
                 &base.id,
@@ -545,12 +662,11 @@ mod tests {
         tokio::fs::create_dir_all(data_dir.join(graph_path.parent().expect("graph parent")))
             .await
             .expect("create graph dir");
-        tokio::fs::write(
-            data_dir.join(&graph_path),
-            serde_json::to_vec_pretty(&graph).expect("graph json"),
-        )
-        .await
-        .expect("write graph");
+        let graph_bytes = serde_json::to_vec_pretty(&graph).expect("graph json");
+        let stored_graph_hash = graph_hash(&graph_bytes);
+        tokio::fs::write(data_dir.join(&graph_path), graph_bytes)
+            .await
+            .expect("write graph");
         let graph_path_string = graph_path.to_string_lossy().into_owned();
         let version = store
             .create_version(NewVersion {
@@ -558,7 +674,7 @@ mod tests {
                 label: "Current graph",
                 source: VersionSource::Manual,
                 graph_path: &graph_path_string,
-                graph_hash: "sha256:current",
+                graph_hash: &stored_graph_hash,
                 parent_id: None,
             })
             .await
