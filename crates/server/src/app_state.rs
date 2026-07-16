@@ -19,6 +19,10 @@ use helixflow_store::{Store, StoreError, WorkspaceRecord};
 use serde_json::json;
 use tokio::sync::Mutex;
 
+use crate::version_file_reconciliation::{
+    ReconciliationReport, VersionFileReconciliationError, reconcile_version_files,
+};
+
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) events: EventBus,
@@ -29,18 +33,43 @@ pub(crate) struct AppState {
     pub(crate) provider_registry: ProviderRegistry,
     pub(crate) runner: RunService<ProviderRegistry>,
     pub(crate) run_queue_locks: Arc<Mutex<BTreeMap<String, Arc<Mutex<()>>>>>,
+    pub(crate) reconciliation_report: Arc<ReconciliationReport>,
 }
 
 impl AppState {
     pub(crate) async fn open(events: EventBus) -> Result<Self, AppStateError> {
         let data_dir = default_data_dir();
-        tokio::fs::create_dir_all(&data_dir).await?;
         let database_url = default_database_url(&data_dir);
+        Self::open_in_data_dir(events, data_dir, database_url).await
+    }
+
+    async fn open_in_data_dir(
+        events: EventBus,
+        data_dir: PathBuf,
+        database_url: String,
+    ) -> Result<Self, AppStateError> {
+        tokio::fs::create_dir_all(&data_dir).await?;
         let store = Store::open(&database_url).await?;
+        let reconciliation_report = Arc::new(reconcile_version_files(&store, &data_dir).await?);
         interrupt_stale_active_runs(&store, &events).await?;
         let registry = default_provider_registry();
         persist_runtime_provider_status(&store, &registry).await?;
-        Ok(Self::with_store_provider(events, store, data_dir, registry))
+        Ok(Self::with_store_provider(
+            events,
+            store,
+            data_dir,
+            registry,
+            reconciliation_report,
+        ))
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn open_for_test(
+        events: EventBus,
+        data_dir: PathBuf,
+    ) -> Result<Self, AppStateError> {
+        let database_url = format!("sqlite://{}", data_dir.join("helixflow.sqlite").display());
+        Self::open_in_data_dir(events, data_dir, database_url).await
     }
 
     fn with_store_provider(
@@ -48,6 +77,7 @@ impl AppState {
         store: Store,
         data_dir: PathBuf,
         provider_registry: ProviderRegistry,
+        reconciliation_report: Arc<ReconciliationReport>,
     ) -> Self {
         let agent_sessions_dir = default_agent_sessions_dir();
         let agent = Arc::new(CodexWorkbenchAgent {
@@ -71,6 +101,7 @@ impl AppState {
             provider_registry,
             runner,
             run_queue_locks,
+            reconciliation_report,
         }
     }
 
@@ -91,6 +122,7 @@ impl AppState {
         )
         .with_max_parallel_steps(default_max_parallel_steps());
         let run_queue_locks = Arc::new(Mutex::new(BTreeMap::new()));
+        let reconciliation_report = Arc::new(ReconciliationReport::default());
         Self {
             events,
             agent,
@@ -100,6 +132,7 @@ impl AppState {
             data_dir,
             provider_registry,
             run_queue_locks,
+            reconciliation_report,
         }
     }
 
@@ -121,6 +154,7 @@ impl AppState {
         )
         .with_max_parallel_steps(default_max_parallel_steps());
         let run_queue_locks = Arc::new(Mutex::new(BTreeMap::new()));
+        let reconciliation_report = Arc::new(ReconciliationReport::default());
         Self {
             events,
             agent,
@@ -130,6 +164,7 @@ impl AppState {
             data_dir,
             provider_registry,
             run_queue_locks,
+            reconciliation_report,
         }
     }
 
@@ -174,6 +209,7 @@ async fn interrupt_stale_active_runs(
 pub(crate) enum AppStateError {
     Io(std::io::Error),
     Store(StoreError),
+    VersionFileConsistency(VersionFileReconciliationError),
 }
 
 impl fmt::Display for AppStateError {
@@ -181,6 +217,7 @@ impl fmt::Display for AppStateError {
         match self {
             Self::Io(err) => write!(f, "failed to initialize app data directory: {err}"),
             Self::Store(err) => write!(f, "failed to initialize store: {err}"),
+            Self::VersionFileConsistency(err) => write!(f, "{err}"),
         }
     }
 }
@@ -196,6 +233,12 @@ impl From<std::io::Error> for AppStateError {
 impl From<StoreError> for AppStateError {
     fn from(err: StoreError) -> Self {
         Self::Store(err)
+    }
+}
+
+impl From<VersionFileReconciliationError> for AppStateError {
+    fn from(err: VersionFileReconciliationError) -> Self {
+        Self::VersionFileConsistency(err)
     }
 }
 
@@ -337,6 +380,7 @@ mod tests {
             store,
             dir.path().to_path_buf(),
             registry,
+            Arc::new(ReconciliationReport::default()),
         );
 
         let selected = state.selected_provider_for_workspace(&workspace);

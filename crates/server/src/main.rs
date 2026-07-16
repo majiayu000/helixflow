@@ -33,6 +33,9 @@ mod test_wait;
 mod version_file_consistency;
 #[cfg(test)]
 mod version_file_consistency_tests;
+mod version_file_reconciliation;
+#[cfg(test)]
+mod version_file_reconciliation_tests;
 mod version_routes;
 mod workbench_message;
 mod workbench_message_canvas;
@@ -64,6 +67,7 @@ use ops_routes::apply_workspace_ops;
 use proposal_routes::{apply_workspace_proposal, dismiss_workspace_proposal};
 use registry_routes::node_registry_catalog;
 use run_routes::{confirm_run, hold_run, interrupt_active_run, queue_workspace_run};
+use version_file_reconciliation::ReconciliationReport;
 use version_routes::{export_workflow_version, restore_workspace_version, undo_workspace_version};
 use workbench_message::post_workspace_message;
 use workspace_canvas::workspace_canvas;
@@ -77,6 +81,10 @@ async fn main() {
     let state = AppState::open(EventBus::default())
         .await
         .expect("initialize app state");
+    println!(
+        "{}",
+        version_file_reconciliation_event(&state.reconciliation_report)
+    );
     let app = app(state);
 
     let bind_addr =
@@ -86,6 +94,14 @@ async fn main() {
         .expect("bind local server");
 
     axum::serve(listener, app).await.expect("serve local app");
+}
+
+pub(crate) fn version_file_reconciliation_event(report: &ReconciliationReport) -> String {
+    json!({
+        "event": "version_file_reconciliation",
+        "report": report,
+    })
+    .to_string()
 }
 
 fn app(state: AppState) -> Router {
