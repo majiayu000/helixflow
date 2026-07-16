@@ -639,13 +639,17 @@ async fn cleanup_candidate_set_removes_each_unreferenced_publication() {
 }
 
 #[tokio::test]
-async fn cleanup_candidate_set_continues_after_earlier_removal_failure() {
+async fn cleanup_candidate_set_continues_and_preserves_references_after_earlier_failure() {
     let dir = tempfile::tempdir().expect("temp dir");
     let (store, _db_dir) = open_store().await;
+    let workspace = store
+        .create_workspace("Partial candidate cleanup")
+        .await
+        .expect("create workspace");
     let mut set = VersionFileCandidateSet::default();
     set.push(
         VersionFileCandidate::from_graph(
-            "ws_set_partial_cleanup",
+            &workspace.id,
             CandidateKind::ProposalOps,
             &sample_graph(),
         )
@@ -653,11 +657,15 @@ async fn cleanup_candidate_set_continues_after_earlier_removal_failure() {
     );
     set.push(
         VersionFileCandidate::from_graph(
-            "ws_set_partial_cleanup",
+            &workspace.id,
             CandidateKind::ProposalPreview,
             &sample_graph(),
         )
         .expect("later candidate"),
+    );
+    set.push(
+        VersionFileCandidate::from_graph(&workspace.id, CandidateKind::Layout, &sample_graph())
+            .expect("referenced candidate"),
     );
     set.publish_all(dir.path()).expect("publish set");
     let paths: Vec<_> = set
@@ -665,6 +673,19 @@ async fn cleanup_candidate_set_continues_after_earlier_removal_failure() {
         .iter()
         .map(|candidate| dir.path().join(candidate.relative_path()))
         .collect();
+    store
+        .create_version(NewVersion {
+            workspace_id: &workspace.id,
+            label: "Referenced candidate",
+            source: VersionSource::Manual,
+            graph_path: set.candidates()[2]
+                .relative_path_text()
+                .expect("referenced path"),
+            graph_hash: set.candidates()[2].graph_hash(),
+            parent_id: None,
+        })
+        .await
+        .expect("create exact version reference");
     let io = FailFirstRemoveIo::default();
 
     let error = set
@@ -684,6 +705,10 @@ async fn cleanup_candidate_set_continues_after_earlier_removal_failure() {
     assert!(
         !paths[1].exists(),
         "later unreferenced candidate was still inspected and removed"
+    );
+    assert!(
+        paths[2].exists(),
+        "later referenced candidate was still inspected and preserved"
     );
     assert_eq!(io.remove_calls.load(Ordering::SeqCst), 2);
 }
