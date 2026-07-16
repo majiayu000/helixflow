@@ -45,7 +45,18 @@ async fn stale_agent_proposal_returns_conflict_without_pending_record() {
     .expect_err("stale agent proposal must conflict");
 
     assert_eq!(err.status, StatusCode::CONFLICT);
-    assert!(err.message.contains("superseded"));
+    assert_eq!(
+        err.message,
+        "message base version is not the workspace current version"
+    );
+    assert!(
+        state
+            .store
+            .workspace_messages(&workspace_id)
+            .await
+            .expect("messages")
+            .is_empty()
+    );
     assert!(
         state
             .store

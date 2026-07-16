@@ -12,6 +12,7 @@ use crate::api_error::ApiError;
 use crate::app_state::AppState;
 use crate::sweep_support::handle_run_request;
 use crate::workbench_message_canvas::{WorkspaceCanvasContext, prepare_agent_canvas_context};
+use crate::workbench_message_graph::{VerifiedMessageGraph, verified_message_graph};
 use crate::workbench_message_metadata::turn_metadata_json;
 use crate::workbench_message_proposals::persist_and_apply_agent_proposal;
 use crate::workbench_payload::{PendingConfirmationPayload, ProposalPayload, RunPayload};
@@ -53,14 +54,16 @@ pub(crate) async fn post_workspace_message(
     State(state): State<AppState>,
     Json(input): Json<WorkspaceMessageRequest>,
 ) -> Result<Json<WorkspaceMessageResponse>, ApiError> {
-    let classification = classify_turn_mode(&input.user_message, &input.graph)
+    let VerifiedMessageGraph { version, graph } =
+        verified_message_graph(&state, &workspace_id, &input.base_version_id, &input.graph).await?;
+    let classification = classify_turn_mode(&input.user_message, &graph)
         .map_err(|err| ApiError::bad_request(err.to_string()))?;
     let canvas_context = prepare_agent_canvas_context(
         &state,
         &workspace_id,
         classification.mode,
-        &input.base_version_id,
-        &input.graph,
+        &version.id,
+        &graph,
         input.canvas_context.clone(),
     )
     .await?;
@@ -86,9 +89,9 @@ pub(crate) async fn post_workspace_message(
     let run_context = debug_run_context(&state, &workspace_id, classification.mode).await?;
     let request = AgentSessionRequest {
         workspace_id: workspace_id.clone(),
-        base_version_id: input.base_version_id,
+        base_version_id: version.id,
         user_message: input.user_message,
-        graph: input.graph,
+        graph,
         provider_catalog,
         run_context,
         sessions_dir: state.agent_sessions_dir.clone(),
