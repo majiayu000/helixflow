@@ -342,6 +342,29 @@ impl VersionFileCandidate {
         Self::from_bytes_with_ids(workspace_id, kind, bytes, Uuid::now_v7(), Uuid::now_v7())
     }
 
+    pub(crate) fn from_keyed_ops_graph(
+        workspace_id: &str,
+        graph: &WorkflowGraph,
+        opaque_digest: &str,
+    ) -> Result<Self, VersionFileConsistencyError> {
+        if opaque_digest.len() != 64
+            || !opaque_digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        {
+            return Err(VersionFileConsistencyError::InvalidHash);
+        }
+        let bytes =
+            canonical_graph_bytes(graph).map_err(|_| VersionFileConsistencyError::EncodeJson)?;
+        Self::from_bytes_with_final_name(
+            workspace_id,
+            CandidateKind::Ops,
+            bytes,
+            format!("ops-key-{opaque_digest}.json"),
+            Uuid::now_v7(),
+        )
+    }
+
     pub(crate) fn from_json<T>(
         workspace_id: &str,
         kind: CandidateKind,
@@ -375,6 +398,22 @@ impl VersionFileCandidate {
         final_id: Uuid,
         ownership_nonce: Uuid,
     ) -> Result<Self, VersionFileConsistencyError> {
+        Self::from_bytes_with_final_name(
+            workspace_id,
+            kind,
+            bytes,
+            format!("{}-{}.json", kind.slug(), final_id.simple()),
+            ownership_nonce,
+        )
+    }
+
+    fn from_bytes_with_final_name(
+        workspace_id: &str,
+        kind: CandidateKind,
+        bytes: Vec<u8>,
+        final_name: String,
+        ownership_nonce: Uuid,
+    ) -> Result<Self, VersionFileConsistencyError> {
         if workspace_id.is_empty()
             || !workspace_id
                 .bytes()
@@ -385,11 +424,10 @@ impl VersionFileCandidate {
         let directory = PathBuf::from("workspaces")
             .join(workspace_id)
             .join("graphs");
-        let final_name = format!("{}-{}.json", kind.slug(), final_id.simple());
         let temp_name = format!(
             ".hf-{}-{}-{}.tmp",
             kind.slug(),
-            final_id.simple(),
+            Uuid::now_v7().simple(),
             ownership_nonce.simple()
         );
         Ok(Self {
