@@ -17,7 +17,7 @@ GH-119：<https://github.com/majiayu000/helixflow/issues/119>
 - [x] `SP119-T4` — Owner: GH-119 artifact I/O lane。Dependencies: `SP119-T2`、`SP119-T3`。实现 restricted client、逐跳 DNS/address validation+pin、手动 redirect、总 timeout 与有界流式写入。Done when: P4–P7/P9/P10 tests 通过，安全错误不回显 URL/root。Verify: `cargo test -p helixflow-run artifact_remote -- --nocapture`。
 - [x] `SP119-T5` — Owner: GH-119 artifact I/O lane。Dependencies: `SP119-T4`。把 response MIME 和下载完成后的 PR #117 media validator 接入成功门禁；保留合法 inline/HTTPS/media 路径。Done when: mismatch/invalid media 无 final artifact，合法 fixture 成功。Verify: `cargo test -p helixflow-run artifact -- --nocapture`; `cargo test -p helixflow-run invalid_media -- --nocapture`。
 - [x] `SP119-T6` — Owner: GH-119 artifact I/O lane。Dependencies: `SP119-T1`–`SP119-T5`。运行 full verification，原始大日志写入 `artifacts/logs/gh119/`。Done when: focused、workspace check/test、GH119/base/all-specs 与 diff check 全部 exit 0。Verify: 见“验证”。
-- [ ] `SP119-T7` — Owner: GH-119 artifact I/O lane。Dependencies: `SP119-T6`。提交、push 并创建 final-slice mixed implementation PR。Done when: 中文 PR 包含 `Fixes #119`、`pr_kind: mixed_impl`、auto-applied readiness 来源与 fresh test evidence；不自审、不合并。Verify: `gh pr view --json number,url,headRefName,body`。
+- [x] `SP119-T7` — Owner: GH-119 artifact I/O lane。Dependencies: `SP119-T6`。提交、push 并创建 final-slice mixed implementation PR。Done when: 中文 PR 包含 `Fixes #119`、`pr_kind: mixed_impl`、auto-applied readiness 来源与 fresh test evidence；不自审、不合并。Verify: `gh pr view --json number,url,headRefName,body`。
 
 ## 并行拆分
 
