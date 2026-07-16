@@ -6,13 +6,17 @@ use axum::{
     extract::{Path as AxumPath, State},
 };
 use helixflow_run::RunEventEnvelope;
+use helixflow_store::{
+    CanvasCommentCommitResult, CanvasCommentOperationRecord, CanvasCommentStateRecord,
+    CommitCanvasCommentOperation, NewCanvasCommentState, Store,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
-use crate::graph_files::write_json_file;
 use crate::workspace_canvas::workspace_canvas_value;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -92,12 +96,12 @@ pub(crate) struct CanvasViewport {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct CanvasCommentOpRequest {
-    #[allow(dead_code)]
     base_seq: Option<i64>,
+    operation_id: Option<String>,
     op: CanvasCommentOp,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 enum CanvasCommentOp {
     CommentAdd {
@@ -116,7 +120,7 @@ enum CanvasCommentOp {
     },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CanvasCommentStore {
     schema_version: u32,
@@ -139,18 +143,67 @@ pub(crate) async fn apply_canvas_comment_op(
     State(state): State<AppState>,
     Json(input): Json<CanvasCommentOpRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let workspace = state
+    state
         .store
         .workspace(&workspace_id)
         .await
         .map_err(ApiError::store)?;
-    let mut store = read_comment_store(&state.data_dir, &workspace_id).await?;
-    store.seq = store
-        .seq
-        .max(current_workspace_version_seq(&state, workspace.cur_version_id.as_deref()).await?);
-    apply_comment_op(&mut store, input.op)?;
-    write_comment_store(&state.data_dir, &workspace_id, &store).await?;
-    Ok(Json(workspace_canvas_value(&state, &workspace_id).await?))
+    if input.base_seq.is_some_and(|seq| seq < 0) {
+        return Err(ApiError::bad_request("baseSeq must not be negative"));
+    }
+    let operation_id = normalize_operation_id(input.operation_id)?;
+    let op = prepare_comment_op(input.op, &operation_id)?;
+    let operation_fingerprint = comment_operation_fingerprint(&op)?;
+    ensure_comment_store(&state.store, &state.data_dir, &workspace_id).await?;
+
+    if let Some(existing) = state
+        .store
+        .canvas_comment_operation(&workspace_id, &operation_id)
+        .await
+        .map_err(ApiError::store)?
+    {
+        return replay_or_conflict(&state, &workspace_id, &operation_fingerprint, existing).await;
+    }
+
+    loop {
+        let current = read_comment_store(&state.store, &workspace_id).await?;
+        let expected_seq = input.base_seq.unwrap_or(current.seq);
+        let mut next = current;
+        apply_comment_op(&mut next, op.clone())?;
+        let comments_json = serde_json::to_string(&next.comments)
+            .map_err(|err| ApiError::server_error(format!("encode canvas comments: {err}")))?;
+        match state
+            .store
+            .commit_canvas_comment_operation(CommitCanvasCommentOperation {
+                workspace_id: &workspace_id,
+                operation_id: &operation_id,
+                operation_fingerprint: &operation_fingerprint,
+                expected_seq,
+                comments_json: &comments_json,
+            })
+            .await
+            .map_err(ApiError::store)?
+        {
+            CanvasCommentCommitResult::Applied(_) | CanvasCommentCommitResult::Replayed(_) => {
+                return Ok(Json(workspace_canvas_value(&state, &workspace_id).await?));
+            }
+            CanvasCommentCommitResult::Stale { current_seq } => {
+                if input.base_seq.is_none() {
+                    continue;
+                }
+                return Err(comment_conflict(
+                    "canvas comment base sequence is stale",
+                    current_seq,
+                ));
+            }
+            CanvasCommentCommitResult::OperationIdConflict { current_seq } => {
+                return Err(comment_conflict(
+                    "canvas comment operationId was reused with different content",
+                    current_seq,
+                ));
+            }
+        }
+    }
 }
 
 pub(crate) async fn update_canvas_presence(
@@ -187,26 +240,49 @@ pub(crate) async fn load_canvas_comments(
     data_dir: &Path,
     workspace_id: &str,
 ) -> Result<Vec<CanvasComment>, ApiError> {
-    Ok(read_comment_store(data_dir, workspace_id).await?.comments)
+    let store = open_comment_store(data_dir).await?;
+    ensure_comment_store(&store, data_dir, workspace_id).await?;
+    Ok(read_comment_store(&store, workspace_id).await?.comments)
 }
 
 pub(crate) async fn canvas_comment_seq(
     data_dir: &Path,
     workspace_id: &str,
 ) -> Result<i64, ApiError> {
-    Ok(read_comment_store(data_dir, workspace_id).await?.seq)
+    let store = open_comment_store(data_dir).await?;
+    ensure_comment_store(&store, data_dir, workspace_id).await?;
+    Ok(read_comment_store(&store, workspace_id).await?.seq)
 }
 
-async fn read_comment_store(
+async fn ensure_comment_store(
+    store: &Store,
     data_dir: &Path,
     workspace_id: &str,
-) -> Result<CanvasCommentStore, ApiError> {
+) -> Result<(), ApiError> {
+    if store
+        .canvas_comment_state(workspace_id)
+        .await
+        .map_err(ApiError::store)?
+        .is_some()
+    {
+        return Ok(());
+    }
+
     let relative = comments_relative_path(workspace_id)?;
     let full_path = data_dir.join(&relative);
-    let bytes = match tokio::fs::read(&full_path).await {
-        Ok(bytes) => bytes,
+    let (legacy, migration_source) = match tokio::fs::read(&full_path).await {
+        Ok(bytes) => {
+            let legacy: CanvasCommentStore = serde_json::from_slice(&bytes).map_err(|err| {
+                ApiError::server_error(format!(
+                    "canvas comments `{}` contains invalid JSON: {err}",
+                    relative.display()
+                ))
+            })?;
+            validate_comment_store(&legacy, &relative)?;
+            (legacy, "legacy_json")
+        }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(CanvasCommentStore::default());
+            (CanvasCommentStore::default(), "empty")
         }
         Err(err) => {
             return Err(ApiError::io(
@@ -215,50 +291,159 @@ async fn read_comment_store(
             ));
         }
     };
-    let store: CanvasCommentStore = serde_json::from_slice(&bytes).map_err(|err| {
-        ApiError::server_error(format!(
-            "canvas comments `{}` contains invalid JSON: {err}",
-            relative.display()
-        ))
-    })?;
+    let comments_json = serde_json::to_string(&legacy.comments)
+        .map_err(|err| ApiError::server_error(format!("encode legacy canvas comments: {err}")))?;
+    store
+        .initialize_canvas_comment_state(NewCanvasCommentState {
+            workspace_id,
+            seq: legacy.seq,
+            comments_json: &comments_json,
+            migration_source,
+        })
+        .await
+        .map_err(ApiError::store)?;
+    Ok(())
+}
+
+async fn read_comment_store(
+    store: &Store,
+    workspace_id: &str,
+) -> Result<CanvasCommentStore, ApiError> {
+    let record = store
+        .canvas_comment_state(workspace_id)
+        .await
+        .map_err(ApiError::store)?
+        .ok_or_else(|| ApiError::server_error("canvas comments were not initialized"))?;
+    comment_store_from_record(record)
+}
+
+fn comment_store_from_record(
+    record: CanvasCommentStateRecord,
+) -> Result<CanvasCommentStore, ApiError> {
+    let comments: Vec<CanvasComment> =
+        serde_json::from_str(&record.comments_json).map_err(|err| {
+            ApiError::server_error(format!(
+                "canvas comments in SQLite for workspace `{}` contain invalid JSON: {err}",
+                record.workspace_id
+            ))
+        })?;
+    let store = CanvasCommentStore {
+        schema_version: 1,
+        seq: record.seq,
+        comments,
+    };
+    validate_comment_store(&store, Path::new("sqlite:canvas_comment_states"))?;
+    Ok(store)
+}
+
+fn validate_comment_store(store: &CanvasCommentStore, source: &Path) -> Result<(), ApiError> {
+    if store.schema_version != 1 {
+        return Err(ApiError::server_error(format!(
+            "canvas comments `{}` has unsupported schema version {}",
+            source.display(),
+            store.schema_version
+        )));
+    }
     if store.seq < 0 {
         return Err(ApiError::server_error(format!(
             "canvas comments `{}` has a negative seq",
-            relative.display()
+            source.display()
         )));
     }
     if store.comments.len() as i64 > store.seq {
         return Err(ApiError::server_error(format!(
             "canvas comments `{}` snapshot is ahead of seq",
-            relative.display()
+            source.display()
         )));
     }
-    Ok(store)
-}
-
-async fn write_comment_store(
-    data_dir: &Path,
-    workspace_id: &str,
-    store: &CanvasCommentStore,
-) -> Result<(), ApiError> {
-    let relative = comments_relative_path(workspace_id)?;
-    write_json_file(data_dir, &relative, store, "write canvas comments").await?;
     Ok(())
 }
 
-async fn current_workspace_version_seq(
+async fn open_comment_store(data_dir: &Path) -> Result<Store, ApiError> {
+    let database_url = std::env::var("HELIXFLOW_DATABASE_URL")
+        .unwrap_or_else(|_| format!("sqlite://{}", data_dir.join("helixflow.sqlite").display()));
+    Store::open(&database_url).await.map_err(ApiError::store)
+}
+
+async fn replay_or_conflict(
     state: &AppState,
-    version_id: Option<&str>,
-) -> Result<i64, ApiError> {
-    let Some(version_id) = version_id else {
-        return Ok(0);
+    workspace_id: &str,
+    operation_fingerprint: &str,
+    existing: CanvasCommentOperationRecord,
+) -> Result<Json<Value>, ApiError> {
+    if existing.operation_fingerprint == operation_fingerprint {
+        return Ok(Json(workspace_canvas_value(state, workspace_id).await?));
+    }
+    let current_seq = read_comment_store(&state.store, workspace_id).await?.seq;
+    Err(comment_conflict(
+        "canvas comment operationId was reused with different content",
+        current_seq,
+    ))
+}
+
+fn comment_conflict(message: &str, current_seq: i64) -> ApiError {
+    ApiError::conflict_with_details(message, json!({ "currentSeq": current_seq }))
+}
+
+fn normalize_operation_id(operation_id: Option<String>) -> Result<String, ApiError> {
+    let Some(operation_id) = operation_id else {
+        return Ok(format!("operation_{}", Uuid::now_v7()));
     };
-    let version = state
-        .store
-        .version(version_id)
-        .await
-        .map_err(ApiError::store)?;
-    Ok(version.idx)
+    let operation_id = operation_id.trim();
+    if operation_id.is_empty() {
+        return Err(ApiError::bad_request("operationId must not be empty"));
+    }
+    if operation_id.len() > 256 {
+        return Err(ApiError::bad_request(
+            "operationId must not exceed 256 bytes",
+        ));
+    }
+    Ok(operation_id.to_owned())
+}
+
+fn prepare_comment_op(
+    op: CanvasCommentOp,
+    operation_id: &str,
+) -> Result<CanvasCommentOp, ApiError> {
+    match op {
+        CanvasCommentOp::CommentAdd {
+            id,
+            target,
+            body,
+            actor,
+        } => {
+            validate_target(&target)?;
+            let actor = actor.unwrap_or_else(local_actor);
+            validate_actor(&actor)?;
+            Ok(CanvasCommentOp::CommentAdd {
+                id: Some(
+                    id.filter(|value| !value.trim().is_empty())
+                        .unwrap_or_else(|| stable_comment_id(operation_id)),
+                ),
+                target,
+                body: normalize_body(body)?,
+                actor: Some(actor),
+            })
+        }
+        CanvasCommentOp::CommentPatch { id, body, status } => Ok(CanvasCommentOp::CommentPatch {
+            id,
+            body: body.map(normalize_body).transpose()?,
+            status,
+        }),
+        CanvasCommentOp::CommentDelete { id } => Ok(CanvasCommentOp::CommentDelete { id }),
+    }
+}
+
+fn stable_comment_id(operation_id: &str) -> String {
+    let digest = Sha256::digest(operation_id.as_bytes());
+    format!("comment_{digest:x}")
+}
+
+fn comment_operation_fingerprint(op: &CanvasCommentOp) -> Result<String, ApiError> {
+    let encoded = serde_json::to_vec(op)
+        .map_err(|err| ApiError::server_error(format!("encode canvas comment operation: {err}")))?;
+    let digest = Sha256::digest(encoded);
+    Ok(format!("sha256:{digest:x}"))
 }
 
 fn comments_relative_path(workspace_id: &str) -> Result<PathBuf, ApiError> {
@@ -396,143 +581,5 @@ fn now_marker() -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use axum::Json;
-    use axum::extract::{Path as AxumPath, State};
-    use helixflow_run::EventBus;
-    use helixflow_store::Store;
-
-    use super::*;
-    use crate::test_support::FailingWorkbenchAgent;
-
-    #[tokio::test]
-    async fn comment_ops_persist_and_reload_from_canvas_snapshot() {
-        let (_dir, state, workspace_id) = test_state().await;
-
-        let added = apply_canvas_comment_op(
-            AxumPath(workspace_id.clone()),
-            State(state.clone()),
-            Json(CanvasCommentOpRequest {
-                base_seq: None,
-                op: CanvasCommentOp::CommentAdd {
-                    id: Some("comment_1".to_owned()),
-                    target: CanvasCommentTarget::Position { x: 20.0, y: 30.0 },
-                    body: " Needs review ".to_owned(),
-                    actor: Some(CanvasActor {
-                        actor_id: "reviewer".to_owned(),
-                        display_name: "Reviewer".to_owned(),
-                    }),
-                },
-            }),
-        )
-        .await
-        .expect("add comment")
-        .0;
-
-        assert_eq!(added["comments"][0]["id"], "comment_1");
-        assert_eq!(added["comments"][0]["body"], "Needs review");
-        assert_eq!(added["comments"][0]["status"], "open");
-
-        let resolved = apply_canvas_comment_op(
-            AxumPath(workspace_id.clone()),
-            State(state.clone()),
-            Json(CanvasCommentOpRequest {
-                base_seq: None,
-                op: CanvasCommentOp::CommentPatch {
-                    id: "comment_1".to_owned(),
-                    body: None,
-                    status: Some(CanvasCommentStatus::Resolved),
-                },
-            }),
-        )
-        .await
-        .expect("resolve comment")
-        .0;
-        assert_eq!(resolved["comments"][0]["status"], "resolved");
-
-        let reloaded = workspace_canvas_value(&state, &workspace_id)
-            .await
-            .expect("reload canvas");
-        assert_eq!(reloaded["comments"][0]["id"], "comment_1");
-        assert_eq!(reloaded["comments"][0]["status"], "resolved");
-
-        let deleted = apply_canvas_comment_op(
-            AxumPath(workspace_id.clone()),
-            State(state.clone()),
-            Json(CanvasCommentOpRequest {
-                base_seq: None,
-                op: CanvasCommentOp::CommentDelete {
-                    id: "comment_1".to_owned(),
-                },
-            }),
-        )
-        .await
-        .expect("delete comment")
-        .0;
-        assert_eq!(deleted["comments"].as_array().expect("comments").len(), 0);
-    }
-
-    #[tokio::test]
-    async fn presence_broadcasts_without_creating_durable_comments() {
-        let (_dir, state, workspace_id) = test_state().await;
-        let mut receiver = state.events.subscribe();
-
-        let body = update_canvas_presence(
-            AxumPath(workspace_id.clone()),
-            State(state.clone()),
-            Json(CanvasPresencePayload {
-                actor: CanvasActor {
-                    actor_id: "actor_remote".to_owned(),
-                    display_name: "Remote".to_owned(),
-                },
-                cursor: Some(CanvasPoint { x: 42.0, y: 55.0 }),
-                selection: Some(CanvasPresenceSelection {
-                    node_ids: vec!["node_a".to_owned()],
-                    edge_ids: Vec::new(),
-                }),
-                viewport: Some(CanvasViewport {
-                    x: 1.0,
-                    y: 2.0,
-                    zoom: 1.1,
-                }),
-            }),
-        )
-        .await
-        .expect("presence")
-        .0;
-
-        assert_eq!(body["ok"], true);
-        let event = receiver.recv().await.expect("presence event");
-        assert_eq!(event.workspace_id, workspace_id);
-        assert_eq!(event.ev, "canvas.presence");
-        assert_eq!(event.data["actor"]["actorId"], "actor_remote");
-        assert_eq!(
-            load_canvas_comments(&state.data_dir, &workspace_id)
-                .await
-                .expect("comments")
-                .len(),
-            0
-        );
-    }
-
-    async fn test_state() -> (tempfile::TempDir, AppState, String) {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let data_dir = dir.path().to_path_buf();
-        let database_url = format!("sqlite://{}", data_dir.join("helixflow.sqlite").display());
-        let store = Store::open(&database_url).await.expect("open store");
-        let workspace = store
-            .create_workspace("Canvas collaboration")
-            .await
-            .expect("workspace");
-        let state = AppState::with_store_agent(
-            EventBus::new(16),
-            store,
-            data_dir.clone(),
-            Arc::new(FailingWorkbenchAgent),
-            data_dir.join("sessions"),
-        );
-        (dir, state, workspace.id)
-    }
-}
+#[path = "canvas_collaboration_tests.rs"]
+mod tests;

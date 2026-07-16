@@ -1,0 +1,75 @@
+crates/store/src/migration_tests.rs:15:    let all = sqlx::migrate!("./migrations");
+crates/store/src/migration_tests.rs:17:        migrations: Cow::Owned(all.iter().take(3).cloned().collect()),
+crates/store/src/migration_tests.rs:23:        .expect("apply migrations through 0003");
+crates/store/src/lib.rs:11:mod migration_tests;
+crates/store/src/lib.rs:67:            Self::Migration(err) => write!(f, "sqlite migration error: {err}"),
+crates/store/src/lib.rs:135:        store.run_migrations().await?;
+crates/store/src/lib.rs:143:    pub async fn run_migrations(&self) -> StoreResult<()> {
+crates/store/src/lib.rs:144:        sqlx::migrate!("./migrations").run(&self.pool).await?;
+crates/store/src/lib.rs:506:    async fn fresh_database_applies_migrations_and_wal_mode() {
+crates/store/migrations/0004_run_retry_and_artifact_review.sql:5:ALTER TABLE runs ADD COLUMN parent_run_id TEXT REFERENCES runs(id) ON DELETE SET NULL;
+crates/store/migrations/0004_run_retry_and_artifact_review.sql:6:ALTER TABLE runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0;
+crates/store/migrations/0004_run_retry_and_artifact_review.sql:7:ALTER TABLE runs ADD COLUMN force_rerun INTEGER NOT NULL DEFAULT 0;
+crates/store/migrations/0004_run_retry_and_artifact_review.sql:11:ALTER TABLE artifacts ADD COLUMN review_state TEXT NOT NULL DEFAULT 'pending'
+crates/store/migrations/0002_workspace_runtime_provider.sql:1:ALTER TABLE workspaces ADD COLUMN runtime_provider_id TEXT NULL;
+crates/store/migrations/0003_node_cache_entries.sql:1:ALTER TABLE run_steps ADD COLUMN metadata_json TEXT;
+crates/store/migrations/0003_node_cache_entries.sql:3:CREATE TABLE node_cache_entries (
+crates/store/migrations/0001_initial.sql:1:CREATE TABLE workspaces (
+crates/store/migrations/0001_initial.sql:9:CREATE TABLE versions (
+crates/store/migrations/0001_initial.sql:26:CREATE TABLE proposals (
+crates/store/migrations/0001_initial.sql:47:CREATE TABLE messages (
+crates/store/migrations/0001_initial.sql:61:CREATE TABLE runs (
+crates/store/migrations/0001_initial.sql:92:CREATE TABLE run_steps (
+crates/store/migrations/0001_initial.sql:110:CREATE TABLE run_events (
+crates/store/migrations/0001_initial.sql:123:CREATE TABLE uploads (
+crates/store/migrations/0001_initial.sql:136:CREATE TABLE artifacts (
+crates/store/migrations/0001_initial.sql:160:CREATE TABLE providers (
+crates/store/migrations/0001_initial.sql:169:CREATE TABLE cost_ledger (
+crates/registry/src/lib.rs:122:            schema_version: 1,
+crates/registry/src/lib.rs:135:    pub schema_version: u32,
+crates/registry/src/lib.rs:567:        assert_eq!(catalog.schema_version, 1);
+crates/agent/src/prompt_stack.rs:266:- Do not put top-level "schema_version", "nodes", or "edges" in out/proposal.json.
+crates/server/src/workspace_canvas.rs:106:            "graphSchemaVersion": graph.schema_version,
+crates/server/src/workspace_canvas.rs:276:            schema_version: 1,
+crates/server/src/ops_routes_tests.rs:341:        schema_version: 1,
+crates/agent/src/canvas_ops.rs:9:    pub schema_version: u32,
+crates/agent/src/canvas_ops.rs:27:            schema_version: 1,
+crates/agent/src/canvas_ops.rs:104:    pub schema_version: u32,
+crates/agent/src/canvas_ops.rs:111:            schema_version: 1,
+crates/server/src/artifact_retry_tests.rs:156:        schema_version: 1,
+crates/agent/src/tests.rs:16:        schema_version: 1,
+crates/agent/src/tests.rs:121:    assert!(ctx.contains("Do not put top-level \"schema_version\", \"nodes\", or \"edges\""));
+crates/agent/src/tests.rs:283:        schema_version: 1,
+crates/server/src/run_routes.rs:705:            schema_version: 1,
+crates/server/src/run_routes.rs:722:            schema_version: 1,
+crates/server/src/run_routes.rs:734:            schema_version: 1,
+crates/server/src/artifact_routes.rs:707:            schema_version: 1,
+crates/server/src/version_routes.rs:590:            schema_version: 1,
+crates/server/src/run_routes_unavailable_tests.rs:86:        schema_version: 1,
+crates/server/src/canvas_collaboration.rs:122:    schema_version: u32,
+crates/server/src/canvas_collaboration.rs:130:            schema_version: 1,
+crates/agent/src/retry_tests.rs:16:        schema_version: 1,
+crates/server/src/layout_routes.rs:500:            schema_version: 1,
+crates/graph/src/tests.rs:12:        schema_version: 1,
+crates/graph/src/tests.rs:89:    assert_eq!(encoded["schema_version"], 1);
+crates/graph/src/tests.rs:244:    assert_eq!(plan.schema_version, 1);
+crates/graph/src/lib.rs:16:    pub schema_version: u32,
+crates/graph/src/lib.rs:51:        if graph.schema_version != 1 {
+crates/graph/src/lib.rs:52:            return Err(GraphError::UnsupportedSchema(graph.schema_version));
+crates/graph/src/lib.rs:316:            schema_version: 1,
+crates/graph/src/lib.rs:418:    pub schema_version: u32,
+crates/server/src/graph_files.rs:12:        schema_version: 1,
+crates/server/src/sweep_support.rs:570:            schema_version: 1,
+crates/server/src/workspace_state.rs:515:            schema_version: 1,
+crates/server/src/workspace_state.rs:834:            schema_version: 1,
+crates/server/src/workbench_message_canvas.rs:199:            schema_version: 1,
+crates/server/src/workspace_events.rs:114:            &serde_json::json!({"schema_version":1,"nodes":{},"edges":[]}),
+crates/server/src/workbench_message.rs:672:            schema_version: 1,
+crates/server/src/proposal_routes.rs:405:            schema_version: 1,
+crates/run/src/self_heal_tests.rs:326:        schema_version: 1,
+crates/run/src/sweep_tests.rs:47:        schema_version: 1,
+crates/run/src/tests.rs:49:        schema_version: 1,
+crates/run/src/cache_tests.rs:45:        schema_version: 1,
+crates/run/src/background_tests.rs:46:        schema_version: 1,
+crates/run/src/executor.rs:744:            schema_version: 1,
+crates/run/src/parallel_tests.rs:47:        schema_version: 1,

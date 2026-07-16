@@ -6,6 +6,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Executor, Row, SqlitePool};
 use uuid::Uuid;
 
+mod canvas_comment_records;
 mod failed_run_records;
 #[cfg(test)]
 mod migration_tests;
@@ -21,6 +22,7 @@ mod run_records_tests;
 mod sweep_records;
 mod workspace_records;
 
+pub use canvas_comment_records::*;
 pub use node_cache_records::*;
 pub use proposal_records::*;
 pub use run_records::*;
@@ -57,6 +59,13 @@ pub enum StoreError {
     ProposalWorkspaceMismatch {
         proposal_id: String,
         workspace_id: String,
+    },
+    CanvasCommentStateMissing {
+        workspace_id: String,
+    },
+    CanvasCommentInvariant {
+        workspace_id: String,
+        message: String,
     },
 }
 
@@ -98,6 +107,19 @@ impl fmt::Display for StoreError {
             } => write!(
                 f,
                 "proposal `{proposal_id}` was not found in workspace `{workspace_id}`"
+            ),
+            Self::CanvasCommentStateMissing { workspace_id } => {
+                write!(
+                    f,
+                    "canvas comments were not initialized for workspace `{workspace_id}`"
+                )
+            }
+            Self::CanvasCommentInvariant {
+                workspace_id,
+                message,
+            } => write!(
+                f,
+                "canvas comments for workspace `{workspace_id}` violated an invariant: {message}"
             ),
         }
     }

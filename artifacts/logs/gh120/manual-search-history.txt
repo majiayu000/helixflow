@@ -1,0 +1,4 @@
+d680185 Implement GH93 canvas regression coverage (#100)
+42f4d4a (implx/gh93-e2e-coverage) Implement GH93 canvas regression coverage
+93ecd75 Implement canvas comments and presence (#97)
+85355b0 (implx/gh90-comments-presence) Implement canvas comments and presence

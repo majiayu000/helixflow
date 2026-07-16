@@ -1,0 +1,34 @@
+{
+  "allowed_actions": [],
+  "blocked_actions": [
+    "final_approval",
+    "force_push",
+    "merge"
+  ],
+  "current_state": null,
+  "decision": "needs_human",
+  "human_gates": [
+    "readiness_label"
+  ],
+  "issue": 120,
+  "missing": [
+    "current_state"
+  ],
+  "mode": "dry_run",
+  "pr": null,
+  "reasons": [
+    "no state or matching readiness label was provided"
+  ],
+  "required_artifacts": [
+    "specs/GH120/product.md",
+    "specs/GH120/tech.md"
+  ],
+  "route": "write_spec",
+  "satisfied": [
+    "linked_issue: GH-120"
+  ],
+  "verification_commands": [
+    "python3 checks/check_workflow.py --repo .",
+    "python3 checks/check_workflow.py --repo . --spec-dir specs/GH120"
+  ]
+}

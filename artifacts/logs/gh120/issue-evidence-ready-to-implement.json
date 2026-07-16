@@ -1,0 +1,20 @@
+{
+  "artifacts": {
+    "product_spec": "specs/GH120/product.md",
+    "task_plan": "specs/GH120/tasks.md",
+    "tech_spec": "specs/GH120/tech.md"
+  },
+  "github_state": "OPEN",
+  "issue": 120,
+  "labels": [
+    "bug",
+    "ready_to_implement",
+    "area_runtime",
+    "agent_generated"
+  ],
+  "state": "ready_to_implement",
+  "state_source": "label",
+  "state_trusted": true,
+  "title": "\u5e76\u53d1 Canvas comments \u65e0 CAS \u5bfc\u81f4\u786e\u8ba4\u66f4\u65b0\u4e22\u5931",
+  "url": "https://github.com/majiayu000/helixflow/issues/120"
+}
