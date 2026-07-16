@@ -78,6 +78,11 @@ pub enum StoreError {
         proposal_id: String,
         workspace_id: String,
     },
+    ProposalBaseMismatch {
+        proposal_id: String,
+        expected_base_version_id: String,
+        actual_base_version_id: String,
+    },
     CanvasCommentStateMissing {
         workspace_id: String,
     },
@@ -138,6 +143,14 @@ impl fmt::Display for StoreError {
             } => write!(
                 f,
                 "proposal `{proposal_id}` was not found in workspace `{workspace_id}`"
+            ),
+            Self::ProposalBaseMismatch {
+                proposal_id,
+                expected_base_version_id,
+                actual_base_version_id,
+            } => write!(
+                f,
+                "proposal `{proposal_id}` expected base version `{expected_base_version_id}` but found `{actual_base_version_id}`"
             ),
             Self::CanvasCommentStateMissing { workspace_id } => {
                 write!(

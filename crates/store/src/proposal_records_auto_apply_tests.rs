@@ -121,34 +121,26 @@ async fn auto_apply_version_conflict_rolls_back_all_database_records() {
         })
         .await
         .expect("create base");
-    let mismatched_parent = store
-        .auto_apply_proposal_version(AutoApplyProposalVersionRecord {
-            proposal: NewProposal {
-                workspace_id: &workspace.id,
-                base_version_id: &base.id,
-                kind: "modify",
-                title: "Invalid parent",
-                summary: "Must not persist",
-                ops_path: "proposals/invalid/ops.json",
-                preview_graph_path: Some("proposals/invalid/preview.json"),
-                message_id: None,
-            },
-            version: NewVersion {
-                workspace_id: &workspace.id,
-                label: "Invalid parent",
-                source: VersionSource::Proposal,
-                graph_path: "proposals/invalid/applied.json",
-                graph_hash: "sha256:invalid",
-                parent_id: None,
-            },
-            message_text: "Should not persist",
-        })
+    for (suffix, parent_id) in [("missing", None), ("unrelated", Some("ver_unrelated"))] {
+        let mismatch = submit_auto_apply_with_parent(
+            store.clone(),
+            &workspace.id,
+            &base.id,
+            suffix,
+            parent_id,
+        )
         .await
         .expect_err("version parent must match proposal base");
-    assert!(matches!(
-        mismatched_parent,
-        StoreError::VersionConflict { .. }
-    ));
+        assert!(matches!(
+            mismatch,
+            StoreError::VersionParentMismatch {
+                expected_parent_version_id,
+                actual_parent_version_id,
+                ..
+            } if expected_parent_version_id == base.id
+                && actual_parent_version_id.as_deref() == parent_id
+        ));
+    }
     assert!(
         store
             .workspace_proposals(&workspace.id)
@@ -416,6 +408,23 @@ async fn submit_auto_apply(
     base_version_id: String,
     suffix: &'static str,
 ) -> StoreResult<AutoApplyProposalVersionResult> {
+    submit_auto_apply_with_parent(
+        store,
+        &workspace_id,
+        &base_version_id,
+        suffix,
+        Some(&base_version_id),
+    )
+    .await
+}
+
+async fn submit_auto_apply_with_parent(
+    store: Store,
+    workspace_id: &str,
+    base_version_id: &str,
+    suffix: &str,
+    parent_id: Option<&str>,
+) -> StoreResult<AutoApplyProposalVersionResult> {
     let ops_path = format!("proposals/{suffix}/ops.json");
     let preview_path = format!("proposals/{suffix}/preview.json");
     let graph_path = format!("proposals/{suffix}/applied.json");
@@ -423,8 +432,8 @@ async fn submit_auto_apply(
     store
         .auto_apply_proposal_version(AutoApplyProposalVersionRecord {
             proposal: NewProposal {
-                workspace_id: &workspace_id,
-                base_version_id: &base_version_id,
+                workspace_id,
+                base_version_id,
                 kind: "modify",
                 title: suffix,
                 summary: suffix,
@@ -433,12 +442,12 @@ async fn submit_auto_apply(
                 message_id: None,
             },
             version: NewVersion {
-                workspace_id: &workspace_id,
+                workspace_id,
                 label: suffix,
                 source: VersionSource::Proposal,
                 graph_path: &graph_path,
                 graph_hash: &graph_hash,
-                parent_id: Some(&base_version_id),
+                parent_id,
             },
             message_text: suffix,
         })

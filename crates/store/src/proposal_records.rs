@@ -46,13 +46,6 @@ pub struct ApplyProposalVersionRecord<'a> {
     pub proposal_id: &'a str,
     pub expected_current_version_id: &'a str,
     pub version: NewVersion<'a>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ApplyProposalVersionWithMessageRecord<'a> {
-    pub proposal_id: &'a str,
-    pub expected_current_version_id: &'a str,
-    pub version: NewVersion<'a>,
     pub message_text: &'a str,
 }
 
@@ -237,119 +230,12 @@ impl Store {
     pub async fn create_version_after_applying_proposal(
         &self,
         input: ApplyProposalVersionRecord<'_>,
-    ) -> StoreResult<VersionRecord> {
-        let version_id = new_id("ver");
-        let mut tx = self.pool().begin().await?;
-
-        let proposal = sqlx::query_as::<_, ProposalRecord>(
-            r#"
-            SELECT id, workspace_id, base_version_id, kind, title, summary,
-                   ops_path, preview_graph_path, state, result_version_id, message_id,
-                   created_at, resolved_at
-            FROM proposals
-            WHERE id = ?
-            "#,
-        )
-        .bind(input.proposal_id)
-        .fetch_one(&mut *tx)
-        .await?;
-        ensure_proposal_workspace(&proposal, input.version.workspace_id)?;
-        ensure_pending(&proposal)?;
-
-        let actual_version_id: Option<String> = sqlx::query_scalar(
-            r#"
-            SELECT cur_version_id
-            FROM workspaces
-            WHERE id = ?
-            "#,
-        )
-        .bind(input.version.workspace_id)
-        .fetch_one(&mut *tx)
-        .await?;
-
-        if actual_version_id.as_deref() != Some(input.expected_current_version_id) {
-            return Err(StoreError::VersionConflict {
-                workspace_id: input.version.workspace_id.to_owned(),
-                expected_version_id: input.expected_current_version_id.to_owned(),
-                actual_version_id,
-            });
-        }
-
-        let idx: i64 = sqlx::query_scalar(
-            r#"
-            SELECT COALESCE(MAX(idx), 0) + 1
-            FROM versions
-            WHERE workspace_id = ?
-            "#,
-        )
-        .bind(input.version.workspace_id)
-        .fetch_one(&mut *tx)
-        .await?;
-
-        sqlx::query(
-            r#"
-            INSERT INTO versions (
-                id, workspace_id, idx, label, source, graph_path, graph_hash, parent_id, created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)
-            "#,
-        )
-        .bind(&version_id)
-        .bind(input.version.workspace_id)
-        .bind(idx)
-        .bind(input.version.label)
-        .bind(input.version.source.as_str())
-        .bind(input.version.graph_path)
-        .bind(input.version.graph_hash)
-        .bind(input.version.parent_id)
-        .execute(&mut *tx)
-        .await?;
-
-        sqlx::query(
-            r#"
-            UPDATE workspaces
-            SET cur_version_id = ?, updated_at = current_timestamp
-            WHERE id = ?
-            "#,
-        )
-        .bind(&version_id)
-        .bind(input.version.workspace_id)
-        .execute(&mut *tx)
-        .await?;
-
-        let result = sqlx::query(
-            r#"
-            UPDATE proposals
-            SET state = 'applied', result_version_id = ?, resolved_at = current_timestamp
-            WHERE id = ? AND workspace_id = ? AND state = 'pending'
-            "#,
-        )
-        .bind(&version_id)
-        .bind(input.proposal_id)
-        .bind(input.version.workspace_id)
-        .execute(&mut *tx)
-        .await?;
-
-        if result.rows_affected() != 1 {
-            return Err(StoreError::ProposalStateConflict {
-                proposal_id: input.proposal_id.to_owned(),
-                expected_state: "pending".to_owned(),
-                actual_state: None,
-            });
-        }
-
-        tx.commit().await?;
-        self.version(&version_id).await
-    }
-
-    pub async fn create_version_after_applying_proposal_with_message(
-        &self,
-        input: ApplyProposalVersionWithMessageRecord<'_>,
     ) -> StoreResult<ApplyProposalVersionResult> {
+        ensure_version_parent(&input.version, input.expected_current_version_id)?;
         let version_id = new_id("ver");
         let message_id = new_id("msg");
         let message_attachment_ids_json = format!(r#"{{"versionId":"{version_id}"}}"#);
-        let mut tx = self.pool().begin().await?;
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
 
         let proposal = sqlx::query_as::<_, ProposalRecord>(
             r#"
@@ -365,12 +251,14 @@ impl Store {
         .await?;
         ensure_proposal_workspace(&proposal, input.version.workspace_id)?;
         ensure_pending(&proposal)?;
+        ensure_proposal_base(&proposal, input.expected_current_version_id)?;
 
         let actual_version_id: Option<String> =
             sqlx::query_scalar("SELECT cur_version_id FROM workspaces WHERE id = ?")
                 .bind(input.version.workspace_id)
-                .fetch_one(&mut *tx)
-                .await?;
+                .fetch_optional(&mut *tx)
+                .await?
+                .flatten();
         if actual_version_id.as_deref() != Some(input.expected_current_version_id) {
             return Err(StoreError::VersionConflict {
                 workspace_id: input.version.workspace_id.to_owned(),
@@ -385,7 +273,7 @@ impl Store {
         .bind(input.version.workspace_id)
         .fetch_one(&mut *tx)
         .await?;
-        sqlx::query(
+        let version_insert = sqlx::query(
             r#"
             INSERT INTO versions (
                 id, workspace_id, idx, label, source, graph_path, graph_hash, parent_id, created_at
@@ -403,6 +291,10 @@ impl Store {
         .bind(input.version.parent_id)
         .execute(&mut *tx)
         .await?;
+        require_one_write(
+            "insert_applied_proposal_version",
+            version_insert.rows_affected(),
+        )?;
 
         let current_update = sqlx::query(
             r#"
@@ -416,7 +308,7 @@ impl Store {
         .bind(input.expected_current_version_id)
         .execute(&mut *tx)
         .await?;
-        if current_update.rows_affected() != 1 {
+        if current_update.rows_affected() == 0 {
             let actual_version_id: Option<String> =
                 sqlx::query_scalar("SELECT cur_version_id FROM workspaces WHERE id = ?")
                     .bind(input.version.workspace_id)
@@ -429,6 +321,10 @@ impl Store {
                 actual_version_id,
             });
         }
+        require_one_write(
+            "advance_applied_proposal_current",
+            current_update.rows_affected(),
+        )?;
 
         let proposal_update = sqlx::query(
             r#"
@@ -442,15 +338,20 @@ impl Store {
         .bind(input.version.workspace_id)
         .execute(&mut *tx)
         .await?;
-        if proposal_update.rows_affected() != 1 {
+        if proposal_update.rows_affected() == 0 {
+            let actual_state = sqlx::query_scalar("SELECT state FROM proposals WHERE id = ?")
+                .bind(input.proposal_id)
+                .fetch_optional(&mut *tx)
+                .await?;
             return Err(StoreError::ProposalStateConflict {
                 proposal_id: input.proposal_id.to_owned(),
                 expected_state: "pending".to_owned(),
-                actual_state: None,
+                actual_state,
             });
         }
+        require_one_write("mark_applied_proposal", proposal_update.rows_affected())?;
 
-        sqlx::query(
+        let message_insert = sqlx::query(
             r#"
             INSERT INTO messages (
                 id, workspace_id, role, text, kind, ref_id, attachment_ids_json, created_at
@@ -465,6 +366,10 @@ impl Store {
         .bind(&message_attachment_ids_json)
         .execute(&mut *tx)
         .await?;
+        require_one_write(
+            "insert_applied_proposal_message",
+            message_insert.rows_affected(),
+        )?;
 
         let version = sqlx::query_as::<_, VersionRecord>(
             r#"
@@ -504,16 +409,24 @@ impl Store {
                 workspace_id: input.version.workspace_id.to_owned(),
             });
         }
-        if input.version.parent_id != Some(input.proposal.base_version_id) {
+        ensure_version_parent(&input.version, input.proposal.base_version_id)?;
+
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        let actual_version_id: Option<String> =
+            sqlx::query_scalar("SELECT cur_version_id FROM workspaces WHERE id = ?")
+                .bind(input.version.workspace_id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .flatten();
+        if actual_version_id.as_deref() != Some(input.proposal.base_version_id) {
             return Err(StoreError::VersionConflict {
                 workspace_id: input.version.workspace_id.to_owned(),
                 expected_version_id: input.proposal.base_version_id.to_owned(),
-                actual_version_id: input.version.parent_id.map(str::to_owned),
+                actual_version_id,
             });
         }
 
-        let mut tx = self.pool().begin().await?;
-        sqlx::query(
+        let version_insert = sqlx::query(
             r#"
             INSERT INTO versions (
                 id, workspace_id, idx, label, source, graph_path, graph_hash, parent_id, created_at
@@ -535,6 +448,10 @@ impl Store {
         .bind(input.version.parent_id)
         .execute(&mut *tx)
         .await?;
+        require_one_write(
+            "insert_auto_applied_version",
+            version_insert.rows_affected(),
+        )?;
 
         let current_update = sqlx::query(
             r#"
@@ -548,25 +465,25 @@ impl Store {
         .bind(input.proposal.base_version_id)
         .execute(&mut *tx)
         .await?;
-        if current_update.rows_affected() != 1 {
-            let actual_version_id: Option<String> = sqlx::query_scalar(
-                r#"
-                SELECT cur_version_id
-                FROM workspaces
-                WHERE id = ?
-                "#,
-            )
-            .bind(input.version.workspace_id)
-            .fetch_one(&mut *tx)
-            .await?;
+        if current_update.rows_affected() == 0 {
+            let actual_version_id: Option<String> =
+                sqlx::query_scalar("SELECT cur_version_id FROM workspaces WHERE id = ?")
+                    .bind(input.version.workspace_id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .flatten();
             return Err(StoreError::VersionConflict {
                 workspace_id: input.version.workspace_id.to_owned(),
                 expected_version_id: input.proposal.base_version_id.to_owned(),
                 actual_version_id,
             });
         }
+        require_one_write(
+            "advance_auto_applied_current",
+            current_update.rows_affected(),
+        )?;
 
-        sqlx::query(
+        let message_insert = sqlx::query(
             r#"
             INSERT INTO messages (
                 id, workspace_id, role, text, kind, ref_id, attachment_ids_json, created_at
@@ -581,8 +498,12 @@ impl Store {
         .bind(&message_attachment_ids_json)
         .execute(&mut *tx)
         .await?;
+        require_one_write(
+            "insert_auto_applied_message",
+            message_insert.rows_affected(),
+        )?;
 
-        sqlx::query(
+        let proposal_insert = sqlx::query(
             r#"
             INSERT INTO proposals (
                 id, workspace_id, base_version_id, kind, title, summary,
@@ -604,6 +525,10 @@ impl Store {
         .bind(&message_id)
         .execute(&mut *tx)
         .await?;
+        require_one_write(
+            "insert_auto_applied_proposal",
+            proposal_insert.rows_affected(),
+        )?;
 
         let proposal = sqlx::query_as::<_, ProposalRecord>(
             r#"
@@ -665,4 +590,37 @@ fn ensure_pending(proposal: &ProposalRecord) -> StoreResult<()> {
         });
     }
     Ok(())
+}
+
+fn ensure_version_parent(version: &NewVersion<'_>, expected_parent: &str) -> StoreResult<()> {
+    if version.parent_id != Some(expected_parent) {
+        return Err(StoreError::VersionParentMismatch {
+            workspace_id: version.workspace_id.to_owned(),
+            expected_parent_version_id: expected_parent.to_owned(),
+            actual_parent_version_id: version.parent_id.map(str::to_owned),
+        });
+    }
+    Ok(())
+}
+
+fn ensure_proposal_base(proposal: &ProposalRecord, expected_base: &str) -> StoreResult<()> {
+    if proposal.base_version_id != expected_base {
+        return Err(StoreError::ProposalBaseMismatch {
+            proposal_id: proposal.id.clone(),
+            expected_base_version_id: expected_base.to_owned(),
+            actual_base_version_id: proposal.base_version_id.clone(),
+        });
+    }
+    Ok(())
+}
+
+fn require_one_write(operation: &'static str, actual_rows: u64) -> StoreResult<()> {
+    if actual_rows == 1 {
+        return Ok(());
+    }
+    Err(StoreError::StatementInvariant {
+        operation,
+        expected_rows: 1,
+        actual_rows,
+    })
 }

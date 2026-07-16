@@ -8,8 +8,8 @@ use helixflow_agent::ValidatedAgentProposal;
 use helixflow_graph::{GraphService, ProposalKind};
 use helixflow_registry::NodeRegistry;
 use helixflow_store::{
-    AutoApplyProposalVersionRecord, MessageRecord, NewProposal, NewVersion, ProposalRecord,
-    StoreError, VersionSource,
+    AutoApplyProposalVersionRecord, MessageRecord, NewProposal, NewVersion, StoreError,
+    VersionSource,
 };
 
 pub(crate) async fn persist_and_apply_agent_proposal(
@@ -109,13 +109,6 @@ fn proposal_storage_paths(workspace_id: &str, session_id: &str) -> (PathBuf, Pat
         dir.join("preview.json"),
         dir.join("applied.json"),
     )
-}
-
-pub(crate) fn applied_graph_path(proposal: &ProposalRecord) -> PathBuf {
-    PathBuf::from("workspaces")
-        .join(&proposal.workspace_id)
-        .join("graphs")
-        .join(format!("{}.json", proposal.id))
 }
 
 pub(crate) fn proposal_kind_as_str(kind: ProposalKind) -> &'static str {

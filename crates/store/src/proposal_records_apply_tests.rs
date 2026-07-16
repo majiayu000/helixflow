@@ -151,7 +151,7 @@ async fn applying_proposal_creates_version_and_marks_applied() {
         .await
         .expect("create proposal");
 
-    let child = store
+    let result = store
         .create_version_after_applying_proposal(ApplyProposalVersionRecord {
             proposal_id: &proposal.id,
             expected_current_version_id: &base.id,
@@ -163,16 +163,17 @@ async fn applying_proposal_creates_version_and_marks_applied() {
                 graph_hash: "sha256:applied",
                 parent_id: Some(&base.id),
             },
+            message_text: "Applied proposal",
         })
         .await
         .expect("apply proposal");
     let updated = store.proposal(&proposal.id).await.expect("proposal");
 
-    assert_eq!(child.parent_id.as_deref(), Some(base.id.as_str()));
+    assert_eq!(result.version.parent_id.as_deref(), Some(base.id.as_str()));
     assert_eq!(updated.state, "applied");
     assert_eq!(
         updated.result_version_id.as_deref(),
-        Some(child.id.as_str())
+        Some(result.version.id.as_str())
     );
 }
 
@@ -180,9 +181,15 @@ async fn applying_proposal_creates_version_and_marks_applied() {
 async fn applying_proposal_with_message_commits_all_records_together() {
     let (store, workspace_id, base_id, proposal_id, _dir) = apply_fixture().await;
 
-    let result = apply_with_message(&store, &workspace_id, &base_id, &proposal_id)
-        .await
-        .expect("apply proposal with message");
+    let result = apply_proposal(
+        &store,
+        &workspace_id,
+        &base_id,
+        &proposal_id,
+        Some(base_id.as_str()),
+    )
+    .await
+    .expect("apply proposal with message");
     let proposal = store.proposal(&proposal_id).await.expect("proposal");
     let workspace = store.workspace(&workspace_id).await.expect("workspace");
 
@@ -203,6 +210,137 @@ async fn applying_proposal_with_message_commits_all_records_together() {
         result.message.attachment_ids_json.as_deref(),
         Some(format!(r#"{{"versionId":"{}"}}"#, result.version.id).as_str())
     );
+}
+
+#[tokio::test]
+async fn applying_proposal_rejects_missing_parent_before_writes() {
+    assert_manual_invariant_is_write_free(None).await;
+}
+
+#[tokio::test]
+async fn applying_proposal_rejects_unrelated_parent_before_writes() {
+    assert_manual_invariant_is_write_free(Some("ver_unrelated")).await;
+}
+
+#[tokio::test]
+async fn applying_proposal_rejects_proposal_base_mismatch_before_writes() {
+    let (store, workspace_id, base_id, proposal_id, _dir) = apply_fixture().await;
+    let newer = store
+        .create_version_after(
+            NewVersion {
+                workspace_id: &workspace_id,
+                label: "New current",
+                source: VersionSource::Manual,
+                graph_path: "graphs/new-current.json",
+                graph_hash: "sha256:new-current",
+                parent_id: Some(&base_id),
+            },
+            &base_id,
+        )
+        .await
+        .expect("advance current");
+
+    let error = apply_proposal(
+        &store,
+        &workspace_id,
+        &newer.id,
+        &proposal_id,
+        Some(&newer.id),
+    )
+    .await
+    .expect_err("proposal base must equal expected current");
+
+    assert!(matches!(
+        error,
+        StoreError::ProposalBaseMismatch {
+            proposal_id: actual_proposal_id,
+            expected_base_version_id,
+            actual_base_version_id,
+        } if actual_proposal_id == proposal_id
+            && expected_base_version_id == newer.id
+            && actual_base_version_id == base_id
+    ));
+    assert_manual_state(&store, &workspace_id, &newer.id, &proposal_id, 2, "pending").await;
+}
+
+#[tokio::test]
+async fn applying_proposal_rejects_stale_current_without_partial_writes() {
+    let (store, workspace_id, base_id, proposal_id, _dir) = apply_fixture().await;
+    let newer = store
+        .create_version_after(
+            NewVersion {
+                workspace_id: &workspace_id,
+                label: "Newer",
+                source: VersionSource::Manual,
+                graph_path: "graphs/newer.json",
+                graph_hash: "sha256:newer",
+                parent_id: Some(&base_id),
+            },
+            &base_id,
+        )
+        .await
+        .expect("advance current");
+
+    let error = apply_proposal(
+        &store,
+        &workspace_id,
+        &base_id,
+        &proposal_id,
+        Some(&base_id),
+    )
+    .await
+    .expect_err("stale current must conflict");
+
+    assert!(matches!(
+        error,
+        StoreError::VersionConflict {
+            expected_version_id,
+            actual_version_id: Some(actual_version_id),
+            ..
+        } if expected_version_id == base_id && actual_version_id == newer.id
+    ));
+    assert_manual_state(&store, &workspace_id, &newer.id, &proposal_id, 2, "pending").await;
+}
+
+#[tokio::test]
+async fn applying_proposal_rejects_non_pending_state_without_partial_writes() {
+    let (store, workspace_id, base_id, proposal_id, _dir) = apply_fixture().await;
+    store
+        .resolve_proposal(ResolveProposal {
+            proposal_id: &proposal_id,
+            workspace_id: &workspace_id,
+            state: ProposalResolutionState::Dismissed,
+            result_version_id: None,
+        })
+        .await
+        .expect("dismiss proposal");
+
+    let error = apply_proposal(
+        &store,
+        &workspace_id,
+        &base_id,
+        &proposal_id,
+        Some(&base_id),
+    )
+    .await
+    .expect_err("resolved proposal cannot be applied");
+
+    assert!(matches!(
+        error,
+        StoreError::ProposalStateConflict {
+            actual_state: Some(actual_state),
+            ..
+        } if actual_state == "dismissed"
+    ));
+    assert_manual_state(
+        &store,
+        &workspace_id,
+        &base_id,
+        &proposal_id,
+        1,
+        "dismissed",
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -272,9 +410,15 @@ async fn assert_manual_apply_fault_rolls_back(trigger_sql: &str) {
         .await
         .expect("install fault trigger");
 
-    let error = apply_with_message(&store, &workspace_id, &base_id, &proposal_id)
-        .await
-        .expect_err("fault must abort proposal transaction");
+    let error = apply_proposal(
+        &store,
+        &workspace_id,
+        &base_id,
+        &proposal_id,
+        Some(base_id.as_str()),
+    )
+    .await
+    .expect_err("fault must abort proposal transaction");
 
     assert!(matches!(error, StoreError::Sqlx(_)));
     assert_eq!(
@@ -306,28 +450,81 @@ async fn assert_manual_apply_fault_rolls_back(trigger_sql: &str) {
     assert_eq!(proposal.result_version_id, None);
 }
 
-async fn apply_with_message(
+async fn assert_manual_invariant_is_write_free(parent_id: Option<&str>) {
+    let (store, workspace_id, base_id, proposal_id, _dir) = apply_fixture().await;
+    let error = apply_proposal(&store, &workspace_id, &base_id, &proposal_id, parent_id)
+        .await
+        .expect_err("declared parent must equal expected current");
+    assert!(matches!(
+        error,
+        StoreError::VersionParentMismatch {
+            expected_parent_version_id,
+            actual_parent_version_id,
+            ..
+        } if expected_parent_version_id == base_id
+            && actual_parent_version_id.as_deref() == parent_id
+    ));
+    assert_manual_state(&store, &workspace_id, &base_id, &proposal_id, 1, "pending").await;
+}
+
+async fn assert_manual_state(
+    store: &Store,
+    workspace_id: &str,
+    current_version_id: &str,
+    proposal_id: &str,
+    version_count: usize,
+    proposal_state: &str,
+) {
+    assert_eq!(
+        store
+            .workspace(workspace_id)
+            .await
+            .expect("workspace state")
+            .cur_version_id
+            .as_deref(),
+        Some(current_version_id)
+    );
+    assert_eq!(
+        store
+            .versions_for_workspace(workspace_id)
+            .await
+            .expect("versions")
+            .len(),
+        version_count
+    );
+    assert!(
+        store
+            .workspace_messages(workspace_id)
+            .await
+            .expect("messages")
+            .is_empty()
+    );
+    let proposal = store.proposal(proposal_id).await.expect("proposal state");
+    assert_eq!(proposal.state, proposal_state);
+    assert_eq!(proposal.result_version_id, None);
+}
+
+async fn apply_proposal(
     store: &Store,
     workspace_id: &str,
     base_id: &str,
     proposal_id: &str,
+    parent_id: Option<&str>,
 ) -> StoreResult<ApplyProposalVersionResult> {
     store
-        .create_version_after_applying_proposal_with_message(
-            ApplyProposalVersionWithMessageRecord {
-                proposal_id,
-                expected_current_version_id: base_id,
-                version: NewVersion {
-                    workspace_id,
-                    label: "Applied atomically",
-                    source: VersionSource::Proposal,
-                    graph_path: "graphs/applied-atomic.json",
-                    graph_hash: "sha256:applied-atomic",
-                    parent_id: Some(base_id),
-                },
-                message_text: "Applied atomically",
+        .create_version_after_applying_proposal(ApplyProposalVersionRecord {
+            proposal_id,
+            expected_current_version_id: base_id,
+            version: NewVersion {
+                workspace_id,
+                label: "Applied atomically",
+                source: VersionSource::Proposal,
+                graph_path: "graphs/applied-atomic.json",
+                graph_hash: "sha256:applied-atomic",
+                parent_id,
             },
-        )
+            message_text: "Applied atomically",
+        })
         .await
 }
 
