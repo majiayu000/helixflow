@@ -480,13 +480,11 @@ async fn apply_ops_json(
 }
 
 fn keyed_graph_path(workspace_id: &str, base_version_id: &str, key: &str) -> PathBuf {
+    let digest = ops_idempotency_digest(workspace_id, base_version_id, key);
     PathBuf::from("workspaces")
         .join(workspace_id)
         .join("graphs")
-        .join(format!(
-            "ops-key-{}.json",
-            ops_idempotency_digest(workspace_id, base_version_id, key)
-        ))
+        .join(format!("ops-key-{digest}.json"))
 }
 
 fn spawn_ops(
@@ -775,9 +773,10 @@ async fn graph_file_count(state: &AppState, workspace_id: &str) -> usize {
     let mut entries = tokio::fs::read_dir(graph_dir).await.expect("graph dir");
     let mut count = 0;
     while let Some(entry) = entries.next_entry().await.expect("graph entry") {
-        if entry.path().extension().is_some_and(|ext| ext == "json") {
-            count += 1;
-        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let is_temp = name.starts_with(".hf-") && name.ends_with(".tmp");
+        assert!(!is_temp, "candidate temp remains: {name}");
+        count += 1;
     }
     count
 }

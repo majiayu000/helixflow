@@ -32,10 +32,41 @@ struct NodePositionUpdate {
     y: f32,
 }
 
+#[cfg(test)]
+#[derive(Clone)]
+struct LayoutCommitHook {
+    published: std::sync::Arc<tokio::sync::Barrier>,
+    release: std::sync::Arc<tokio::sync::Barrier>,
+}
+
+#[cfg(test)]
+impl LayoutCommitHook {
+    async fn after_publish(&self) {
+        self.published.wait().await;
+        self.release.wait().await;
+    }
+}
+
 pub(crate) async fn save_workspace_layout(
+    path: Path<String>,
+    state: State<AppState>,
+    request: Json<SaveLayoutRequest>,
+) -> Result<Json<Value>, ApiError> {
+    #[cfg(test)]
+    {
+        save_workspace_layout_inner(path, state, request, None).await
+    }
+    #[cfg(not(test))]
+    {
+        save_workspace_layout_inner(path, state, request).await
+    }
+}
+
+async fn save_workspace_layout_inner(
     Path(workspace_id): Path<String>,
     State(state): State<AppState>,
     Json(request): Json<SaveLayoutRequest>,
+    #[cfg(test)] commit_hook: Option<&LayoutCommitHook>,
 ) -> Result<Json<Value>, ApiError> {
     let workspace = state
         .store
@@ -102,6 +133,10 @@ pub(crate) async fn save_workspace_layout(
     candidate
         .publish(&state.data_dir)
         .map_err(candidate_error)?;
+    #[cfg(test)]
+    if let Some(hook) = commit_hook {
+        hook.after_publish().await;
+    }
     let result = state
         .store
         .create_version_after_without_pending_proposal(
@@ -206,7 +241,10 @@ mod tests {
     use helixflow_run::EventBus;
     use helixflow_store::{NewProposal, NewVersion, Store, VersionSource};
     use serde_json::json;
-    use tokio::sync::Barrier;
+    use tokio::{
+        sync::Barrier,
+        time::{Duration, timeout},
+    };
 
     use super::*;
     use crate::app_state::{AppState, WorkbenchAgent};
@@ -413,22 +451,44 @@ mod tests {
     async fn concurrent_same_base_layout_has_one_winner_and_cleans_loser_candidate() {
         let (state, workspace_id, base_version_id, _dir) =
             state_with_layout_graph(layout_route_graph()).await;
-        let barrier = Arc::new(Barrier::new(3));
+        let hook = LayoutCommitHook {
+            published: Arc::new(Barrier::new(3)),
+            release: Arc::new(Barrier::new(3)),
+        };
         let first = spawn_layout_save(
             state.clone(),
-            Arc::clone(&barrier),
+            hook.clone(),
             workspace_id.clone(),
             base_version_id.clone(),
             500.0,
         );
         let second = spawn_layout_save(
             state.clone(),
-            Arc::clone(&barrier),
+            hook.clone(),
             workspace_id.clone(),
             base_version_id.clone(),
             600.0,
         );
-        barrier.wait().await;
+        wait_for_layout_phase(&hook.published, &first, &second, "publish").await;
+        let published_entries = graph_entry_names(&state, &workspace_id).await;
+        assert_eq!(published_entries.len(), 3, "entries: {published_entries:?}");
+        assert_eq!(
+            published_entries
+                .iter()
+                .filter(|name| *name == "base.json")
+                .count(),
+            1
+        );
+        assert_eq!(
+            published_entries
+                .iter()
+                .filter(|name| name.starts_with("layout-") && name.ends_with(".json"))
+                .count(),
+            2,
+            "entries: {published_entries:?}"
+        );
+        assert_no_candidate_temps(&published_entries);
+        wait_for_layout_phase(&hook.release, &first, &second, "CAS release").await;
         let results = [
             first.await.expect("first layout task"),
             second.await.expect("second layout task"),
@@ -473,19 +533,20 @@ mod tests {
                 .len(),
             2
         );
-        assert_eq!(graph_file_count(&state, &workspace_id).await, 2);
+        let final_entries = graph_entry_names(&state, &workspace_id).await;
+        assert_eq!(final_entries.len(), 2, "entries: {final_entries:?}");
+        assert_no_candidate_temps(&final_entries);
     }
 
     fn spawn_layout_save(
         state: AppState,
-        barrier: Arc<Barrier>,
+        hook: LayoutCommitHook,
         workspace_id: String,
         base_version_id: String,
         x: f32,
     ) -> tokio::task::JoinHandle<Result<Json<Value>, ApiError>> {
         tokio::spawn(async move {
-            barrier.wait().await;
-            save_workspace_layout(
+            save_workspace_layout_inner(
                 Path(workspace_id),
                 State(state),
                 Json(SaveLayoutRequest {
@@ -496,9 +557,26 @@ mod tests {
                         y: 90.0,
                     }],
                 }),
+                Some(&hook),
             )
             .await
         })
+    }
+
+    async fn wait_for_layout_phase(
+        barrier: &Barrier,
+        first: &tokio::task::JoinHandle<Result<Json<Value>, ApiError>>,
+        second: &tokio::task::JoinHandle<Result<Json<Value>, ApiError>>,
+        phase: &str,
+    ) {
+        if timeout(Duration::from_secs(5), barrier.wait())
+            .await
+            .is_err()
+        {
+            first.abort();
+            second.abort();
+            panic!("layout race timed out at {phase} barrier");
+        }
     }
 
     async fn state_with_layout_graph(
@@ -621,7 +699,7 @@ mod tests {
             .id
     }
 
-    async fn graph_file_count(state: &AppState, workspace_id: &str) -> usize {
+    async fn graph_entry_names(state: &AppState, workspace_id: &str) -> Vec<String> {
         let mut entries = tokio::fs::read_dir(
             state
                 .data_dir
@@ -631,16 +709,21 @@ mod tests {
         )
         .await
         .expect("graph directory");
-        let mut count = 0;
-        while entries
-            .next_entry()
-            .await
-            .expect("read graph entry")
-            .is_some()
-        {
-            count += 1;
+        let mut names = Vec::new();
+        while let Some(entry) = entries.next_entry().await.expect("read graph entry") {
+            names.push(entry.file_name().to_string_lossy().into_owned());
         }
-        count
+        names.sort();
+        names
+    }
+
+    fn assert_no_candidate_temps(entries: &[String]) {
+        assert!(
+            entries
+                .iter()
+                .all(|name| !(name.starts_with(".hf-") && name.ends_with(".tmp"))),
+            "candidate temp remains: {entries:?}"
+        );
     }
 
     fn layout_route_graph() -> WorkflowGraph {
