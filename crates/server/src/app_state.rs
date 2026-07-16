@@ -316,6 +316,39 @@ mod tests {
         assert!(!registry.provider_enabled("openai"));
     }
 
+    #[tokio::test]
+    async fn workspace_without_persisted_provider_inherits_fail_closed_server_default() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let database_url = format!("sqlite://{}", dir.path().join("helixflow.sqlite").display());
+        let store = Store::open(&database_url).await.expect("open store");
+        let workspace = store
+            .create_workspace("Fail-closed workspace")
+            .await
+            .expect("create workspace");
+        let registry = ProviderRegistry::new(
+            "unconfigured",
+            vec![RuntimeProvider::unavailable(
+                "unconfigured",
+                "HELIXFLOW_RUNTIME_PROVIDER is not configured",
+            )],
+        );
+        let state = AppState::with_store_provider(
+            EventBus::new(16),
+            store,
+            dir.path().to_path_buf(),
+            registry,
+        );
+
+        let selected = state.selected_provider_for_workspace(&workspace);
+        let catalog = state.provider_catalog_for_workspace(&workspace);
+
+        assert_eq!(selected, "unconfigured");
+        assert_eq!(catalog.default_provider, "unconfigured");
+        assert_eq!(catalog.runtime_providers.len(), 1);
+        assert_eq!(catalog.runtime_providers[0].kind, "unavailable");
+        assert!(!catalog.runtime_providers[0].enabled);
+    }
+
     #[test]
     fn provider_catalog_can_include_unavailable_fal_with_mock() {
         let registry = ProviderRegistry::new(

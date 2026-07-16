@@ -17,7 +17,7 @@ use tokio::sync::Notify;
 
 use super::*;
 
-async fn open_temp_store() -> (Store, tempfile::TempDir) {
+pub(crate) async fn open_temp_store() -> (Store, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("create temp dir");
     let db_path = dir.path().join("helixflow.sqlite");
     let database_url = format!("sqlite://{}", db_path.display());
@@ -25,7 +25,7 @@ async fn open_temp_store() -> (Store, tempfile::TempDir) {
     (store, dir)
 }
 
-async fn workspace_version(store: &Store) -> (String, String) {
+pub(crate) async fn workspace_version(store: &Store) -> (String, String) {
     let workspace = store
         .create_workspace("Run workspace")
         .await
@@ -44,7 +44,7 @@ async fn workspace_version(store: &Store) -> (String, String) {
     (workspace.id, version.id)
 }
 
-fn executable_graph() -> WorkflowGraph {
+pub(crate) fn executable_graph() -> WorkflowGraph {
     WorkflowGraph {
         schema_version: 1,
         nodes: BTreeMap::from([
@@ -202,37 +202,6 @@ async fn manual_run_persists_steps_events_and_artifacts() {
         streamed.push(event);
     }
     assert!(streamed.iter().any(|event| event.ev == "node.state"));
-}
-
-#[tokio::test]
-async fn provider_artifact_content_persists_relative_file_path() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let payload = ArtifactPayload {
-        kind: ArtifactKind::Image,
-        mime: "image/png".to_owned(),
-        storage_uri: String::new(),
-        content: ArtifactContent::InlineBytes {
-            bytes: vec![137, 80, 78, 71],
-            ext_hint: Some("png".to_owned()),
-        },
-        width: Some(1),
-        height: Some(1),
-        duration_ms: None,
-        meta: json!({}),
-    };
-
-    let relative = persist_provider_artifact(dir.path(), "run_1", "step_1", "image", &payload)
-        .await
-        .expect("persist artifact");
-
-    assert!(relative.starts_with("artifacts/run_1/"));
-    assert!(!relative.starts_with("http"));
-    assert_eq!(
-        tokio::fs::read(dir.path().join(&relative))
-            .await
-            .expect("read artifact"),
-        vec![137, 80, 78, 71],
-    );
 }
 
 #[tokio::test]
