@@ -16,6 +16,8 @@ GH-118（https://github.com/majiayu000/helixflow/issues/118）
   "complete": true,
   "paths": [
     "crates/server/src/app_state.rs",
+    "crates/server/src/artifact_retry_tests.rs",
+    "crates/server/src/artifact_routes.rs",
     "crates/server/src/graph_files.rs",
     "crates/server/src/layout_routes.rs",
     "crates/server/src/main.rs",
@@ -160,6 +162,8 @@ manual ops 的 keyed 逻辑身份是 `sha256("helixflow:ops-idempotency:v1" || l
 - `create_restore_version` 在 CAS 前 verified read target；
 - `workbench_message_graph::verified_message_graph`。
 
+T5 可在 `artifact_routes.rs` 的 inline tests 与 `artifact_retry_tests.rs` 中仅更新因 strict verified-read 暴露的 version fixture，使 `graph_hash` 来自 fixture 实际 bytes；不得改变 artifact production route、review/rerun 状态机或断言语义。
+
 proposal ops/preview 不是 `VersionRecord`，继续走安全 `read_json_file`；不得伪造 hash。startup 对它们验证路径、存在性与预期 JSON 类型。
 
 `workbench_message_graph.rs` 提供：
@@ -189,6 +193,8 @@ verified_message_graph(state, workspace_id, base_version_id, client_graph)
 | unknown legacy unreferenced file | startup 分类为 `retained_unknown` 并报告 | 命名不满足 GH-118 ownership proof | GH-118 永不自动删；需未来显式迁移/运维决策 |
 | existing proposal ops/preview | startup/read 校验 safe path、存在性、预期 JSON | proposal row 仍引用 | GH-118 不删 referenced payload；新 proposal 改用 exclusive candidate。未来 proposal retention 删除 DB 引用后才可由独立 GC 删除 |
 | recognized GH-118 temp/final candidate | startup 按命名 + DB reference 查询分类 | 有引用或查询不明则保留/fail closed | 两类 Store 查询均明确无引用时由 startup 删除 |
+
+Artifact route/retry 测试中的 version graph 只属于测试兼容 fixture；strict verified-read 生效后必须使用真实 bytes/hash，不能以假 hash 绕过，也不能因此改变 artifact production 行为。
 
 本 issue 不提供“关闭 hash 校验”的兼容开关，也不迁移存量路径。
 
