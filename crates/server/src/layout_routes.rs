@@ -1,5 +1,4 @@
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 
 use axum::{
     Json,
@@ -7,13 +6,15 @@ use axum::{
 };
 use helixflow_graph::{GraphError, GraphService, ProposalOp};
 use helixflow_registry::NodeRegistry;
-use helixflow_store::{NewVersion, VersionSource};
+use helixflow_store::{NewVersion, StoreError, VersionSource};
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
-use crate::graph_files::{read_graph_file, write_json_file};
+use crate::version_file_consistency::{
+    CandidateKind, VersionFileCandidate, VersionFileConsistencyError, read_version_graph,
+};
 use crate::workspace_state::workspace_state_value;
 
 #[derive(Debug, Deserialize)]
@@ -74,7 +75,9 @@ pub(crate) async fn save_workspace_layout(
         .version(current_version_id)
         .await
         .map_err(ApiError::store)?;
-    let current_graph = read_graph_file(&state.data_dir, &current.graph_path).await?;
+    let current_graph = read_version_graph(&state.data_dir, &current)
+        .await
+        .map_err(candidate_error)?;
     let ops = layout_ops(&current_graph, &request.positions)?;
     if ops.is_empty() {
         return Err(ApiError::bad_request(
@@ -88,30 +91,37 @@ pub(crate) async fn save_workspace_layout(
     graph_service
         .validate_graph(&moved_graph)
         .map_err(graph_layout_error)?;
-    let graph_path = layout_graph_path(&workspace_id, current_version_id);
-    let graph_hash = write_json_file(
-        &state.data_dir,
-        &graph_path,
-        &moved_graph,
-        "write layout graph",
-    )
-    .await?;
-    let graph_path_string = graph_path.to_string_lossy().into_owned();
-    state
+    let mut candidate =
+        VersionFileCandidate::from_graph(&workspace_id, CandidateKind::Layout, &moved_graph)
+            .map_err(candidate_error)?;
+    let graph_path = candidate
+        .relative_path_text()
+        .map_err(candidate_error)?
+        .to_owned();
+    let graph_hash = candidate.graph_hash().to_owned();
+    candidate
+        .publish(&state.data_dir)
+        .map_err(candidate_error)?;
+    let result = state
         .store
-        .create_version_after(
+        .create_version_after_without_pending_proposal(
             NewVersion {
                 workspace_id: &workspace_id,
                 label: "Update layout",
                 source: VersionSource::Manual,
-                graph_path: &graph_path_string,
+                graph_path: &graph_path,
                 graph_hash: &graph_hash,
                 parent_id: Some(current_version_id),
             },
             current_version_id,
         )
-        .await
-        .map_err(ApiError::store)?;
+        .await;
+    match result {
+        Ok(_) => candidate.mark_committed().map_err(candidate_error)?,
+        Err(store_error) => {
+            return Err(cleanup_layout_candidate(&state, &mut candidate, store_error).await);
+        }
+    }
 
     Ok(Json(workspace_state_value(&state, &workspace_id).await?))
 }
@@ -152,11 +162,26 @@ fn layout_ops(
     Ok(ops)
 }
 
-fn layout_graph_path(workspace_id: &str, base_version_id: &str) -> PathBuf {
-    PathBuf::from("workspaces")
-        .join(workspace_id)
-        .join("graphs")
-        .join(format!("layout-{base_version_id}.json"))
+async fn cleanup_layout_candidate(
+    state: &AppState,
+    candidate: &mut VersionFileCandidate,
+    store_error: StoreError,
+) -> ApiError {
+    match candidate.cleanup_after_store_error(&state.store).await {
+        Ok(_) => match store_error {
+            StoreError::VersionConflict { .. } | StoreError::PendingProposalConflict { .. } => {
+                ApiError::conflict("workspace changed while saving layout; refresh and retry")
+            }
+            error => ApiError::store(error),
+        },
+        Err(cleanup_error) => ApiError::server_error(format!(
+            "layout commit failed and candidate cleanup was deferred: {cleanup_error}"
+        )),
+    }
+}
+
+fn candidate_error(error: VersionFileConsistencyError) -> ApiError {
+    ApiError::server_error(error.to_string())
 }
 
 fn graph_layout_error(err: GraphError) -> ApiError {
@@ -181,9 +206,11 @@ mod tests {
     use helixflow_run::EventBus;
     use helixflow_store::{NewProposal, NewVersion, Store, VersionSource};
     use serde_json::json;
+    use tokio::sync::Barrier;
 
     use super::*;
     use crate::app_state::{AppState, WorkbenchAgent};
+    use crate::graph_files::{graph_hash, read_graph_file};
 
     #[tokio::test]
     async fn save_workspace_layout_creates_manual_version_with_updated_positions() {
@@ -235,6 +262,14 @@ mod tests {
         assert_eq!(version.parent_id.as_deref(), Some(base_version_id.as_str()));
         assert!(state.data_dir.join(&version.graph_path).exists());
         assert_ne!(version.graph_hash, "sha256:base");
+        assert_eq!(
+            read_version_graph(&state.data_dir, &version)
+                .await
+                .expect("verified layout graph"),
+            read_graph_file(&state.data_dir, &version.graph_path)
+                .await
+                .expect("stored layout graph")
+        );
         assert!(
             body["history"]
                 .as_array()
@@ -374,6 +409,98 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn concurrent_same_base_layout_has_one_winner_and_cleans_loser_candidate() {
+        let (state, workspace_id, base_version_id, _dir) =
+            state_with_layout_graph(layout_route_graph()).await;
+        let barrier = Arc::new(Barrier::new(3));
+        let first = spawn_layout_save(
+            state.clone(),
+            Arc::clone(&barrier),
+            workspace_id.clone(),
+            base_version_id.clone(),
+            500.0,
+        );
+        let second = spawn_layout_save(
+            state.clone(),
+            Arc::clone(&barrier),
+            workspace_id.clone(),
+            base_version_id.clone(),
+            600.0,
+        );
+        barrier.wait().await;
+        let results = [
+            first.await.expect("first layout task"),
+            second.await.expect("second layout task"),
+        ];
+
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter_map(|result| result.as_ref().err())
+                .filter(|error| error.status == axum::http::StatusCode::CONFLICT)
+                .count(),
+            1,
+            "results: {results:?}"
+        );
+        let workspace = state
+            .store
+            .workspace(&workspace_id)
+            .await
+            .expect("workspace after race");
+        let winner_id = workspace.cur_version_id.expect("winner version id");
+        let winner = state
+            .store
+            .version(&winner_id)
+            .await
+            .expect("winner version");
+        let bytes = tokio::fs::read(state.data_dir.join(&winner.graph_path))
+            .await
+            .expect("winner bytes");
+        let graph = read_version_graph(&state.data_dir, &winner)
+            .await
+            .expect("verified winner graph");
+        assert_eq!(winner.parent_id.as_deref(), Some(base_version_id.as_str()));
+        assert_eq!(winner.graph_hash, graph_hash(&bytes));
+        assert!(matches!(graph.nodes["video"].pos[0], 500.0 | 600.0));
+        assert_eq!(
+            state
+                .store
+                .versions_for_workspace(&workspace_id)
+                .await
+                .expect("versions after race")
+                .len(),
+            2
+        );
+        assert_eq!(graph_file_count(&state, &workspace_id).await, 2);
+    }
+
+    fn spawn_layout_save(
+        state: AppState,
+        barrier: Arc<Barrier>,
+        workspace_id: String,
+        base_version_id: String,
+        x: f32,
+    ) -> tokio::task::JoinHandle<Result<Json<Value>, ApiError>> {
+        tokio::spawn(async move {
+            barrier.wait().await;
+            save_workspace_layout(
+                Path(workspace_id),
+                State(state),
+                Json(SaveLayoutRequest {
+                    base_version_id,
+                    positions: vec![NodePositionUpdate {
+                        id: "video".to_owned(),
+                        x,
+                        y: 90.0,
+                    }],
+                }),
+            )
+            .await
+        })
+    }
+
     async fn state_with_layout_graph(
         graph: WorkflowGraph,
     ) -> (AppState, String, String, tempfile::TempDir) {
@@ -392,20 +519,19 @@ mod tests {
         tokio::fs::create_dir_all(data_dir.join(graph_path.parent().expect("graph parent")))
             .await
             .expect("create graph dir");
-        tokio::fs::write(
-            data_dir.join(&graph_path),
-            serde_json::to_vec_pretty(&graph).expect("graph json"),
-        )
-        .await
-        .expect("write graph");
+        let graph_bytes = serde_json::to_vec_pretty(&graph).expect("graph json");
+        tokio::fs::write(data_dir.join(&graph_path), &graph_bytes)
+            .await
+            .expect("write graph");
         let graph_path_string = graph_path.to_string_lossy().into_owned();
+        let stored_graph_hash = graph_hash(&graph_bytes);
         let version = store
             .create_version(NewVersion {
                 workspace_id: &workspace.id,
                 label: "Base graph",
                 source: VersionSource::Manual,
                 graph_path: &graph_path_string,
-                graph_hash: "sha256:base",
+                graph_hash: &stored_graph_hash,
                 parent_id: None,
             })
             .await
@@ -429,13 +555,13 @@ mod tests {
             .join(workspace_id)
             .join("graphs")
             .join("advanced.json");
-        tokio::fs::write(
-            state.data_dir.join(&graph_path),
-            serde_json::to_vec_pretty(&layout_route_graph()).expect("advanced graph json"),
-        )
-        .await
-        .expect("write advanced graph");
+        let graph_bytes =
+            serde_json::to_vec_pretty(&layout_route_graph()).expect("advanced graph json");
+        tokio::fs::write(state.data_dir.join(&graph_path), &graph_bytes)
+            .await
+            .expect("write advanced graph");
         let graph_path_string = graph_path.to_string_lossy().into_owned();
+        let stored_graph_hash = graph_hash(&graph_bytes);
         state
             .store
             .create_version_after(
@@ -444,7 +570,7 @@ mod tests {
                     label: "Advanced graph",
                     source: VersionSource::Manual,
                     graph_path: &graph_path_string,
-                    graph_hash: "sha256:advanced",
+                    graph_hash: &stored_graph_hash,
                     parent_id: Some(base_version_id),
                 },
                 base_version_id,
@@ -493,6 +619,28 @@ mod tests {
             .await
             .expect("create proposal")
             .id
+    }
+
+    async fn graph_file_count(state: &AppState, workspace_id: &str) -> usize {
+        let mut entries = tokio::fs::read_dir(
+            state
+                .data_dir
+                .join("workspaces")
+                .join(workspace_id)
+                .join("graphs"),
+        )
+        .await
+        .expect("graph directory");
+        let mut count = 0;
+        while entries
+            .next_entry()
+            .await
+            .expect("read graph entry")
+            .is_some()
+        {
+            count += 1;
+        }
+        count
     }
 
     fn layout_route_graph() -> WorkflowGraph {
