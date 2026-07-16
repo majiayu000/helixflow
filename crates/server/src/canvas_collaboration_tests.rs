@@ -353,9 +353,10 @@ async fn legacy_json_imports_once_and_never_becomes_truth_again() {
     .await
     .expect("write legacy comments");
 
-    let imported = load_canvas_comments(&state.data_dir, &workspace_id)
+    let imported = canvas_comment_snapshot(&state.store, &state.data_dir, &workspace_id)
         .await
-        .expect("import legacy comments");
+        .expect("import legacy comments")
+        .1;
     assert_eq!(imported.len(), 1);
     assert_eq!(imported[0].id, "legacy_comment");
     assert_eq!(
@@ -372,9 +373,10 @@ async fn legacy_json_imports_once_and_never_becomes_truth_again() {
     tokio::fs::write(state.data_dir.join(relative), b"not valid json")
         .await
         .expect("corrupt old legacy file");
-    let reloaded = load_canvas_comments(&state.data_dir, &workspace_id)
+    let reloaded = canvas_comment_snapshot(&state.store, &state.data_dir, &workspace_id)
         .await
-        .expect("reload SQLite comments");
+        .expect("reload SQLite comments")
+        .1;
     assert_eq!(reloaded.len(), 1);
     assert_eq!(reloaded[0].id, "legacy_comment");
 }
@@ -432,7 +434,7 @@ async fn invalid_legacy_json_fails_closed_without_initializing_empty_state() {
         .await
         .expect("write invalid legacy file");
 
-    let error = load_canvas_comments(&state.data_dir, &workspace_id)
+    let error = canvas_comment_snapshot(&state.store, &state.data_dir, &workspace_id)
         .await
         .expect_err("invalid legacy JSON must fail");
     assert!(error.message.contains("contains invalid JSON"));

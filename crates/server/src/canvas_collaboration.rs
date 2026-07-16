@@ -156,7 +156,7 @@ pub(crate) async fn apply_canvas_comment_op(
     let operation_id = normalize_operation_id(input.operation_id)?;
     let op = prepare_comment_op(input.op, &operation_id)?;
     let operation_fingerprint = comment_operation_fingerprint(&op)?;
-    ensure_comment_store(&state.store, &state.data_dir, &workspace_id).await?;
+    let mut current = ensure_comment_store(&state.store, &state.data_dir, &workspace_id).await?;
 
     if let Some(existing) = state
         .store
@@ -169,7 +169,6 @@ pub(crate) async fn apply_canvas_comment_op(
 
     let mut compatibility_cas_retries = 0;
     loop {
-        let current = read_comment_store(&state.store, &workspace_id).await?;
         if let Some(base_seq) = input.base_seq
             && base_seq != current.seq
         {
@@ -201,6 +200,7 @@ pub(crate) async fn apply_canvas_comment_op(
             CanvasCommentCommitResult::Stale { current_seq } => {
                 if input.base_seq.is_none() {
                     prepare_compatibility_cas_retry(&mut compatibility_cas_retries, current_seq)?;
+                    current = read_comment_store(&state.store, &workspace_id).await?;
                     continue;
                 }
                 return Err(comment_conflict(
@@ -248,36 +248,26 @@ pub(crate) async fn update_canvas_presence(
     })))
 }
 
-pub(crate) async fn load_canvas_comments(
+pub(crate) async fn canvas_comment_snapshot(
+    store: &Store,
     data_dir: &Path,
     workspace_id: &str,
-) -> Result<Vec<CanvasComment>, ApiError> {
-    let store = open_comment_store(data_dir).await?;
-    ensure_comment_store(&store, data_dir, workspace_id).await?;
-    Ok(read_comment_store(&store, workspace_id).await?.comments)
-}
-
-pub(crate) async fn canvas_comment_seq(
-    data_dir: &Path,
-    workspace_id: &str,
-) -> Result<i64, ApiError> {
-    let store = open_comment_store(data_dir).await?;
-    ensure_comment_store(&store, data_dir, workspace_id).await?;
-    Ok(read_comment_store(&store, workspace_id).await?.seq)
+) -> Result<(i64, Vec<CanvasComment>), ApiError> {
+    let snapshot = ensure_comment_store(store, data_dir, workspace_id).await?;
+    Ok((snapshot.seq, snapshot.comments))
 }
 
 async fn ensure_comment_store(
     store: &Store,
     data_dir: &Path,
     workspace_id: &str,
-) -> Result<(), ApiError> {
-    if store
+) -> Result<CanvasCommentStore, ApiError> {
+    if let Some(record) = store
         .canvas_comment_state(workspace_id)
         .await
         .map_err(ApiError::store)?
-        .is_some()
     {
-        return Ok(());
+        return comment_store_from_record(record);
     }
 
     let relative = comments_relative_path(workspace_id)?;
@@ -305,7 +295,7 @@ async fn ensure_comment_store(
     };
     let comments_json = serde_json::to_string(&legacy.comments)
         .map_err(|err| ApiError::server_error(format!("encode legacy canvas comments: {err}")))?;
-    store
+    let record = store
         .initialize_canvas_comment_state(NewCanvasCommentState {
             workspace_id,
             seq: legacy.seq,
@@ -314,7 +304,7 @@ async fn ensure_comment_store(
         })
         .await
         .map_err(ApiError::store)?;
-    Ok(())
+    comment_store_from_record(record)
 }
 
 async fn read_comment_store(
@@ -369,12 +359,6 @@ fn validate_comment_store(store: &CanvasCommentStore, source: &Path) -> Result<(
         )));
     }
     Ok(())
-}
-
-async fn open_comment_store(data_dir: &Path) -> Result<Store, ApiError> {
-    let database_url = std::env::var("HELIXFLOW_DATABASE_URL")
-        .unwrap_or_else(|_| format!("sqlite://{}", data_dir.join("helixflow.sqlite").display()));
-    Store::open(&database_url).await.map_err(ApiError::store)
 }
 
 async fn replay_or_conflict(
