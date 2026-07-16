@@ -1,5 +1,7 @@
+use std::str::FromStr;
 use std::sync::Arc;
 
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tokio::sync::Barrier;
 
 use super::{
@@ -11,6 +13,24 @@ async fn open_temp_store() -> (Store, tempfile::TempDir) {
     let db_path = dir.path().join("helixflow.sqlite");
     let database_url = format!("sqlite://{}", db_path.display());
     let store = Store::open(&database_url).await.expect("open store");
+    (store, dir)
+}
+
+async fn open_single_connection_store() -> (Store, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let options = SqliteConnectOptions::from_str(&format!(
+        "sqlite://{}",
+        dir.path().join("helixflow.sqlite").display()
+    ))
+    .expect("sqlite options")
+    .create_if_missing(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .expect("connect sqlite");
+    let store = Store { pool };
+    store.run_migrations().await.expect("run migrations");
     (store, dir)
 }
 
@@ -191,6 +211,36 @@ async fn pending_guard_rejects_existing_pending_proposal_and_rolls_back_insert()
 }
 
 #[tokio::test]
+async fn version_insert_fault_rolls_back_current_and_preserves_base_hash() {
+    assert_version_statement_fault_rolls_back(
+        r#"
+        CREATE TEMP TRIGGER fail_conditional_version_insert
+        BEFORE INSERT ON versions
+        WHEN NEW.label = 'Faulted version'
+        BEGIN
+          SELECT RAISE(ABORT, 'fail_conditional_version_insert');
+        END
+        "#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn current_cas_fault_rolls_back_version_insert_and_preserves_base_hash() {
+    assert_version_statement_fault_rolls_back(
+        r#"
+        CREATE TEMP TRIGGER fail_conditional_current_update
+        BEFORE UPDATE OF cur_version_id ON workspaces
+        WHEN NEW.cur_version_id != OLD.cur_version_id
+        BEGIN
+          SELECT RAISE(ABORT, 'fail_conditional_current_update');
+        END
+        "#,
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn normal_creation_rejects_missing_declared_parent_before_writes() {
     assert_parent_mismatch_is_write_free(false, None).await;
 }
@@ -250,6 +300,50 @@ async fn assert_parent_mismatch_is_write_free(
             .workspace(&workspace.id)
             .await
             .expect("workspace after parent mismatch")
+            .cur_version_id,
+        Some(base.id)
+    );
+}
+
+async fn assert_version_statement_fault_rolls_back(trigger: &str) {
+    let (store, _dir) = open_single_connection_store().await;
+    let workspace = store
+        .create_workspace("Statement fault")
+        .await
+        .expect("create workspace");
+    let base = create_base_version(&store, &workspace.id, "statement-fault").await;
+    sqlx::query(trigger)
+        .execute(store.pool())
+        .await
+        .expect("install TEMP trigger");
+
+    let error = store
+        .create_version_after(
+            NewVersion {
+                workspace_id: &workspace.id,
+                label: "Faulted version",
+                source: VersionSource::Manual,
+                graph_path: "workspaces/fault/rejected.json",
+                graph_hash: "sha256:rejected",
+                parent_id: Some(&base.id),
+            },
+            &base.id,
+        )
+        .await
+        .expect_err("injected statement fault must fail");
+
+    assert!(matches!(error, StoreError::Sqlx(_)));
+    let versions = store
+        .versions_for_workspace(&workspace.id)
+        .await
+        .expect("versions after statement fault");
+    assert_eq!(versions, vec![base.clone()]);
+    assert_eq!(versions[0].graph_hash, base.graph_hash);
+    assert_eq!(
+        store
+            .workspace(&workspace.id)
+            .await
+            .expect("workspace after statement fault")
             .cur_version_id,
         Some(base.id)
     );

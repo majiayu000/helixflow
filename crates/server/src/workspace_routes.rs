@@ -102,25 +102,34 @@ async fn initialize_workspace(
     candidate
         .publish(&state.data_dir)
         .map_err(candidate_error)?;
-    let result = state
-        .store
-        .create_workspace_with_initial_version(CreateWorkspaceWithInitialVersion {
-            identity,
-            name,
-            version_label: "Initial graph",
-            source: VersionSource::Manual,
-            graph_path: &graph_path,
-            graph_hash: &graph_hash,
-        })
-        .await;
-    match result {
+    commit_initial_candidate(
+        state,
+        &mut candidate,
+        state
+            .store
+            .create_workspace_with_initial_version(CreateWorkspaceWithInitialVersion {
+                identity,
+                name,
+                version_label: "Initial graph",
+                source: VersionSource::Manual,
+                graph_path: &graph_path,
+                graph_hash: &graph_hash,
+            }),
+    )
+    .await
+}
+
+async fn commit_initial_candidate(
+    state: &AppState,
+    candidate: &mut VersionFileCandidate,
+    commit: impl std::future::Future<Output = Result<InitializedWorkspace, StoreError>>,
+) -> Result<InitializedWorkspace, ApiError> {
+    match commit.await {
         Ok(initialized) => {
             candidate.mark_committed().map_err(candidate_error)?;
             Ok(initialized)
         }
-        Err(store_error) => {
-            Err(cleanup_initial_candidate(state, &mut candidate, store_error).await)
-        }
+        Err(store_error) => Err(cleanup_initial_candidate(state, candidate, store_error).await),
     }
 }
 
@@ -231,6 +240,66 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(graph_file_count(&state, &existing.id).await, 0);
+    }
+
+    #[tokio::test]
+    async fn create_workspace_commit_then_error_preserves_exact_initial_reference() {
+        let (state, _dir) = test_state().await;
+        let identity = state.store.reserve_workspace_identity();
+        let mut candidate = VersionFileCandidate::from_graph(
+            &identity.workspace_id,
+            CandidateKind::Initial,
+            &blank_graph(),
+        )
+        .expect("initial candidate");
+        let graph_path = candidate
+            .relative_path_text()
+            .expect("initial candidate path")
+            .to_owned();
+        let graph_hash = candidate.graph_hash().to_owned();
+        candidate
+            .publish(&state.data_dir)
+            .expect("publish candidate");
+        let commit_identity = identity.clone();
+        let store = state.store.clone();
+
+        let error = commit_initial_candidate(&state, &mut candidate, async move {
+            store
+                .create_workspace_with_initial_version(CreateWorkspaceWithInitialVersion {
+                    identity: commit_identity,
+                    name: "Committed before synthetic error",
+                    version_label: "Initial graph",
+                    source: VersionSource::Manual,
+                    graph_path: &graph_path,
+                    graph_hash: &graph_hash,
+                })
+                .await
+                .expect("real Store commit succeeds");
+            Err(StoreError::StatementInvariant {
+                operation: "synthetic_post_commit_outcome",
+                expected_rows: 1,
+                actual_rows: 0,
+            })
+        })
+        .await
+        .expect_err("synthetic outcome error remains visible");
+
+        assert_eq!(error.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        let workspaces = state.store.workspaces().await.expect("workspaces");
+        assert_eq!(workspaces.len(), 1, "must not create a duplicate workspace");
+        assert_eq!(workspaces[0].id, identity.workspace_id);
+        assert_eq!(
+            workspaces[0].cur_version_id.as_deref(),
+            Some(identity.initial_version_id.as_str())
+        );
+        let version = state
+            .store
+            .version(&identity.initial_version_id)
+            .await
+            .expect("exact committed initial version");
+        assert_eq!(version.graph_path, candidate.relative_path_text().unwrap());
+        assert!(state.data_dir.join(&version.graph_path).exists());
+        assert_eq!(graph_file_count(&state, &identity.workspace_id).await, 1);
     }
 
     #[tokio::test]
