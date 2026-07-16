@@ -461,6 +461,95 @@ describe('App', () => {
     expect(markup).toContain('disabled=""');
   });
 
+  it('renders user, agent chat, and system messages in stable timeline order', () => {
+    const markup = renderToStaticMarkup(
+      <App
+        initialState={{
+          ...state,
+          chat: {
+            messages: [
+              {
+                id: 'msg_user_timeline',
+                role: 'user',
+                kind: 'text',
+                text: '<script>alert("timeline")</script>',
+                time: '09:10',
+              },
+              {
+                id: 'msg_agent_timeline',
+                role: 'agent',
+                kind: 'chat',
+                text: 'Agent timeline reply',
+                time: '09:11',
+              },
+              {
+                id: 'msg_system_timeline',
+                role: 'system',
+                kind: 'run_failed',
+                text: 'System timeline error',
+                time: '09:12',
+              },
+            ],
+          },
+        }}
+      />,
+    );
+
+    const userIndex = markup.indexOf('&lt;script&gt;alert');
+    const agentIndex = markup.indexOf('Agent timeline reply');
+    const systemIndex = markup.indexOf('System timeline error');
+    expect(userIndex).toBeGreaterThan(-1);
+    expect(agentIndex).toBeGreaterThan(userIndex);
+    expect(systemIndex).toBeGreaterThan(agentIndex);
+    expect(markup).not.toContain('<script>');
+  });
+
+  it('renders one agent reply together with its grouped tool log', () => {
+    const markup = renderToStaticMarkup(
+      <App
+        initialState={{
+          ...state,
+          chat: {
+            messages: [
+              {
+                id: 'msg_user_tool_turn',
+                role: 'user',
+                kind: 'text',
+                text: 'Inspect the workflow',
+                time: '09:10',
+              },
+              {
+                id: 'msg_agent_tool_before',
+                role: 'agent',
+                kind: 'agent_log:prompt',
+                text: 'Prepared prompt context',
+                time: '09:11',
+              },
+              {
+                id: 'msg_agent_tool_reply',
+                role: 'agent',
+                kind: 'chat',
+                text: '普通回复正文',
+                time: '09:12',
+              },
+              {
+                id: 'msg_agent_tool_after',
+                role: 'agent',
+                kind: 'agent_log:command_execution',
+                text: 'rg workflow',
+                time: '09:13',
+              },
+            ],
+          },
+        }}
+      />,
+    );
+
+    expect(markup.split('普通回复正文')).toHaveLength(2);
+    expect(markup).toContain('工具调用 · 1 次');
+    expect(markup).toContain('2 events');
+  });
+
   it('renders agent runtime logs in a collapsed log group', () => {
     const markup = renderToStaticMarkup(
       <App
@@ -727,6 +816,13 @@ describe('App', () => {
       kind: 'chat',
       text: '我是 Helixflow agent。',
     });
+    const updated = useWorkbenchStore.getState().state;
+    if (!updated) {
+      throw new Error('expected message response to keep workspace state');
+    }
+    const markup = renderToStaticMarkup(<App initialState={updated} />);
+    expect(markup).toContain('你好');
+    expect(markup).toContain('我是 Helixflow agent。');
   });
 
   it('rejects unknown canvas message context fields locally', () => {
