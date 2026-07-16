@@ -1,7 +1,7 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
 use std::io;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use helixflow_graph::{ProposalOp, WorkflowGraph};
 use helixflow_store::{ProposalRecord, Store, VersionRecord};
@@ -110,8 +110,8 @@ pub(crate) async fn reconcile_version_files_with_io<I: ReconciliationIo>(
     io: &I,
 ) -> Result<ReconciliationReport, VersionFileReconciliationError> {
     let mut report = ReconciliationReport::default();
-    verify_references(store, data_dir, &mut report).await?;
-    scan_and_remove_orphans(store, data_dir, io, &mut report).await?;
+    let referenced_targets = verify_references(store, data_dir, &mut report).await?;
+    scan_and_remove_orphans(store, data_dir, io, &referenced_targets, &mut report).await?;
     Ok(report)
 }
 
@@ -119,7 +119,8 @@ async fn verify_references(
     store: &Store,
     data_dir: &Path,
     report: &mut ReconciliationReport,
-) -> Result<(), VersionFileReconciliationError> {
+) -> Result<HashSet<PathBuf>, VersionFileReconciliationError> {
+    let mut referenced_targets = HashSet::new();
     let workspaces = store
         .workspaces()
         .await
@@ -133,6 +134,15 @@ async fn verify_references(
             read_version_graph(data_dir, &version)
                 .await
                 .map_err(|error| map_version_error(&version, error))?;
+            referenced_targets.insert(
+                canonical_reference_target(
+                    data_dir,
+                    &version.graph_path,
+                    &version.id,
+                    "version_graph",
+                )
+                .await?,
+            );
             report.verified_versions += 1;
             report.count("version_graph");
         }
@@ -141,7 +151,7 @@ async fn verify_references(
             .await
             .map_err(|_| store_query("enumerate_proposals"))?;
         for proposal in proposals {
-            verify_proposal_files(data_dir, &proposal).await?;
+            referenced_targets.extend(verify_proposal_files(data_dir, &proposal).await?);
             report.verified_proposal_files += 1;
             report.count("proposal_ops");
             if proposal.preview_graph_path.is_some() {
@@ -150,19 +160,29 @@ async fn verify_references(
             }
         }
     }
-    Ok(())
+    Ok(referenced_targets)
 }
 
 async fn verify_proposal_files(
     data_dir: &Path,
     proposal: &ProposalRecord,
-) -> Result<(), VersionFileReconciliationError> {
-    read_safe_json::<Vec<ProposalOp>>(data_dir, &proposal.ops_path, &proposal.id, "proposal_ops")
-        .await?;
+) -> Result<Vec<PathBuf>, VersionFileReconciliationError> {
+    let mut targets = vec![
+        read_safe_json::<Vec<ProposalOp>>(
+            data_dir,
+            &proposal.ops_path,
+            &proposal.id,
+            "proposal_ops",
+        )
+        .await?,
+    ];
     if let Some(path) = &proposal.preview_graph_path {
-        read_safe_json::<WorkflowGraph>(data_dir, path, &proposal.id, "proposal_preview").await?;
+        targets.push(
+            read_safe_json::<WorkflowGraph>(data_dir, path, &proposal.id, "proposal_preview")
+                .await?,
+        );
     }
-    Ok(())
+    Ok(targets)
 }
 
 async fn read_safe_json<T: DeserializeOwned>(
@@ -170,7 +190,26 @@ async fn read_safe_json<T: DeserializeOwned>(
     relative_path: &str,
     record_id: &str,
     path_category: &'static str,
-) -> Result<T, VersionFileReconciliationError> {
+) -> Result<PathBuf, VersionFileReconciliationError> {
+    let canonical =
+        canonical_reference_target(data_dir, relative_path, record_id, path_category).await?;
+    let bytes = tokio::fs::read(&canonical)
+        .await
+        .map_err(|error| match error.kind() {
+            io::ErrorKind::NotFound => corrupt("missing_file", record_id, path_category),
+            _ => fs_error("read_proposal_file", error),
+        })?;
+    serde_json::from_slice::<T>(&bytes)
+        .map_err(|_| corrupt("invalid_json", record_id, path_category))?;
+    Ok(canonical)
+}
+
+async fn canonical_reference_target(
+    data_dir: &Path,
+    relative_path: &str,
+    record_id: &str,
+    path_category: &'static str,
+) -> Result<PathBuf, VersionFileReconciliationError> {
     let relative = Path::new(relative_path);
     if !is_safe_relative_path(relative) {
         return Err(corrupt("unsafe_path", record_id, path_category));
@@ -188,19 +227,14 @@ async fn read_safe_json<T: DeserializeOwned>(
     if !canonical.starts_with(&root) {
         return Err(corrupt("unsafe_path", record_id, path_category));
     }
-    let bytes = tokio::fs::read(canonical)
-        .await
-        .map_err(|error| match error.kind() {
-            io::ErrorKind::NotFound => corrupt("missing_file", record_id, path_category),
-            _ => fs_error("read_proposal_file", error),
-        })?;
-    serde_json::from_slice(&bytes).map_err(|_| corrupt("invalid_json", record_id, path_category))
+    Ok(canonical)
 }
 
 async fn scan_and_remove_orphans<I: ReconciliationIo>(
     store: &Store,
     data_dir: &Path,
     io: &I,
+    referenced_targets: &HashSet<PathBuf>,
     report: &mut ReconciliationReport,
 ) -> Result<(), VersionFileReconciliationError> {
     let root = std::fs::canonicalize(data_dir)
@@ -221,7 +255,15 @@ async fn scan_and_remove_orphans<I: ReconciliationIo>(
             retain_unknown(report, "workspace_entry");
             continue;
         }
-        scan_graph_directory(store, &root, &workspace_entry.path(), io, report).await?;
+        scan_graph_directory(
+            store,
+            &root,
+            &workspace_entry.path(),
+            io,
+            referenced_targets,
+            report,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -231,6 +273,7 @@ async fn scan_graph_directory<I: ReconciliationIo>(
     root: &Path,
     workspace_dir: &Path,
     io: &I,
+    referenced_targets: &HashSet<PathBuf>,
     report: &mut ReconciliationReport,
 ) -> Result<(), VersionFileReconciliationError> {
     let graphs = workspace_dir.join("graphs");
@@ -287,6 +330,12 @@ async fn scan_graph_directory<I: ReconciliationIo>(
             report.count("referenced_candidate");
             continue;
         }
+        let canonical_candidate = std::fs::canonicalize(&path)
+            .map_err(|error| fs_error("canonicalize_candidate", error))?;
+        if referenced_targets.contains(&canonical_candidate) {
+            report.count("aliased_reference_candidate");
+            continue;
+        }
         io.remove_file(&path)
             .map_err(|error| fs_error("remove_orphan", error))?;
         io.sync_parent(&canonical_graphs)
@@ -323,7 +372,14 @@ fn is_temporary_candidate(name: &str, kind: &str) -> bool {
 }
 
 fn is_simple_uuid(value: &str) -> bool {
-    value.len() == 32 && Uuid::parse_str(value).is_ok()
+    let bytes = value.as_bytes();
+    bytes.len() == 32
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        && bytes[12] == b'7'
+        && matches!(bytes[16], b'8' | b'9' | b'a' | b'b')
+        && Uuid::parse_str(value).is_ok()
 }
 
 fn is_safe_relative_path(path: &Path) -> bool {

@@ -77,6 +77,104 @@ async fn startup_verifies_references_and_removes_only_owned_orphans() {
 }
 
 #[tokio::test]
+async fn startup_retains_physical_targets_referenced_through_safe_aliases() {
+    let fixture = Fixture::new().await;
+    let workspace = fixture
+        .store
+        .create_workspace("safe aliases")
+        .await
+        .expect("workspace");
+    let graph = sample_graph();
+    let graph_bytes = serde_json::to_vec(&graph).expect("graph JSON");
+    let graph_relative = format!(
+        "workspaces/{}/graphs/initial-{}.json",
+        workspace.id,
+        uuid::Uuid::now_v7().simple()
+    );
+    fixture.write(&graph_relative, &graph_bytes).await;
+    let graph_alias = format!("./{graph_relative}");
+    let version = fixture
+        .store
+        .create_version(NewVersion {
+            workspace_id: &workspace.id,
+            label: "aliased graph",
+            source: VersionSource::Manual,
+            graph_path: &graph_alias,
+            graph_hash: &graph_hash(&graph_bytes),
+            parent_id: None,
+        })
+        .await
+        .expect("version");
+    let ops_relative = format!(
+        "workspaces/{}/graphs/proposal-ops-{}.json",
+        workspace.id,
+        uuid::Uuid::now_v7().simple()
+    );
+    fixture.write(&ops_relative, b"[]").await;
+    let ops_alias = ops_relative.replacen("/graphs/", "//graphs/", 1);
+    fixture
+        .store
+        .create_proposal(NewProposal {
+            workspace_id: &workspace.id,
+            base_version_id: &version.id,
+            kind: "modify",
+            title: "aliased proposal",
+            summary: "aliased proposal",
+            ops_path: &ops_alias,
+            preview_graph_path: None,
+            message_id: None,
+        })
+        .await
+        .expect("proposal");
+
+    let report = reconcile_version_files(&fixture.store, fixture.root())
+        .await
+        .expect("safe aliases remain compatible");
+
+    assert!(fixture.root().join(graph_relative).exists());
+    assert!(fixture.root().join(ops_relative).exists());
+    assert_eq!(report.removed_orphans, 0);
+    assert_eq!(report.path_categories["aliased_reference_candidate"], 2);
+}
+
+#[tokio::test]
+async fn startup_retains_non_v7_and_uppercase_uuid_names_as_unknown() {
+    let fixture = Fixture::new().await;
+    let workspace = fixture
+        .store
+        .create_workspace("strict UUID ownership")
+        .await
+        .expect("workspace");
+    let lowercase_v4 = format!(
+        "workspaces/{}/graphs/ops-550e8400e29b41d4a716446655440000.json",
+        workspace.id
+    );
+    let uppercase_v7 = format!(
+        "workspaces/{}/graphs/layout-{}.json",
+        workspace.id,
+        uuid::Uuid::now_v7().simple().to_string().to_uppercase()
+    );
+    let nil_uuid = format!(
+        "workspaces/{}/graphs/initial-00000000000000000000000000000000.json",
+        workspace.id
+    );
+    fixture.write(&lowercase_v4, b"v4").await;
+    fixture.write(&uppercase_v7, b"uppercase v7").await;
+    fixture.write(&nil_uuid, b"nil").await;
+
+    let report = reconcile_version_files(&fixture.store, fixture.root())
+        .await
+        .expect("non-owned UUID names are legacy unknowns");
+
+    assert!(fixture.root().join(lowercase_v4).exists());
+    assert!(fixture.root().join(uppercase_v7).exists());
+    assert!(fixture.root().join(nil_uuid).exists());
+    assert_eq!(report.removed_orphans, 0);
+    assert_eq!(report.retained_unknown, 3);
+    assert_eq!(report.path_categories["unknown_graph_file"], 3);
+}
+
+#[tokio::test]
 async fn startup_open_retains_success_report_in_app_state() {
     let fixture = Fixture::new().await;
     let (workspace_id, _version_id) = fixture.seed_valid_version().await;
