@@ -1,3 +1,7 @@
+use std::sync::Arc;
+
+use tokio::sync::Barrier;
+
 use crate::{
     AutoApplyProposalVersionRecord, AutoApplyProposalVersionResult, NewProposal, NewVersion, Store,
     StoreError, StoreResult, VersionSource,
@@ -220,7 +224,7 @@ async fn auto_apply_version_conflict_rolls_back_all_database_records() {
 }
 
 #[tokio::test]
-async fn concurrent_auto_apply_has_one_winner_and_one_explicit_version_conflict() {
+async fn concurrent_same_base_auto_apply_has_one_winner_and_one_explicit_version_conflict() {
     let (store, _dir) = proposal_test_store().await;
     let workspace = store
         .create_workspace("Concurrent proposals")
@@ -238,42 +242,71 @@ async fn concurrent_auto_apply_has_one_winner_and_one_explicit_version_conflict(
         .await
         .expect("create base");
 
-    let first = submit_auto_apply(
+    let barrier = Arc::new(Barrier::new(3));
+    let first = tokio::spawn(submit_auto_apply_after_barrier(
         store.clone(),
         workspace.id.clone(),
         base.id.clone(),
         "first",
-    );
-    let second = submit_auto_apply(
+        Arc::clone(&barrier),
+    ));
+    let second = tokio::spawn(submit_auto_apply_after_barrier(
         store.clone(),
         workspace.id.clone(),
         base.id.clone(),
         "second",
-    );
-    let (first, second) = tokio::join!(first, second);
-    let results = [first, second];
+        Arc::clone(&barrier),
+    ));
+    barrier.wait().await;
+    let results = [
+        first.await.expect("first auto apply joined"),
+        second.await.expect("second auto apply joined"),
+    ];
 
     assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    let winner = results
+        .iter()
+        .find_map(|result| result.as_ref().ok())
+        .expect("one request must commit");
     let failure = results
         .iter()
         .find_map(|result| result.as_ref().err())
         .expect("one request must fail");
-    assert!(matches!(failure, StoreError::VersionConflict { .. }));
+    assert!(matches!(
+        failure,
+        StoreError::VersionConflict {
+            expected_version_id,
+            actual_version_id: Some(actual_version_id),
+            ..
+        } if expected_version_id == &base.id && actual_version_id == &winner.version.id
+    ));
     assert_eq!(
         store
             .workspace_proposals(&workspace.id)
             .await
             .expect("proposals")
-            .len(),
-        1
+            .as_slice(),
+        [winner.proposal.clone()]
     );
     assert_eq!(
         store
             .versions_for_workspace(&workspace.id)
             .await
             .expect("versions")
-            .len(),
-        2
+            .as_slice(),
+        [base.clone(), winner.version.clone()]
+    );
+    assert_eq!(
+        store
+            .workspace_messages(&workspace.id)
+            .await
+            .expect("messages")
+            .as_slice(),
+        [winner.message.clone()]
+    );
+    assert_eq!(
+        store.workspace(&workspace.id).await.unwrap().cur_version_id,
+        Some(winner.version.id.clone())
     );
 }
 
@@ -581,6 +614,17 @@ async fn submit_auto_apply(
         Some(&base_version_id),
     )
     .await
+}
+
+async fn submit_auto_apply_after_barrier(
+    store: Store,
+    workspace_id: String,
+    base_version_id: String,
+    suffix: &'static str,
+    barrier: Arc<Barrier>,
+) -> StoreResult<AutoApplyProposalVersionResult> {
+    barrier.wait().await;
+    submit_auto_apply(store, workspace_id, base_version_id, suffix).await
 }
 
 async fn submit_auto_apply_with_parent(

@@ -416,6 +416,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_same_base_manual_proposals_have_one_winner_and_clean_loser() {
+        let (state, workspace_id, base_version_id, first_id, _dir) =
+            state_with_pending_proposal().await;
+        let first = state
+            .store
+            .proposal(&first_id)
+            .await
+            .expect("first proposal");
+        let second = state
+            .store
+            .create_proposal(NewProposal {
+                workspace_id: &workspace_id,
+                base_version_id: &base_version_id,
+                kind: &first.kind,
+                title: "Concurrent proposal",
+                summary: &first.summary,
+                ops_path: &first.ops_path,
+                preview_graph_path: first.preview_graph_path.as_deref(),
+                message_id: None,
+            })
+            .await
+            .expect("second proposal");
+        let hook = ApplyProposalCommitHook {
+            published: Arc::new(tokio::sync::Barrier::new(3)),
+            release: Arc::new(tokio::sync::Barrier::new(3)),
+        };
+        let first_task = spawn_proposal_apply(
+            state.clone(),
+            workspace_id.clone(),
+            first_id.clone(),
+            hook.clone(),
+        );
+        let second_task = spawn_proposal_apply(
+            state.clone(),
+            workspace_id.clone(),
+            second.id.clone(),
+            hook.clone(),
+        );
+        hook.published.wait().await;
+        hook.release.wait().await;
+        let results = [
+            first_task.await.expect("first apply joined"),
+            second_task.await.expect("second apply joined"),
+        ];
+
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        let loser = results
+            .iter()
+            .find_map(|result| result.as_ref().err())
+            .expect("one apply conflicts");
+        assert_eq!(loser.status, axum::http::StatusCode::CONFLICT);
+        let versions = state
+            .store
+            .versions_for_workspace(&workspace_id)
+            .await
+            .expect("versions");
+        assert_eq!(versions.len(), 2, "loser must not leave a version");
+        let winner = &versions[1];
+        assert_eq!(winner.parent_id.as_deref(), Some(base_version_id.as_str()));
+        let workspace = state.store.workspace(&workspace_id).await.unwrap();
+        assert_eq!(workspace.cur_version_id, Some(winner.id.clone()));
+        let bytes = tokio::fs::read(state.data_dir.join(&winner.graph_path))
+            .await
+            .expect("winner bytes");
+        assert_eq!(winner.graph_hash, graph_hash(&bytes));
+        read_version_graph(&state.data_dir, winner)
+            .await
+            .expect("verified winner graph");
+        let proposals = [
+            state.store.proposal(&first_id).await.unwrap(),
+            state.store.proposal(&second.id).await.unwrap(),
+        ];
+        assert!(
+            matches!(
+                (proposals[0].state.as_str(), proposals[1].state.as_str()),
+                ("applied", "pending") | ("pending", "applied")
+            ),
+            "one proposal must apply and one must remain pending"
+        );
+        let applied = proposals
+            .iter()
+            .find(|value| value.state == "applied")
+            .unwrap();
+        assert_eq!(
+            applied.result_version_id.as_deref(),
+            Some(winner.id.as_str())
+        );
+        let messages = state.store.workspace_messages(&workspace_id).await.unwrap();
+        assert_eq!(messages.len(), 1, "loser must not leave a message");
+        assert_eq!(messages[0].ref_id, Some(applied.id.clone()));
+        let entries = graph_entry_names(&state, &workspace_id).await;
+        assert_eq!(entries.len(), 2, "loser candidate must be removed");
+        assert_no_candidate_temps(&entries);
+    }
+
+    #[tokio::test]
     async fn dismiss_workspace_proposal_leaves_current_version_unchanged() {
         let (state, workspace_id, base_version_id, proposal_id, _dir) =
             state_with_pending_proposal().await;
@@ -572,6 +668,22 @@ mod tests {
             data_dir.join("sessions"),
         );
         (state, workspace.id, version.id, proposal.id, dir)
+    }
+
+    fn spawn_proposal_apply(
+        state: AppState,
+        workspace_id: String,
+        proposal_id: String,
+        hook: ApplyProposalCommitHook,
+    ) -> tokio::task::JoinHandle<Result<Json<Value>, ApiError>> {
+        tokio::spawn(async move {
+            apply_workspace_proposal_inner(
+                Path((workspace_id, proposal_id)),
+                State(state),
+                Some(&hook),
+            )
+            .await
+        })
     }
 
     async fn graph_entry_names(state: &AppState, workspace_id: &str) -> Vec<String> {
