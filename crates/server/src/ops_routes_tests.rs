@@ -783,8 +783,7 @@ async fn graph_file_count(state: &AppState, workspace_id: &str) -> usize {
 }
 
 async fn error_body(err: ApiError) -> Value {
-    let response = err.into_response();
-    let bytes = to_bytes(response.into_body(), usize::MAX)
+    let bytes = to_bytes(err.into_response().into_body(), usize::MAX)
         .await
         .expect("error body");
     serde_json::from_slice(&bytes).expect("json body")

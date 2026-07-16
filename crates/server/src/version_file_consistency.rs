@@ -347,11 +347,11 @@ impl VersionFileCandidate {
         graph: &WorkflowGraph,
         opaque_digest: &str,
     ) -> Result<Self, VersionFileConsistencyError> {
-        if opaque_digest.len() != 64
-            || !opaque_digest
+        let digest_is_safe = opaque_digest.len() == 64
+            && opaque_digest
                 .bytes()
-                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-        {
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'));
+        if !digest_is_safe {
             return Err(VersionFileConsistencyError::InvalidHash);
         }
         let bytes =
@@ -398,13 +398,8 @@ impl VersionFileCandidate {
         final_id: Uuid,
         ownership_nonce: Uuid,
     ) -> Result<Self, VersionFileConsistencyError> {
-        Self::from_bytes_with_final_name(
-            workspace_id,
-            kind,
-            bytes,
-            format!("{}-{}.json", kind.slug(), final_id.simple()),
-            ownership_nonce,
-        )
+        let final_name = format!("{}-{}.json", kind.slug(), final_id.simple());
+        Self::from_bytes_with_final_name(workspace_id, kind, bytes, final_name, ownership_nonce)
     }
 
     fn from_bytes_with_final_name(
@@ -414,22 +409,19 @@ impl VersionFileCandidate {
         final_name: String,
         ownership_nonce: Uuid,
     ) -> Result<Self, VersionFileConsistencyError> {
-        if workspace_id.is_empty()
-            || !workspace_id
+        let workspace_is_safe = !workspace_id.is_empty()
+            && workspace_id
                 .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-        {
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'));
+        if !workspace_is_safe {
             return Err(VersionFileConsistencyError::InvalidWorkspaceIdentity);
         }
         let directory = PathBuf::from("workspaces")
             .join(workspace_id)
             .join("graphs");
-        let temp_name = format!(
-            ".hf-{}-{}-{}.tmp",
-            kind.slug(),
-            Uuid::now_v7().simple(),
-            ownership_nonce.simple()
-        );
+        let temp_id = Uuid::now_v7().simple();
+        let nonce = ownership_nonce.simple();
+        let temp_name = format!(".hf-{}-{temp_id}-{nonce}.tmp", kind.slug());
         Ok(Self {
             workspace_id: workspace_id.to_owned(),
             kind,
