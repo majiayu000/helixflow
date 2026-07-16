@@ -30,6 +30,9 @@ mod sweep_support;
 mod test_support;
 #[cfg(test)]
 mod test_wait;
+mod version_file_consistency;
+#[cfg(test)]
+mod version_file_consistency_tests;
 mod version_routes;
 mod workbench_message;
 mod workbench_message_canvas;

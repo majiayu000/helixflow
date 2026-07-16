@@ -69,6 +69,10 @@ pub(crate) fn graph_hash(bytes: &[u8]) -> String {
     hash
 }
 
+pub(crate) fn canonical_graph_bytes(graph: &WorkflowGraph) -> Result<Vec<u8>, serde_json::Error> {
+    serde_json::to_vec(graph)
+}
+
 fn safe_read_path(data_dir: &Path, relative_path: &str) -> Result<std::path::PathBuf, ApiError> {
     let relative = Path::new(relative_path);
     if !is_safe_relative_path(relative) {
