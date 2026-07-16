@@ -30,47 +30,14 @@ impl Store {
         reject_pending_proposal: bool,
     ) -> StoreResult<VersionRecord> {
         let version_id = new_id("ver");
-        let mut tx = self.pool.begin().await?;
-
-        if let Some(expected_version_id) = expected_current_version_id {
-            let actual_version_id: Option<String> = sqlx::query_scalar(
-                r#"
-                SELECT cur_version_id
-                FROM workspaces
-                WHERE id = ?
-                "#,
-            )
-            .bind(input.workspace_id)
-            .fetch_one(&mut *tx)
-            .await?;
-
-            if actual_version_id.as_deref() != Some(expected_version_id) {
-                return Err(StoreError::VersionConflict {
-                    workspace_id: input.workspace_id.to_owned(),
-                    expected_version_id: expected_version_id.to_owned(),
-                    actual_version_id,
-                });
-            }
-        }
-        if reject_pending_proposal {
-            let pending_proposal_id: Option<String> = sqlx::query_scalar(
-                r#"
-                SELECT id
-                FROM proposals
-                WHERE workspace_id = ? AND state = 'pending'
-                ORDER BY created_at DESC, id DESC
-                LIMIT 1
-                "#,
-            )
-            .bind(input.workspace_id)
-            .fetch_optional(&mut *tx)
-            .await?;
-            if pending_proposal_id.is_some() {
-                return Err(StoreError::PendingProposalConflict {
-                    workspace_id: input.workspace_id.to_owned(),
-                });
-            }
-        }
+        let mut tx = if expected_current_version_id.is_some() {
+            // Acquire the SQLite writer reservation before reading the next index. This makes
+            // concurrent same-base writers wait for the committed CAS result instead of failing
+            // a deferred read-to-write upgrade with SQLITE_BUSY.
+            self.pool.begin_with("BEGIN IMMEDIATE").await?
+        } else {
+            self.pool.begin().await?
+        };
 
         let idx: i64 = sqlx::query_scalar(
             r#"
@@ -102,17 +69,105 @@ impl Store {
         .execute(&mut *tx)
         .await?;
 
-        sqlx::query(
-            r#"
-            UPDATE workspaces
-            SET cur_version_id = ?, updated_at = current_timestamp
-            WHERE id = ?
-            "#,
-        )
-        .bind(&version_id)
-        .bind(input.workspace_id)
-        .execute(&mut *tx)
-        .await?;
+        let current_update = match expected_current_version_id {
+            Some(expected_version_id) if reject_pending_proposal => {
+                sqlx::query(
+                    r#"
+                UPDATE workspaces
+                SET cur_version_id = ?, updated_at = current_timestamp
+                WHERE id = ?
+                  AND cur_version_id = ?
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM proposals
+                      WHERE workspace_id = workspaces.id AND state = 'pending'
+                  )
+                "#,
+                )
+                .bind(&version_id)
+                .bind(input.workspace_id)
+                .bind(expected_version_id)
+                .execute(&mut *tx)
+                .await?
+            }
+            Some(expected_version_id) => {
+                sqlx::query(
+                    r#"
+                UPDATE workspaces
+                SET cur_version_id = ?, updated_at = current_timestamp
+                WHERE id = ? AND cur_version_id = ?
+                "#,
+                )
+                .bind(&version_id)
+                .bind(input.workspace_id)
+                .bind(expected_version_id)
+                .execute(&mut *tx)
+                .await?
+            }
+            None => {
+                sqlx::query(
+                    r#"
+                UPDATE workspaces
+                SET cur_version_id = ?, updated_at = current_timestamp
+                WHERE id = ?
+                "#,
+                )
+                .bind(&version_id)
+                .bind(input.workspace_id)
+                .execute(&mut *tx)
+                .await?
+            }
+        };
+
+        if current_update.rows_affected() == 0 {
+            let expected_version_id =
+                expected_current_version_id.ok_or(StoreError::StatementInvariant {
+                    operation: "advance_unconditional_version",
+                    expected_rows: 1,
+                    actual_rows: 0,
+                })?;
+            let state: Option<(Option<String>, bool)> = sqlx::query_as(
+                r#"
+                SELECT
+                    cur_version_id,
+                    EXISTS (
+                        SELECT 1
+                        FROM proposals
+                        WHERE workspace_id = workspaces.id AND state = 'pending'
+                    )
+                FROM workspaces
+                WHERE id = ?
+                "#,
+            )
+            .bind(input.workspace_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let (actual_version_id, has_pending_proposal) = state.unwrap_or((None, false));
+            if actual_version_id.as_deref() != Some(expected_version_id) {
+                return Err(StoreError::VersionConflict {
+                    workspace_id: input.workspace_id.to_owned(),
+                    expected_version_id: expected_version_id.to_owned(),
+                    actual_version_id,
+                });
+            }
+            if reject_pending_proposal && has_pending_proposal {
+                return Err(StoreError::PendingProposalConflict {
+                    workspace_id: input.workspace_id.to_owned(),
+                });
+            }
+            return Err(StoreError::StatementInvariant {
+                operation: "advance_version_after_atomic_predicate",
+                expected_rows: 1,
+                actual_rows: 0,
+            });
+        }
+        if current_update.rows_affected() != 1 {
+            return Err(StoreError::StatementInvariant {
+                operation: "advance_version_after_atomic_predicate",
+                expected_rows: 1,
+                actual_rows: current_update.rows_affected(),
+            });
+        }
 
         tx.commit().await?;
 
