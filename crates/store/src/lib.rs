@@ -13,6 +13,8 @@ mod migration_tests;
 mod node_cache_records;
 mod proposal_records;
 #[cfg(test)]
+mod proposal_records_apply_tests;
+#[cfg(test)]
 mod proposal_records_auto_apply_tests;
 mod retry_records;
 mod run_cleanup;
@@ -20,15 +22,23 @@ mod run_records;
 #[cfg(test)]
 mod run_records_tests;
 mod sweep_records;
+mod version_file_reference_records;
+#[cfg(test)]
+mod version_file_reference_records_tests;
 mod version_records;
 #[cfg(test)]
 mod version_records_tests;
+mod workspace_initialization_records;
+#[cfg(test)]
+mod workspace_initialization_records_tests;
 mod workspace_records;
 
 pub use canvas_comment_records::*;
 pub use node_cache_records::*;
 pub use proposal_records::*;
 pub use run_records::*;
+pub use version_file_reference_records::*;
+pub use workspace_initialization_records::*;
 pub use workspace_records::*;
 
 pub fn module_name() -> &'static str {
@@ -69,6 +79,11 @@ pub enum StoreError {
     CanvasCommentInvariant {
         workspace_id: String,
         message: String,
+    },
+    StatementInvariant {
+        operation: &'static str,
+        expected_rows: u64,
+        actual_rows: u64,
     },
 }
 
@@ -124,6 +139,14 @@ impl fmt::Display for StoreError {
                 f,
                 "canvas comments for workspace `{workspace_id}` violated an invariant: {message}"
             ),
+            Self::StatementInvariant {
+                operation,
+                expected_rows,
+                actual_rows,
+            } => write!(
+                f,
+                "store operation `{operation}` expected {expected_rows} changed row(s), found {actual_rows}"
+            ),
         }
     }
 }
@@ -168,58 +191,6 @@ impl Store {
     pub async fn run_migrations(&self) -> StoreResult<()> {
         sqlx::migrate!("./migrations").run(&self.pool).await?;
         Ok(())
-    }
-
-    pub async fn create_workspace(&self, name: &str) -> StoreResult<WorkspaceRecord> {
-        let id = new_id("ws");
-
-        sqlx::query(
-            r#"
-            INSERT INTO workspaces (id, name, created_at, updated_at)
-            VALUES (?, ?, current_timestamp, current_timestamp)
-            "#,
-        )
-        .bind(&id)
-        .bind(name)
-        .execute(&self.pool)
-        .await?;
-
-        self.workspace(&id).await
-    }
-
-    pub async fn workspace(&self, workspace_id: &str) -> StoreResult<WorkspaceRecord> {
-        let workspace = sqlx::query_as::<_, WorkspaceRecord>(
-            r#"
-            SELECT id, name, cur_version_id, runtime_provider_id, created_at, updated_at
-            FROM workspaces
-            WHERE id = ?
-            "#,
-        )
-        .bind(workspace_id)
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(workspace)
-    }
-
-    pub async fn set_workspace_runtime_provider(
-        &self,
-        workspace_id: &str,
-        provider_id: Option<&str>,
-    ) -> StoreResult<WorkspaceRecord> {
-        sqlx::query(
-            r#"
-            UPDATE workspaces
-            SET runtime_provider_id = ?, updated_at = current_timestamp
-            WHERE id = ?
-            "#,
-        )
-        .bind(provider_id)
-        .bind(workspace_id)
-        .execute(&self.pool)
-        .await?;
-
-        self.workspace(workspace_id).await
     }
 
     pub async fn upsert_provider_status(

@@ -4,10 +4,22 @@ use crate::{
 };
 
 async fn proposal_test_store() -> (Store, tempfile::TempDir) {
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use std::str::FromStr;
+
     let dir = tempfile::tempdir().expect("create temp dir");
-    let db_path = dir.path().join("helixflow.sqlite");
-    let database_url = format!("sqlite://{}", db_path.display());
-    let store = Store::open(&database_url).await.expect("open store");
+    let database_url = format!("sqlite://{}", dir.path().join("helixflow.sqlite").display());
+    let options = SqliteConnectOptions::from_str(&database_url)
+        .expect("parse database URL")
+        .create_if_missing(true)
+        .foreign_keys(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .expect("connect test pool");
+    let store = Store { pool };
+    store.run_migrations().await.expect("run migrations");
     (store, dir)
 }
 
@@ -270,6 +282,131 @@ async fn concurrent_auto_apply_has_one_winner_and_one_explicit_version_conflict(
             .expect("versions")
             .len(),
         2
+    );
+}
+
+#[tokio::test]
+async fn auto_apply_version_insert_fault_rolls_back_all_database_records() {
+    assert_auto_apply_fault_rolls_back(
+        r#"
+        CREATE TEMP TRIGGER fail_auto_version_insert
+        BEFORE INSERT ON versions
+        WHEN NEW.label = 'fault'
+        BEGIN
+          SELECT RAISE(ABORT, 'fail_auto_version_insert');
+        END
+        "#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn auto_apply_current_update_fault_rolls_back_all_database_records() {
+    assert_auto_apply_fault_rolls_back(
+        r#"
+        CREATE TEMP TRIGGER fail_auto_current_update
+        BEFORE UPDATE OF cur_version_id ON workspaces
+        WHEN NEW.cur_version_id != OLD.cur_version_id
+        BEGIN
+          SELECT RAISE(ABORT, 'fail_auto_current_update');
+        END
+        "#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn auto_apply_message_insert_fault_rolls_back_all_database_records() {
+    assert_auto_apply_fault_rolls_back(
+        r#"
+        CREATE TEMP TRIGGER fail_auto_message_insert
+        BEFORE INSERT ON messages
+        WHEN NEW.kind = 'proposal_applied'
+        BEGIN
+          SELECT RAISE(ABORT, 'fail_auto_message_insert');
+        END
+        "#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn auto_apply_proposal_insert_fault_rolls_back_all_database_records() {
+    assert_auto_apply_fault_rolls_back(
+        r#"
+        CREATE TEMP TRIGGER fail_auto_proposal_insert
+        BEFORE INSERT ON proposals
+        WHEN NEW.state = 'applied'
+        BEGIN
+          SELECT RAISE(ABORT, 'fail_auto_proposal_insert');
+        END
+        "#,
+    )
+    .await;
+}
+
+async fn assert_auto_apply_fault_rolls_back(trigger_sql: &str) {
+    let (store, _dir) = proposal_test_store().await;
+    let workspace = store
+        .create_workspace("Auto apply fault")
+        .await
+        .expect("create workspace");
+    let base = store
+        .create_version(NewVersion {
+            workspace_id: &workspace.id,
+            label: "Base",
+            source: VersionSource::Manual,
+            graph_path: "graphs/base-fault.json",
+            graph_hash: "sha256:base-fault",
+            parent_id: None,
+        })
+        .await
+        .expect("create base");
+    sqlx::query(trigger_sql)
+        .execute(store.pool())
+        .await
+        .expect("install fault trigger");
+
+    let error = submit_auto_apply(
+        store.clone(),
+        workspace.id.clone(),
+        base.id.clone(),
+        "fault",
+    )
+    .await
+    .expect_err("fault must abort auto apply transaction");
+
+    assert!(matches!(error, StoreError::Sqlx(_)));
+    assert_eq!(
+        store
+            .workspace(&workspace.id)
+            .await
+            .expect("workspace")
+            .cur_version_id
+            .as_deref(),
+        Some(base.id.as_str())
+    );
+    assert_eq!(
+        store
+            .versions_for_workspace(&workspace.id)
+            .await
+            .expect("versions")
+            .len(),
+        1
+    );
+    assert!(
+        store
+            .workspace_messages(&workspace.id)
+            .await
+            .expect("messages")
+            .is_empty()
+    );
+    assert!(
+        store
+            .workspace_proposals(&workspace.id)
+            .await
+            .expect("proposals")
+            .is_empty()
     );
 }
 
