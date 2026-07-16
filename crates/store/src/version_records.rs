@@ -29,6 +29,15 @@ impl Store {
         expected_current_version_id: Option<&str>,
         reject_pending_proposal: bool,
     ) -> StoreResult<VersionRecord> {
+        if let Some(expected_version_id) = expected_current_version_id
+            && input.parent_id != Some(expected_version_id)
+        {
+            return Err(StoreError::VersionParentMismatch {
+                workspace_id: input.workspace_id.to_owned(),
+                expected_parent_version_id: expected_version_id.to_owned(),
+                actual_parent_version_id: input.parent_id.map(str::to_owned),
+            });
+        }
         let version_id = new_id("ver");
         let mut tx = if expected_current_version_id.is_some() {
             // Acquire the SQLite writer reservation before reading the next index. This makes

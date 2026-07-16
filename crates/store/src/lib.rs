@@ -56,6 +56,11 @@ pub enum StoreError {
         expected_version_id: String,
         actual_version_id: Option<String>,
     },
+    VersionParentMismatch {
+        workspace_id: String,
+        expected_parent_version_id: String,
+        actual_parent_version_id: Option<String>,
+    },
     PendingProposalConflict {
         workspace_id: String,
     },
@@ -99,6 +104,14 @@ impl fmt::Display for StoreError {
             } => write!(
                 f,
                 "workspace `{workspace_id}` expected current version `{expected_version_id}` but found `{actual_version_id:?}`"
+            ),
+            Self::VersionParentMismatch {
+                workspace_id,
+                expected_parent_version_id,
+                actual_parent_version_id,
+            } => write!(
+                f,
+                "workspace `{workspace_id}` expected new version parent `{expected_parent_version_id}` but received `{actual_parent_version_id:?}`"
             ),
             Self::PendingProposalConflict { workspace_id } => {
                 write!(f, "workspace `{workspace_id}` has a pending proposal")

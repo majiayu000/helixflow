@@ -190,6 +190,71 @@ async fn pending_guard_rejects_existing_pending_proposal_and_rolls_back_insert()
     );
 }
 
+#[tokio::test]
+async fn normal_creation_rejects_missing_declared_parent_before_writes() {
+    assert_parent_mismatch_is_write_free(false, None).await;
+}
+
+#[tokio::test]
+async fn pending_guarded_creation_rejects_unrelated_declared_parent_before_writes() {
+    assert_parent_mismatch_is_write_free(true, Some("ver_unrelated")).await;
+}
+
+async fn assert_parent_mismatch_is_write_free(
+    reject_pending_proposal: bool,
+    declared_parent_id: Option<&str>,
+) {
+    let (store, _dir) = open_temp_store().await;
+    let workspace = store
+        .create_workspace("Parent mismatch")
+        .await
+        .expect("create workspace");
+    let base = create_base_version(&store, &workspace.id, "parent-mismatch").await;
+    let input = NewVersion {
+        workspace_id: &workspace.id,
+        label: "Mismatched parent",
+        source: VersionSource::Manual,
+        graph_path: "workspaces/parent-mismatch/rejected.json",
+        graph_hash: "sha256:rejected",
+        parent_id: declared_parent_id,
+    };
+
+    let error = if reject_pending_proposal {
+        store
+            .create_version_after_without_pending_proposal(input, &base.id)
+            .await
+    } else {
+        store.create_version_after(input, &base.id).await
+    }
+    .expect_err("declared parent must equal the expected current version");
+
+    assert!(matches!(
+        error,
+        StoreError::VersionParentMismatch {
+            workspace_id,
+            expected_parent_version_id,
+            actual_parent_version_id,
+        } if workspace_id == workspace.id
+            && expected_parent_version_id == base.id
+            && actual_parent_version_id.as_deref() == declared_parent_id
+    ));
+    assert_eq!(
+        store
+            .versions_for_workspace(&workspace.id)
+            .await
+            .expect("versions after parent mismatch"),
+        vec![base.clone()]
+    );
+    assert_eq!(
+        store
+            .workspace(&workspace.id)
+            .await
+            .expect("workspace after parent mismatch")
+            .cur_version_id,
+        Some(base.id)
+    );
+}
+
 async fn assert_repeated_concurrent_same_base(reject_pending_proposal: bool) {
     let (store, _dir) = open_temp_store().await;
     for attempt in 0..8 {
