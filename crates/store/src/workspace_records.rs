@@ -26,6 +26,58 @@ pub struct MessageRecord {
 }
 
 impl Store {
+    pub async fn create_workspace(&self, name: &str) -> StoreResult<WorkspaceRecord> {
+        let id = new_id("ws");
+
+        sqlx::query(
+            r#"
+            INSERT INTO workspaces (id, name, created_at, updated_at)
+            VALUES (?, ?, current_timestamp, current_timestamp)
+            "#,
+        )
+        .bind(&id)
+        .bind(name)
+        .execute(&self.pool)
+        .await?;
+
+        self.workspace(&id).await
+    }
+
+    pub async fn workspace(&self, workspace_id: &str) -> StoreResult<WorkspaceRecord> {
+        let workspace = sqlx::query_as::<_, WorkspaceRecord>(
+            r#"
+            SELECT id, name, cur_version_id, runtime_provider_id, created_at, updated_at
+            FROM workspaces
+            WHERE id = ?
+            "#,
+        )
+        .bind(workspace_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(workspace)
+    }
+
+    pub async fn set_workspace_runtime_provider(
+        &self,
+        workspace_id: &str,
+        provider_id: Option<&str>,
+    ) -> StoreResult<WorkspaceRecord> {
+        sqlx::query(
+            r#"
+            UPDATE workspaces
+            SET runtime_provider_id = ?, updated_at = current_timestamp
+            WHERE id = ?
+            "#,
+        )
+        .bind(provider_id)
+        .bind(workspace_id)
+        .execute(&self.pool)
+        .await?;
+
+        self.workspace(workspace_id).await
+    }
+
     pub async fn workspaces(&self) -> StoreResult<Vec<WorkspaceRecord>> {
         Ok(sqlx::query_as::<_, WorkspaceRecord>(
             r#"

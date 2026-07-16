@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::body::to_bytes;
@@ -8,12 +9,14 @@ use helixflow_graph::{GraphEdge, GraphNode, WorkflowGraph};
 use helixflow_run::EventBus;
 use helixflow_store::{NewProposal, NewVersion, Store, VersionSource};
 use serde_json::{Value, json};
+use tokio::sync::Barrier;
 
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
-use crate::graph_files::write_json_file;
-use crate::ops_routes::apply_workspace_ops;
+use crate::graph_files::{graph_hash, write_json_file};
+use crate::ops_routes::{apply_workspace_ops, ops_idempotency_digest};
 use crate::test_support::FailingWorkbenchAgent;
+use crate::version_file_consistency::{VersionFileCandidate, read_version_graph};
 
 #[tokio::test]
 async fn ops_route_applies_multiple_ops_as_one_manual_version() {
@@ -71,7 +74,7 @@ async fn ops_route_applies_multiple_ops_as_one_manual_version() {
 }
 
 #[tokio::test]
-async fn ops_route_reuses_idempotency_key_without_duplicate_versions() {
+async fn idempotency_reuses_exact_key_and_payload_without_duplicate_versions() {
     let (state, workspace_id, base_version_id, _dir) = state_with_graph().await;
     let body = json!({
         "baseVersionId": base_version_id,
@@ -119,6 +122,381 @@ async fn ops_route_reuses_idempotency_key_without_duplicate_versions() {
             .len(),
         version_count
     );
+}
+
+#[tokio::test]
+async fn idempotency_same_key_different_payload_conflicts_without_mutating_winner() {
+    let (state, workspace_id, base_version_id, _dir) = state_with_graph().await;
+    let key = "same-key-different-payload";
+    let first_body = ops_move_body(&base_version_id, Some(key), 420.0);
+    apply_ops_json(&state, &workspace_id, &first_body)
+        .await
+        .expect("first keyed ops");
+    let winner_id = state
+        .store
+        .workspace(&workspace_id)
+        .await
+        .expect("workspace after first")
+        .cur_version_id
+        .expect("winner id");
+    let winner = state.store.version(&winner_id).await.expect("winner");
+    let winner_bytes = tokio::fs::read(state.data_dir.join(&winner.graph_path))
+        .await
+        .expect("winner bytes");
+
+    let error = apply_ops_json(
+        &state,
+        &workspace_id,
+        &ops_move_body(&base_version_id, Some(key), 520.0),
+    )
+    .await
+    .expect_err("same key with different canonical payload must conflict");
+
+    assert_eq!(error.status, axum::http::StatusCode::CONFLICT);
+    assert_eq!(
+        state
+            .store
+            .workspace(&workspace_id)
+            .await
+            .expect("workspace after collision")
+            .cur_version_id,
+        Some(winner_id)
+    );
+    assert_eq!(
+        tokio::fs::read(state.data_dir.join(&winner.graph_path))
+            .await
+            .expect("winner bytes after collision"),
+        winner_bytes
+    );
+    assert_eq!(
+        state
+            .store
+            .versions_for_workspace(&workspace_id)
+            .await
+            .expect("versions after collision")
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn idempotency_different_keys_with_same_content_do_not_alias() {
+    let (state, workspace_id, base_version_id, _dir) = state_with_graph().await;
+    let first_path = keyed_graph_path(&workspace_id, &base_version_id, "first-key");
+    let second_path = keyed_graph_path(&workspace_id, &base_version_id, "second-key");
+    assert_ne!(first_path, second_path);
+    let first_body = ops_move_body(&base_version_id, Some("first-key"), 420.0);
+    apply_ops_json(&state, &workspace_id, &first_body)
+        .await
+        .expect("first keyed ops");
+
+    let error = apply_ops_json(
+        &state,
+        &workspace_id,
+        &ops_move_body(&base_version_id, Some("second-key"), 420.0),
+    )
+    .await
+    .expect_err("different key remains a distinct same-base write");
+
+    assert_eq!(error.status, axum::http::StatusCode::CONFLICT);
+    assert!(state.data_dir.join(first_path).exists());
+    assert!(
+        !state.data_dir.join(second_path).exists(),
+        "losing distinct candidate must be cleaned"
+    );
+}
+
+#[tokio::test]
+async fn idempotency_existing_file_without_reference_conflicts_without_delete_or_key_leak() {
+    let (state, workspace_id, base_version_id, _dir) = state_with_graph().await;
+    let raw_key = "secret/raw key?token=never-expose";
+    let path = keyed_graph_path(&workspace_id, &base_version_id, raw_key);
+    assert!(!path.to_string_lossy().contains(raw_key));
+    tokio::fs::write(state.data_dir.join(&path), b"unowned-canary")
+        .await
+        .expect("write unowned collision");
+
+    let error = apply_ops_json(
+        &state,
+        &workspace_id,
+        &ops_move_body(&base_version_id, Some(raw_key), 420.0),
+    )
+    .await
+    .expect_err("file without exact DB reference cannot replay");
+
+    assert_eq!(error.status, axum::http::StatusCode::CONFLICT);
+    assert!(!error.message.contains(raw_key));
+    assert_eq!(
+        tokio::fs::read(state.data_dir.join(path))
+            .await
+            .expect("unowned collision preserved"),
+        b"unowned-canary"
+    );
+    assert_eq!(
+        state
+            .store
+            .versions_for_workspace(&workspace_id)
+            .await
+            .expect("versions after unowned collision")
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn idempotency_mismatched_single_reference_and_multiple_references_both_conflict() {
+    assert_non_exact_reference_collision(false).await;
+    assert_non_exact_reference_collision(true).await;
+}
+
+async fn assert_non_exact_reference_collision(multiple_references: bool) {
+    let (state, workspace_id, base_version_id, _dir) = state_with_graph().await;
+    let key = if multiple_references {
+        "multiple-references"
+    } else {
+        "mismatched-reference"
+    };
+    let mut edited_graph = ops_graph();
+    edited_graph.nodes.get_mut("writer").expect("writer").pos = [420.0, 80.0];
+    let digest = ops_idempotency_digest(&workspace_id, &base_version_id, key);
+    let mut candidate =
+        VersionFileCandidate::from_keyed_ops_graph(&workspace_id, &edited_graph, &digest)
+            .expect("keyed candidate");
+    let graph_path = candidate
+        .relative_path_text()
+        .expect("candidate path")
+        .to_owned();
+    let candidate_hash = candidate.graph_hash().to_owned();
+    candidate
+        .publish(&state.data_dir)
+        .expect("publish collision fixture");
+    let reference_count = if multiple_references { 2 } else { 1 };
+    for index in 0..reference_count {
+        let reference_workspace_id = if multiple_references {
+            state
+                .store
+                .create_workspace(&format!("Reference {index}"))
+                .await
+                .expect("create reference workspace")
+                .id
+        } else {
+            workspace_id.clone()
+        };
+        state
+            .store
+            .create_version(NewVersion {
+                workspace_id: &reference_workspace_id,
+                label: "Non-exact reference",
+                source: VersionSource::Manual,
+                graph_path: &graph_path,
+                graph_hash: &candidate_hash,
+                parent_id: None,
+            })
+            .await
+            .expect("create non-exact reference");
+    }
+    candidate.mark_committed().expect("mark fixture committed");
+    let before_bytes = tokio::fs::read(state.data_dir.join(&graph_path))
+        .await
+        .expect("fixture bytes");
+    let target_version_count = state
+        .store
+        .versions_for_workspace(&workspace_id)
+        .await
+        .expect("target versions before collision")
+        .len();
+
+    let error = apply_ops_json(
+        &state,
+        &workspace_id,
+        &ops_move_body(&base_version_id, Some(key), 420.0),
+    )
+    .await
+    .expect_err("non-exact reference shape must conflict");
+
+    assert_eq!(error.status, axum::http::StatusCode::CONFLICT);
+    assert_eq!(
+        tokio::fs::read(state.data_dir.join(&graph_path))
+            .await
+            .expect("fixture bytes after collision"),
+        before_bytes
+    );
+    assert_eq!(
+        state
+            .store
+            .versions_for_workspace(&workspace_id)
+            .await
+            .expect("target versions after collision")
+            .len(),
+        target_version_count
+    );
+}
+
+#[test]
+fn idempotency_digest_is_domain_separated_length_delimited_and_strictly_opaque() {
+    let first = ops_idempotency_digest("ab", "c", "d");
+    let second = ops_idempotency_digest("a", "bc", "d");
+    assert_ne!(first, second);
+    assert_eq!(first.len(), 64);
+    assert!(
+        first
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    );
+    assert!(VersionFileCandidate::from_keyed_ops_graph("ws_test", &ops_graph(), &first).is_ok());
+    assert!(VersionFileCandidate::from_keyed_ops_graph("ws_test", &ops_graph(), "ABC").is_err());
+}
+
+#[tokio::test]
+async fn concurrent_same_base_ops_has_one_winner_and_cleans_loser_candidate() {
+    let (state, workspace_id, base_version_id, _dir) = state_with_graph().await;
+    let barrier = Arc::new(Barrier::new(3));
+    let first = spawn_ops(
+        state.clone(),
+        Arc::clone(&barrier),
+        workspace_id.clone(),
+        ops_move_body(&base_version_id, None, 420.0),
+    );
+    let second = spawn_ops(
+        state.clone(),
+        Arc::clone(&barrier),
+        workspace_id.clone(),
+        ops_move_body(&base_version_id, None, 520.0),
+    );
+    barrier.wait().await;
+    let results = [
+        first.await.expect("first ops task"),
+        second.await.expect("second ops task"),
+    ];
+
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter_map(|result| result.as_ref().err())
+            .filter(|error| error.status == axum::http::StatusCode::CONFLICT)
+            .count(),
+        1,
+        "results: {results:?}"
+    );
+    let winner_id = state
+        .store
+        .workspace(&workspace_id)
+        .await
+        .expect("workspace after race")
+        .cur_version_id
+        .expect("winner id");
+    let winner = state.store.version(&winner_id).await.expect("winner");
+    let bytes = tokio::fs::read(state.data_dir.join(&winner.graph_path))
+        .await
+        .expect("winner bytes");
+    let graph = read_version_graph(&state.data_dir, &winner)
+        .await
+        .expect("verified winner");
+    assert_eq!(winner.parent_id.as_deref(), Some(base_version_id.as_str()));
+    assert_eq!(winner.graph_hash, graph_hash(&bytes));
+    assert!(matches!(graph.nodes["writer"].pos[0], 420.0 | 520.0));
+    assert_eq!(
+        state
+            .store
+            .versions_for_workspace(&workspace_id)
+            .await
+            .expect("versions after race")
+            .len(),
+        2
+    );
+    assert_eq!(graph_file_count(&state, &workspace_id).await, 2);
+}
+
+#[tokio::test]
+async fn idempotency_replay_after_later_advance_returns_latest_state_without_duplicate() {
+    let (state, workspace_id, base_version_id, _dir) = state_with_graph().await;
+    let original = ops_move_body(&base_version_id, Some("replay-after-advance"), 420.0);
+    let first = apply_ops_json(&state, &workspace_id, &original)
+        .await
+        .expect("original keyed ops");
+    let original_version_id = first["workspace"]["versionId"]
+        .as_str()
+        .expect("original version id")
+        .to_owned();
+    let advanced = apply_ops_json(
+        &state,
+        &workspace_id,
+        &ops_move_body(&original_version_id, None, 520.0),
+    )
+    .await
+    .expect("later unkeyed advance");
+    let latest_version_id = advanced["workspace"]["versionId"]
+        .as_str()
+        .expect("latest version id")
+        .to_owned();
+    let version_count = state
+        .store
+        .versions_for_workspace(&workspace_id)
+        .await
+        .expect("versions before replay")
+        .len();
+
+    let replay = apply_ops_json(&state, &workspace_id, &original)
+        .await
+        .expect("exact historical replay");
+
+    assert_ne!(latest_version_id, original_version_id);
+    assert_eq!(replay["workspace"]["versionId"], latest_version_id);
+    assert_eq!(
+        state
+            .store
+            .versions_for_workspace(&workspace_id)
+            .await
+            .expect("versions after replay")
+            .len(),
+        version_count
+    );
+}
+
+fn ops_move_body(base_version_id: &str, key: Option<&str>, x: f32) -> Value {
+    let mut body = json!({
+        "baseVersionId": base_version_id,
+        "ops": [{ "op": "move_node", "id": "writer", "pos": [x, 80] }]
+    });
+    if let Some(key) = key {
+        body["idempotencyKey"] = Value::String(key.to_owned());
+    }
+    body
+}
+
+async fn apply_ops_json(
+    state: &AppState,
+    workspace_id: &str,
+    body: &Value,
+) -> Result<Value, ApiError> {
+    apply_workspace_ops(
+        Path(workspace_id.to_owned()),
+        State(state.clone()),
+        body.to_string(),
+    )
+    .await
+    .map(|response| response.0)
+}
+
+fn keyed_graph_path(workspace_id: &str, base_version_id: &str, key: &str) -> PathBuf {
+    let digest = ops_idempotency_digest(workspace_id, base_version_id, key);
+    PathBuf::from("workspaces")
+        .join(workspace_id)
+        .join("graphs")
+        .join(format!("ops-key-{digest}.json"))
+}
+
+fn spawn_ops(
+    state: AppState,
+    barrier: Arc<Barrier>,
+    workspace_id: String,
+    body: Value,
+) -> tokio::task::JoinHandle<Result<Value, ApiError>> {
+    tokio::spawn(async move {
+        barrier.wait().await;
+        apply_ops_json(&state, &workspace_id, &body).await
+    })
 }
 
 #[tokio::test]
@@ -395,16 +773,16 @@ async fn graph_file_count(state: &AppState, workspace_id: &str) -> usize {
     let mut entries = tokio::fs::read_dir(graph_dir).await.expect("graph dir");
     let mut count = 0;
     while let Some(entry) = entries.next_entry().await.expect("graph entry") {
-        if entry.path().extension().is_some_and(|ext| ext == "json") {
-            count += 1;
-        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let is_temp = name.starts_with(".hf-") && name.ends_with(".tmp");
+        assert!(!is_temp, "candidate temp remains: {name}");
+        count += 1;
     }
     count
 }
 
 async fn error_body(err: ApiError) -> Value {
-    let response = err.into_response();
-    let bytes = to_bytes(response.into_body(), usize::MAX)
+    let bytes = to_bytes(err.into_response().into_body(), usize::MAX)
         .await
         .expect("error body");
     serde_json::from_slice(&bytes).expect("json body")

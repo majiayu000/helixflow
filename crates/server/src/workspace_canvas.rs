@@ -8,7 +8,8 @@ use serde_json::{Value, json};
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
 use crate::canvas_collaboration::canvas_comment_snapshot;
-use crate::graph_files::{blank_graph, read_graph_file};
+use crate::graph_files::blank_graph;
+use crate::version_file_consistency::read_version_graph;
 
 pub(crate) async fn workspace_canvas(
     AxumPath(workspace_id): AxumPath<String>,
@@ -33,7 +34,9 @@ pub(crate) async fn workspace_canvas_value(
                 .version(version_id)
                 .await
                 .map_err(ApiError::store)?;
-            let graph = read_graph_file(&state.data_dir, &version.graph_path).await?;
+            let graph = read_version_graph(&state.data_dir, &version)
+                .await
+                .map_err(|error| ApiError::server_error(error.to_string()))?;
             (version.id, version.idx, graph)
         }
         None => (String::new(), 0, blank_graph()),
@@ -120,7 +123,7 @@ mod tests {
 
     use super::*;
     use crate::app_state::AppState;
-    use crate::graph_files::write_json_file;
+    use crate::graph_files::{graph_hash, write_json_file};
     use crate::test_support::FailingWorkbenchAgent;
 
     #[tokio::test]
@@ -206,6 +209,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn verified_read_workspace_canvas_rejects_corrupt_graph_without_side_effects() {
+        for payload in [
+            StoredCanvasGraph::Missing,
+            StoredCanvasGraph::InvalidStoredHash,
+            StoredCanvasGraph::HashMismatch,
+            StoredCanvasGraph::InvalidJson,
+        ] {
+            let (state, workspace_id, version_id, _dir) = state_with_canvas_payload(payload).await;
+            let error = workspace_canvas(AxumPath(workspace_id.clone()), State(state.clone()))
+                .await
+                .expect_err("corrupt canvas graph must fail closed");
+
+            assert_eq!(error.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+            assert!(
+                !error
+                    .message
+                    .contains(state.data_dir.to_string_lossy().as_ref())
+            );
+            assert!(
+                state
+                    .store
+                    .canvas_comment_state(&workspace_id)
+                    .await
+                    .expect("comment state")
+                    .is_none()
+            );
+            assert!(
+                state
+                    .store
+                    .workspace_messages(&workspace_id)
+                    .await
+                    .expect("messages")
+                    .is_empty()
+            );
+            assert!(
+                state
+                    .store
+                    .latest_workspace_run(&workspace_id)
+                    .await
+                    .expect("latest run")
+                    .is_none()
+            );
+            let versions = state
+                .store
+                .versions_for_workspace(&workspace_id)
+                .await
+                .expect("versions");
+            assert_eq!(versions.len(), 1);
+            assert_eq!(versions[0].id, version_id);
+            assert_eq!(
+                state
+                    .store
+                    .workspace(&workspace_id)
+                    .await
+                    .expect("workspace")
+                    .cur_version_id
+                    .as_deref(),
+                Some(version_id.as_str())
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn workspace_canvas_uses_app_state_store_for_comment_snapshot() {
         let store_dir = tempfile::tempdir().expect("store dir");
         let data_dir = tempfile::tempdir().expect("data dir");
@@ -242,6 +308,23 @@ mod tests {
     }
 
     async fn state_with_workspace() -> (AppState, String, tempfile::TempDir) {
+        let (state, workspace_id, _version_id, dir) =
+            state_with_canvas_payload(StoredCanvasGraph::Valid).await;
+        (state, workspace_id, dir)
+    }
+
+    #[derive(Clone, Copy)]
+    enum StoredCanvasGraph {
+        Valid,
+        Missing,
+        InvalidStoredHash,
+        HashMismatch,
+        InvalidJson,
+    }
+
+    async fn state_with_canvas_payload(
+        payload: StoredCanvasGraph,
+    ) -> (AppState, String, String, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
         let data_dir = dir.path().to_path_buf();
         let store = open_canvas_store(dir.path()).await;
@@ -250,22 +333,43 @@ mod tests {
             .await
             .expect("create workspace");
         let graph_path = std::path::PathBuf::from("graphs/current.json");
-        let graph_hash = write_json_file(&data_dir, &graph_path, &sample_graph(), "write graph")
+        let canonical_bytes = serde_json::to_vec(&sample_graph()).expect("graph json");
+        let (file_bytes, stored_graph_hash) = match payload {
+            StoredCanvasGraph::Valid => {
+                (Some(canonical_bytes.clone()), graph_hash(&canonical_bytes))
+            }
+            StoredCanvasGraph::Missing => (None, graph_hash(&canonical_bytes)),
+            StoredCanvasGraph::InvalidStoredHash => {
+                (Some(canonical_bytes), "sha256:not-canonical".to_owned())
+            }
+            StoredCanvasGraph::HashMismatch => (Some(b"{}".to_vec()), graph_hash(&canonical_bytes)),
+            StoredCanvasGraph::InvalidJson => {
+                let bytes = b"invalid canvas graph json".to_vec();
+                let hash = graph_hash(&bytes);
+                (Some(bytes), hash)
+            }
+        };
+        tokio::fs::create_dir_all(data_dir.join("graphs"))
             .await
-            .expect("write graph");
-        store
+            .expect("create graph dir");
+        if let Some(file_bytes) = file_bytes {
+            tokio::fs::write(data_dir.join(&graph_path), file_bytes)
+                .await
+                .expect("write graph");
+        }
+        let version = store
             .create_version(NewVersion {
                 workspace_id: &workspace.id,
                 label: "Current graph",
                 source: VersionSource::Manual,
                 graph_path: graph_path.to_string_lossy().as_ref(),
-                graph_hash: &graph_hash,
+                graph_hash: &stored_graph_hash,
                 parent_id: None,
             })
             .await
             .expect("create version");
         let state = canvas_test_state(store, data_dir);
-        (state, workspace.id, dir)
+        (state, workspace.id, version.id, dir)
     }
 
     async fn open_canvas_store(path: &std::path::Path) -> Store {

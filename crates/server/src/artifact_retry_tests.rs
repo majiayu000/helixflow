@@ -15,6 +15,7 @@ use serde_json::json;
 
 use crate::app_state::{AppState, WorkbenchAgent};
 use crate::artifact_routes::{RejectOutputRequest, reject_output};
+use crate::graph_files::graph_hash;
 
 #[tokio::test]
 async fn reject_with_rerun_executes_provider_bypasses_cache_and_records_actual_cost() {
@@ -123,19 +124,18 @@ async fn review_state() -> (AppState, String, String, tempfile::TempDir) {
     tokio::fs::create_dir_all(data_dir.join("graphs"))
         .await
         .expect("graph directory");
-    tokio::fs::write(
-        data_dir.join(&graph_path),
-        serde_json::to_vec_pretty(&review_graph()).expect("graph json"),
-    )
-    .await
-    .expect("write graph");
+    let graph_bytes = serde_json::to_vec_pretty(&review_graph()).expect("graph json");
+    let stored_graph_hash = graph_hash(&graph_bytes);
+    tokio::fs::write(data_dir.join(&graph_path), graph_bytes)
+        .await
+        .expect("write graph");
     let version = store
         .create_version(NewVersion {
             workspace_id: &workspace.id,
             label: "Review graph",
             source: VersionSource::Manual,
             graph_path: graph_path.to_str().expect("graph path"),
-            graph_hash: "sha256:review",
+            graph_hash: &stored_graph_hash,
             parent_id: None,
         })
         .await

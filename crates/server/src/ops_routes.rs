@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::io;
 
 use axum::{
     Json,
@@ -10,11 +10,13 @@ use helixflow_registry::NodeRegistry;
 use helixflow_store::{NewVersion, StoreError, VersionSource};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use uuid::Uuid;
+use sha2::{Digest, Sha256};
 
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
-use crate::graph_files::{graph_hash, read_graph_file};
+use crate::version_file_consistency::{
+    CandidateKind, VersionFileCandidate, VersionFileConsistencyError, read_version_graph,
+};
 use crate::workspace_state::workspace_state_value;
 
 #[derive(Debug, Deserialize)]
@@ -81,55 +83,28 @@ pub(crate) async fn apply_workspace_ops(
     if input.ops.is_empty() {
         return Err(ApiError::bad_request("ops must contain at least one op"));
     }
-    let idempotent_graph_path = input
-        .idempotency_key
-        .as_deref()
-        .map(|key| ops_graph_path(&workspace_id, Some(key)));
-
     let workspace = state
         .store
         .workspace(&workspace_id)
         .await
         .map_err(ApiError::store)?;
-    let current_version_id = workspace
+    workspace
         .cur_version_id
         .as_deref()
         .ok_or_else(|| ApiError::conflict("workspace has no current version"))?;
-    if input.base_version_id != current_version_id {
-        if let Some(graph_path) = idempotent_graph_path.as_deref()
-            && accepted_idempotent_version(
-                &state,
-                &workspace_id,
-                &input.base_version_id,
-                graph_path,
-            )
-            .await?
-        {
-            return Ok(Json(workspace_state_value(&state, &workspace_id).await?));
-        }
-        return Err(ApiError::conflict(format!(
-            "ops base `{}` is superseded by `{current_version_id}`",
-            input.base_version_id
-        )));
-    }
-    if state
+    let base = state
         .store
-        .latest_pending_proposal(&workspace_id)
-        .await
-        .map_err(ApiError::store)?
-        .is_some()
-    {
-        return Err(ApiError::conflict(
-            "workspace has a pending proposal; apply or dismiss it before editing",
-        ));
-    }
-
-    let current = state
-        .store
-        .version(current_version_id)
+        .version(&input.base_version_id)
         .await
         .map_err(ApiError::store)?;
-    let current_graph = read_graph_file(&state.data_dir, &current.graph_path).await?;
+    if base.workspace_id != workspace_id {
+        return Err(ApiError::conflict(
+            "ops base version belongs to another workspace",
+        ));
+    }
+    let current_graph = read_version_graph(&state.data_dir, &base)
+        .await
+        .map_err(candidate_error)?;
     let registry = NodeRegistry::builtin();
     let graph_service = GraphService::new(registry.clone());
     let (ops, edited_graph) = prepare_ops(input.ops, &current_graph, &registry, &graph_service)?;
@@ -137,14 +112,45 @@ pub(crate) async fn apply_workspace_ops(
         .validate_graph(&edited_graph)
         .map_err(|err| graph_ops_error(err, None))?;
 
-    let graph_path = idempotent_graph_path.unwrap_or_else(|| ops_graph_path(&workspace_id, None));
-    ensure_idempotent_path_available(&state, &graph_path).await?;
-    let graph_hash = write_graph_atomically(&state.data_dir, &graph_path, &edited_graph).await?;
-    let graph_path_string = graph_path.to_string_lossy().into_owned();
     let label = input
         .label
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| manual_version_label(&ops));
+    let opaque_digest = input
+        .idempotency_key
+        .as_deref()
+        .map(|key| ops_idempotency_digest(&workspace_id, &input.base_version_id, key));
+    let mut candidate = match opaque_digest.as_deref() {
+        Some(digest) => {
+            VersionFileCandidate::from_keyed_ops_graph(&workspace_id, &edited_graph, digest)
+        }
+        None => VersionFileCandidate::from_graph(&workspace_id, CandidateKind::Ops, &edited_graph),
+    }
+    .map_err(candidate_error)?;
+    let graph_path = candidate
+        .relative_path_text()
+        .map_err(candidate_error)?
+        .to_owned();
+    let graph_hash = candidate.graph_hash().to_owned();
+    if let Err(error) = candidate.publish(&state.data_dir) {
+        if opaque_digest.is_some() && is_publish_collision(&error) {
+            if accepted_idempotent_version(
+                &state,
+                &workspace_id,
+                &input.base_version_id,
+                &graph_path,
+                &graph_hash,
+            )
+            .await?
+            {
+                return Ok(Json(workspace_state_value(&state, &workspace_id).await?));
+            }
+            return Err(ApiError::conflict(
+                "idempotent ops candidate conflicts with existing state",
+            ));
+        }
+        return Err(candidate_error(error));
+    }
     let version_result = state
         .store
         .create_version_after_without_pending_proposal(
@@ -152,26 +158,20 @@ pub(crate) async fn apply_workspace_ops(
                 workspace_id: &workspace_id,
                 label: &label,
                 source: VersionSource::Manual,
-                graph_path: &graph_path_string,
+                graph_path: &graph_path,
                 graph_hash: &graph_hash,
-                parent_id: Some(current_version_id),
+                parent_id: Some(&input.base_version_id),
             },
-            current_version_id,
+            &input.base_version_id,
         )
         .await;
 
     match version_result {
-        Ok(_) => Ok(Json(workspace_state_value(&state, &workspace_id).await?)),
-        Err(StoreError::VersionConflict { .. } | StoreError::PendingProposalConflict { .. }) => {
-            cleanup_graph_files(&state.data_dir, &graph_path).await;
-            Err(ApiError::conflict(
-                "workspace changed while applying manual ops; refresh and retry",
-            ))
+        Ok(_) => {
+            candidate.mark_committed().map_err(candidate_error)?;
+            Ok(Json(workspace_state_value(&state, &workspace_id).await?))
         }
-        Err(err) => {
-            cleanup_graph_files(&state.data_dir, &graph_path).await;
-            Err(ApiError::store(err))
-        }
+        Err(store_error) => Err(cleanup_ops_candidate(&state, &mut candidate, store_error).await),
     }
 }
 
@@ -348,14 +348,6 @@ fn ensure_idempotency_key(key: &str) -> Result<(), ApiError> {
             "idempotencyKey must be 128 bytes or less",
         ));
     }
-    if !key
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-    {
-        return Err(ApiError::bad_request(
-            "idempotencyKey may only contain ASCII letters, digits, `_`, or `-`",
-        ));
-    }
     Ok(())
 }
 
@@ -397,82 +389,76 @@ fn manual_title(op: &ProposalOp) -> String {
     }
 }
 
-fn ops_graph_path(workspace_id: &str, idempotency_key: Option<&str>) -> PathBuf {
-    let filename = match idempotency_key {
-        Some(key) => format!("ops-{key}.json"),
-        None => format!("ops-{}.json", Uuid::now_v7().simple()),
-    };
-    PathBuf::from("workspaces")
-        .join(workspace_id)
-        .join("graphs")
-        .join(filename)
+pub(crate) fn ops_idempotency_digest(
+    workspace_id: &str,
+    base_version_id: &str,
+    idempotency_key: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"helixflow:ops-idempotency:v1");
+    for value in [workspace_id, base_version_id, idempotency_key] {
+        hasher.update((value.len() as u64).to_be_bytes());
+        hasher.update(value.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 async fn accepted_idempotent_version(
     state: &AppState,
     workspace_id: &str,
     base_version_id: &str,
-    graph_path: &Path,
+    graph_path: &str,
+    graph_hash: &str,
 ) -> Result<bool, ApiError> {
-    let graph_path_string = graph_path.to_string_lossy();
-    let versions = state
+    let references = state
         .store
-        .versions_for_workspace(workspace_id)
+        .version_file_references(graph_path)
         .await
         .map_err(ApiError::store)?;
-    Ok(versions.iter().any(|version| {
-        version.parent_id.as_deref() == Some(base_version_id)
-            && version.graph_path == graph_path_string.as_ref()
-    }))
-}
-
-async fn ensure_idempotent_path_available(
-    state: &AppState,
-    graph_path: &Path,
-) -> Result<(), ApiError> {
-    if tokio::fs::try_exists(state.data_dir.join(graph_path))
-        .await
-        .map_err(|err| ApiError::io("check idempotent ops graph path", err))?
+    let [version] = references.as_slice() else {
+        return Ok(false);
+    };
+    if version.workspace_id != workspace_id
+        || version.parent_id.as_deref() != Some(base_version_id)
+        || version.graph_path != graph_path
+        || version.graph_hash != graph_hash
     {
-        return Err(ApiError::conflict(
-            "idempotencyKey is already reserved; refresh and retry",
-        ));
+        return Ok(false);
     }
-    Ok(())
+    read_version_graph(&state.data_dir, version)
+        .await
+        .map_err(candidate_error)?;
+    Ok(true)
 }
 
-async fn write_graph_atomically(
-    data_dir: &Path,
-    graph_path: &Path,
-    graph: &WorkflowGraph,
-) -> Result<String, ApiError> {
-    let bytes = serde_json::to_vec_pretty(graph)
-        .map_err(|err| ApiError::server_error(format!("write ops graph: encode JSON: {err}")))?;
-    let full_path = data_dir.join(graph_path);
-    let tmp_path = tmp_graph_path(&full_path);
-    if let Some(parent) = full_path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|err| ApiError::io("write ops graph: create parent directory", err))?;
+fn is_publish_collision(error: &VersionFileConsistencyError) -> bool {
+    matches!(
+        error,
+        VersionFileConsistencyError::Io {
+            operation: "publish_candidate",
+            kind: io::ErrorKind::AlreadyExists,
+        }
+    )
+}
+
+async fn cleanup_ops_candidate(
+    state: &AppState,
+    candidate: &mut VersionFileCandidate,
+    store_error: StoreError,
+) -> ApiError {
+    match candidate.cleanup_after_store_error(&state.store).await {
+        Ok(_) => match store_error {
+            StoreError::VersionConflict { .. } | StoreError::PendingProposalConflict { .. } => {
+                ApiError::conflict("workspace changed while applying manual ops; refresh and retry")
+            }
+            error => ApiError::store(error),
+        },
+        Err(cleanup_error) => ApiError::server_error(format!(
+            "manual ops commit failed and candidate cleanup was deferred: {cleanup_error}"
+        )),
     }
-    tokio::fs::write(&tmp_path, &bytes)
-        .await
-        .map_err(|err| ApiError::io("write ops graph: write temp file", err))?;
-    tokio::fs::rename(&tmp_path, &full_path)
-        .await
-        .map_err(|err| ApiError::io("write ops graph: rename temp file", err))?;
-    Ok(graph_hash(&bytes))
 }
 
-async fn cleanup_graph_files(data_dir: &Path, graph_path: &Path) {
-    let full_path = data_dir.join(graph_path);
-    let tmp_path = tmp_graph_path(&full_path);
-    drop(tokio::fs::remove_file(&full_path).await);
-    drop(tokio::fs::remove_file(&tmp_path).await);
-}
-
-fn tmp_graph_path(full_path: &Path) -> PathBuf {
-    let mut tmp = full_path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    PathBuf::from(tmp)
+fn candidate_error(error: VersionFileConsistencyError) -> ApiError {
+    ApiError::server_error(error.to_string())
 }
