@@ -1,16 +1,20 @@
-use std::path::PathBuf;
-
 use axum::{
     Json,
     extract::{Path, State},
 };
-use helixflow_store::{NewVersion, VersionSource, WorkspaceRecord};
+use helixflow_store::{
+    CreateWorkspaceWithInitialVersion, InitializedWorkspace, ReservedWorkspaceIdentity, StoreError,
+    VersionSource, WorkspaceRecord,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
-use crate::graph_files::{blank_graph, write_json_file};
+use crate::graph_files::blank_graph;
+use crate::version_file_consistency::{
+    CandidateKind, VersionFileCandidate, VersionFileConsistencyError,
+};
 use crate::workspace_state::workspace_state_value;
 
 #[derive(Debug, Deserialize)]
@@ -51,39 +55,10 @@ pub(crate) async fn create_workspace(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("Helixflow Workspace");
-    let workspace = state
-        .store
-        .create_workspace(name)
-        .await
-        .map_err(ApiError::store)?;
-    let graph_path = initial_graph_path(&workspace.id);
-    let graph = blank_graph();
-    let graph_hash = write_json_file(
-        &state.data_dir,
-        &graph_path,
-        &graph,
-        "write workspace initial graph",
-    )
-    .await?;
-    state
-        .store
-        .create_version(NewVersion {
-            workspace_id: &workspace.id,
-            label: "Initial graph",
-            source: VersionSource::Manual,
-            graph_path: graph_path.to_string_lossy().as_ref(),
-            graph_hash: &graph_hash,
-            parent_id: None,
-        })
-        .await
-        .map_err(ApiError::store)?;
-    let workspace = state
-        .store
-        .workspace(&workspace.id)
-        .await
-        .map_err(ApiError::store)?;
+    let identity = state.store.reserve_workspace_identity();
+    let initialized = initialize_workspace(&state, identity, name).await?;
 
-    Ok(Json(workspace_summary(&workspace)))
+    Ok(Json(workspace_summary(&initialized.workspace)))
 }
 
 pub(crate) async fn set_workspace_provider(
@@ -108,11 +83,62 @@ pub(crate) async fn set_workspace_provider(
     workspace_state_value(&state, &workspace_id).await.map(Json)
 }
 
-fn initial_graph_path(workspace_id: &str) -> PathBuf {
-    PathBuf::from("workspaces")
-        .join(workspace_id)
-        .join("graphs")
-        .join("initial.json")
+async fn initialize_workspace(
+    state: &AppState,
+    identity: ReservedWorkspaceIdentity,
+    name: &str,
+) -> Result<InitializedWorkspace, ApiError> {
+    let mut candidate = VersionFileCandidate::from_graph(
+        &identity.workspace_id,
+        CandidateKind::Initial,
+        &blank_graph(),
+    )
+    .map_err(candidate_error)?;
+    let graph_path = candidate
+        .relative_path_text()
+        .map_err(candidate_error)?
+        .to_owned();
+    let graph_hash = candidate.graph_hash().to_owned();
+    candidate
+        .publish(&state.data_dir)
+        .map_err(candidate_error)?;
+    let result = state
+        .store
+        .create_workspace_with_initial_version(CreateWorkspaceWithInitialVersion {
+            identity,
+            name,
+            version_label: "Initial graph",
+            source: VersionSource::Manual,
+            graph_path: &graph_path,
+            graph_hash: &graph_hash,
+        })
+        .await;
+    match result {
+        Ok(initialized) => {
+            candidate.mark_committed().map_err(candidate_error)?;
+            Ok(initialized)
+        }
+        Err(store_error) => {
+            Err(cleanup_initial_candidate(state, &mut candidate, store_error).await)
+        }
+    }
+}
+
+async fn cleanup_initial_candidate(
+    state: &AppState,
+    candidate: &mut VersionFileCandidate,
+    store_error: StoreError,
+) -> ApiError {
+    match candidate.cleanup_after_store_error(&state.store).await {
+        Ok(_) => ApiError::store(store_error),
+        Err(cleanup_error) => ApiError::server_error(format!(
+            "initial workspace commit failed and candidate cleanup was deferred: {cleanup_error}"
+        )),
+    }
+}
+
+fn candidate_error(error: VersionFileConsistencyError) -> ApiError {
+    ApiError::server_error(error.to_string())
 }
 
 fn workspace_summary(workspace: &WorkspaceRecord) -> WorkspaceSummary {
@@ -138,6 +164,8 @@ mod tests {
 
     use super::*;
     use crate::app_state::{AppState, WorkbenchAgent};
+    use crate::graph_files::graph_hash;
+    use crate::version_file_consistency::read_version_graph;
 
     #[tokio::test]
     async fn create_workspace_writes_initial_graph_and_version() {
@@ -158,8 +186,84 @@ mod tests {
             .version(&summary.version_id)
             .await
             .expect("version");
-        assert!(state.data_dir.join(version.graph_path).exists());
-        assert!(version.graph_hash.starts_with("sha256:"));
+        let graph_path = state.data_dir.join(&version.graph_path);
+        let bytes = tokio::fs::read(&graph_path).await.expect("initial bytes");
+        assert!(graph_path.exists());
+        assert!(version.graph_path.contains("/initial-"));
+        assert_eq!(version.graph_hash, graph_hash(&bytes));
+        assert_eq!(
+            read_version_graph(&state.data_dir, &version)
+                .await
+                .expect("verified initial graph"),
+            blank_graph()
+        );
+    }
+
+    #[tokio::test]
+    async fn create_workspace_sql_failure_removes_unreferenced_initial_candidate() {
+        let (state, _dir) = test_state().await;
+        let existing = state
+            .store
+            .create_workspace("Existing")
+            .await
+            .expect("create collision workspace");
+        let mut identity = state.store.reserve_workspace_identity();
+        identity.workspace_id = existing.id.clone();
+
+        let error = initialize_workspace(&state, identity.clone(), "Rejected")
+            .await
+            .expect_err("duplicate workspace identity must fail");
+
+        assert_eq!(error.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(
+            state
+                .store
+                .version(&identity.initial_version_id)
+                .await
+                .is_err()
+        );
+        assert!(
+            state
+                .store
+                .versions_for_workspace(&existing.id)
+                .await
+                .expect("existing versions")
+                .is_empty()
+        );
+        assert_eq!(graph_file_count(&state, &existing.id).await, 0);
+    }
+
+    #[tokio::test]
+    async fn create_workspace_file_failure_has_no_database_side_effect() {
+        let (mut state, dir) = test_state().await;
+        let blocked_data_dir = dir.path().join("blocked-data-dir");
+        tokio::fs::write(&blocked_data_dir, b"not a directory")
+            .await
+            .expect("write blocking file");
+        state.data_dir = blocked_data_dir;
+        let identity = state.store.reserve_workspace_identity();
+
+        let error = initialize_workspace(&state, identity.clone(), "Rejected")
+            .await
+            .expect_err("candidate publication must fail");
+
+        assert_eq!(error.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(state.store.workspace(&identity.workspace_id).await.is_err());
+        assert!(
+            state
+                .store
+                .version(&identity.initial_version_id)
+                .await
+                .is_err()
+        );
+        assert!(
+            state
+                .store
+                .workspaces()
+                .await
+                .expect("workspaces")
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -198,6 +302,30 @@ mod tests {
             data_dir.join("sessions"),
         );
         (state, dir)
+    }
+
+    async fn graph_file_count(state: &AppState, workspace_id: &str) -> usize {
+        let directory = state
+            .data_dir
+            .join("workspaces")
+            .join(workspace_id)
+            .join("graphs");
+        match tokio::fs::read_dir(directory).await {
+            Ok(mut entries) => {
+                let mut count = 0;
+                while entries
+                    .next_entry()
+                    .await
+                    .expect("read graph entry")
+                    .is_some()
+                {
+                    count += 1;
+                }
+                count
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(error) => panic!("read graph directory: {error}"),
+        }
     }
 
     struct NoopWorkbenchAgent;
