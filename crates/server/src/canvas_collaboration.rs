@@ -19,7 +19,8 @@ use crate::api_error::ApiError;
 use crate::app_state::AppState;
 use crate::workspace_canvas::workspace_canvas_value;
 
-const MAX_COMPATIBILITY_CAS_RETRIES: usize = 8;
+// Covers the 40-way compatibility acceptance scale with room for extra collaborators.
+const MAX_COMPATIBILITY_CAS_RETRIES: usize = 64;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -200,6 +201,7 @@ pub(crate) async fn apply_canvas_comment_op(
             CanvasCommentCommitResult::Stale { current_seq } => {
                 if input.base_seq.is_none() {
                     prepare_compatibility_cas_retry(&mut compatibility_cas_retries, current_seq)?;
+                    tokio::task::yield_now().await;
                     current = read_comment_store(&state.store, &workspace_id).await?;
                     continue;
                 }

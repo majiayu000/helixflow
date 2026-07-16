@@ -242,9 +242,10 @@ async fn compatibility_retry_limit_returns_conflict_with_latest_current_seq() {
             .expect("retry remains within compatibility budget");
     }
 
-    let error = prepare_compatibility_cas_retry(&mut completed_retries, 41)
+    let latest_current_seq = MAX_COMPATIBILITY_CAS_RETRIES as i64 + 1;
+    let error = prepare_compatibility_cas_retry(&mut completed_retries, latest_current_seq)
         .expect_err("compatibility retry budget must be bounded");
-    assert_current_seq_conflict(error, 41).await;
+    assert_current_seq_conflict(error, latest_current_seq).await;
 }
 
 #[tokio::test]
@@ -290,6 +291,35 @@ async fn operation_id_reuse_with_different_content_returns_409() {
         .expect("read comments");
     assert_eq!(snapshot.seq, 1);
     assert_eq!(snapshot.comments.len(), 1);
+}
+
+#[tokio::test]
+async fn forty_no_base_comment_ops_complete_without_client_retries() {
+    let (_dir, state, workspace_id) = comment_test_state().await;
+    let requests = (0..40).map(|index| {
+        let state = state.clone();
+        let workspace_id = workspace_id.clone();
+        async move { submit_add_without_base(&state, &workspace_id, index).await }
+    });
+
+    let results = join_all(requests).await;
+    let accepted = results.iter().filter(|result| result.is_ok()).count();
+    let conflicts = results
+        .iter()
+        .filter(|result| {
+            result
+                .as_ref()
+                .is_err_and(|error| error.status == StatusCode::CONFLICT)
+        })
+        .count();
+    assert_eq!(accepted, 40, "all compatibility requests must succeed");
+    assert_eq!(conflicts, 0);
+
+    let snapshot = read_comment_store(&state.store, &workspace_id)
+        .await
+        .expect("read no-base concurrency result");
+    assert_eq!(snapshot.comments.len(), 40);
+    assert_eq!(snapshot.seq, 40);
 }
 
 #[tokio::test]
@@ -509,6 +539,31 @@ async fn submit_add(
                     y: 0.0,
                 },
                 body: format!("Concurrent comment {index}"),
+                actor: None,
+            },
+        }),
+    )
+    .await
+}
+
+async fn submit_add_without_base(
+    state: &AppState,
+    workspace_id: &str,
+    index: usize,
+) -> Result<Json<Value>, ApiError> {
+    apply_canvas_comment_op(
+        AxumPath(workspace_id.to_owned()),
+        State(state.clone()),
+        Json(CanvasCommentOpRequest {
+            base_seq: None,
+            operation_id: Some(format!("compatibility_operation_{index}")),
+            op: CanvasCommentOp::CommentAdd {
+                id: Some(format!("compatibility_comment_{index}")),
+                target: CanvasCommentTarget::Position {
+                    x: index as f32,
+                    y: 0.0,
+                },
+                body: format!("Compatibility comment {index}"),
                 actor: None,
             },
         }),
