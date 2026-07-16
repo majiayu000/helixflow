@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 use helixflow_gateway::{ArtifactContent, ArtifactKind, ArtifactPayload};
 
+use crate::artifact_path::write_complete_artifact;
+use crate::artifact_remote::download_remote_artifact;
 use crate::{RunError, RunResult};
 
 pub(crate) fn default_artifact_root() -> PathBuf {
@@ -10,44 +12,21 @@ pub(crate) fn default_artifact_root() -> PathBuf {
 
 pub(crate) async fn persist_provider_artifact(
     root: &Path,
-    run_id: &str,
-    step_id: &str,
-    node_id: &str,
+    _run_id: &str,
+    _step_id: &str,
+    _node_id: &str,
     payload: &ArtifactPayload,
 ) -> RunResult<String> {
     match &payload.content {
         ArtifactContent::InlineBytes { bytes, ext_hint } => {
             validate_artifact_bytes(payload, bytes)?;
             let extension = extension_for_payload(payload, ext_hint.as_deref());
-            let relative = artifact_relative_path(run_id, step_id, node_id, &extension);
-            write_artifact_file(root, &relative, bytes).await?;
+            let relative = write_complete_artifact(root, &extension, bytes).await?;
             Ok(relative.to_string_lossy().into_owned())
         }
         ArtifactContent::RemoteUrl { url } => {
-            let parsed = reqwest::Url::parse(url).map_err(|_| {
-                RunError::ArtifactPersistence("remote artifact URL is invalid".to_owned())
-            })?;
-            if parsed.scheme() != "https" {
-                return Err(RunError::ArtifactPersistence(
-                    "remote artifact URL must use https".to_owned(),
-                ));
-            }
-            let response = reqwest::get(parsed).await.map_err(|err| {
-                RunError::ArtifactPersistence(format!("remote artifact download failed: {err}"))
-            })?;
-            if !response.status().is_success() {
-                return Err(RunError::ArtifactPersistence(format!(
-                    "remote artifact download returned HTTP {}",
-                    response.status().as_u16()
-                )));
-            }
-            let bytes = response.bytes().await.map_err(|err| {
-                RunError::ArtifactPersistence(format!("remote artifact body failed: {err}"))
-            })?;
-            validate_artifact_bytes(payload, &bytes)?;
             let extension = extension_for_payload(payload, None);
-            let relative = artifact_relative_path(run_id, step_id, node_id, &extension);
-            write_artifact_file(root, &relative, &bytes).await?;
+            let relative = download_remote_artifact(root, url, payload, &extension).await?;
             Ok(relative.to_string_lossy().into_owned())
         }
         ArtifactContent::None => match payload.kind {
@@ -60,7 +39,7 @@ pub(crate) async fn persist_provider_artifact(
     }
 }
 
-fn validate_artifact_bytes(payload: &ArtifactPayload, bytes: &[u8]) -> RunResult<()> {
+pub(crate) fn validate_artifact_bytes(payload: &ArtifactPayload, bytes: &[u8]) -> RunResult<()> {
     let parsed_mime = payload.mime.parse::<mime::Mime>().map_err(|_| {
         RunError::ArtifactPersistence("artifact MIME is invalid or unsupported".to_owned())
     })?;
@@ -95,7 +74,26 @@ fn validate_artifact_bytes(payload: &ArtifactPayload, bytes: &[u8]) -> RunResult
 }
 
 fn invalid_media_error(mime: &str, reason: &str) -> RunError {
-    RunError::ArtifactPersistence(format!("invalid {mime} artifact content: {reason}"))
+    let safe_mime = mime
+        .parse::<mime::Mime>()
+        .ok()
+        .and_then(|value| {
+            if value.type_() == mime::IMAGE && value.subtype() == mime::PNG {
+                Some("image/png")
+            } else if value.type_() == mime::IMAGE && value.subtype() == mime::JPEG {
+                Some("image/jpeg")
+            } else if value.type_() == mime::VIDEO && value.subtype() == mime::MP4 {
+                Some("video/mp4")
+            } else if value.type_() == mime::IMAGE {
+                Some("image")
+            } else if value.type_() == mime::VIDEO {
+                Some("video")
+            } else {
+                None
+            }
+        })
+        .unwrap_or("declared media");
+    RunError::ArtifactPersistence(format!("invalid {safe_mime} artifact content: {reason}"))
 }
 
 fn validate_png(bytes: &[u8]) -> Result<(), &'static str> {
@@ -324,26 +322,6 @@ fn mp4_container_has_box(bytes: &[u8], expected: [u8; 4]) -> Result<bool, &'stat
         cursor = parsed.end;
     }
     Ok(false)
-}
-
-async fn write_artifact_file(root: &Path, relative: &Path, bytes: &[u8]) -> RunResult<()> {
-    let full_path = root.join(relative);
-    let parent = full_path
-        .parent()
-        .ok_or_else(|| RunError::ArtifactPersistence("artifact path has no parent".to_owned()))?;
-    tokio::fs::create_dir_all(parent)
-        .await
-        .map_err(|err| RunError::ArtifactPersistence(err.to_string()))?;
-    tokio::fs::write(&full_path, bytes)
-        .await
-        .map_err(|err| RunError::ArtifactPersistence(err.to_string()))?;
-    Ok(())
-}
-
-fn artifact_relative_path(run_id: &str, step_id: &str, node_id: &str, extension: &str) -> PathBuf {
-    PathBuf::from("artifacts")
-        .join(run_id)
-        .join(format!("{step_id}-{node_id}.{extension}"))
 }
 
 fn extension_for_payload(payload: &ArtifactPayload, ext_hint: Option<&str>) -> String {

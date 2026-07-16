@@ -11,6 +11,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{Mutex, Notify, broadcast};
 
+mod artifact_path;
+#[cfg(test)]
+mod artifact_path_tests;
+mod artifact_remote;
+#[cfg(test)]
+mod artifact_remote_tests;
 mod artifacts;
 mod background;
 mod cache;
