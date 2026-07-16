@@ -97,7 +97,7 @@ fn mock_catalog_snapshot() -> ProviderCatalogSnapshot {
         "local_test",
         true,
         "healthy",
-        Some("mock provider ready".to_owned()),
+        Some("non-production synthetic mock provider enabled for local testing".to_owned()),
         catalog,
     )
 }

@@ -2,11 +2,13 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 mod atlas;
 mod fal;
+mod mock_media;
 mod registry;
 mod runtime_provider;
 
@@ -273,7 +275,9 @@ impl Provider for MockProvider {
     async fn health(&self) -> ProviderHealth {
         ProviderHealth {
             ok: true,
-            message: Some("mock provider ready".to_owned()),
+            message: Some(
+                "non-production synthetic mock provider enabled for local testing".to_owned(),
+            ),
         }
     }
 
@@ -305,7 +309,7 @@ impl Provider for MockProvider {
             return Err(ProviderError::UnsupportedCapability(req.capability));
         };
 
-        let artifact = deterministic_artifact(&req, capability);
+        let artifact = deterministic_artifact(&req, capability)?;
 
         Ok(ProviderResult {
             outputs: BTreeMap::from([(capability.output_name.clone(), artifact)]),
@@ -325,7 +329,7 @@ impl Provider for MockProvider {
 fn deterministic_artifact(
     req: &ProviderRequest,
     capability: &ProviderCapability,
-) -> ArtifactPayload {
+) -> ProviderResultValue<ArtifactPayload> {
     let extension = match capability.artifact_kind {
         ArtifactKind::Text => "txt",
         ArtifactKind::Image => "png",
@@ -338,16 +342,16 @@ fn deterministic_artifact(
     );
 
     let (width, height, duration_ms) = match capability.artifact_kind {
-        ArtifactKind::Image => (Some(1024), Some(1024), None),
-        ArtifactKind::Video => (Some(1080), Some(1920), Some(duration_ms(&req.params))),
+        ArtifactKind::Image => (Some(1), Some(1), None),
+        ArtifactKind::Video => (Some(16), Some(16), Some(40)),
         ArtifactKind::Text | ArtifactKind::Json => (None, None, None),
     };
 
-    ArtifactPayload {
+    Ok(ArtifactPayload {
         kind: capability.artifact_kind,
         mime: capability.mime.clone(),
         storage_uri,
-        content: mock_content(&req, capability),
+        content: mock_content(req, capability)?,
         width,
         height,
         duration_ms,
@@ -356,11 +360,14 @@ fn deterministic_artifact(
             "capability": req.capability,
             "deterministic": true
         }),
-    }
+    })
 }
 
-fn mock_content(req: &ProviderRequest, capability: &ProviderCapability) -> ArtifactContent {
-    match capability.artifact_kind {
+fn mock_content(
+    req: &ProviderRequest,
+    capability: &ProviderCapability,
+) -> ProviderResultValue<ArtifactContent> {
+    Ok(match capability.artifact_kind {
         ArtifactKind::Text => ArtifactContent::InlineBytes {
             bytes: format!(
                 "provider=mock\ncapability={}\nnode={}\n",
@@ -370,11 +377,11 @@ fn mock_content(req: &ProviderRequest, capability: &ProviderCapability) -> Artif
             ext_hint: Some("txt".to_owned()),
         },
         ArtifactKind::Image => ArtifactContent::InlineBytes {
-            bytes: vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a],
+            bytes: decode_mock_media(mock_media::PNG_BASE64, "PNG")?,
             ext_hint: Some("png".to_owned()),
         },
         ArtifactKind::Video => ArtifactContent::InlineBytes {
-            bytes: b"helixflow mock video artifact\n".to_vec(),
+            bytes: decode_mock_media(mock_media::MP4_BASE64, "MP4")?,
             ext_hint: Some("mp4".to_owned()),
         },
         ArtifactKind::Json => ArtifactContent::InlineBytes {
@@ -382,18 +389,20 @@ fn mock_content(req: &ProviderRequest, capability: &ProviderCapability) -> Artif
                 "provider": "mock",
                 "capability": req.capability,
             }))
-            .unwrap_or_default(),
+            .map_err(|_| {
+                ProviderError::InvalidResponse(
+                    "embedded mock JSON fixture could not be serialized".to_owned(),
+                )
+            })?,
             ext_hint: Some("json".to_owned()),
         },
-    }
+    })
 }
 
-fn duration_ms(params: &Value) -> u32 {
-    params
-        .get("duration_sec")
-        .and_then(Value::as_u64)
-        .map(|seconds| seconds.saturating_mul(1000).min(u32::MAX as u64) as u32)
-        .unwrap_or(1000)
+fn decode_mock_media(encoded: &str, kind: &str) -> ProviderResultValue<Vec<u8>> {
+    STANDARD.decode(encoded).map_err(|_| {
+        ProviderError::InvalidResponse(format!("embedded mock {kind} fixture is invalid"))
+    })
 }
 
 pub fn sanitize_provider_id(id: &str) -> String {
@@ -504,7 +513,9 @@ mod tests {
             artifact.storage_uri,
             "workspace://outputs/run_123/n4/text_to_video.mp4"
         );
-        assert_eq!(artifact.duration_ms, Some(5000));
+        assert_eq!(artifact.width, Some(16));
+        assert_eq!(artifact.height, Some(16));
+        assert_eq!(artifact.duration_ms, Some(40));
     }
 
     #[tokio::test]
@@ -547,6 +558,12 @@ mod tests {
         assert_eq!(snapshot.runtime_providers[0].kind, "local_test");
         assert!(snapshot.runtime_providers[0].enabled);
         assert_eq!(snapshot.runtime_providers[0].status, "healthy");
+        assert!(
+            snapshot.runtime_providers[0]
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("non-production synthetic"))
+        );
         assert!(
             snapshot.runtime_providers[0]
                 .capabilities

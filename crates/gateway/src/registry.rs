@@ -17,19 +17,45 @@ pub struct ProviderRegistry {
 
 impl ProviderRegistry {
     pub fn from_env() -> Self {
-        let default_provider = std::env::var("HELIXFLOW_RUNTIME_PROVIDER")
-            .ok()
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "mock".to_owned());
-        Self::new(
-            default_provider,
-            vec![
-                RuntimeProvider::mock(),
-                RuntimeProvider::atlas_from_env(),
-                RuntimeProvider::fal_from_env(),
-            ],
+        let runtime_provider = std::env::var("HELIXFLOW_RUNTIME_PROVIDER").ok();
+        let enable_mock_provider = std::env::var("HELIXFLOW_ENABLE_MOCK_PROVIDER").ok();
+        Self::from_config(
+            runtime_provider.as_deref(),
+            enable_mock_provider.as_deref(),
+            RuntimeProvider::atlas_from_env(),
+            RuntimeProvider::fal_from_env(),
         )
+    }
+
+    fn from_config(
+        runtime_provider: Option<&str>,
+        enable_mock_provider: Option<&str>,
+        atlas: RuntimeProvider,
+        fal: RuntimeProvider,
+    ) -> Self {
+        let default_provider = runtime_provider
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("unconfigured");
+        let mut providers = vec![
+            RuntimeProvider::unavailable(
+                "unconfigured",
+                "HELIXFLOW_RUNTIME_PROVIDER is not configured",
+            ),
+            atlas,
+            fal,
+        ];
+        if sanitize_provider_id(default_provider) == "mock" {
+            providers.push(if mock_provider_enabled(enable_mock_provider) {
+                RuntimeProvider::mock()
+            } else {
+                RuntimeProvider::unavailable(
+                    "mock",
+                    "mock provider is disabled; explicit dev/test enablement is required",
+                )
+            });
+        }
+        Self::new(default_provider, providers)
     }
 
     pub fn new(default_provider: impl Into<String>, providers: Vec<RuntimeProvider>) -> Self {
@@ -143,6 +169,15 @@ impl ProviderRegistry {
     }
 }
 
+fn mock_provider_enabled(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
 #[async_trait]
 impl Provider for ProviderRegistry {
     fn id(&self) -> &str {
@@ -170,5 +205,52 @@ impl Provider for ProviderRegistry {
 
     async fn cancel(&self, handle: ProviderTaskHandle) -> ProviderResultValue<()> {
         self.provider_for(&handle.provider)?.cancel(handle).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn registry_from_test_config(
+        runtime_provider: Option<&str>,
+        enable_mock_provider: Option<&str>,
+    ) -> ProviderRegistry {
+        ProviderRegistry::from_config(
+            runtime_provider,
+            enable_mock_provider,
+            RuntimeProvider::unavailable("atlas", "Atlas provider is not configured"),
+            RuntimeProvider::unavailable("fal", "FAL_KEY is not configured"),
+        )
+    }
+
+    #[test]
+    fn production_config_without_provider_fails_closed() {
+        let registry = registry_from_test_config(None, None);
+
+        assert_eq!(registry.default_provider(), "unconfigured");
+        assert!(!registry.contains_provider("mock"));
+        assert!(!registry.provider_enabled("unconfigured"));
+        assert_eq!(registry.selected_provider(None), "unconfigured");
+    }
+
+    #[test]
+    fn mock_requires_explicit_provider_and_dev_test_switch() {
+        for (provider, switch) in [
+            (Some("mock"), None),
+            (None, Some("true")),
+            (Some("mock"), Some("false")),
+            (Some("mock"), Some("typo")),
+        ] {
+            let registry = registry_from_test_config(provider, switch);
+            assert!(
+                !registry.provider_enabled("mock"),
+                "mock must remain unavailable for provider={provider:?}, switch={switch:?}"
+            );
+        }
+
+        let registry = registry_from_test_config(Some("mock"), Some("true"));
+        assert_eq!(registry.default_provider(), "mock");
+        assert!(registry.provider_enabled("mock"));
     }
 }

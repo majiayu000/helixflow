@@ -18,6 +18,8 @@ mod cost_gate;
 mod cost_types;
 mod error;
 mod executor;
+#[cfg(test)]
+mod invalid_media_tests;
 mod run_policy;
 mod self_heal;
 #[cfg(test)]
