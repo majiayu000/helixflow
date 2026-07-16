@@ -1,0 +1,36 @@
+{
+  "allowed_actions": [
+    "write_spec"
+  ],
+  "blocked_actions": [
+    "final_approval",
+    "force_push",
+    "merge"
+  ],
+  "current_state": "ready_to_spec",
+  "decision": "allowed",
+  "human_gates": [
+    "readiness_label"
+  ],
+  "issue": 120,
+  "missing": [],
+  "mode": "dry_run",
+  "pr": null,
+  "reasons": [
+    "route write_spec passed local SpecRail gates"
+  ],
+  "required_artifacts": [
+    "specs/GH120/product.md",
+    "specs/GH120/tech.md"
+  ],
+  "route": "write_spec",
+  "satisfied": [
+    "linked_issue: GH-120",
+    "state provided explicitly: ready_to_spec",
+    "state ready_to_spec allows write_spec"
+  ],
+  "verification_commands": [
+    "python3 checks/check_workflow.py --repo .",
+    "python3 checks/check_workflow.py --repo . --spec-dir specs/GH120"
+  ]
+}

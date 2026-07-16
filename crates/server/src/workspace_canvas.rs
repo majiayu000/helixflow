@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
-use crate::canvas_collaboration::{canvas_comment_seq, load_canvas_comments};
+use crate::canvas_collaboration::canvas_comment_snapshot;
 use crate::graph_files::{blank_graph, read_graph_file};
 
 pub(crate) async fn workspace_canvas(
@@ -38,8 +38,8 @@ pub(crate) async fn workspace_canvas_value(
         }
         None => (String::new(), 0, blank_graph()),
     };
-    let comments = load_canvas_comments(&state.data_dir, &workspace.id).await?;
-    let comment_seq = canvas_comment_seq(&state.data_dir, &workspace.id).await?;
+    let (comment_seq, comments) =
+        canvas_comment_snapshot(&state.store, &state.data_dir, &workspace.id).await?;
 
     Ok(canvas_document_payload(
         &workspace.id,
@@ -203,6 +203,42 @@ mod tests {
 
         assert_eq!(body["nodes"].as_array().expect("nodes").len(), 0);
         assert_eq!(body["edges"].as_array().expect("edges").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn workspace_canvas_uses_app_state_store_for_comment_snapshot() {
+        let store_dir = tempfile::tempdir().expect("store dir");
+        let data_dir = tempfile::tempdir().expect("data dir");
+        let store = open_canvas_store(store_dir.path()).await;
+        let workspace = store
+            .create_workspace("Store-backed comments")
+            .await
+            .expect("create workspace");
+        let state = canvas_test_state(store, data_dir.path().to_path_buf());
+
+        let body = workspace_canvas(AxumPath(workspace.id.clone()), State(state.clone()))
+            .await
+            .expect("workspace canvas from AppState store")
+            .0;
+
+        assert_eq!(body["workspaceId"], workspace.id);
+        assert_eq!(body["seq"], 0);
+        assert_eq!(body["comments"], json!([]));
+        assert!(
+            state
+                .store
+                .canvas_comment_state(&workspace.id)
+                .await
+                .expect("read comment state")
+                .is_some()
+        );
+        assert_eq!(
+            std::fs::read_dir(data_dir.path())
+                .expect("read isolated data dir")
+                .count(),
+            0,
+            "canvas read must not open a new Store in data_dir"
+        );
     }
 
     async fn state_with_workspace() -> (AppState, String, tempfile::TempDir) {

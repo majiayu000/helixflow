@@ -1,0 +1,184 @@
+crates/server/src/workspace_canvas.rs:10:use crate::canvas_collaboration::{canvas_comment_seq, load_canvas_comments};
+crates/server/src/workspace_canvas.rs:41:    let comments = load_canvas_comments(&state.data_dir, &workspace.id).await?;
+crates/server/src/workspace_canvas.rs:42:    let comment_seq = canvas_comment_seq(&state.data_dir, &workspace.id).await?;
+crates/server/src/workspace_canvas.rs:47:        seq.max(comment_seq),
+crates/server/src/workspace_canvas.rs:49:        comments,
+crates/server/src/workspace_canvas.rs:58:    comments: Vec<crate::canvas_collaboration::CanvasComment>,
+crates/server/src/workspace_canvas.rs:102:        "comments": comments,
+crates/server/src/workspace_canvas.rs:148:    async fn workspace_canvas_replays_comment_snapshot_when_seq_is_ahead_of_graph_version() {
+crates/server/src/workspace_canvas.rs:152:            &comments_path(&workspace_id),
+crates/server/src/workspace_canvas.rs:154:            "write comments",
+crates/server/src/workspace_canvas.rs:157:        .expect("write comments");
+crates/server/src/workspace_canvas.rs:165:        assert_eq!(body["comments"][0]["id"], "comment_replay");
+crates/server/src/workspace_canvas.rs:166:        assert_eq!(body["comments"][0]["target"]["nodeId"], "text");
+crates/server/src/workspace_canvas.rs:174:            &comments_path(&workspace_id),
+crates/server/src/workspace_canvas.rs:176:            "write stale comments",
+crates/server/src/workspace_canvas.rs:179:        .expect("write comments");
+crates/server/src/workspace_canvas.rs:250:    fn comments_path(workspace_id: &str) -> std::path::PathBuf {
+crates/server/src/workspace_canvas.rs:253:            .join("comments.json")
+crates/server/src/workspace_canvas.rs:256:    fn comment_store_json(seq: i64) -> serde_json::Value {
+crates/server/src/workspace_canvas.rs:260:            "comments": [
+crates/server/src/canvas_collaboration.rs:20:pub(crate) struct CanvasComment {
+crates/server/src/canvas_collaboration.rs:22:    target: CanvasCommentTarget,
+crates/server/src/canvas_collaboration.rs:25:    status: CanvasCommentStatus,
+crates/server/src/canvas_collaboration.rs:32:pub(crate) enum CanvasCommentTarget {
+crates/server/src/canvas_collaboration.rs:56:pub(crate) enum CanvasCommentStatus {
+crates/server/src/canvas_collaboration.rs:94:pub(crate) struct CanvasCommentOpRequest {
+crates/server/src/canvas_collaboration.rs:96:    base_seq: Option<i64>,
+crates/server/src/canvas_collaboration.rs:97:    op: CanvasCommentOp,
+crates/server/src/canvas_collaboration.rs:102:enum CanvasCommentOp {
+crates/server/src/canvas_collaboration.rs:105:        target: CanvasCommentTarget,
+crates/server/src/canvas_collaboration.rs:112:        status: Option<CanvasCommentStatus>,
+crates/server/src/canvas_collaboration.rs:121:struct CanvasCommentStore {
+crates/server/src/canvas_collaboration.rs:124:    comments: Vec<CanvasComment>,
+crates/server/src/canvas_collaboration.rs:127:impl Default for CanvasCommentStore {
+crates/server/src/canvas_collaboration.rs:132:            comments: Vec::new(),
+crates/server/src/canvas_collaboration.rs:140:    Json(input): Json<CanvasCommentOpRequest>,
+crates/server/src/canvas_collaboration.rs:186:pub(crate) async fn load_canvas_comments(
+crates/server/src/canvas_collaboration.rs:189:) -> Result<Vec<CanvasComment>, ApiError> {
+crates/server/src/canvas_collaboration.rs:190:    Ok(read_comment_store(data_dir, workspace_id).await?.comments)
+crates/server/src/canvas_collaboration.rs:193:pub(crate) async fn canvas_comment_seq(
+crates/server/src/canvas_collaboration.rs:197:    Ok(read_comment_store(data_dir, workspace_id).await?.seq)
+crates/server/src/canvas_collaboration.rs:203:) -> Result<CanvasCommentStore, ApiError> {
+crates/server/src/canvas_collaboration.rs:204:    let relative = comments_relative_path(workspace_id)?;
+crates/server/src/canvas_collaboration.rs:209:            return Ok(CanvasCommentStore::default());
+crates/server/src/canvas_collaboration.rs:213:                format!("read canvas comments `{}`", relative.display()),
+crates/server/src/canvas_collaboration.rs:218:    let store: CanvasCommentStore = serde_json::from_slice(&bytes).map_err(|err| {
+crates/server/src/canvas_collaboration.rs:220:            "canvas comments `{}` contains invalid JSON: {err}",
+crates/server/src/canvas_collaboration.rs:226:            "canvas comments `{}` has a negative seq",
+crates/server/src/canvas_collaboration.rs:230:    if store.comments.len() as i64 > store.seq {
+crates/server/src/canvas_collaboration.rs:232:            "canvas comments `{}` snapshot is ahead of seq",
+crates/server/src/canvas_collaboration.rs:242:    store: &CanvasCommentStore,
+crates/server/src/canvas_collaboration.rs:244:    let relative = comments_relative_path(workspace_id)?;
+crates/server/src/canvas_collaboration.rs:245:    write_json_file(data_dir, &relative, store, "write canvas comments").await?;
+crates/server/src/canvas_collaboration.rs:264:fn comments_relative_path(workspace_id: &str) -> Result<PathBuf, ApiError> {
+crates/server/src/canvas_collaboration.rs:274:        .join("comments.json"))
+crates/server/src/canvas_collaboration.rs:277:fn apply_comment_op(store: &mut CanvasCommentStore, op: CanvasCommentOp) -> Result<(), ApiError> {
+crates/server/src/canvas_collaboration.rs:279:        CanvasCommentOp::CommentAdd {
+crates/server/src/canvas_collaboration.rs:292:            if store.comments.iter().any(|comment| comment.id == id) {
+crates/server/src/canvas_collaboration.rs:296:            store.comments.push(CanvasComment {
+crates/server/src/canvas_collaboration.rs:301:                status: CanvasCommentStatus::Open,
+crates/server/src/canvas_collaboration.rs:306:        CanvasCommentOp::CommentPatch { id, body, status } => {
+crates/server/src/canvas_collaboration.rs:308:                .comments
+crates/server/src/canvas_collaboration.rs:320:        CanvasCommentOp::CommentDelete { id } => {
+crates/server/src/canvas_collaboration.rs:321:            let before = store.comments.len();
+crates/server/src/canvas_collaboration.rs:322:            store.comments.retain(|comment| comment.id != id);
+crates/server/src/canvas_collaboration.rs:323:            if store.comments.len() == before {
+crates/server/src/canvas_collaboration.rs:350:fn validate_target(target: &CanvasCommentTarget) -> Result<(), ApiError> {
+crates/server/src/canvas_collaboration.rs:352:        CanvasCommentTarget::Node { node_id } if node_id.trim().is_empty() => Err(
+crates/server/src/canvas_collaboration.rs:355:        CanvasCommentTarget::Edge { edge_id } if edge_id.trim().is_empty() => Err(
+crates/server/src/canvas_collaboration.rs:358:        CanvasCommentTarget::Position { x, y } if !x.is_finite() || !y.is_finite() => Err(
+crates/server/src/canvas_collaboration.rs:417:            Json(CanvasCommentOpRequest {
+crates/server/src/canvas_collaboration.rs:418:                base_seq: None,
+crates/server/src/canvas_collaboration.rs:419:                op: CanvasCommentOp::CommentAdd {
+crates/server/src/canvas_collaboration.rs:421:                    target: CanvasCommentTarget::Position { x: 20.0, y: 30.0 },
+crates/server/src/canvas_collaboration.rs:434:        assert_eq!(added["comments"][0]["id"], "comment_1");
+crates/server/src/canvas_collaboration.rs:435:        assert_eq!(added["comments"][0]["body"], "Needs review");
+crates/server/src/canvas_collaboration.rs:436:        assert_eq!(added["comments"][0]["status"], "open");
+crates/server/src/canvas_collaboration.rs:441:            Json(CanvasCommentOpRequest {
+crates/server/src/canvas_collaboration.rs:442:                base_seq: None,
+crates/server/src/canvas_collaboration.rs:443:                op: CanvasCommentOp::CommentPatch {
+crates/server/src/canvas_collaboration.rs:446:                    status: Some(CanvasCommentStatus::Resolved),
+crates/server/src/canvas_collaboration.rs:453:        assert_eq!(resolved["comments"][0]["status"], "resolved");
+crates/server/src/canvas_collaboration.rs:458:        assert_eq!(reloaded["comments"][0]["id"], "comment_1");
+crates/server/src/canvas_collaboration.rs:459:        assert_eq!(reloaded["comments"][0]["status"], "resolved");
+crates/server/src/canvas_collaboration.rs:464:            Json(CanvasCommentOpRequest {
+crates/server/src/canvas_collaboration.rs:465:                base_seq: None,
+crates/server/src/canvas_collaboration.rs:466:                op: CanvasCommentOp::CommentDelete {
+crates/server/src/canvas_collaboration.rs:474:        assert_eq!(deleted["comments"].as_array().expect("comments").len(), 0);
+crates/server/src/canvas_collaboration.rs:478:    async fn presence_broadcasts_without_creating_durable_comments() {
+crates/server/src/canvas_collaboration.rs:512:            load_canvas_comments(&state.data_dir, &workspace_id)
+crates/server/src/canvas_collaboration.rs:514:                .expect("comments")
+crates/server/src/workspace_canvas.rs:10:use crate::canvas_collaboration::{canvas_comment_seq, load_canvas_comments};
+crates/server/src/workspace_canvas.rs:41:    let comments = load_canvas_comments(&state.data_dir, &workspace.id).await?;
+crates/server/src/workspace_canvas.rs:42:    let comment_seq = canvas_comment_seq(&state.data_dir, &workspace.id).await?;
+crates/server/src/workspace_canvas.rs:47:        seq.max(comment_seq),
+crates/server/src/workspace_canvas.rs:49:        comments,
+crates/server/src/workspace_canvas.rs:58:    comments: Vec<crate::canvas_collaboration::CanvasComment>,
+crates/server/src/workspace_canvas.rs:102:        "comments": comments,
+crates/server/src/workspace_canvas.rs:148:    async fn workspace_canvas_replays_comment_snapshot_when_seq_is_ahead_of_graph_version() {
+crates/server/src/workspace_canvas.rs:152:            &comments_path(&workspace_id),
+crates/server/src/workspace_canvas.rs:154:            "write comments",
+crates/server/src/workspace_canvas.rs:157:        .expect("write comments");
+crates/server/src/workspace_canvas.rs:165:        assert_eq!(body["comments"][0]["id"], "comment_replay");
+crates/server/src/workspace_canvas.rs:166:        assert_eq!(body["comments"][0]["target"]["nodeId"], "text");
+crates/server/src/workspace_canvas.rs:174:            &comments_path(&workspace_id),
+crates/server/src/workspace_canvas.rs:176:            "write stale comments",
+crates/server/src/workspace_canvas.rs:179:        .expect("write comments");
+crates/server/src/workspace_canvas.rs:250:    fn comments_path(workspace_id: &str) -> std::path::PathBuf {
+crates/server/src/workspace_canvas.rs:253:            .join("comments.json")
+crates/server/src/workspace_canvas.rs:256:    fn comment_store_json(seq: i64) -> serde_json::Value {
+crates/server/src/workspace_canvas.rs:260:            "comments": [
+crates/server/src/main.rs:94:            "/api/workspaces/{workspace_id}/canvas/comments/ops",
+crates/server/src/canvas_collaboration.rs:20:pub(crate) struct CanvasComment {
+crates/server/src/canvas_collaboration.rs:22:    target: CanvasCommentTarget,
+crates/server/src/canvas_collaboration.rs:25:    status: CanvasCommentStatus,
+crates/server/src/canvas_collaboration.rs:32:pub(crate) enum CanvasCommentTarget {
+crates/server/src/canvas_collaboration.rs:56:pub(crate) enum CanvasCommentStatus {
+crates/server/src/canvas_collaboration.rs:94:pub(crate) struct CanvasCommentOpRequest {
+crates/server/src/canvas_collaboration.rs:96:    base_seq: Option<i64>,
+crates/server/src/canvas_collaboration.rs:97:    op: CanvasCommentOp,
+crates/server/src/canvas_collaboration.rs:102:enum CanvasCommentOp {
+crates/server/src/canvas_collaboration.rs:105:        target: CanvasCommentTarget,
+crates/server/src/canvas_collaboration.rs:112:        status: Option<CanvasCommentStatus>,
+crates/server/src/canvas_collaboration.rs:121:struct CanvasCommentStore {
+crates/server/src/canvas_collaboration.rs:124:    comments: Vec<CanvasComment>,
+crates/server/src/canvas_collaboration.rs:127:impl Default for CanvasCommentStore {
+crates/server/src/canvas_collaboration.rs:132:            comments: Vec::new(),
+crates/server/src/canvas_collaboration.rs:140:    Json(input): Json<CanvasCommentOpRequest>,
+crates/server/src/canvas_collaboration.rs:186:pub(crate) async fn load_canvas_comments(
+crates/server/src/canvas_collaboration.rs:189:) -> Result<Vec<CanvasComment>, ApiError> {
+crates/server/src/canvas_collaboration.rs:190:    Ok(read_comment_store(data_dir, workspace_id).await?.comments)
+crates/server/src/canvas_collaboration.rs:193:pub(crate) async fn canvas_comment_seq(
+crates/server/src/canvas_collaboration.rs:197:    Ok(read_comment_store(data_dir, workspace_id).await?.seq)
+crates/server/src/canvas_collaboration.rs:203:) -> Result<CanvasCommentStore, ApiError> {
+crates/server/src/canvas_collaboration.rs:204:    let relative = comments_relative_path(workspace_id)?;
+crates/server/src/canvas_collaboration.rs:209:            return Ok(CanvasCommentStore::default());
+crates/server/src/canvas_collaboration.rs:213:                format!("read canvas comments `{}`", relative.display()),
+crates/server/src/canvas_collaboration.rs:218:    let store: CanvasCommentStore = serde_json::from_slice(&bytes).map_err(|err| {
+crates/server/src/canvas_collaboration.rs:220:            "canvas comments `{}` contains invalid JSON: {err}",
+crates/server/src/canvas_collaboration.rs:226:            "canvas comments `{}` has a negative seq",
+crates/server/src/canvas_collaboration.rs:230:    if store.comments.len() as i64 > store.seq {
+crates/server/src/canvas_collaboration.rs:232:            "canvas comments `{}` snapshot is ahead of seq",
+crates/server/src/canvas_collaboration.rs:242:    store: &CanvasCommentStore,
+crates/server/src/canvas_collaboration.rs:244:    let relative = comments_relative_path(workspace_id)?;
+crates/server/src/canvas_collaboration.rs:245:    write_json_file(data_dir, &relative, store, "write canvas comments").await?;
+crates/server/src/canvas_collaboration.rs:264:fn comments_relative_path(workspace_id: &str) -> Result<PathBuf, ApiError> {
+crates/server/src/canvas_collaboration.rs:274:        .join("comments.json"))
+crates/server/src/canvas_collaboration.rs:277:fn apply_comment_op(store: &mut CanvasCommentStore, op: CanvasCommentOp) -> Result<(), ApiError> {
+crates/server/src/canvas_collaboration.rs:279:        CanvasCommentOp::CommentAdd {
+crates/server/src/canvas_collaboration.rs:292:            if store.comments.iter().any(|comment| comment.id == id) {
+crates/server/src/canvas_collaboration.rs:296:            store.comments.push(CanvasComment {
+crates/server/src/canvas_collaboration.rs:301:                status: CanvasCommentStatus::Open,
+crates/server/src/canvas_collaboration.rs:306:        CanvasCommentOp::CommentPatch { id, body, status } => {
+crates/server/src/canvas_collaboration.rs:308:                .comments
+crates/server/src/canvas_collaboration.rs:320:        CanvasCommentOp::CommentDelete { id } => {
+crates/server/src/canvas_collaboration.rs:321:            let before = store.comments.len();
+crates/server/src/canvas_collaboration.rs:322:            store.comments.retain(|comment| comment.id != id);
+crates/server/src/canvas_collaboration.rs:323:            if store.comments.len() == before {
+crates/server/src/canvas_collaboration.rs:350:fn validate_target(target: &CanvasCommentTarget) -> Result<(), ApiError> {
+crates/server/src/canvas_collaboration.rs:352:        CanvasCommentTarget::Node { node_id } if node_id.trim().is_empty() => Err(
+crates/server/src/canvas_collaboration.rs:355:        CanvasCommentTarget::Edge { edge_id } if edge_id.trim().is_empty() => Err(
+crates/server/src/canvas_collaboration.rs:358:        CanvasCommentTarget::Position { x, y } if !x.is_finite() || !y.is_finite() => Err(
+crates/server/src/canvas_collaboration.rs:417:            Json(CanvasCommentOpRequest {
+crates/server/src/canvas_collaboration.rs:418:                base_seq: None,
+crates/server/src/canvas_collaboration.rs:419:                op: CanvasCommentOp::CommentAdd {
+crates/server/src/canvas_collaboration.rs:421:                    target: CanvasCommentTarget::Position { x: 20.0, y: 30.0 },
+crates/server/src/canvas_collaboration.rs:434:        assert_eq!(added["comments"][0]["id"], "comment_1");
+crates/server/src/canvas_collaboration.rs:435:        assert_eq!(added["comments"][0]["body"], "Needs review");
+crates/server/src/canvas_collaboration.rs:436:        assert_eq!(added["comments"][0]["status"], "open");
+crates/server/src/canvas_collaboration.rs:441:            Json(CanvasCommentOpRequest {
+crates/server/src/canvas_collaboration.rs:442:                base_seq: None,
+crates/server/src/canvas_collaboration.rs:443:                op: CanvasCommentOp::CommentPatch {
+crates/server/src/canvas_collaboration.rs:446:                    status: Some(CanvasCommentStatus::Resolved),
+crates/server/src/canvas_collaboration.rs:453:        assert_eq!(resolved["comments"][0]["status"], "resolved");
+crates/server/src/canvas_collaboration.rs:458:        assert_eq!(reloaded["comments"][0]["id"], "comment_1");
+crates/server/src/canvas_collaboration.rs:459:        assert_eq!(reloaded["comments"][0]["status"], "resolved");
+crates/server/src/canvas_collaboration.rs:464:            Json(CanvasCommentOpRequest {
+crates/server/src/canvas_collaboration.rs:465:                base_seq: None,
+crates/server/src/canvas_collaboration.rs:466:                op: CanvasCommentOp::CommentDelete {
+crates/server/src/canvas_collaboration.rs:474:        assert_eq!(deleted["comments"].as_array().expect("comments").len(), 0);
+crates/server/src/canvas_collaboration.rs:478:    async fn presence_broadcasts_without_creating_durable_comments() {
+crates/server/src/canvas_collaboration.rs:512:            load_canvas_comments(&state.data_dir, &workspace_id)
+crates/server/src/canvas_collaboration.rs:514:                .expect("comments")
+crates/server/src/main.rs:94:            "/api/workspaces/{workspace_id}/canvas/comments/ops",
