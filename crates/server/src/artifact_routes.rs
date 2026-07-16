@@ -259,6 +259,7 @@ mod tests {
 
     use super::*;
     use crate::app_state::{AppState, WorkbenchAgent};
+    use crate::graph_files::graph_hash;
 
     #[tokio::test]
     async fn select_output_persists_single_selected_output_in_latest_run_state() {
@@ -626,12 +627,11 @@ mod tests {
         tokio::fs::create_dir_all(data_dir.join(graph_path.parent().expect("graph parent")))
             .await
             .expect("create graph dir");
-        tokio::fs::write(
-            data_dir.join(&graph_path),
-            serde_json::to_vec_pretty(&sample_graph()).expect("graph json"),
-        )
-        .await
-        .expect("write graph");
+        let graph_bytes = serde_json::to_vec_pretty(&sample_graph()).expect("graph json");
+        let stored_graph_hash = graph_hash(&graph_bytes);
+        tokio::fs::write(data_dir.join(&graph_path), graph_bytes)
+            .await
+            .expect("write graph");
         let graph_path_string = graph_path.to_string_lossy().into_owned();
         let version = store
             .create_version(NewVersion {
@@ -639,7 +639,7 @@ mod tests {
                 label: "Current graph",
                 source: VersionSource::Manual,
                 graph_path: &graph_path_string,
-                graph_hash: "sha256:current",
+                graph_hash: &stored_graph_hash,
                 parent_id: None,
             })
             .await
