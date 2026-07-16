@@ -235,7 +235,7 @@ Artifact route/retry 测试中的 version graph 只属于测试兼容 fixture；
 | B-009 | restore preflight | `cargo test -p helixflow-server version_routes::tests::restore_rejects_corrupt_target` |
 | B-010, B-011, B-012 | startup reconciliation/report/crash fixtures | `cargo test -p helixflow-server version_file_reconciliation_tests::startup` |
 | B-013 | valid/invalid legacy fixtures | `cargo test -p helixflow-server version_file_reconciliation_tests::legacy` |
-| B-014 | five writer integrations | `cargo test -p helixflow-server initial_layout_ops_proposal_writers` |
+| B-014 | five writer integrations | `cargo test -p helixflow-server workspace_routes`；`cargo test -p helixflow-server layout_routes`；`cargo test -p helixflow-server ops_routes_tests::idempotency`；`cargo test -p helixflow-server proposal_routes`；`cargo test -p helixflow-server workbench_message_tests::post_message_auto_applies` |
 | B-015 | excluded-path diff + existing collaboration suites | `cargo test -p helixflow-server canvas_collaboration && cargo test -p helixflow-server workspace_canvas` and manifest diff audit |
 
 Cargo test filters may match multiple named tests; implementation必须使用表中的 stable name prefix，不得留下不存在的 aspirational test command。
