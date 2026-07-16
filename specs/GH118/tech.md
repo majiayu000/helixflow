@@ -28,6 +28,8 @@ GH-118（https://github.com/majiayu000/helixflow/issues/118）
     "crates/server/src/run_routes_tests.rs",
     "crates/server/src/version_file_consistency.rs",
     "crates/server/src/version_file_consistency_tests.rs",
+    "crates/server/src/version_file_reconciliation.rs",
+    "crates/server/src/version_file_reconciliation_tests.rs",
     "crates/server/src/version_routes.rs",
     "crates/server/src/workbench_message.rs",
     "crates/server/src/workbench_message/gh102_tests.rs",
@@ -218,7 +220,7 @@ Artifact route/retry 测试中的 version graph 只属于测试兼容 fixture；
 | reference lookup failure | SQLite trigger/closed pool after candidate publish | candidate 保留；cleanup-deferred error | `version_file_reference_records_tests.rs`、consistency tests |
 | verified read missing/bad hash/bad JSON | mutate referenced file/record fixture | consumer fail closed，无 user message/run/version/restore side effect | route/read test files in manifest |
 | workbench client/server mismatch | same base ID + altered client graph；stale base ID | conflict before user message/agent/run | `workbench_message_graph_tests.rs` |
-| startup referenced corruption/orphan/unknown | isolated AppState data-dir fixtures | corrupt blocks open；recognized orphan removed；unknown retained；success report retained/loggable | `version_file_consistency_tests.rs`、app state tests |
+| startup referenced corruption/orphan/unknown | isolated AppState data-dir fixtures | corrupt blocks open；recognized orphan removed；unknown retained；success report retained/loggable | `version_file_reconciliation_tests.rs`、app state tests |
 
 ## Product-to-Test Mapping
 
@@ -231,8 +233,8 @@ Artifact route/retry 测试中的 version graph 只属于测试兼容 fixture；
 | B-006, B-007 | reference APIs + candidate coordinator | `cargo test -p helixflow-server version_file_consistency_tests::cleanup`；`cargo test -p helixflow-store version_file_reference_records_tests` |
 | B-008 | all read consumers + message ingress | `cargo test -p helixflow-server verified_read`；`cargo test -p helixflow-server workbench_message_graph_tests` |
 | B-009 | restore preflight | `cargo test -p helixflow-server version_routes::tests::restore_rejects_corrupt_target` |
-| B-010, B-011, B-012 | startup reconciliation/report/crash fixtures | `cargo test -p helixflow-server version_file_consistency_tests::startup` |
-| B-013 | valid/invalid legacy fixtures | `cargo test -p helixflow-server version_file_consistency_tests::legacy` |
+| B-010, B-011, B-012 | startup reconciliation/report/crash fixtures | `cargo test -p helixflow-server version_file_reconciliation_tests::startup` |
+| B-013 | valid/invalid legacy fixtures | `cargo test -p helixflow-server version_file_reconciliation_tests::legacy` |
 | B-014 | five writer integrations | `cargo test -p helixflow-server initial_layout_ops_proposal_writers` |
 | B-015 | excluded-path diff + existing collaboration suites | `cargo test -p helixflow-server canvas_collaboration && cargo test -p helixflow-server workspace_canvas` and manifest diff audit |
 
