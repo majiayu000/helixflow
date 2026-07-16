@@ -22,6 +22,8 @@ mod proposal_routes;
 mod registry_routes;
 mod run_routes;
 #[cfg(test)]
+mod run_routes_tests;
+#[cfg(test)]
 mod run_routes_unavailable_tests;
 mod sweep_support;
 #[cfg(test)]
@@ -33,12 +35,16 @@ mod workbench_message;
 mod workbench_message_canvas;
 mod workbench_message_metadata;
 mod workbench_message_proposals;
+#[cfg(test)]
+mod workbench_message_tests;
 mod workbench_payload;
 mod workspace_canvas;
 mod workspace_events;
 mod workspace_routes;
 mod workspace_state;
 mod workspace_state_run;
+#[cfg(test)]
+mod workspace_state_tests;
 mod ws;
 
 use app_state::AppState;

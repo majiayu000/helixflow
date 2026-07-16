@@ -20,6 +20,9 @@ mod run_records;
 #[cfg(test)]
 mod run_records_tests;
 mod sweep_records;
+mod version_records;
+#[cfg(test)]
+mod version_records_tests;
 mod workspace_records;
 
 pub use canvas_comment_records::*;
@@ -219,139 +222,6 @@ impl Store {
         self.workspace(workspace_id).await
     }
 
-    pub async fn create_version(&self, input: NewVersion<'_>) -> StoreResult<VersionRecord> {
-        self.insert_version(input, None, false).await
-    }
-
-    pub async fn create_version_after(
-        &self,
-        input: NewVersion<'_>,
-        expected_current_version_id: &str,
-    ) -> StoreResult<VersionRecord> {
-        self.insert_version(input, Some(expected_current_version_id), false)
-            .await
-    }
-
-    pub async fn create_version_after_without_pending_proposal(
-        &self,
-        input: NewVersion<'_>,
-        expected_current_version_id: &str,
-    ) -> StoreResult<VersionRecord> {
-        self.insert_version(input, Some(expected_current_version_id), true)
-            .await
-    }
-
-    async fn insert_version(
-        &self,
-        input: NewVersion<'_>,
-        expected_current_version_id: Option<&str>,
-        reject_pending_proposal: bool,
-    ) -> StoreResult<VersionRecord> {
-        let version_id = new_id("ver");
-        let mut tx = self.pool.begin().await?;
-
-        if let Some(expected_version_id) = expected_current_version_id {
-            let actual_version_id: Option<String> = sqlx::query_scalar(
-                r#"
-                SELECT cur_version_id
-                FROM workspaces
-                WHERE id = ?
-                "#,
-            )
-            .bind(input.workspace_id)
-            .fetch_one(&mut *tx)
-            .await?;
-
-            if actual_version_id.as_deref() != Some(expected_version_id) {
-                return Err(StoreError::VersionConflict {
-                    workspace_id: input.workspace_id.to_owned(),
-                    expected_version_id: expected_version_id.to_owned(),
-                    actual_version_id,
-                });
-            }
-        }
-        if reject_pending_proposal {
-            let pending_proposal_id: Option<String> = sqlx::query_scalar(
-                r#"
-                SELECT id
-                FROM proposals
-                WHERE workspace_id = ? AND state = 'pending'
-                ORDER BY created_at DESC, id DESC
-                LIMIT 1
-                "#,
-            )
-            .bind(input.workspace_id)
-            .fetch_optional(&mut *tx)
-            .await?;
-            if pending_proposal_id.is_some() {
-                return Err(StoreError::PendingProposalConflict {
-                    workspace_id: input.workspace_id.to_owned(),
-                });
-            }
-        }
-
-        let idx: i64 = sqlx::query_scalar(
-            r#"
-            SELECT COALESCE(MAX(idx), 0) + 1
-            FROM versions
-            WHERE workspace_id = ?
-            "#,
-        )
-        .bind(input.workspace_id)
-        .fetch_one(&mut *tx)
-        .await?;
-
-        sqlx::query(
-            r#"
-            INSERT INTO versions (
-                id, workspace_id, idx, label, source, graph_path, graph_hash, parent_id, created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)
-            "#,
-        )
-        .bind(&version_id)
-        .bind(input.workspace_id)
-        .bind(idx)
-        .bind(input.label)
-        .bind(input.source.as_str())
-        .bind(input.graph_path)
-        .bind(input.graph_hash)
-        .bind(input.parent_id)
-        .execute(&mut *tx)
-        .await?;
-
-        sqlx::query(
-            r#"
-            UPDATE workspaces
-            SET cur_version_id = ?, updated_at = current_timestamp
-            WHERE id = ?
-            "#,
-        )
-        .bind(&version_id)
-        .bind(input.workspace_id)
-        .execute(&mut *tx)
-        .await?;
-
-        tx.commit().await?;
-
-        self.version(&version_id).await
-    }
-
-    pub async fn version(&self, version_id: &str) -> StoreResult<VersionRecord> {
-        let version = sqlx::query_as::<_, VersionRecord>(
-            r#"
-            SELECT id, workspace_id, idx, label, source, graph_path, graph_hash, parent_id, created_at
-            FROM versions
-            WHERE id = ?
-            "#,
-        )
-        .bind(version_id)
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(version)
-    }
-
     pub async fn upsert_provider_status(
         &self,
         provider_id: &str,
@@ -538,37 +408,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn creates_workspace_and_version() {
-        let (store, _dir) = open_temp_store().await;
-
-        let workspace = store
-            .create_workspace("First workflow")
-            .await
-            .expect("create workspace");
-        let version = store
-            .create_version(NewVersion {
-                workspace_id: &workspace.id,
-                label: "Initial graph",
-                source: VersionSource::Manual,
-                graph_path: "workspaces/ws_1/graphs/ver_1.json",
-                graph_hash: "sha256:graph",
-                parent_id: None,
-            })
-            .await
-            .expect("create version");
-        let updated_workspace = store.workspace(&workspace.id).await.expect("workspace");
-
-        assert_eq!(version.workspace_id, workspace.id);
-        assert_eq!(version.idx, 1);
-        assert_eq!(version.source, "manual");
-        assert_eq!(
-            updated_workspace.cur_version_id.as_deref(),
-            Some(version.id.as_str())
-        );
-        assert_eq!(updated_workspace.runtime_provider_id, None);
-    }
-
-    #[tokio::test]
     async fn persists_workspace_runtime_provider_choice() {
         let (store, dir) = open_temp_store().await;
         let workspace = store
@@ -590,63 +429,6 @@ mod tests {
         let persisted = reopened.workspace(&workspace.id).await.expect("workspace");
 
         assert_eq!(persisted.runtime_provider_id.as_deref(), Some("atlas"));
-    }
-
-    #[tokio::test]
-    async fn conditional_version_creation_rejects_stale_parent() {
-        let (store, _dir) = open_temp_store().await;
-
-        let workspace = store
-            .create_workspace("First workflow")
-            .await
-            .expect("create workspace");
-        let first = store
-            .create_version(NewVersion {
-                workspace_id: &workspace.id,
-                label: "Initial graph",
-                source: VersionSource::Manual,
-                graph_path: "workspaces/ws_1/graphs/ver_1.json",
-                graph_hash: "sha256:graph-1",
-                parent_id: None,
-            })
-            .await
-            .expect("create first version");
-        let second = store
-            .create_version_after(
-                NewVersion {
-                    workspace_id: &workspace.id,
-                    label: "Second graph",
-                    source: VersionSource::Manual,
-                    graph_path: "workspaces/ws_1/graphs/ver_2.json",
-                    graph_hash: "sha256:graph-2",
-                    parent_id: Some(&first.id),
-                },
-                &first.id,
-            )
-            .await
-            .expect("create second version");
-        let err = store
-            .create_version_after(
-                NewVersion {
-                    workspace_id: &workspace.id,
-                    label: "Stale graph",
-                    source: VersionSource::Proposal,
-                    graph_path: "workspaces/ws_1/graphs/ver_stale.json",
-                    graph_hash: "sha256:stale",
-                    parent_id: Some(&first.id),
-                },
-                &first.id,
-            )
-            .await
-            .expect_err("stale current version should fail");
-
-        assert!(matches!(
-            err,
-            StoreError::VersionConflict {
-                actual_version_id: Some(actual),
-                ..
-            } if actual == second.id
-        ));
     }
 
     #[tokio::test]
