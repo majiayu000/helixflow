@@ -1,7 +1,51 @@
+import { useEffect, useState } from 'react';
+
+import { fetchArtifactText } from '../api';
 import { Icon } from '../icons';
 import type { WorkbenchState } from '../types';
 
 type ArtifactOutput = WorkbenchState['outputs'][number];
+
+type TextContentState =
+  | { status: 'loading' }
+  | { status: 'loaded'; text: string }
+  | { status: 'error'; message: string };
+
+function TextArtifactPreview({ artifact }: { artifact: ArtifactOutput }) {
+  const [content, setContent] = useState<TextContentState>({ status: 'loading' });
+
+  useEffect(() => {
+    let cancelled = false;
+    setContent({ status: 'loading' });
+    fetchArtifactText(artifact.id)
+      .then((text) => {
+        if (!cancelled) setContent({ status: 'loaded', text });
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setContent({
+            status: 'error',
+            message: error instanceof Error ? error.message : 'artifact content request failed',
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [artifact.id]);
+
+  if (content.status === 'loading') {
+    return <pre className="artifact-text-preview">Loading artifact content…</pre>;
+  }
+  if (content.status === 'error') {
+    return (
+      <pre className="artifact-text-preview artifact-text-error">
+        Failed to load artifact content: {content.message}
+      </pre>
+    );
+  }
+  return <pre className="artifact-text-preview">{content.text}</pre>;
+}
 
 type ArtifactStageProps = {
   outputs: WorkbenchState['outputs'];
@@ -46,7 +90,7 @@ export function ArtifactStage({ outputs }: ArtifactStageProps) {
             title={artifact.title}
           />
         ) : (
-          <pre className="artifact-text-preview">{artifact.preview.content}</pre>
+          <TextArtifactPreview artifact={artifact} />
         )}
       </div>
     </section>

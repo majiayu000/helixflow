@@ -36,13 +36,19 @@ pub(crate) struct WorkspaceSummary {
     name: String,
     version_id: String,
     updated_at: String,
+    message_count: i64,
+    first_message: Option<String>,
 }
 
 pub(crate) async fn list_workspaces(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<WorkspaceSummary>>, ApiError> {
     let workspaces = state.store.workspaces().await.map_err(ApiError::store)?;
-    Ok(Json(workspaces.iter().map(workspace_summary).collect()))
+    let mut summaries = Vec::with_capacity(workspaces.len());
+    for workspace in &workspaces {
+        summaries.push(workspace_summary(&state, workspace).await?);
+    }
+    Ok(Json(summaries))
 }
 
 pub(crate) async fn create_workspace(
@@ -58,7 +64,9 @@ pub(crate) async fn create_workspace(
     let identity = state.store.reserve_workspace_identity();
     let initialized = initialize_workspace(&state, identity, name).await?;
 
-    Ok(Json(workspace_summary(&initialized.workspace)))
+    Ok(Json(
+        workspace_summary(&state, &initialized.workspace).await?,
+    ))
 }
 
 pub(crate) async fn set_workspace_provider(
@@ -150,13 +158,23 @@ fn candidate_error(error: VersionFileConsistencyError) -> ApiError {
     ApiError::server_error(error.to_string())
 }
 
-fn workspace_summary(workspace: &WorkspaceRecord) -> WorkspaceSummary {
-    WorkspaceSummary {
+async fn workspace_summary(
+    state: &AppState,
+    workspace: &WorkspaceRecord,
+) -> Result<WorkspaceSummary, ApiError> {
+    let (message_count, first_message) = state
+        .store
+        .workspace_message_stats(&workspace.id)
+        .await
+        .map_err(ApiError::store)?;
+    Ok(WorkspaceSummary {
         id: workspace.id.clone(),
         name: workspace.name.clone(),
         version_id: workspace.cur_version_id.clone().unwrap_or_default(),
         updated_at: workspace.updated_at.clone(),
-    }
+        message_count,
+        first_message,
+    })
 }
 
 #[cfg(test)]

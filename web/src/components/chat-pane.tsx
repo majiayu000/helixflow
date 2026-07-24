@@ -30,6 +30,7 @@ type ChatPaneProps = {
   editSessionSummary: EditSessionSummary | null;
   selectedNodeIds?: string[];
   onSend: (text: string) => Promise<void>;
+  onUploadImage?: (file: File) => Promise<void>;
   onCommitEdits: () => Promise<void>;
   onDiscardEdits: () => void;
   onApplyProposal: (proposalId: string) => Promise<void>;
@@ -44,6 +45,7 @@ export function ChatPane({
   editSessionSummary,
   selectedNodeIds = [],
   onSend,
+  onUploadImage,
   onCommitEdits,
   onDiscardEdits,
   onApplyProposal,
@@ -51,6 +53,7 @@ export function ChatPane({
 }: ChatPaneProps) {
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const isComposingRef = useRef(false);
   const selectedSummary = selectedNodeIds.length > 0
     ? `@选中 ${selectedNodeIds.join(', ')}`
@@ -126,7 +129,24 @@ export function ChatPane({
           />
           <div className="composer-foot">
             <div className="left">
-              <button className="ibtn ibtn--icon" disabled title="上传图片">
+              <input
+                accept="image/*"
+                aria-label="上传图片"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = '';
+                  if (file && onUploadImage) void onUploadImage(file);
+                }}
+                ref={uploadInputRef}
+                style={{ display: 'none' }}
+                type="file"
+              />
+              <button
+                className="ibtn ibtn--icon"
+                disabled={busy || !onUploadImage}
+                onClick={() => uploadInputRef.current?.click()}
+                title="上传图片"
+              >
                 <Icon n="paperclip" s={14} />
               </button>
             </div>

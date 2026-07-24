@@ -220,7 +220,7 @@ fn hex_digest(bytes: &[u8]) -> String {
     out
 }
 
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+pub(crate) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     if left.len() != right.len() {
         return false;
     }

@@ -28,6 +28,8 @@ export type WorkbenchStore = {
   presenceByActor: PresenceByActor;
   state: WorkbenchState | null;
   editSession: ManualEditSession | null;
+  /** Last seen event seq per run/agent stream (HF-012). */
+  streamSeqs: Record<string, number>;
   workspaceGeneration: number;
   activeWorkspaceId: string | null;
   bootstrap: (workspaceId?: string | null) => Promise<void>;
@@ -41,6 +43,7 @@ export type WorkbenchStore = {
   submitCanvasCommentOp: (input: CanvasCommentOpInput) => Promise<void>;
   applyEvent: (event: RunEventEnvelope, generation?: number) => void;
   sendMessage: (text: string, canvasContext?: CanvasMessageContext) => Promise<void>;
+  uploadImage: (file: File) => Promise<void>;
   queueRun: (options?: QueueRunOptions) => Promise<void>;
   interruptRun: (runId?: string) => Promise<void>;
   exportWorkflow: () => Promise<WorkflowGraph | null>;

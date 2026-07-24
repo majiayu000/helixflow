@@ -67,6 +67,24 @@ pub(crate) async fn post_workspace_message(
         input.canvas_context.clone(),
     )
     .await?;
+    // Prior turns give the agent cross-request memory (HF-013). Loaded
+    // before persisting the new user message so it is not duplicated.
+    let history = state
+        .store
+        .workspace_messages(&workspace_id)
+        .await
+        .map_err(ApiError::store)?
+        .into_iter()
+        .filter(|message| message.role == "user" || message.role == "agent")
+        .filter_map(|message| {
+            message
+                .text
+                .map(|text| helixflow_agent::AgentHistoryMessage {
+                    role: message.role,
+                    text,
+                })
+        })
+        .collect();
     let turn_metadata = turn_metadata_json(classification);
     state
         .store
@@ -91,6 +109,7 @@ pub(crate) async fn post_workspace_message(
         workspace_id: workspace_id.clone(),
         base_version_id: version.id,
         user_message: input.user_message,
+        history,
         graph,
         provider_catalog,
         run_context,

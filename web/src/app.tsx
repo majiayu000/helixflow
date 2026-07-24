@@ -57,6 +57,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const activeWorkspaceId = useWorkbenchStore((store) => store.activeWorkspaceId);
   const sendCanvasPresence = useWorkbenchStore((store) => store.sendCanvasPresence);
   const sendMessage = useWorkbenchStore((store) => store.sendMessage);
+  const uploadImage = useWorkbenchStore((store) => store.uploadImage);
   const submitCanvasCommentOp = useWorkbenchStore((store) => store.submitCanvasCommentOp);
   const applyProposal = useWorkbenchStore((store) => store.applyProposal);
   const dismissProposal = useWorkbenchStore((store) => store.dismissProposal);
@@ -124,6 +125,14 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
       useWorkbenchStore.getState().state?.workspace.id === activeState.workspace.id;
     return connectWorkspaceEvents(activeState.workspace.id, {
       getLastSeq: () => useWorkbenchStore.getState().state?.eventSeq ?? 0,
+      getStreamSeq: (runId) => {
+        const store = useWorkbenchStore.getState();
+        if (store.state?.run?.id === runId) {
+          return Math.max(store.state.eventSeq, store.streamSeqs[runId] ?? 0);
+        }
+        return store.streamSeqs[runId] ?? 0;
+      },
+      isPrimaryStream: (runId) => useWorkbenchStore.getState().state?.run?.id === runId,
       onEvent: (event) => applyEvent(event, generation),
       onPresence: (presence) => {
         if (isCurrentSubscription()) applyCanvasPresence(presence);
@@ -229,6 +238,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
             messages={activeState.chat.messages}
             onApplyProposal={(id) => runAction(() => applyProposal(id))}
             onDismissProposal={(id) => runAction(() => dismissProposal(id))}
+            onUploadImage={(file) => runAction(() => uploadImage(file))}
             editSessionSummary={
               dirtyEditCount > 0
                 ? {

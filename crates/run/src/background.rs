@@ -1,6 +1,8 @@
 use helixflow_gateway::Provider;
 use helixflow_store::NewRun;
+use serde_json::json;
 
+use super::run_policy::run_requires_confirmation;
 use super::{ManualRunRequest, RunInterrupt, RunOutcome, RunResult, RunService, RunStatus};
 
 impl<P> RunService<P>
@@ -14,6 +16,8 @@ where
         if plan.steps.is_empty() {
             return Err(super::RunError::NoExecutableSteps);
         }
+        self.ensure_workspace_not_busy(&request.workspace_id, request.group_id.as_deref(), None)
+            .await?;
         let plan_json = serde_json::to_string(&plan)?;
         let run = self
             .store
@@ -28,12 +32,84 @@ where
                 status: RunStatus::Queued.as_str(),
             })
             .await?;
+        if request.force_rerun {
+            self.store.set_run_force_rerun(&run.id, true).await?;
+        }
         let steps = self.ensure_run_steps(&run.id, &plan).await?;
         let interrupt = RunInterrupt::default();
         self.interrupts
             .lock()
             .await
             .insert(run.id.clone(), interrupt.clone());
+
+        // Manual runs pass the same cost gate as agent runs: estimate first,
+        // and anything over budget or of unknown cost waits for explicit
+        // confirmation instead of executing immediately (HF-004).
+        let estimate = match self
+            .estimate_created_run(
+                &request.workspace_id,
+                &run.id,
+                &plan.steps,
+                &steps,
+                &interrupt,
+            )
+            .await
+        {
+            Ok(estimate) => estimate,
+            Err(err) => {
+                self.interrupts.lock().await.remove(&run.id);
+                let error_json = serde_json::to_string(&json!({ "error": err.to_string() }))?;
+                self.store
+                    .update_run_status(&run.id, RunStatus::Failed.as_str(), Some(&error_json))
+                    .await?;
+                self.emit(
+                    &request.workspace_id,
+                    &run.id,
+                    "run.failed",
+                    json!({ "error": err.to_string(), "phase": "estimate" }),
+                )
+                .await?;
+                return Err(err);
+            }
+        };
+        let estimate_json = serde_json::to_string(&estimate)?;
+        if run_requires_confirmation(&estimate)? {
+            self.interrupts.lock().await.remove(&run.id);
+            let run = self
+                .store
+                .update_run_estimate_and_status(
+                    &run.id,
+                    Some(&estimate_json),
+                    RunStatus::WaitingConfirmation.as_str(),
+                )
+                .await?;
+            self.emit(
+                &request.workspace_id,
+                &run.id,
+                "run.requested",
+                json!({
+                    "trigger": "manual",
+                    "estimate": estimate,
+                    "requires_confirmation": true
+                }),
+            )
+            .await?;
+            let steps = self.store.run_steps(&run.id).await?;
+            return Ok(RunOutcome {
+                run,
+                steps,
+                artifacts: Vec::new(),
+            });
+        }
+        let run = self
+            .store
+            .update_run_estimate_and_status(
+                &run.id,
+                Some(&estimate_json),
+                RunStatus::Queued.as_str(),
+            )
+            .await?;
+        let steps = self.store.run_steps(&run.id).await?;
 
         let outcome = RunOutcome {
             run: run.clone(),

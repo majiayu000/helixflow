@@ -25,7 +25,8 @@ pub fn parse_run_confirmation_threshold_usd(raw: Option<&str>) -> RunResult<f64>
 
 /// Whether a run with the given estimate must be confirmed before starting.
 pub fn run_requires_confirmation(cost: &CostSummary) -> RunResult<bool> {
-    if !cost.amount.is_finite() || cost.amount < 0.0 {
+    // Unknown totals must never be treated as free (HF-004).
+    if cost.unknown || !cost.amount.is_finite() || cost.amount < 0.0 {
         return Ok(true);
     }
     if cost.currency != "USD" {

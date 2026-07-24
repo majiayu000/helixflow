@@ -11,8 +11,10 @@ mod app_state;
 #[cfg(test)]
 mod artifact_retry_tests;
 mod artifact_routes;
+mod auth;
 mod canvas_collaboration;
 mod canvas_ticket;
+mod capability_preflight;
 mod graph_files;
 mod layout_routes;
 mod ops_routes;
@@ -30,6 +32,7 @@ mod sweep_support;
 mod test_support;
 #[cfg(test)]
 mod test_wait;
+mod upload_routes;
 mod version_file_consistency;
 #[cfg(test)]
 mod version_file_consistency_tests;
@@ -60,6 +63,7 @@ use app_state::AppState;
 use artifact_routes::{
     accept_output, artifact_content, download_output, preview_output, reject_output, select_output,
 };
+use auth::{AuthConfig, require_auth, validate_bind_auth};
 use canvas_collaboration::{apply_canvas_comment_op, update_canvas_presence};
 use canvas_ticket::create_canvas_ticket;
 use layout_routes::save_workspace_layout;
@@ -67,6 +71,7 @@ use ops_routes::apply_workspace_ops;
 use proposal_routes::{apply_workspace_proposal, dismiss_workspace_proposal};
 use registry_routes::node_registry_catalog;
 use run_routes::{confirm_run, hold_run, interrupt_active_run, queue_workspace_run};
+use upload_routes::upload_workspace_image;
 use version_file_reconciliation::ReconciliationReport;
 use version_routes::{export_workflow_version, restore_workspace_version, undo_workspace_version};
 use workbench_message::post_workspace_message;
@@ -85,15 +90,47 @@ async fn main() {
         "{}",
         version_file_reconciliation_event(&state.reconciliation_report)
     );
-    let app = app(state);
-
+    let auth_config = AuthConfig::from_env();
     let bind_addr =
         std::env::var("HELIXFLOW_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8787".to_owned());
+    if let Err(message) = validate_bind_auth(&bind_addr, &auth_config) {
+        eprintln!("{message}");
+        std::process::exit(1);
+    }
+    let app = serve_web_dist(app_with_auth(state, auth_config));
     let listener = tokio::net::TcpListener::bind(&bind_addr)
         .await
         .expect("bind local server");
 
     axum::serve(listener, app).await.expect("serve local app");
+}
+
+/// Serve the built frontend from the same process so the release topology
+/// is a single server (HF-022). Reads HELIXFLOW_WEB_DIST (default
+/// `web/dist`); if the directory is missing the API still runs and `/`
+/// explains how to build the frontend.
+fn serve_web_dist(app: Router) -> Router {
+    let web_dist = std::path::PathBuf::from(
+        std::env::var("HELIXFLOW_WEB_DIST").unwrap_or_else(|_| "web/dist".to_owned()),
+    );
+    if !web_dist.join("index.html").exists() {
+        eprintln!(
+            "web dist `{}` not found; serving API only (build it with `cd web && npm run build`              or set HELIXFLOW_WEB_DIST)",
+            web_dist.display()
+        );
+        return app;
+    }
+    let index = web_dist.join("index.html");
+    app.fallback_service(
+        tower_http::services::ServeDir::new(web_dist)
+            .fallback(tower_http::services::ServeFile::new(index)),
+    )
+}
+
+fn app_with_auth(state: AppState, auth_config: AuthConfig) -> Router {
+    app(state)
+        .layer(axum::middleware::from_fn(require_auth))
+        .layer(axum::Extension(auth_config))
 }
 
 pub(crate) fn version_file_reconciliation_event(report: &ReconciliationReport) -> String {
@@ -107,6 +144,7 @@ pub(crate) fn version_file_reconciliation_event(report: &ReconciliationReport) -
 fn app(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(health))
+        .route("/api/ready", get(ready))
         .route("/api/system", get(system))
         .route("/api/registry/catalog", get(node_registry_catalog))
         .route(
@@ -141,6 +179,10 @@ fn app(state: AppState) -> Router {
         .route(
             "/api/workspaces/{workspace_id}/messages",
             post(post_workspace_message),
+        )
+        .route(
+            "/api/workspaces/{workspace_id}/uploads",
+            post(upload_workspace_image),
         )
         .route(
             "/api/workspaces/{workspace_id}/proposals/{proposal_id}/apply",
@@ -195,6 +237,37 @@ fn app(state: AppState) -> Router {
 
 async fn health() -> Json<Value> {
     Json(json!({ "ok": true, "service": "helixflow" }))
+}
+
+/// Readiness checks the database, storage directory, and provider state
+/// instead of returning a constant `ok` (HF-029).
+async fn ready(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> Result<Json<Value>, crate::api_error::ApiError> {
+    let db_ok = state.store.ping().await.is_ok();
+    let probe = state
+        .data_dir
+        .join(format!(".readiness-probe-{}", uuid::Uuid::now_v7()));
+    let storage_ok = match tokio::fs::write(&probe, b"ok").await {
+        Ok(()) => {
+            drop(tokio::fs::remove_file(&probe).await);
+            true
+        }
+        Err(_) => false,
+    };
+    let provider_health = helixflow_gateway::Provider::health(&state.provider_registry).await;
+    let body = json!({
+        "ok": db_ok && storage_ok,
+        "database": db_ok,
+        "storage": storage_ok,
+        "provider": { "ok": provider_health.ok, "message": provider_health.message },
+    });
+    if !(db_ok && storage_ok) {
+        return Err(crate::api_error::ApiError::service_unavailable(
+            body.to_string(),
+        ));
+    }
+    Ok(Json(body))
 }
 
 async fn system() -> Json<Value> {
@@ -311,6 +384,83 @@ mod tests {
         assert_eq!(body["run_id"], "run_1");
         assert_eq!(body["ev"], "node.state");
         assert_eq!(body["data"]["state"], "running");
+    }
+
+    #[tokio::test]
+    async fn auth_token_gates_rest_and_ws_requests() {
+        use tokio::net::TcpListener;
+
+        let events = EventBus::new(16);
+        let (_dir, state) = test_app_state(events.clone()).await;
+        let app = app_with_auth(state, AuthConfig::with_token(Some("secret-token")));
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
+        let addr = listener.local_addr().expect("listener addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve test app");
+        });
+
+        let client = reqwest::Client::new();
+        let denied = client
+            .get(format!("http://{addr}/api/health"))
+            .send()
+            .await
+            .expect("request without token");
+        assert_eq!(denied.status(), 401);
+
+        let wrong = client
+            .get(format!("http://{addr}/api/health"))
+            .bearer_auth("wrong-token")
+            .send()
+            .await
+            .expect("request with wrong token");
+        assert_eq!(wrong.status(), 401);
+
+        let allowed = client
+            .get(format!("http://{addr}/api/health"))
+            .bearer_auth("secret-token")
+            .send()
+            .await
+            .expect("request with token");
+        assert_eq!(allowed.status(), 200);
+
+        let query_allowed = client
+            .get(format!("http://{addr}/api/health?token=secret-token"))
+            .send()
+            .await
+            .expect("request with query token");
+        assert_eq!(query_allowed.status(), 200);
+
+        let ws_denied =
+            tokio_tungstenite::connect_async(format!("ws://{addr}/ws?workspace_id=ws_1")).await;
+        assert!(ws_denied.is_err(), "ws without token must be rejected");
+        let ws_allowed = tokio_tungstenite::connect_async(format!(
+            "ws://{addr}/ws?workspace_id=ws_1&token=secret-token"
+        ))
+        .await;
+        assert!(ws_allowed.is_ok(), "ws with token must connect");
+    }
+
+    #[tokio::test]
+    async fn without_configured_token_requests_pass_through() {
+        use tokio::net::TcpListener;
+
+        let events = EventBus::new(16);
+        let (_dir, state) = test_app_state(events.clone()).await;
+        let app = app_with_auth(state, AuthConfig::with_token(None));
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
+        let addr = listener.local_addr().expect("listener addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve test app");
+        });
+
+        let response = reqwest::get(format!("http://{addr}/api/health"))
+            .await
+            .expect("request without auth");
+        assert_eq!(response.status(), 200);
     }
 
     async fn test_app_state(events: EventBus) -> (tempfile::TempDir, AppState) {

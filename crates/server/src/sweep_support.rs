@@ -38,6 +38,11 @@ async fn handle_run_request_with_threshold_config(
         return request_seed_sweep(state, request, label, confirmation_threshold_usd).await;
     }
     let provider = selected_provider_for_workspace(state, &request.workspace_id).await?;
+    crate::capability_preflight::preflight_provider_capabilities(
+        &state,
+        &provider,
+        &request.graph,
+    )?;
 
     let pending = state
         .runner
@@ -142,6 +147,11 @@ async fn request_seed_sweep(
 ) -> Result<RunRequestResult, ApiError> {
     let count = seed_sweep_run_count(&request.user_message);
     let provider = selected_provider_for_workspace(state, &request.workspace_id).await?;
+    crate::capability_preflight::preflight_provider_capabilities(
+        &state,
+        &provider,
+        &request.graph,
+    )?;
     let seed_plan = build_seed_sweep_plan(
         request.workspace_id,
         request.base_version_id,
@@ -447,6 +457,7 @@ mod tests {
             amount,
             currency: "USD".to_owned(),
             estimated: true,
+            unknown: false,
         };
         assert!(!requires_run_confirmation(&usd(0.99), 1.0));
         assert!(!requires_run_confirmation(&usd(1.0), 1.0));
@@ -458,6 +469,7 @@ mod tests {
                 amount: 0.01,
                 currency: "EUR".to_owned(),
                 estimated: true,
+                unknown: false,
             },
             100.0
         ));
@@ -477,6 +489,7 @@ mod tests {
                 workspace_id,
                 base_version_id: version_id,
                 user_message: "为当前工作流设计 4 个不同 seed 的真实运行计划".to_owned(),
+                history: Vec::new(),
                 graph: seed_graph(),
                 provider_catalog: RuntimeProvider::mock().catalog_snapshot(),
                 run_context: None,

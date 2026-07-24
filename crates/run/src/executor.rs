@@ -350,12 +350,19 @@ where
         let mut cache_links = Vec::new();
         let mut step_outputs = Vec::new();
         let cost = if let (Some(provider), Some(capability)) = (&step.provider, &step.capability) {
+            let input_texts = crate::input_materialize::materialize_text_inputs(
+                &self.store,
+                &self.artifact_root,
+                &inputs,
+            )
+            .await?;
             let request = ProviderRequest {
                 provider: provider.clone(),
                 capability: capability.clone(),
                 node_id: step.node_id.clone(),
                 run_id: run_id.to_owned(),
                 inputs: inputs.clone(),
+                input_texts,
                 params: step.params.clone(),
             };
             let result = tokio::select! {

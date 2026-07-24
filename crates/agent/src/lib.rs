@@ -56,6 +56,9 @@ pub struct AgentSessionRequest {
     pub workspace_id: String,
     pub base_version_id: String,
     pub user_message: String,
+    /// Prior chat turns (oldest first) so agent replies can reference
+    /// earlier context across requests (HF-013).
+    pub history: Vec<AgentHistoryMessage>,
     pub graph: WorkflowGraph,
     pub provider_catalog: ProviderCatalogSnapshot,
     pub run_context: Option<String>,
@@ -63,6 +66,12 @@ pub struct AgentSessionRequest {
     pub mode: TurnMode,
     pub skill: AgentSkill,
     pub canvas_context: Option<CanvasOpsContext>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentHistoryMessage {
+    pub role: String,
+    pub text: String,
 }
 
 pub fn create_session_contract(request: &AgentSessionRequest) -> AgentResult<AgentSession> {

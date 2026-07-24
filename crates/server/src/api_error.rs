@@ -36,6 +36,14 @@ impl ApiError {
         }
     }
 
+    pub(crate) fn service_unavailable(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: message.into(),
+            details: None,
+        }
+    }
+
     pub(crate) fn unauthorized(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::UNAUTHORIZED,
@@ -107,6 +115,7 @@ impl ApiError {
             },
             RunError::InvalidRunStatus { .. }
             | RunError::RunNotActive(_)
+            | RunError::WorkspaceBusy { .. }
             | RunError::Interrupted(_) => Self {
                 status: StatusCode::CONFLICT,
                 message: err.to_string(),

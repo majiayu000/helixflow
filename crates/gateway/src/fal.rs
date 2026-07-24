@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use crate::{
     ArtifactContent, ArtifactKind, ArtifactPayload, CostEstimate, Provider, ProviderCapability,
     ProviderCatalog, ProviderError, ProviderHealth, ProviderRequest, ProviderResult,
-    ProviderResultValue, ProviderTaskHandle,
+    ProviderResultValue, ProviderTaskHandle, wired_or_param_string,
 };
 
 const DEFAULT_FAL_API_BASE: &str = "https://queue.fal.run";
@@ -39,6 +39,9 @@ impl FalProviderConfig {
 pub struct FalProvider {
     config: FalProviderConfig,
     client: reqwest::Client,
+    /// In-flight remote tasks by run id; provider_task_id is the validated
+    /// status URL so cancel can be derived from it (HF-011).
+    in_flight: std::sync::Arc<tokio::sync::Mutex<BTreeMap<String, Vec<ProviderTaskHandle>>>>,
 }
 
 impl FalProvider {
@@ -62,6 +65,31 @@ impl FalProvider {
         Self {
             config,
             client: reqwest::Client::new(),
+            in_flight: std::sync::Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
+        }
+    }
+
+    async fn register_in_flight(&self, run_id: &str, status_url: &str) -> ProviderTaskHandle {
+        let handle = ProviderTaskHandle {
+            provider: "fal".to_owned(),
+            provider_task_id: status_url.to_owned(),
+        };
+        self.in_flight
+            .lock()
+            .await
+            .entry(run_id.to_owned())
+            .or_default()
+            .push(handle.clone());
+        handle
+    }
+
+    async fn clear_in_flight(&self, run_id: &str, status_url: &str) {
+        let mut in_flight = self.in_flight.lock().await;
+        if let Some(handles) = in_flight.get_mut(run_id) {
+            handles.retain(|handle| handle.provider_task_id != status_url);
+            if handles.is_empty() {
+                in_flight.remove(run_id);
+            }
         }
     }
 
@@ -124,7 +152,7 @@ impl FalProvider {
     }
 
     async fn invoke_image(&self, req: ProviderRequest) -> ProviderResultValue<ProviderResult> {
-        let prompt = required_string(&req.params, "prompt")?;
+        let prompt = wired_or_param_string(&req, "prompt", "prompt")?;
         let model = optional_string(&req.params, "model")
             .and_then(|value| normalize_model_path(&value))
             .unwrap_or_else(|| self.config.image_model.clone());
@@ -145,7 +173,10 @@ impl FalProvider {
             status_url(&submit, &self.config.api_base, &model, &request_id),
             &self.config.api_base,
         )?;
-        self.poll_status(&status_url).await?;
+        drop(self.register_in_flight(&req.run_id, &status_url).await);
+        let poll_result = self.poll_status(&status_url).await;
+        self.clear_in_flight(&req.run_id, &status_url).await;
+        poll_result?;
         let result = self.get_json(response_url).await?;
         let image = first_image(&result)?;
 
@@ -171,7 +202,10 @@ impl FalProvider {
             cost: CostEstimate {
                 amount: 0.0,
                 currency: "USD".to_owned(),
+                // FAL does not report per-call cost; the charge is unknown,
+                // never a confirmed $0 (HF-004).
                 estimated: true,
+                unknown: true,
             },
         })
     }
@@ -213,11 +247,61 @@ impl Provider for FalProvider {
         "fal"
     }
 
+    fn config_fingerprint(&self, _provider_id: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"fal-catalog-v1");
+        hasher.update(self.config.api_base.as_bytes());
+        hasher.update([0]);
+        hasher.update(self.config.image_model.as_bytes());
+        format!("sha256:{:x}", hasher.finalize())
+    }
+
     async fn health(&self) -> ProviderHealth {
-        ProviderHealth {
-            ok: true,
-            message: Some("fal.ai provider configured".to_owned()),
+        // Real reachability + auth probe instead of "key env var is set"
+        // (HF-010). Any HTTP response means the endpoint is reachable;
+        // 401/403 means the key is rejected.
+        let response = self
+            .client
+            .get(self.config.api_base.clone())
+            .header("authorization", format!("Key {}", self.config.api_key))
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await;
+        match response {
+            Ok(response)
+                if response.status() == reqwest::StatusCode::UNAUTHORIZED
+                    || response.status() == reqwest::StatusCode::FORBIDDEN =>
+            {
+                ProviderHealth {
+                    ok: false,
+                    message: Some(format!(
+                        "fal.ai rejected the API key (HTTP {})",
+                        response.status().as_u16()
+                    )),
+                }
+            }
+            Ok(_) => ProviderHealth {
+                ok: true,
+                message: Some("fal.ai endpoint reachable".to_owned()),
+            },
+            Err(err) => ProviderHealth {
+                ok: false,
+                message: Some(redact_sensitive(
+                    &format!("fal.ai endpoint unreachable: {err}"),
+                    &self.config.api_key,
+                )),
+            },
         }
+    }
+
+    async fn active_handles(&self, run_id: &str) -> Vec<ProviderTaskHandle> {
+        self.in_flight
+            .lock()
+            .await
+            .get(run_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     async fn catalog(&self) -> ProviderResultValue<ProviderCatalog> {
@@ -233,6 +317,7 @@ impl Provider for FalProvider {
             amount: 0.0,
             currency: "USD".to_owned(),
             estimated: true,
+            unknown: true,
         })
     }
 
@@ -245,7 +330,36 @@ impl Provider for FalProvider {
     }
 
     async fn cancel(&self, handle: ProviderTaskHandle) -> ProviderResultValue<()> {
-        Err(ProviderError::CancelUnsupported(handle.provider_task_id))
+        // fal queue API: PUT {status_url}/cancel. provider_task_id holds the
+        // validated status URL for the in-flight request (HF-011).
+        let cancel_url = format!(
+            "{}/cancel",
+            handle.provider_task_id.trim_end_matches("/status")
+        );
+        drop(validate_callback_url(
+            cancel_url.clone(),
+            &self.config.api_base,
+        )?);
+        let response = self
+            .client
+            .put(cancel_url)
+            .header("authorization", format!("Key {}", self.config.api_key))
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+            .map_err(|err| {
+                ProviderError::RequestFailed(redact_sensitive(
+                    &err.to_string(),
+                    &self.config.api_key,
+                ))
+            })?;
+        if !response.status().is_success() {
+            return Err(ProviderError::RequestFailed(format!(
+                "fal cancel returned HTTP {}",
+                response.status().as_u16()
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -376,11 +490,6 @@ fn byte_array(value: &Value) -> Option<Vec<u8>> {
     })
 }
 
-fn required_string(params: &Value, key: &str) -> ProviderResultValue<String> {
-    optional_string(params, key)
-        .ok_or_else(|| ProviderError::InvalidRequest(format!("missing string param `{key}`")))
-}
-
 fn optional_string(params: &Value, key: &str) -> Option<String> {
     params
         .get(key)
@@ -470,258 +579,7 @@ fn truncate(value: &str, max_len: usize) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod tests;
 
-    fn request(capability: &str) -> ProviderRequest {
-        ProviderRequest {
-            provider: "fal".to_owned(),
-            capability: capability.to_owned(),
-            node_id: "image_node".to_owned(),
-            run_id: "run_1".to_owned(),
-            inputs: BTreeMap::new(),
-            params: json!({ "prompt": "a product image", "aspect_ratio": "1:1" }),
-        }
-    }
-
-    #[test]
-    fn fal_catalog_exposes_image_generation_only() {
-        let catalog = FalProvider::catalog_value();
-
-        assert!(catalog.capabilities.contains_key("image_generate"));
-        assert!(!catalog.capabilities.contains_key("text_to_video"));
-    }
-
-    #[tokio::test]
-    async fn fal_rejects_unsupported_capability() {
-        let provider = FalProvider::new(FalProviderConfig::new(
-            "test-key".to_owned(),
-            DEFAULT_FAL_API_BASE.to_owned(),
-            DEFAULT_FAL_IMAGE_MODEL.to_owned(),
-        ));
-
-        let err = provider
-            .invoke(request("text_to_video"))
-            .await
-            .expect_err("unsupported capability");
-
-        assert_eq!(
-            err,
-            ProviderError::UnsupportedCapability("text_to_video".to_owned())
-        );
-    }
-
-    #[tokio::test]
-    async fn fal_queue_image_generation_returns_remote_image()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let addr = listener.local_addr()?;
-        let server = tokio::spawn(async move {
-            serve_response(
-                &listener,
-                r#"{"request_id":"req_1","status_url":"http://ADDR/status","response_url":"http://ADDR/response"}"#,
-                addr,
-            )
-            .await?;
-            serve_response(
-                &listener,
-                r#"{"status":"COMPLETED","request_id":"req_1"}"#,
-                addr,
-            )
-            .await?;
-            serve_response(
-                &listener,
-                r#"{"images":[{"url":"https://cdn.example/fal.png","width":768,"height":768,"content_type":"image/png"}]}"#,
-                addr,
-            )
-            .await?;
-            Ok::<(), std::io::Error>(())
-        });
-        let provider = FalProvider::new(FalProviderConfig::new(
-            "test-key".to_owned(),
-            format!("http://{addr}"),
-            DEFAULT_FAL_IMAGE_MODEL.to_owned(),
-        ));
-
-        let result = provider
-            .invoke(request("image_generate"))
-            .await
-            .expect("fal image result");
-        server.await??;
-        let image = result.outputs.get("image").expect("image output");
-
-        assert_eq!(image.kind, ArtifactKind::Image);
-        assert_eq!(image.width, Some(768));
-        assert_eq!(image.height, Some(768));
-        assert!(matches!(image.content, ArtifactContent::RemoteUrl { .. }));
-        assert_eq!(image.meta["provider"], "fal");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn fal_errors_redact_api_key() -> Result<(), Box<dyn std::error::Error>> {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let addr = listener.local_addr()?;
-        let server = tokio::spawn(async move {
-            serve_status_response(
-                &listener,
-                401,
-                r#"{"detail":"FAL_KEY test-key was rejected"}"#,
-                addr,
-            )
-            .await?;
-            Ok::<(), std::io::Error>(())
-        });
-        let provider = FalProvider::new(FalProviderConfig::new(
-            "test-key".to_owned(),
-            format!("http://{addr}"),
-            DEFAULT_FAL_IMAGE_MODEL.to_owned(),
-        ));
-
-        let err = provider
-            .invoke(request("image_generate"))
-            .await
-            .expect_err("auth failure");
-        server.await??;
-        let message = err.to_string().to_lowercase();
-
-        assert!(message.contains("authentication"));
-        assert!(!message.contains("test-key"));
-        assert!(!message.contains("fal_key"));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn fal_rate_limit_errors_are_generic() -> Result<(), Box<dyn std::error::Error>> {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let addr = listener.local_addr()?;
-        let server = tokio::spawn(async move {
-            serve_status_response(
-                &listener,
-                429,
-                r#"{"detail":"Key test-key is over quota"}"#,
-                addr,
-            )
-            .await?;
-            Ok::<(), std::io::Error>(())
-        });
-        let provider = FalProvider::new(FalProviderConfig::new(
-            "test-key".to_owned(),
-            format!("http://{addr}"),
-            DEFAULT_FAL_IMAGE_MODEL.to_owned(),
-        ));
-
-        let err = provider
-            .invoke(request("image_generate"))
-            .await
-            .expect_err("rate limit failure");
-        server.await??;
-        let message = err.to_string().to_lowercase();
-
-        assert!(message.contains("rate limit"));
-        assert!(!message.contains("test-key"));
-        assert!(!message.contains("over quota"));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn fal_status_errors_redact_api_key() -> Result<(), Box<dyn std::error::Error>> {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let addr = listener.local_addr()?;
-        let server = tokio::spawn(async move {
-            serve_response(
-                &listener,
-                r#"{"request_id":"req_1","status_url":"http://ADDR/status","response_url":"http://ADDR/response"}"#,
-                addr,
-            )
-            .await?;
-            serve_response(
-                &listener,
-                r#"{"status":"FAILED","error":"Bearer test-key failed upstream"}"#,
-                addr,
-            )
-            .await?;
-            Ok::<(), std::io::Error>(())
-        });
-        let provider = FalProvider::new(FalProviderConfig::new(
-            "test-key".to_owned(),
-            format!("http://{addr}"),
-            DEFAULT_FAL_IMAGE_MODEL.to_owned(),
-        ));
-
-        let err = provider
-            .invoke(request("image_generate"))
-            .await
-            .expect_err("status failure");
-        server.await??;
-        let message = err.to_string().to_lowercase();
-
-        assert!(message.contains("provider message was redacted"));
-        assert!(!message.contains("test-key"));
-        assert!(!message.contains("bearer"));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn fal_rejects_cross_base_callback_urls() -> Result<(), Box<dyn std::error::Error>> {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let addr = listener.local_addr()?;
-        let server = tokio::spawn(async move {
-            serve_response(
-                &listener,
-                r#"{"request_id":"req_1","status_url":"https://evil.example/status","response_url":"https://evil.example/response"}"#,
-                addr,
-            )
-            .await?;
-            Ok::<(), std::io::Error>(())
-        });
-        let provider = FalProvider::new(FalProviderConfig::new(
-            "test-key".to_owned(),
-            format!("http://{addr}"),
-            DEFAULT_FAL_IMAGE_MODEL.to_owned(),
-        ));
-
-        let err = provider
-            .invoke(request("image_generate"))
-            .await
-            .expect_err("callback URL validation failure");
-        server.await??;
-
-        assert!(
-            err.to_string()
-                .contains("fal response has unexpected callback URL")
-        );
-        Ok(())
-    }
-
-    async fn serve_response(
-        listener: &tokio::net::TcpListener,
-        body: &str,
-        addr: std::net::SocketAddr,
-    ) -> std::io::Result<()> {
-        serve_status_response(listener, 200, body, addr).await
-    }
-
-    async fn serve_status_response(
-        listener: &tokio::net::TcpListener,
-        status: u16,
-        body: &str,
-        addr: std::net::SocketAddr,
-    ) -> std::io::Result<()> {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-        let (mut stream, _) = listener.accept().await?;
-        let mut buf = [0_u8; 2048];
-        let bytes_read = stream.read(&mut buf).await?;
-        assert!(bytes_read > 0);
-        let body = body.replace("ADDR", &addr.to_string());
-        let status_text = if status == 200 { "OK" } else { "Error" };
-        let response = format!(
-            "HTTP/1.1 {status} {status_text}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
-            body.len(),
-            body
-        );
-        stream.write_all(response.as_bytes()).await?;
-        Ok(())
-    }
-}
+#[cfg(test)]
+mod fingerprint_tests;

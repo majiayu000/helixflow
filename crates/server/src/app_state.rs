@@ -39,6 +39,7 @@ pub(crate) struct AppState {
 impl AppState {
     pub(crate) async fn open(events: EventBus) -> Result<Self, AppStateError> {
         let data_dir = default_data_dir();
+        eprintln!("helixflow data dir: {}", data_dir.display());
         let database_url = default_database_url(&data_dir);
         Self::open_in_data_dir(events, data_dir, database_url).await
     }
@@ -324,13 +325,13 @@ async fn persist_runtime_provider_status(
 }
 
 fn default_data_dir() -> PathBuf {
+    // A stable per-user location instead of the process cwd, so starting
+    // the server from a different directory no longer creates a second
+    // empty database (HF-032).
     std::env::var_os("HELIXFLOW_DATA_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::current_dir()
-                .unwrap_or_else(|_| std::env::temp_dir())
-                .join(".helixflow")
-        })
+        .or_else(|| std::env::home_dir().map(|home| home.join(".helixflow")))
+        .unwrap_or_else(|| std::env::temp_dir().join(".helixflow"))
 }
 
 fn default_database_url(data_dir: &std::path::Path) -> String {

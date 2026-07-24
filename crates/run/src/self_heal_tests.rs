@@ -275,6 +275,7 @@ impl Provider for CostedFailingProvider {
             amount: self.estimate_amount,
             currency: "USD".to_owned(),
             estimated: true,
+            unknown: false,
         })
     }
 

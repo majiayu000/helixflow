@@ -200,6 +200,22 @@ impl Store {
         .await?)
     }
 
+    pub async fn active_workspace_runs(&self, workspace_id: &str) -> StoreResult<Vec<RunRecord>> {
+        Ok(sqlx::query_as::<_, RunRecord>(
+            r#"
+            SELECT id, workspace_id, version_id, group_id, label, trigger, plan_json,
+                   estimate_json, status, error_json, started_at, ended_at, created_at,
+                   parent_run_id, attempt, force_rerun
+            FROM runs
+            WHERE workspace_id = ? AND status IN ('queued', 'estimating', 'running')
+            ORDER BY created_at, id
+            "#,
+        )
+        .bind(workspace_id)
+        .fetch_all(self.pool())
+        .await?)
+    }
+
     pub async fn latest_workspace_run(&self, workspace_id: &str) -> StoreResult<Option<RunRecord>> {
         Ok(sqlx::query_as::<_, RunRecord>(
             r#"

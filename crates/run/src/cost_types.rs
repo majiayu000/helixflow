@@ -34,6 +34,10 @@ pub struct CostSummary {
     pub amount: f64,
     pub currency: String,
     pub estimated: bool,
+    /// True when any contributing provider could not produce a trustworthy
+    /// amount. Unknown totals always require explicit confirmation (HF-004).
+    #[serde(default)]
+    pub unknown: bool,
 }
 
 #[derive(Debug, Clone)]

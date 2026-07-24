@@ -21,6 +21,7 @@ import {
   sendWorkspaceMessage,
   submitCanvasCommentOp as submitCanvasCommentOpRequest,
   undoWorkspaceVersion,
+  uploadWorkspaceImage,
 } from './api';
 import {
   applyRunEvent,
@@ -49,6 +50,7 @@ import {
   snapshotReady,
 } from './workspace-snapshot';
 import type { WorkbenchStore } from './store-types';
+import { createUploadImageAction } from './store-upload';
 import { WorkspaceActionGuard, WorkspaceChangedError } from './workspace-action-guard';
 
 export { applyRunEvent } from './store-events';
@@ -133,6 +135,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
   presenceByActor: {},
   state: null,
   editSession: null,
+  streamSeqs: {},
   workspaceGeneration: 0,
   activeWorkspaceId: null,
   bootstrap: async (workspaceId) => {
@@ -263,6 +266,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       throw normalized;
     }
   },
+  uploadImage: createUploadImageAction(set, get),
   sendMessage: async (text, canvasContext) => {
     const trimmed = text.trim();
     if (!trimmed) {
@@ -352,6 +356,12 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     if (!state) {
       return;
     }
+    set((current) => ({
+      streamSeqs: {
+        ...current.streamSeqs,
+        [event.run_id]: Math.max(current.streamSeqs[event.run_id] ?? 0, event.seq),
+      },
+    }));
     const needsSnapshot = shouldRefetchWorkspaceState(state, event);
     set({ state: applyRunEvent(state, event) });
     if (needsSnapshot) {

@@ -24,6 +24,7 @@ mod cost_gate;
 mod cost_types;
 mod error;
 mod executor;
+mod input_materialize;
 #[cfg(test)]
 mod invalid_media_tests;
 mod run_policy;
@@ -255,12 +256,71 @@ where
         self.events.clone()
     }
 
+    /// Enforce the one-active-run-per-workspace invariant at every entry
+    /// point (manual, agent, confirm, retry), not only the manual route
+    /// (HF-018). Runs sharing `group_id` (sweeps) are allowed together.
+    pub(crate) async fn ensure_workspace_not_busy(
+        &self,
+        workspace_id: &str,
+        group_id: Option<&str>,
+        exclude_run_id: Option<&str>,
+    ) -> RunResult<()> {
+        for run in self.store.active_workspace_runs(workspace_id).await? {
+            if Some(run.id.as_str()) == exclude_run_id {
+                continue;
+            }
+            if group_id.is_some() && run.group_id.as_deref() == group_id {
+                continue;
+            }
+            return Err(RunError::WorkspaceBusy {
+                workspace_id: workspace_id.to_owned(),
+                active_run_id: run.id,
+            });
+        }
+        Ok(())
+    }
+
     pub async fn interrupt_run(&self, run_id: &str) -> RunResult<()> {
-        let interrupts = self.interrupts.lock().await;
-        let interrupt = interrupts
-            .get(run_id)
-            .ok_or_else(|| RunError::RunNotActive(run_id.to_owned()))?;
-        interrupt.request();
+        {
+            let interrupts = self.interrupts.lock().await;
+            let interrupt = interrupts
+                .get(run_id)
+                .ok_or_else(|| RunError::RunNotActive(run_id.to_owned()))?;
+            interrupt.request();
+        }
+        // Also cancel remote paid work instead of only dropping the local
+        // future (HF-011). Failures are surfaced as run events so the UI
+        // never claims a remote task stopped when it did not.
+        let run = self.store.run(run_id).await?;
+        for handle in self.provider.active_handles(run_id).await {
+            match self.provider.cancel(handle.clone()).await {
+                Ok(()) => {
+                    self.emit(
+                        &run.workspace_id,
+                        run_id,
+                        "run.remote_cancelled",
+                        serde_json::json!({ "provider": handle.provider }),
+                    )
+                    .await?;
+                }
+                Err(err) => {
+                    eprintln!(
+                        "run `{run_id}`: remote cancel failed for provider `{}`: {err}",
+                        handle.provider
+                    );
+                    self.emit(
+                        &run.workspace_id,
+                        run_id,
+                        "run.remote_cancel_failed",
+                        serde_json::json!({
+                            "provider": handle.provider,
+                            "error": err.to_string(),
+                        }),
+                    )
+                    .await?;
+                }
+            }
+        }
         Ok(())
     }
 

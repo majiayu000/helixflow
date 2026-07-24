@@ -53,6 +53,7 @@ fn request(dir: &tempfile::TempDir) -> AgentSessionRequest {
         workspace_id: "ws_1".to_owned(),
         base_version_id: "ver_1".to_owned(),
         user_message: "make it shorter".to_owned(),
+        history: Vec::new(),
         graph: sample_graph(),
         provider_catalog: RuntimeProvider::mock().catalog_snapshot(),
         run_context: None,
@@ -68,6 +69,7 @@ fn chat_request(dir: &tempfile::TempDir) -> AgentSessionRequest {
         workspace_id: "ws_1".to_owned(),
         base_version_id: "ver_1".to_owned(),
         user_message: "你好，你是谁？".to_owned(),
+        history: Vec::new(),
         graph: sample_graph(),
         provider_catalog: RuntimeProvider::mock().catalog_snapshot(),
         run_context: None,
@@ -631,4 +633,34 @@ fn write_reply_to_path(out_dir: &Path) -> RuntimeResult<()> {
             .map_err(|err| RuntimeError::Failed(err.to_string()))?,
     )
     .map_err(|err| RuntimeError::Failed(err.to_string()))
+}
+
+#[test]
+fn prompt_stack_includes_conversation_history() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut req = chat_request(&dir);
+    req.history = vec![
+        crate::AgentHistoryMessage {
+            role: "user".to_owned(),
+            text: "写一个火箭发射的提示词".to_owned(),
+        },
+        crate::AgentHistoryMessage {
+            role: "agent".to_owned(),
+            text: "好的，这是提示词：火箭在黎明升空。".to_owned(),
+        },
+    ];
+    let session = create_session_contract(&req).expect("session");
+    let ctx = std::fs::read_to_string(session.ctx_dir.join("instructions.md")).expect("ctx");
+    assert!(ctx.contains("Conversation history"));
+    assert!(ctx.contains("[user] 写一个火箭发射的提示词"));
+    assert!(ctx.contains("[agent] 好的，这是提示词：火箭在黎明升空。"));
+}
+
+#[test]
+fn prompt_stack_without_history_says_no_prior_turns() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let req = chat_request(&dir);
+    let session = create_session_contract(&req).expect("session");
+    let ctx = std::fs::read_to_string(session.ctx_dir.join("instructions.md")).expect("ctx");
+    assert!(ctx.contains("No prior turns"));
 }

@@ -32,7 +32,12 @@ type EventHandlers = {
   onEvent: (event: RunEventEnvelope) => void;
   onPresence?: (presence: CanvasPresence) => void;
   onStatus: (status: ConnectionStatus) => void;
+  /** Last seq of the primary (currently displayed) run stream. */
   getLastSeq?: () => number;
+  /** Last seq per event stream (run or agent session); HF-012. */
+  getStreamSeq?: (runId: string) => number;
+  /** Whether the stream is the primary run whose gaps REST catch-up repairs. */
+  isPrimaryStream?: (runId: string) => boolean;
 };
 
 const RECONNECT_DELAY_MS = 1000;
@@ -49,6 +54,39 @@ export async function fetchWorkspaceState(
   }
 
   return WorkbenchStateSchema.parse(await response.json());
+}
+
+export type UploadedImage = {
+  id: string;
+  storageUri: string;
+  filename: string;
+  mime: string;
+};
+
+export async function uploadWorkspaceImage(
+  workspaceId: string,
+  file: File,
+): Promise<UploadedImage> {
+  const body = new FormData();
+  body.append('file', file, file.name);
+  const response = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/uploads`, {
+    method: 'POST',
+    body,
+  });
+  if (!response.ok) {
+    throw new Error(`image upload failed: ${response.status}`);
+  }
+
+  return (await response.json()) as UploadedImage;
+}
+
+export async function fetchArtifactText(outputId: string): Promise<string> {
+  const response = await fetch(`/api/artifacts/${encodeURIComponent(outputId)}/content`);
+  if (!response.ok) {
+    throw new Error(`artifact content request failed: ${response.status}`);
+  }
+
+  return response.text();
 }
 
 export async function fetchWorkspaceCanvas(
@@ -555,9 +593,16 @@ export function connectWorkspaceEvents(
     }, RECONNECT_DELAY_MS);
   };
 
+  const streamSeq = (runId: string) =>
+    handlers.getStreamSeq?.(runId) ?? (handlers.isPrimaryStream?.(runId) !== false ? lastSeq() : 0);
+  const isPrimary = (runId: string) => handlers.isPrimaryStream?.(runId) ?? true;
+
   const handleEvent = async (event: RunEventEnvelope) => {
-    if (event.seq <= lastSeq()) return;
-    if (event.seq > lastSeq() + 1) {
+    // Each run and agent session numbers its events from 1 (HF-012); dedupe
+    // and gap-detect per stream so a second stream's legitimate low seq is
+    // never dropped against another stream's cursor.
+    if (event.seq <= streamSeq(event.run_id)) return;
+    if (isPrimary(event.run_id) && event.seq > streamSeq(event.run_id) + 1) {
       try {
         await fetchMissingEvents();
       } catch {
@@ -565,8 +610,8 @@ export function connectWorkspaceEvents(
         socket?.close();
         return;
       }
-      if (event.seq <= lastSeq()) return;
-      if (event.seq > lastSeq() + 1) {
+      if (event.seq <= streamSeq(event.run_id)) return;
+      if (event.seq > streamSeq(event.run_id) + 1) {
         handlers.onStatus('offline');
         socket?.close();
         return;

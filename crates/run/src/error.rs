@@ -35,6 +35,10 @@ pub enum RunError {
         param: String,
     },
     RunNotActive(String),
+    WorkspaceBusy {
+        workspace_id: String,
+        active_run_id: String,
+    },
     UnsupportedBuiltin(String),
     TaskJoin(String),
 }
@@ -76,6 +80,13 @@ impl fmt::Display for RunError {
                 write!(f, "missing builtin param `{param}` for node `{node_id}`")
             }
             Self::RunNotActive(run_id) => write!(f, "run is not active: {run_id}"),
+            Self::WorkspaceBusy {
+                workspace_id,
+                active_run_id,
+            } => write!(
+                f,
+                "workspace `{workspace_id}` already has active run `{active_run_id}`"
+            ),
             Self::UnsupportedBuiltin(node_type) => {
                 write!(f, "unsupported builtin node type: {node_type}")
             }

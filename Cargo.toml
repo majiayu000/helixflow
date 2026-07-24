@@ -18,7 +18,7 @@ repository = "https://github.com/majiayu000/helixflow"
 [workspace.dependencies]
 anyhow = "1"
 async-trait = "0.1"
-axum = { version = "0.8", features = ["ws"] }
+axum = { version = "0.8", features = ["ws", "multipart"] }
 base64 = "0.22"
 futures-util = "0.3"
 helixflow-gateway = { path = "crates/gateway" }
@@ -32,5 +32,6 @@ serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
 tokio = { version = "1", features = ["io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
+tower-http = { version = "0.6", features = ["fs"] }
 tokio-tungstenite = "0.29"
 uuid = { version = "1", features = ["v7", "serde"] }

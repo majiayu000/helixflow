@@ -1071,7 +1071,10 @@ describe('App', () => {
     );
 
     expect(markup).toContain('artifact-stage');
-    expect(markup).toContain('Artifact: Vertical teaser');
+    // HF-023: text previews load the real artifact bytes from the content
+    // API instead of rendering the metadata summary inline.
+    expect(markup).toContain('Loading artifact content');
+    expect(markup).not.toContain('Artifact: Vertical teaser');
     expect(markup).toContain('canvas-grid');
     expect(markup).toContain('node-artifact--selected');
   });

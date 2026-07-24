@@ -141,6 +141,36 @@ impl Store {
         .await?)
     }
 
+    /// Real per-workspace message stats for list summaries (HF-026).
+    pub async fn workspace_message_stats(
+        &self,
+        workspace_id: &str,
+    ) -> StoreResult<(i64, Option<String>)> {
+        let count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM messages
+            WHERE workspace_id = ? AND role = 'user'
+            "#,
+        )
+        .bind(workspace_id)
+        .fetch_one(self.pool())
+        .await?;
+        let first: Option<String> = sqlx::query_scalar(
+            r#"
+            SELECT text
+            FROM messages
+            WHERE workspace_id = ? AND role = 'user' AND text IS NOT NULL
+            ORDER BY created_at, id
+            LIMIT 1
+            "#,
+        )
+        .bind(workspace_id)
+        .fetch_optional(self.pool())
+        .await?;
+        Ok((count, first))
+    }
+
     pub async fn versions_for_workspace(
         &self,
         workspace_id: &str,

@@ -660,6 +660,7 @@ impl Provider for FailingProvider {
             amount: 0.0,
             currency: "USD".to_owned(),
             estimated: true,
+            unknown: false,
         })
     }
 

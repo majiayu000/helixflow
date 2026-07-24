@@ -22,6 +22,7 @@ mod run_records;
 #[cfg(test)]
 mod run_records_tests;
 mod sweep_records;
+mod upload_records;
 mod version_file_reference_records;
 #[cfg(test)]
 mod version_file_reference_records_tests;
@@ -37,6 +38,7 @@ pub use canvas_comment_records::*;
 pub use node_cache_records::*;
 pub use proposal_records::*;
 pub use run_records::*;
+pub use upload_records::*;
 pub use version_file_reference_records::*;
 pub use workspace_initialization_records::*;
 pub use workspace_records::*;
@@ -216,6 +218,12 @@ impl Store {
 
     pub async fn run_migrations(&self) -> StoreResult<()> {
         sqlx::migrate!("./migrations").run(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Cheap readiness probe: verifies the database answers queries.
+    pub async fn ping(&self) -> StoreResult<()> {
+        sqlx::query("SELECT 1").execute(self.pool()).await?;
         Ok(())
     }
 

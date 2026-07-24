@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use crate::{
     ArtifactContent, ArtifactKind, ArtifactPayload, CostEstimate, Provider, ProviderCapability,
     ProviderCatalog, ProviderError, ProviderHealth, ProviderRequest, ProviderResult,
-    ProviderResultValue, ProviderTaskHandle,
+    ProviderResultValue, ProviderTaskHandle, wired_or_param_string,
 };
 
 const DEFAULT_ATLAS_API_BASE: &str = "https://api.atlascloud.ai/v1";
@@ -41,6 +41,8 @@ impl ApiProviderConfig {
 pub struct AtlasProvider {
     config: ApiProviderConfig,
     client: reqwest::Client,
+    /// In-flight remote prediction ids by run id (HF-011).
+    in_flight: std::sync::Arc<tokio::sync::Mutex<BTreeMap<String, Vec<ProviderTaskHandle>>>>,
 }
 
 impl AtlasProvider {
@@ -48,13 +50,44 @@ impl AtlasProvider {
         let api_base =
             std::env::var("ATLAS_API_BASE").unwrap_or_else(|_| DEFAULT_ATLAS_API_BASE.to_owned());
         let api_key = atlas_api_key(&api_base)?;
-        Some(Self::new(ApiProviderConfig::atlas(api_key, api_base)))
+        let config = ApiProviderConfig::atlas(api_key, api_base);
+        // Reject unparseable header configuration at startup instead of
+        // silently dropping it and failing with an auth error at run time
+        // (HF-037).
+        if let Err(message) = validate_header_config(&config) {
+            eprintln!("[ATLAS CONFIG ERROR] {message}; Atlas provider disabled");
+            return None;
+        }
+        Some(Self::new(config))
     }
 
     pub fn new(config: ApiProviderConfig) -> Self {
         Self {
             config,
             client: reqwest::Client::new(),
+            in_flight: std::sync::Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
+        }
+    }
+
+    async fn register_in_flight(&self, run_id: &str, prediction_id: &str) {
+        self.in_flight
+            .lock()
+            .await
+            .entry(run_id.to_owned())
+            .or_default()
+            .push(ProviderTaskHandle {
+                provider: self.config.provider_id.to_owned(),
+                provider_task_id: prediction_id.to_owned(),
+            });
+    }
+
+    async fn clear_in_flight(&self, run_id: &str, prediction_id: &str) {
+        let mut in_flight = self.in_flight.lock().await;
+        if let Some(handles) = in_flight.get_mut(run_id) {
+            handles.retain(|handle| handle.provider_task_id != prediction_id);
+            if handles.is_empty() {
+                in_flight.remove(run_id);
+            }
         }
     }
 
@@ -158,7 +191,7 @@ impl AtlasProvider {
     }
 
     async fn invoke_chat(&self, req: ProviderRequest) -> ProviderResultValue<ProviderResult> {
-        let prompt = required_string(&req.params, "prompt")?;
+        let prompt = wired_or_param_string(&req, "text", "prompt")?;
         let model = optional_string(&req.params, "model")
             .unwrap_or_else(|| "deepseek-ai/DeepSeek-V3-0324".to_owned());
         let mut messages = Vec::new();
@@ -205,7 +238,7 @@ impl AtlasProvider {
     }
 
     async fn invoke_image(&self, req: ProviderRequest) -> ProviderResultValue<ProviderResult> {
-        let prompt = required_string(&req.params, "prompt")?;
+        let prompt = wired_or_param_string(&req, "prompt", "prompt")?;
         let model = optional_string(&req.params, "model")
             .unwrap_or_else(|| "google/nano-banana-2/text-to-image".to_owned());
         let response = self
@@ -232,7 +265,7 @@ impl AtlasProvider {
     }
 
     async fn invoke_video(&self, req: ProviderRequest) -> ProviderResultValue<ProviderResult> {
-        let prompt = required_string(&req.params, "prompt")?;
+        let prompt = wired_or_param_string(&req, "prompt", "prompt")?;
         let model = optional_string(&req.params, "model")
             .unwrap_or_else(|| "bytedance/seedance-v1.5-pro/text-to-video-fast".to_owned());
         let duration = req
@@ -259,7 +292,10 @@ impl AtlasProvider {
                 ProviderError::InvalidResponse("video response missing data.id".to_owned())
             })?
             .to_owned();
-        let completed = self.poll_prediction(&prediction_id).await?;
+        self.register_in_flight(&req.run_id, &prediction_id).await;
+        let completed = self.poll_prediction(&prediction_id).await;
+        self.clear_in_flight(&req.run_id, &prediction_id).await;
+        let completed = completed?;
         let output = first_output(&completed)?;
         let mut result = remote_output_result(
             "video",
@@ -317,11 +353,59 @@ impl Provider for AtlasProvider {
         self.config.provider_id
     }
 
-    async fn health(&self) -> ProviderHealth {
-        ProviderHealth {
-            ok: true,
-            message: Some("Atlas API provider configured".to_owned()),
+    fn config_fingerprint(&self, _provider_id: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"atlas-catalog-v1");
+        hasher.update(self.config.api_base.as_bytes());
+        hasher.update([0]);
+        hasher.update(self.config.account_id.as_deref().unwrap_or("").as_bytes());
+        hasher.update([0]);
+        if let Some((name, _)) = &self.config.extra_header {
+            hasher.update(name.as_bytes());
         }
+        format!("sha256:{:x}", hasher.finalize())
+    }
+
+    async fn health(&self) -> ProviderHealth {
+        // Real reachability + auth probe against the OpenAI-compatible
+        // models endpoint instead of "key env var is set" (HF-010).
+        let response = self
+            .client
+            .get(format!("{}/models", self.llm_api_base()))
+            .bearer_auth(&self.config.api_key)
+            .headers(self.extra_headers())
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await;
+        match response {
+            Ok(response) if response.status().is_success() => ProviderHealth {
+                ok: true,
+                message: Some("Atlas API reachable".to_owned()),
+            },
+            Ok(response) => ProviderHealth {
+                ok: false,
+                message: Some(format!(
+                    "Atlas API returned HTTP {}",
+                    response.status().as_u16()
+                )),
+            },
+            Err(err) => ProviderHealth {
+                ok: false,
+                message: Some(crate::safe_provider_message(&format!(
+                    "Atlas API unreachable: {err}"
+                ))),
+            },
+        }
+    }
+
+    async fn active_handles(&self, run_id: &str) -> Vec<ProviderTaskHandle> {
+        self.in_flight
+            .lock()
+            .await
+            .get(run_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     async fn catalog(&self) -> ProviderResultValue<ProviderCatalog> {
@@ -340,6 +424,7 @@ impl Provider for AtlasProvider {
             amount: 0.0,
             currency: "USD".to_owned(),
             estimated: true,
+            unknown: true,
         })
     }
 
@@ -381,7 +466,10 @@ fn single_output_result(output_name: &str, payload: ArtifactPayload) -> Provider
         cost: CostEstimate {
             amount: 0.0,
             currency: "USD".to_owned(),
-            estimated: false,
+            // Atlas does not report per-call cost; record the charge as
+            // unknown instead of a fake confirmed $0 (HF-004).
+            estimated: true,
+            unknown: true,
         },
     }
 }
@@ -406,11 +494,6 @@ fn remote_output_result(
             meta,
         },
     )
-}
-
-fn required_string(params: &Value, key: &str) -> ProviderResultValue<String> {
-    optional_string(params, key)
-        .ok_or_else(|| ProviderError::InvalidRequest(format!("missing string param `{key}`")))
 }
 
 fn optional_string(params: &Value, key: &str) -> Option<String> {
@@ -466,6 +549,23 @@ fn env_duration_secs(key: &str, default_secs: u64) -> Duration {
         .and_then(|value| value.parse::<u64>().ok())
         .map(Duration::from_secs)
         .unwrap_or_else(|| Duration::from_secs(default_secs))
+}
+
+fn validate_header_config(config: &ApiProviderConfig) -> Result<(), String> {
+    if let Some(account_id) = &config.account_id
+        && reqwest::header::HeaderValue::from_str(account_id).is_err()
+    {
+        return Err("ATLAS account id is not a valid header value".to_owned());
+    }
+    if let Some((name, value)) = &config.extra_header {
+        if reqwest::header::HeaderName::from_bytes(name.as_bytes()).is_err() {
+            return Err(format!("ATLAS extra header name `{name}` is invalid"));
+        }
+        if reqwest::header::HeaderValue::from_str(value).is_err() {
+            return Err(format!("ATLAS extra header `{name}` has an invalid value"));
+        }
+    }
+    Ok(())
 }
 
 fn atlas_extra_header() -> Option<(String, String)> {
@@ -546,6 +646,7 @@ mod tests {
                 node_id: "node".to_owned(),
                 run_id: "run".to_owned(),
                 inputs: BTreeMap::new(),
+                input_texts: BTreeMap::new(),
                 params: json!({ "prompt": "hello" }),
             };
             let estimate = provider.estimate(req).await.expect("estimate");
@@ -586,6 +687,7 @@ mod tests {
                 node_id: "node".to_owned(),
                 run_id: "run".to_owned(),
                 inputs: BTreeMap::new(),
+                input_texts: BTreeMap::new(),
                 params: json!({ "prompt": "hello", "aspect_ratio": "1:1" }),
             })
             .await;
@@ -597,5 +699,19 @@ mod tests {
         assert!(!message.contains("bearer"));
         assert!(!message.contains("test-key"));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod header_config_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_extra_header_is_rejected_at_startup() {
+        let mut config = ApiProviderConfig::atlas("key".to_owned(), "https://api.test".to_owned());
+        config.extra_header = Some(("bad header\n".to_owned(), "v".to_owned()));
+        assert!(validate_header_config(&config).is_err());
+        config.extra_header = Some(("x-team".to_owned(), "ok".to_owned()));
+        assert!(validate_header_config(&config).is_ok());
     }
 }

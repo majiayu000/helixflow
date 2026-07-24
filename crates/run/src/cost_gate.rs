@@ -576,7 +576,7 @@ where
         })
     }
 
-    async fn estimate_created_run(
+    pub(crate) async fn estimate_created_run(
         &self,
         workspace_id: &str,
         run_id: &str,
@@ -598,6 +598,7 @@ where
                 node_id: step.node_id.clone(),
                 run_id: run_id.to_owned(),
                 inputs: BTreeMap::<String, ArtifactRef>::new(),
+                input_texts: BTreeMap::new(),
                 params: step.params.clone(),
             };
             let estimate = tokio::select! {
@@ -638,7 +639,9 @@ where
                     provider,
                     amount: cost.amount,
                     currency: &cost.currency,
-                    estimated: false,
+                    // Providers that cannot report actual cost keep the
+                    // estimated flag so the ledger never fakes a confirmed $0.
+                    estimated: cost.estimated,
                 })
                 .await?;
         }
@@ -701,6 +704,7 @@ impl CostSummary {
             amount: 0.0,
             currency: "USD".to_owned(),
             estimated: true,
+            unknown: false,
         }
     }
 
@@ -709,6 +713,7 @@ impl CostSummary {
             amount: estimate.amount,
             currency: estimate.currency.clone(),
             estimated: estimate.estimated,
+            unknown: estimate.unknown,
         }
     }
 
@@ -725,6 +730,7 @@ impl CostSummary {
 
         self.amount += cost.amount;
         self.estimated &= cost.estimated;
+        self.unknown |= cost.unknown;
         Ok(())
     }
 }

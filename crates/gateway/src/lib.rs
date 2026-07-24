@@ -26,7 +26,19 @@ pub type ProviderResultValue<T> = Result<T, ProviderError>;
 #[async_trait]
 pub trait Provider: Send + Sync {
     fn id(&self) -> &str;
+    /// Fingerprint of the effective configuration (models, API base, catalog
+    /// revision) for the given provider id. Cached artifacts are keyed on
+    /// this so config changes invalidate stale entries (HF-021).
+    fn config_fingerprint(&self, _provider_id: &str) -> String {
+        String::new()
+    }
     async fn health(&self) -> ProviderHealth;
+    /// Remote task handles currently in flight for the given run, so an
+    /// interrupt can cancel remote paid work instead of only dropping the
+    /// local future (HF-011).
+    async fn active_handles(&self, _run_id: &str) -> Vec<ProviderTaskHandle> {
+        Vec::new()
+    }
     async fn catalog(&self) -> ProviderResultValue<ProviderCatalog>;
     async fn estimate(&self, req: ProviderRequest) -> ProviderResultValue<CostEstimate>;
     async fn invoke(&self, req: ProviderRequest) -> ProviderResultValue<ProviderResult>;
@@ -97,6 +109,11 @@ pub struct ProviderRequest {
     pub node_id: String,
     pub run_id: String,
     pub inputs: BTreeMap<String, ArtifactRef>,
+    /// Upstream text inputs materialized by the executor, keyed by input
+    /// port. Providers must prefer these over hand-typed params so graph
+    /// wiring has real semantics (HF-003).
+    #[serde(default)]
+    pub input_texts: BTreeMap<String, String>,
     pub params: Value,
 }
 
@@ -153,6 +170,10 @@ pub struct CostEstimate {
     pub amount: f64,
     pub currency: String,
     pub estimated: bool,
+    /// True when the provider cannot produce a trustworthy amount. Unknown
+    /// costs must never be treated as free (HF-004).
+    #[serde(default)]
+    pub unknown: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -298,6 +319,7 @@ impl Provider for MockProvider {
             amount: 0.0,
             currency: "USD".to_owned(),
             estimated: true,
+            unknown: false,
         })
     }
 
@@ -317,6 +339,7 @@ impl Provider for MockProvider {
                 amount: 0.0,
                 currency: "USD".to_owned(),
                 estimated: false,
+                unknown: false,
             },
         })
     }
@@ -452,6 +475,34 @@ fn is_safe_provider_id(value: &str) -> bool {
         })
 }
 
+/// Resolve a provider text argument: a wired upstream input on `input_port`
+/// wins over the hand-typed `param_key`; missing both is an invalid request.
+pub fn wired_or_param_string(
+    req: &ProviderRequest,
+    input_port: &str,
+    param_key: &str,
+) -> ProviderResultValue<String> {
+    if let Some(text) = req
+        .input_texts
+        .get(input_port)
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(text.to_owned());
+    }
+    req.params
+        .get(param_key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            ProviderError::InvalidRequest(format!(
+                "missing wired input `{input_port}` and string param `{param_key}`"
+            ))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -464,6 +515,7 @@ mod tests {
             node_id: "n4".to_owned(),
             run_id: "run_123".to_owned(),
             inputs: BTreeMap::new(),
+            input_texts: BTreeMap::new(),
             params: json!({
                 "prompt": "A clean product shot",
                 "duration_sec": 5,
@@ -478,11 +530,38 @@ mod tests {
     }
 
     #[test]
+    fn wired_input_wins_over_param() {
+        let mut req = request("prompt_writer");
+        req.params = json!({ "prompt": "typed prompt" });
+        req.input_texts
+            .insert("text".to_owned(), "wired text".to_owned());
+        let value = wired_or_param_string(&req, "text", "prompt").expect("resolve");
+        assert_eq!(value, "wired text");
+    }
+
+    #[test]
+    fn param_is_fallback_when_no_wired_input() {
+        let mut req = request("prompt_writer");
+        req.params = json!({ "prompt": "typed prompt" });
+        let value = wired_or_param_string(&req, "text", "prompt").expect("resolve");
+        assert_eq!(value, "typed prompt");
+    }
+
+    #[test]
+    fn missing_wired_input_and_param_is_invalid_request() {
+        let mut req = request("prompt_writer");
+        req.params = json!({});
+        let err = wired_or_param_string(&req, "text", "prompt").expect_err("must fail");
+        assert!(matches!(err, ProviderError::InvalidRequest(_)));
+    }
+
+    #[test]
     fn serializes_cost_estimate_boundary() {
         let estimate = CostEstimate {
             amount: 0.42,
             currency: "USD".to_string(),
             estimated: true,
+            unknown: false,
         };
 
         let encoded = serde_json::to_value(&estimate).expect("serialize estimate");

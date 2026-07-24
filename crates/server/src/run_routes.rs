@@ -64,6 +64,7 @@ pub(crate) async fn queue_workspace_run(
     let graph = read_version_graph(&state.data_dir, &version)
         .await
         .map_err(|error| ApiError::server_error(error.to_string()))?;
+    crate::capability_preflight::preflight_provider_capabilities(&state, &provider, &graph)?;
     let force_rerun = body.map(|Json(body)| body.force_rerun).unwrap_or(false);
 
     let threshold =
