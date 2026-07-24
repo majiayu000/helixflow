@@ -163,8 +163,11 @@ where
             input_hashes.insert(port.clone(), artifact_fingerprint(&artifact)?);
         }
         let input_hash_json = serde_json::to_string(&input_hashes)?;
+        // schemaVersion 2: cache keys include the effective provider config
+        // so model/API-base changes invalidate stale entries (HF-021).
         let material = canonicalize_value(&json!({
-            "schemaVersion": 1,
+            "schemaVersion": 2,
+            "providerConfig": self.provider.config_fingerprint(&provider),
             "provider": &provider,
             "capability": step.capability.as_deref(),
             "nodeType": &step.node_type,

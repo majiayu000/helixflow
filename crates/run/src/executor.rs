@@ -478,6 +478,22 @@ where
                         node_id: step.node_id.clone(),
                         param: "storage_uri".to_owned(),
                     })?;
+                // Resolve upload://{id} references to the persisted local
+                // file so image inputs are real bytes, not opaque strings
+                // (HF-008).
+                let resolved = if let Some(upload_id) = storage_uri.strip_prefix("upload://") {
+                    let upload = self.store.upload(upload_id).await?;
+                    let full_path = self.artifact_root.join(&upload.file_path);
+                    if tokio::fs::metadata(&full_path).await.is_err() {
+                        return Err(RunError::ArtifactPersistence(format!(
+                            "uploaded image `{upload_id}` file is missing: {}",
+                            upload.file_path
+                        )));
+                    }
+                    Some(upload)
+                } else {
+                    None
+                };
                 let artifact = self
                     .store
                     .create_artifact(NewArtifact {
@@ -486,9 +502,12 @@ where
                         run_step_id: Some(&record.id),
                         node_id: Some(&step.node_id),
                         kind: "image",
-                        storage_uri,
-                        sha256: None,
-                        mime: None,
+                        storage_uri: resolved
+                            .as_ref()
+                            .map(|upload| upload.file_path.as_str())
+                            .unwrap_or(storage_uri),
+                        sha256: resolved.as_ref().map(|upload| upload.sha256.as_str()),
+                        mime: resolved.as_ref().and_then(|upload| upload.mime.as_deref()),
                         width: None,
                         height: None,
                         duration_ms: None,
@@ -737,59 +756,4 @@ fn artifact_kind_label(kind: ArtifactKind) -> &'static str {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-
-    use helixflow_graph::{ExecutionPlan, ExecutionStep};
-    use serde_json::json;
-
-    use super::*;
-
-    #[test]
-    fn dag_counts_shared_upstream_once_and_releases_join_node_last() {
-        let plan = ExecutionPlan {
-            schema_version: 1,
-            version_id: "ver".to_owned(),
-            steps: vec![
-                step("a", []),
-                step("b", [("text", ["a", "text"])]),
-                step("c", [("text", ["a", "text"])]),
-                step(
-                    "d",
-                    [
-                        ("left", ["b", "prompt"]),
-                        ("right", ["c", "prompt"]),
-                        ("right_again", ["c", "alt"]),
-                    ],
-                ),
-            ],
-        };
-
-        let dag = StepDag::from_plan(&plan).expect("dag");
-
-        assert_eq!(dag.upstream_counts, vec![0, 1, 1, 2]);
-        assert_eq!(dag.initial_ready(), VecDeque::from([0]));
-        assert_eq!(dag.downstream[0], vec![1, 2]);
-        assert_eq!(dag.downstream[1], vec![3]);
-        assert_eq!(dag.downstream[2], vec![3]);
-    }
-
-    fn step<const N: usize>(node_id: &str, inputs: [(&str, [&str; 2]); N]) -> ExecutionStep {
-        ExecutionStep {
-            node_id: node_id.to_owned(),
-            node_type: "test.node".to_owned(),
-            provider: None,
-            capability: None,
-            inputs: inputs
-                .into_iter()
-                .map(|(port, source)| {
-                    (
-                        port.to_owned(),
-                        [source[0].to_owned(), source[1].to_owned()],
-                    )
-                })
-                .collect::<BTreeMap<_, _>>(),
-            params: json!({}),
-        }
-    }
-}
+mod tests;

@@ -339,3 +339,211 @@ impl Provider for BlockingProvider {
         self.inner.cancel(handle).await
     }
 }
+
+/// Delegates to mock but reports an unknown estimate, like Atlas/FAL (HF-004).
+#[derive(Clone, Default)]
+struct UnknownCostProvider {
+    inner: MockProvider,
+    invoked: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[async_trait]
+impl Provider for UnknownCostProvider {
+    fn id(&self) -> &str {
+        self.inner.id()
+    }
+
+    async fn health(&self) -> ProviderHealth {
+        self.inner.health().await
+    }
+
+    async fn catalog(&self) -> ProviderResultValue<ProviderCatalog> {
+        self.inner.catalog().await
+    }
+
+    async fn estimate(&self, req: ProviderRequest) -> ProviderResultValue<CostEstimate> {
+        let mut estimate = self.inner.estimate(req).await?;
+        estimate.unknown = true;
+        Ok(estimate)
+    }
+
+    async fn invoke(&self, req: ProviderRequest) -> ProviderResultValue<ProviderResult> {
+        self.invoked
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.inner.invoke(req).await
+    }
+
+    async fn cancel(&self, handle: ProviderTaskHandle) -> ProviderResultValue<()> {
+        self.inner.cancel(handle).await
+    }
+}
+
+#[tokio::test]
+async fn manual_run_with_unknown_cost_waits_for_confirmation() {
+    let (store, _dir) = open_background_store().await;
+    let (workspace_id, version_id) = background_workspace_version(&store).await;
+    let provider = UnknownCostProvider::default();
+    let invoked = provider.invoked.clone();
+    let service = RunService::with_provider(store.clone(), provider);
+
+    let outcome = service
+        .start_manual_run(ManualRunRequest {
+            workspace_id,
+            version_id,
+            group_id: None,
+            label: "Unknown cost manual".to_owned(),
+            provider: "mock".to_owned(),
+            graph: background_graph(),
+            force_rerun: false,
+        })
+        .await
+        .expect("start manual run");
+
+    assert_eq!(outcome.run.status, "waiting_confirmation");
+    let estimate: crate::CostSummary =
+        serde_json::from_str(outcome.run.estimate_json.as_deref().expect("estimate json"))
+            .expect("estimate summary");
+    assert!(estimate.unknown);
+    assert!(
+        !invoked.load(std::sync::atomic::Ordering::SeqCst),
+        "provider must not be invoked before confirmation"
+    );
+    assert_eq!(
+        store.run(&outcome.run.id).await.expect("run").status,
+        "waiting_confirmation"
+    );
+}
+
+#[tokio::test]
+async fn manual_run_with_known_free_cost_still_starts_immediately() {
+    let (store, _dir) = open_background_store().await;
+    let (workspace_id, version_id) = background_workspace_version(&store).await;
+    let service = RunService::with_provider(store.clone(), MockProvider::new());
+
+    let outcome = service
+        .start_manual_run(ManualRunRequest {
+            workspace_id,
+            version_id,
+            group_id: None,
+            label: "Free manual".to_owned(),
+            provider: "mock".to_owned(),
+            graph: background_graph(),
+            force_rerun: false,
+        })
+        .await
+        .expect("start manual run");
+
+    assert_eq!(outcome.run.status, "queued");
+    wait_for_status(&store, &outcome.run.id, "succeeded").await;
+}
+
+#[test]
+fn unknown_cost_always_requires_confirmation() {
+    let summary = CostSummary {
+        amount: 0.0,
+        currency: "USD".to_owned(),
+        estimated: true,
+        unknown: true,
+    };
+    assert!(run_requires_confirmation(&summary).expect("confirmation decision"));
+    let known_free = CostSummary {
+        amount: 0.0,
+        currency: "USD".to_owned(),
+        estimated: true,
+        unknown: false,
+    };
+    assert!(!run_requires_confirmation(&known_free).expect("confirmation decision"));
+}
+
+/// Blocks like BlockingProvider but exposes a remote handle and records
+/// cancel calls (HF-011).
+#[derive(Clone, Default)]
+struct RemoteHandleProvider {
+    inner: BlockingProvider,
+    cancelled: Arc<std::sync::Mutex<Vec<ProviderTaskHandle>>>,
+}
+
+#[async_trait]
+impl Provider for RemoteHandleProvider {
+    fn id(&self) -> &str {
+        self.inner.id()
+    }
+
+    async fn health(&self) -> ProviderHealth {
+        self.inner.health().await
+    }
+
+    async fn active_handles(&self, run_id: &str) -> Vec<ProviderTaskHandle> {
+        vec![ProviderTaskHandle {
+            provider: "mock".to_owned(),
+            provider_task_id: format!("remote-{run_id}"),
+        }]
+    }
+
+    async fn catalog(&self) -> ProviderResultValue<ProviderCatalog> {
+        self.inner.catalog().await
+    }
+
+    async fn estimate(&self, req: ProviderRequest) -> ProviderResultValue<CostEstimate> {
+        self.inner.estimate(req).await
+    }
+
+    async fn invoke(&self, req: ProviderRequest) -> ProviderResultValue<ProviderResult> {
+        self.inner.invoke(req).await
+    }
+
+    async fn cancel(&self, handle: ProviderTaskHandle) -> ProviderResultValue<()> {
+        self.cancelled.lock().expect("cancel lock").push(handle);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn interrupt_cancels_remote_provider_tasks() {
+    let (store, _dir) = open_background_store().await;
+    let (workspace_id, version_id) = background_workspace_version(&store).await;
+    let provider = RemoteHandleProvider::default();
+    let blocking = provider.inner.clone();
+    let cancelled = provider.cancelled.clone();
+    let service = RunService::with_provider(store.clone(), provider);
+    let mut receiver = service.events().subscribe();
+
+    let outcome = service
+        .start_manual_run(ManualRunRequest {
+            workspace_id,
+            version_id,
+            group_id: None,
+            label: "Remote cancel".to_owned(),
+            provider: "mock".to_owned(),
+            graph: background_graph(),
+            force_rerun: false,
+        })
+        .await
+        .expect("start manual run");
+    blocking.wait_until_blocked().await;
+
+    service
+        .interrupt_run(&outcome.run.id)
+        .await
+        .expect("interrupt run");
+
+    let cancelled = cancelled.lock().expect("cancel lock").clone();
+    assert_eq!(cancelled.len(), 1);
+    assert_eq!(
+        cancelled[0].provider_task_id,
+        format!("remote-{}", outcome.run.id)
+    );
+    let mut saw_remote_cancel_event = false;
+    while let Ok(event) = receiver.try_recv() {
+        if event.ev == "run.remote_cancelled" {
+            saw_remote_cancel_event = true;
+        }
+    }
+    assert!(
+        saw_remote_cancel_event,
+        "remote cancel event must be emitted"
+    );
+
+    blocking.release();
+    wait_for_status(&store, &outcome.run.id, "interrupted").await;
+}

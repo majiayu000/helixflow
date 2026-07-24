@@ -406,3 +406,7 @@ mod parallel_tests;
 mod sweep_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod upload_input_tests;
+#[cfg(test)]
+mod wired_input_tests;

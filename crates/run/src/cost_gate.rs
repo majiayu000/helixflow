@@ -182,6 +182,8 @@ where
         run_id: &str,
     ) -> RunResult<(RunRecord, helixflow_graph::ExecutionPlan, RunInterrupt)> {
         let run = self.store.run(run_id).await?;
+        self.ensure_workspace_not_busy(&run.workspace_id, run.group_id.as_deref(), Some(&run.id))
+            .await?;
         if run.status != RunStatus::WaitingConfirmation.as_str() {
             return Err(RunError::InvalidRunStatus {
                 run_id: run.id,
@@ -463,6 +465,8 @@ where
         emit_requested: bool,
         force_rerun: bool,
     ) -> RunResult<PendingRun> {
+        self.ensure_workspace_not_busy(&request.workspace_id, request.group_id.as_deref(), None)
+            .await?;
         let plan =
             self.graph
                 .compile_plan(&request.graph, &request.version_id, &request.provider)?;

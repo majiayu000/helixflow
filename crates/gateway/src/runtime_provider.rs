@@ -154,12 +154,30 @@ impl Provider for RuntimeProvider {
         }
     }
 
+    fn config_fingerprint(&self, provider_id: &str) -> String {
+        match self {
+            Self::Mock(provider) => provider.config_fingerprint(provider_id),
+            Self::Atlas(provider) => provider.config_fingerprint(provider_id),
+            Self::Fal(provider) => provider.config_fingerprint(provider_id),
+            Self::Unavailable(provider) => provider.config_fingerprint(provider_id),
+        }
+    }
+
     async fn health(&self) -> ProviderHealth {
         match self {
             Self::Mock(provider) => provider.health().await,
             Self::Atlas(provider) => provider.health().await,
             Self::Fal(provider) => provider.health().await,
             Self::Unavailable(provider) => provider.health().await,
+        }
+    }
+
+    async fn active_handles(&self, run_id: &str) -> Vec<ProviderTaskHandle> {
+        match self {
+            Self::Mock(provider) => provider.active_handles(run_id).await,
+            Self::Atlas(provider) => provider.active_handles(run_id).await,
+            Self::Fal(provider) => provider.active_handles(run_id).await,
+            Self::Unavailable(provider) => provider.active_handles(run_id).await,
         }
     }
 

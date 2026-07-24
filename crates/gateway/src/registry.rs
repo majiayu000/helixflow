@@ -184,11 +184,26 @@ impl Provider for ProviderRegistry {
         "registry"
     }
 
+    fn config_fingerprint(&self, provider_id: &str) -> String {
+        self.providers
+            .get(provider_id)
+            .map(|provider| provider.config_fingerprint(provider_id))
+            .unwrap_or_default()
+    }
+
     async fn health(&self) -> ProviderHealth {
         ProviderHealth {
             ok: self.providers.values().any(RuntimeProvider::is_enabled),
             message: Some("provider registry ready".to_owned()),
         }
+    }
+
+    async fn active_handles(&self, run_id: &str) -> Vec<ProviderTaskHandle> {
+        let mut handles = Vec::new();
+        for provider in self.providers.values() {
+            handles.extend(provider.active_handles(run_id).await);
+        }
+        handles
     }
 
     async fn catalog(&self) -> ProviderResultValue<ProviderCatalog> {

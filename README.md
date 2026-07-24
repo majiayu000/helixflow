@@ -47,6 +47,37 @@ cargo check --workspace
 cd web && npm run build
 ```
 
+## Running
+
+Development (two processes, Vite proxies `/api` and `/ws`):
+
+```sh
+cargo run -p helixflow-server            # backend on 127.0.0.1:8787
+cd web && npm run dev                    # frontend on 127.0.0.1:5173
+```
+
+Production (single process serving API + built frontend):
+
+```sh
+cd web && npm run build
+HELIXFLOW_RUNTIME_PROVIDER=atlas cargo run --release -p helixflow-server
+# open http://127.0.0.1:8787/
+```
+
+Key environment variables:
+
+| Variable | Meaning |
+|---|---|
+| `HELIXFLOW_BIND_ADDR` | Listen address (default `127.0.0.1:8787`). Non-loopback requires `HELIXFLOW_AUTH_TOKEN`. |
+| `HELIXFLOW_AUTH_TOKEN` | Bearer/`?token=` auth for all REST/WS routes. |
+| `HELIXFLOW_RUNTIME_PROVIDER` | `atlas`, `fal`, or explicitly `mock` (dev/test). Unset fails closed. |
+| `HELIXFLOW_ENABLE_MOCK_PROVIDER` | Required to actually enable the `mock` provider. |
+| `HELIXFLOW_WEB_DIST` | Frontend build dir served by the backend (default `web/dist`). |
+| `ATLAS_API_KEY` / `FAL_KEY` | Provider credentials. |
+| `HELIXFLOW_AGENT_RUN_CONFIRMATION_THRESHOLD_USD` | Cost above which runs wait for confirmation (default 0). |
+
+Readiness: `GET /api/ready` checks database, storage, and provider health.
+
 ## Agent proposals and run confirmation
 
 Validated Agent graph proposals are applied atomically as immutable workflow
