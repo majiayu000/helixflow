@@ -1,6 +1,7 @@
+import { Profiler } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { GraphNodeState, WorkbenchState } from '../types';
+import type { CanvasPresence, GraphNodeState, WorkbenchState } from '../types';
 import { flushActions } from '../test-utils';
 import { GraphCanvas } from './graph-canvas';
 import { WorkflowNode } from './graph-canvas-node';
@@ -127,6 +128,32 @@ describe('GraphCanvas view-mode integration', () => {
     });
   });
 
+  it('does not rerender the graph for idle pointer movement', async () => {
+    const onRender = vi.fn();
+    const onPresenceChange = vi.fn<(presence: CanvasPresence) => void>();
+    await act(async () => {
+      renderer = create(
+        <Profiler id="graph-canvas" onRender={onRender}>
+          {canvasElement(true, onPresenceChange)}
+        </Profiler>,
+      );
+      await flushActions();
+    });
+    const renderCount = onRender.mock.calls.length;
+
+    await act(async () => {
+      section().props.onPointerMove(pointerEvent());
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    });
+
+    expect(onRender).toHaveBeenCalledTimes(renderCount);
+    expect(onPresenceChange).toHaveBeenCalledTimes(1);
+    expect(onPresenceChange.mock.calls[0]?.[0].cursor).toEqual({
+      x: expect.any(Number),
+      y: expect.any(Number),
+    });
+  });
+
   it('keeps an edit-mode connection rejection visible through the extracted controller', async () => {
     renderer = await renderCanvas(true);
     class TestElement {}
@@ -177,11 +204,15 @@ describe('GraphCanvas view-mode integration', () => {
     return next;
   }
 
-  function canvasElement(editable: boolean) {
+  function canvasElement(
+    editable: boolean,
+    onPresenceChange?: (presence: CanvasPresence) => void,
+  ) {
     return (
       <GraphCanvas
         graph={{ nodes: [viewModeNode()], edges: [] }}
         onCreateProposal={editable ? onCreateProposal : undefined}
+        onPresenceChange={onPresenceChange}
         outputs={[]}
         pendingProposal={null}
         run={run()}

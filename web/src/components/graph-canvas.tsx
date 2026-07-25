@@ -107,7 +107,8 @@ export function GraphCanvas({
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [selectionDrag, setSelectionDrag] = useState<SelectionDragState | null>(null);
   const [clipboardStatus, setClipboardStatus] = useState<string | null>(null);
-  const [localCursor, setLocalCursor] = useState<Point | null>(null);
+  const localCursorRef = useRef<Point | null>(null);
+  const presenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const drag = useRef<DragState | null>(null);
   const suppressNextClick = useRef(false);
   const sourceGraph = canvasGraph ?? graph;
@@ -203,6 +204,21 @@ export function GraphCanvas({
     versionId,
     viewZoom: view.z,
   });
+  const schedulePresence = useCallback(() => {
+    if (!onPresenceChange) return;
+    if (presenceTimerRef.current !== null) {
+      clearTimeout(presenceTimerRef.current);
+    }
+    presenceTimerRef.current = setTimeout(() => {
+      presenceTimerRef.current = null;
+      onPresenceChange({
+        actor: { actorId: 'local', displayName: 'Local user' },
+        cursor: localCursorRef.current,
+        selection: { nodeIds: selectedIdList, edgeIds: [] },
+        viewport: { x: view.x, y: view.y, zoom: view.z },
+      });
+    }, 180);
+  }, [onPresenceChange, selectedIdList, view.x, view.y, view.z]);
 
   useEffect(() => {
     setView(loadGraphCanvasView(workspaceId));
@@ -236,17 +252,14 @@ export function GraphCanvas({
   }, [onSelectionChange, selectedIdList]);
 
   useEffect(() => {
-    if (!onPresenceChange) return;
-    const timer = setTimeout(() => {
-      onPresenceChange({
-        actor: { actorId: 'local', displayName: 'Local user' },
-        cursor: localCursor,
-        selection: { nodeIds: selectedIdList, edgeIds: [] },
-        viewport: { x: view.x, y: view.y, zoom: view.z },
-      });
-    }, 180);
-    return () => clearTimeout(timer);
-  }, [localCursor, onPresenceChange, selectedIdList, view.x, view.y, view.z]);
+    schedulePresence();
+    return () => {
+      if (presenceTimerRef.current !== null) {
+        clearTimeout(presenceTimerRef.current);
+        presenceTimerRef.current = null;
+      }
+    };
+  }, [schedulePresence]);
 
   useEffect(() => {
     const current = canvasRef.current;
@@ -431,7 +444,8 @@ export function GraphCanvas({
         };
       }}
       onPointerMove={(event) => {
-        setLocalCursor(worldPointFromClient(event.clientX, event.clientY));
+        localCursorRef.current = worldPointFromClient(event.clientX, event.clientY);
+        schedulePresence();
         if (connection.drag?.pointerId === event.pointerId) {
           if (!capabilities.connect) {
             connection.setDrag(null);
