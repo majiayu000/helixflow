@@ -1224,3 +1224,35 @@ textarea:disabled {
   font-family: var(--font-mono);
   font-size: 10.5px;
 }
+
+@media (max-width: 900px) {
+  .wb-top {
+    height: auto;
+    flex-wrap: wrap;
+    padding: 10px;
+  }
+
+  .top-actions,
+  .endpoint-box {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .wb-body {
+    flex-direction: column;
+  }
+
+  .chat-column {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    height: min(42vh, 420px);
+    min-height: 0;
+    flex: 0 0 min(42vh, 420px);
+  }
+
+  .wb-chat {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+}
