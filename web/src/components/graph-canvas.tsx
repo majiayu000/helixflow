@@ -450,8 +450,9 @@ export function GraphCanvas({
           return;
         }
         if (selectionDrag?.pointerId === event.pointerId) {
+          const currentPoint = canvasLocalPoint(event);
           setSelectionDrag((current) =>
-            current ? { ...current, current: canvasLocalPoint(event) } : current,
+            current ? { ...current, current: currentPoint } : current,
           );
           return;
         }

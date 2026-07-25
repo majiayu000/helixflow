@@ -101,6 +101,32 @@ describe('GraphCanvas view-mode integration', () => {
     }));
   });
 
+  it('keeps selection drag coordinates after React releases the pointer event target', async () => {
+    renderer = await renderCanvas(true);
+    const start = pointerEvent();
+
+    await act(async () => {
+      section().props.onPointerDown(start);
+    });
+
+    const move = pointerEvent();
+    move.clientX = 80;
+    move.clientY = 60;
+
+    await act(async () => {
+      section().props.onPointerMove(move);
+      move.currentTarget = null;
+      await flushActions();
+    });
+
+    expect(renderer.root.findByProps({ className: 'selection-rect' }).props.style).toEqual({
+      height: 50,
+      width: 70,
+      x: 10,
+      y: 10,
+    });
+  });
+
   it('keeps an edit-mode connection rejection visible through the extracted controller', async () => {
     renderer = await renderCanvas(true);
     class TestElement {}
@@ -177,7 +203,35 @@ describe('GraphCanvas view-mode integration', () => {
   }
 });
 
-function pointerEvent() {
+type PointerTargetStub = {
+    focus: () => void;
+    getBoundingClientRect: () => { left: number; top: number; width: number; height: number };
+    hasPointerCapture: () => boolean;
+    releasePointerCapture: (pointerId: number) => void;
+    setPointerCapture: (pointerId: number) => void;
+};
+
+type PointerEventStub = {
+  button: number;
+  clientX: number;
+  clientY: number;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  pointerId: number;
+  preventDefault: () => void;
+  stopPropagation: () => void;
+  currentTarget: PointerTargetStub | null;
+};
+
+function pointerEvent(): PointerEventStub {
+  const currentTarget: PointerTargetStub = {
+    focus: vi.fn(),
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }),
+    hasPointerCapture: () => false,
+    releasePointerCapture: vi.fn(),
+    setPointerCapture: vi.fn(),
+  };
   return {
     button: 0,
     clientX: 10,
@@ -188,13 +242,7 @@ function pointerEvent() {
     pointerId: 1,
     preventDefault: vi.fn(),
     stopPropagation: vi.fn(),
-    currentTarget: {
-      focus: vi.fn(),
-      getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }),
-      hasPointerCapture: () => false,
-      releasePointerCapture: vi.fn(),
-      setPointerCapture: vi.fn(),
-    },
+    currentTarget,
   };
 }
 
