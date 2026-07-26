@@ -151,6 +151,25 @@ pub enum ImplementationTarget {
     },
 }
 
+/// How a graph node selects its implementation. `Pinned` records the user's
+/// explicit model choice and must resolve to exactly that model (P4);
+/// `Policy` defers to the explicitly configured capability default (P5).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum ImplementationSelection {
+    #[serde(rename_all = "camelCase")]
+    Pinned {
+        requested_model_id: String,
+        binding_id: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    Policy {
+        policy_id: String,
+        #[serde(default)]
+        constraints: serde_json::Value,
+    },
+}
+
 impl CatalogSnapshot {
     /// Builds a snapshot with entries sorted by stable id and the revision
     /// computed over the sorted content, so identical data always produces an

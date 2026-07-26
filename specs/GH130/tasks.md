@@ -13,7 +13,7 @@ GH-130
 
 - [x] `SP130-T0` fixtures 与 regression 基线：固化 Nano Banana/Seedance、GPT Image/Seedance、串行、并行、缺图、model mismatch 六类 fixtures；为现有 Agent→proposal 行为补 regression tests，作为切换前基线。Owner: coordinator。Done when: fixtures 能稳定复现 tech.md「Codebase Context」中的静默默认模型缺口，regression tests 全绿。Verify: `cargo test --workspace`
 - [x] `SP130-T1` Catalog V2 与 resolver：`CapabilityDefinition`/`ModelDefinition`/`ConnectorDefinition`/`CapabilityBinding`/revision/availability 数据模型与持久化；`CapabilityResolver`（unknown/ambiguous/unavailable/pinned/policy 全分支）；catalog API（`GET /api/catalog`、`POST /api/catalog/resolve` 等）；V1 种子 catalog（atlas: nano-banana-2、seedance-v1.5-pro；fal: nano-banana-2）。Owner: catalog lane。Done when: 任意模型组合由 binding 数据表达；resolver 对 pinned/policy 结果确定且 many-to-many 单测通过。Verify: `cargo test -p helixflow-registry -p helixflow-gateway -p helixflow-store`
-- [ ] `SP130-T2` Graph V2 与 migration：`NodeSemantics`/`ImplementationSelection` 字段、graph validator 扩展（binding 一致性、params schema、pinned identity）、v1→v2 migrator（dry-run + report + `needs_resolution`，不从 title 推断模型）。Owner: graph lane。Done when: title/坐标/未声明 param 无法影响模型；迁移不改变 topology 且幂等。Verify: `cargo test -p helixflow-graph`
+- [x] `SP130-T2` Graph V2 与 migration：`NodeSemantics`/`ImplementationSelection` 字段、graph validator 扩展（binding 一致性、params schema、pinned identity）、v1→v2 migrator（dry-run + report + `needs_resolution`，不从 title 推断模型）。Owner: graph lane。Done when: title/坐标/未声明 param 无法影响模型；迁移不改变 topology 且幂等。Verify: `cargo test -p helixflow-graph`
 - [ ] `SP130-T3` IntentPlan 与 compiler：`out/intent.json` contract 与 schema validation；新增 `crates/compiler`（intent/resolver/topology/graph_builder/proposal_diff/layout/errors）；clarify handoff；`POST /api/workflows/compile-intent`。Owner: compiler lane。Done when: 相同 intent + catalog + current graph 产生相同 proposal；Agent 不再输出低层图；六类澄清场景返回 `clarify_first`。Verify: `cargo test -p helixflow-compiler -p helixflow-agent`
 - [ ] `SP130-T4` ResolvedExecutionPlan 与 run preflight：`ResolvedExecutionStep` 不可变快照持久化；10 步 preflight；删除 `crates/gateway/src/atlas.rs:242`/`:269` 与 `crates/gateway/src/fal.rs:14` 的默认模型分支；审计字段写入 run trace。Owner: run lane。Done when: pinned 模型不一致时 run 创建失败（`PINNED_MODEL_MISMATCH`）；provider 代码零隐式默认模型。Verify: `cargo test -p helixflow-run -p helixflow-gateway -p helixflow-server`
 - [ ] `SP130-T5` Workbench UX：capability/model 双视图 node library、implementation inspector（requested/resolved model、binding revision、不可运行原因）、澄清面板、proposal topology 预览。Owner: frontend lane。Done when: 用户能区分 capability、model、mode、connector 和 topology；澄清不伪装成功。Verify: `cd web && npx tsc --noEmit && npm test`
@@ -46,6 +46,16 @@ T0 完成后，T1（后端 catalog）与 T5 的纯 UI 骨架（静态双视图�
 - T1 实现决策：`ModelDefinition` 增加 `aliases` 字段（spec §3.2 的确定性补充——
   用户口语名必须解析且禁止子串匹配，需要显式别名数据）；"seedance 2" 作为
   `bytedance/seedance-v1.5-pro` 的别名录入（与 T0 fixtures 的 utterance 对齐）。
+- T2 实现决策：V2 采用分层结构 `WorkflowGraphV2 = v1 base（结构层，字节级兼容）+
+  semantics map（语义层）`，而非立即把 `semantics/implementation` 嵌入
+  `GraphNode`——全仓约 130 处 struct 字面量构造点在 v1 存活期内不做两次机械改动，
+  嵌入在 T6 删除 v1 写路径时一并完成。
+- T2 实现决策：迁移时无声明模型的节点转成显式 `Policy(capability_default)`，只能
+  经配置的默认 binding 解析（P5），与"采用 provider 内部默认值"有本质区别；
+  `needs_resolution` 保留给 capability 缺失、无默认 binding、模型不可解析三类。
+- T2 发现：`atlas.rs:195` 存在第三处静默默认模型（chat/prompt_writer →
+  deepseek-ai/DeepSeek-V3-0324），已补入种子 catalog（model + binding + default），
+  SP130-T4 与另外两处一并删除。
 - T1 实现决策：pinned 模型命中多个 binding（nano-banana 同时有 atlas/fal）时，
   capability 级 `default_bindings` 优先破平，其次唯一可用者，否则
   `BINDING_AMBIGUOUS`（P5 的确定性延伸，见 `resolver.rs::select_unique`）。

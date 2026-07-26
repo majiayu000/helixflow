@@ -6,6 +6,8 @@ use helixflow_store::{NewVersion, Store, VersionRecord, VersionSource};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub mod graph_v2;
+
 pub fn module_name() -> &'static str {
     "graph"
 }
@@ -45,6 +47,10 @@ pub struct GraphService {
 impl GraphService {
     pub fn new(registry: NodeRegistry) -> Self {
         Self { registry }
+    }
+
+    pub fn registry(&self) -> &NodeRegistry {
+        &self.registry
     }
 
     pub fn validate_graph(&self, graph: &WorkflowGraph) -> GraphResult<()> {

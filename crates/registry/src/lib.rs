@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -157,35 +157,7 @@ pub struct NodeDefinition {
 
 impl NodeDefinition {
     fn validate_params(&self, params: &Value) -> RegistryResult<()> {
-        let Some(map) = params.as_object() else {
-            return Err(RegistryError::ParamsNotObject(self.node_type.clone()));
-        };
-
-        for required in &self.params_schema.required {
-            if !map.contains_key(required) {
-                return Err(RegistryError::MissingRequiredParam {
-                    node_type: self.node_type.clone(),
-                    param: required.clone(),
-                });
-            }
-        }
-
-        for (param, value) in map {
-            let Some(spec) = self.params_schema.properties.get(param) else {
-                if self.params_schema.allow_unknown {
-                    continue;
-                }
-
-                return Err(RegistryError::UnknownParam {
-                    node_type: self.node_type.clone(),
-                    param: param.clone(),
-                });
-            };
-
-            spec.validate(&self.node_type, param, value)?;
-        }
-
-        Ok(())
+        self.params_schema.validate_value(&self.node_type, params)
     }
 }
 
@@ -213,6 +185,54 @@ pub struct ParamsSchema {
     pub required: Vec<String>,
     pub properties: BTreeMap<String, ParamSpec>,
     pub allow_unknown: bool,
+}
+
+impl ParamsSchema {
+    /// Validates a params object against this schema. `context` names the
+    /// owning node type or binding in error messages.
+    pub fn validate_value(&self, context: &str, params: &Value) -> RegistryResult<()> {
+        self.validate_value_with_wired(context, params, &BTreeSet::new())
+    }
+
+    /// Like [`Self::validate_value`], but a required param may also be
+    /// satisfied by a wired input port named in `wired` instead of a literal
+    /// param value.
+    pub fn validate_value_with_wired(
+        &self,
+        context: &str,
+        params: &Value,
+        wired: &BTreeSet<String>,
+    ) -> RegistryResult<()> {
+        let Some(map) = params.as_object() else {
+            return Err(RegistryError::ParamsNotObject(context.to_owned()));
+        };
+
+        for required in &self.required {
+            if !map.contains_key(required) && !wired.contains(required) {
+                return Err(RegistryError::MissingRequiredParam {
+                    node_type: context.to_owned(),
+                    param: required.clone(),
+                });
+            }
+        }
+
+        for (param, value) in map {
+            let Some(spec) = self.properties.get(param) else {
+                if self.allow_unknown {
+                    continue;
+                }
+
+                return Err(RegistryError::UnknownParam {
+                    node_type: context.to_owned(),
+                    param: param.clone(),
+                });
+            };
+
+            spec.validate(context, param, value)?;
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
