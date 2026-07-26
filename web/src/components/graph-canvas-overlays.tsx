@@ -92,7 +92,11 @@ export function CanvasGuides({
         <GuidePill
           index="1"
           label="工具条：新建文本/图片/视频节点、导入素材"
-          style={{ left: 46, top: 98 }}
+          style={{
+            bottom: 98,
+            left: viewportSize.width / 2,
+            transform: 'translateX(-50%)',
+          }}
         />
       )}
       {multiRect && (
