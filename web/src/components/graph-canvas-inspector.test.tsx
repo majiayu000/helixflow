@@ -104,6 +104,56 @@ function workflowNode(): WorkflowGraph['nodes'][string] {
   };
 }
 
+describe('GraphInspector implementation section', () => {
+  it('shows the resolved implementation for capability nodes', () => {
+    const markup = renderToStaticMarkup(
+      <GraphInspector
+        definition={videoDefinition()}
+        node={videoNode()}
+        onClose={() => {}}
+        resolution={{
+          status: 'resolved',
+          resolved: {
+            capabilityId: 'text_to_video',
+            requestedModelId: null,
+            resolvedModelId: 'bytedance/seedance-v1.5-pro',
+            bindingId: 'bytedance.seedance-v1-5-pro.text-to-video.atlas.v1',
+            bindingRevision: 'v1',
+            target: {
+              apiConnector: { connectorId: 'atlas', operationId: 'op' },
+            },
+          },
+        }}
+        workflowNode={workflowNode()}
+      />,
+    );
+
+    expect(markup).toContain('bytedance/seedance-v1.5-pro');
+    expect(markup).toContain('bytedance.seedance-v1-5-pro.text-to-video.atlas.v1');
+    expect(markup).toContain('atlas');
+  });
+
+  it('shows a stable reason when the implementation cannot resolve', () => {
+    const markup = renderToStaticMarkup(
+      <GraphInspector
+        definition={videoDefinition()}
+        node={videoNode()}
+        onClose={() => {}}
+        resolution={{
+          status: 'unresolvable',
+          code: 'BINDING_NOT_FOUND',
+          message: 'no binding implements capability `text_to_video`',
+          recoverable: false,
+        }}
+        workflowNode={workflowNode()}
+      />,
+    );
+
+    expect(markup).toContain('[BINDING_NOT_FOUND]');
+    expect(markup).toContain('不可运行');
+  });
+});
+
 function videoDefinition(): NodeDefinition {
   return {
     type: 'video.text_to_video',

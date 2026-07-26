@@ -20,6 +20,8 @@ describe('NodeLibrary', () => {
         catalog={catalog()}
         disabled={true}
         error={null}
+        modelCatalog={null}
+        modelCatalogError={null}
         onAddNode={() => undefined}
       />,
     );

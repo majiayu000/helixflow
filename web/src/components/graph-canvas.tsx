@@ -8,9 +8,10 @@ import {
   type PointerEvent,
   type WheelEvent,
 } from 'react';
-import { fetchNodeCatalog } from '../api';
+import { fetchModelCatalog, fetchNodeCatalog, resolveImplementation } from '../api';
+import { canonicalCapability } from './model-catalog-tray';
 import { portColor } from '../icons';
-import type { NodeCatalog } from '../types';
+import type { ImplementationResolution, ModelCatalog, NodeCatalog } from '../types';
 import { connectionPath } from './graph-canvas-connections';
 import { useCanvasConnectionController } from './graph-canvas-connection-controller';
 import {
@@ -105,6 +106,9 @@ export function GraphCanvas({
   const [draftSizes, setDraftSizes] = useState<SizeDrafts>({});
   const [catalog, setCatalog] = useState<NodeCatalog | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
+  const [modelCatalogError, setModelCatalogError] = useState<string | null>(null);
+  const [resolution, setResolution] = useState<ImplementationResolution | null>(null);
   const [selectionDrag, setSelectionDrag] = useState<SelectionDragState | null>(null);
   const [clipboardStatus, setClipboardStatus] = useState<string | null>(null);
   const localCursorRef = useRef<Point | null>(null);
@@ -135,6 +139,35 @@ export function GraphCanvas({
   const selectedNodeId = selectedIds.values().next().value as string | undefined;
   const selectedNode = selectedNodeId ? nodeById.get(selectedNodeId) : null;
   const selectedWorkflowNode = selectedNodeId ? workflowGraph?.nodes[selectedNodeId] : undefined;
+  const selectedCapability = selectedNode
+    ? (definitionByType.get(selectedNode.nodeType)?.capability ?? null)
+    : null;
+
+  useEffect(() => {
+    if (!selectedCapability) {
+      setResolution(null);
+      return;
+    }
+    let cancelled = false;
+    setResolution(null);
+    resolveImplementation(canonicalCapability(selectedCapability))
+      .then((outcome) => {
+        if (!cancelled) setResolution(outcome);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setResolution({
+            status: 'unresolvable',
+            code: 'UNKNOWN',
+            message: '解析请求失败',
+            recoverable: false,
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedCapability]);
   const selectedNodes = useMemo(
     () => displayNodes.filter((node) => selectedIds.has(node.id)),
     [displayNodes, selectedIds],
@@ -295,6 +328,27 @@ export function GraphCanvas({
       .catch((error) => {
         if (!cancelled) {
           setCatalogError(error instanceof Error ? error.message : 'node catalog request failed');
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchModelCatalog()
+      .then((nextCatalog) => {
+        if (!cancelled) {
+          setModelCatalog(nextCatalog);
+          setModelCatalogError(null);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setModelCatalogError(
+            error instanceof Error ? error.message : 'model catalog request failed',
+          );
         }
       });
     return () => {
@@ -497,6 +551,8 @@ export function GraphCanvas({
         catalog={catalog}
         disabled={connectionDisabled}
         error={catalogError}
+        modelCatalog={modelCatalog}
+        modelCatalogError={modelCatalogError}
         onAddNode={editActions.addNode}
       />
       <CanvasStatusToast
@@ -602,6 +658,7 @@ export function GraphCanvas({
           catalogError={catalogError}
           definition={definitionByType.get(selectedNode.nodeType)}
           node={selectedNode}
+          resolution={resolution}
           onClose={() => setSelectedIds(new Set())}
           onRequestProposal={capabilities.move ? onRequestNodeProposal : undefined}
           onSetParam={capabilities.move ? onSetParam : undefined}

@@ -16,7 +16,7 @@ GH-130
 - [x] `SP130-T2` Graph V2 与 migration：`NodeSemantics`/`ImplementationSelection` 字段、graph validator 扩展（binding 一致性、params schema、pinned identity）、v1→v2 migrator（dry-run + report + `needs_resolution`，不从 title 推断模型）。Owner: graph lane。Done when: title/坐标/未声明 param 无法影响模型；迁移不改变 topology 且幂等。Verify: `cargo test -p helixflow-graph`
 - [x] `SP130-T3` IntentPlan 与 compiler：`out/intent.json` contract 与 schema validation；新增 `crates/compiler`（intent/resolver/topology/graph_builder/proposal_diff/layout/errors）；clarify handoff；`POST /api/workflows/compile-intent`。Owner: compiler lane。Done when: 相同 intent + catalog + current graph 产生相同 proposal；Agent 不再输出低层图；六类澄清场景返回 `clarify_first`。Verify: `cargo test -p helixflow-compiler -p helixflow-agent`
 - [x] `SP130-T4` ResolvedExecutionPlan 与 run preflight：`ResolvedExecutionStep` 不可变快照持久化；10 步 preflight；删除 `crates/gateway/src/atlas.rs:242`/`:269` 与 `crates/gateway/src/fal.rs:14` 的默认模型分支；审计字段写入 run trace。Owner: run lane。Done when: pinned 模型不一致时 run 创建失败（`PINNED_MODEL_MISMATCH`）；provider 代码零隐式默认模型。Verify: `cargo test -p helixflow-run -p helixflow-gateway -p helixflow-server`
-- [ ] `SP130-T5` Workbench UX：capability/model 双视图 node library、implementation inspector（requested/resolved model、binding revision、不可运行原因）、澄清面板、proposal topology 预览。Owner: frontend lane。Done when: 用户能区分 capability、model、mode、connector 和 topology；澄清不伪装成功。Verify: `cd web && npx tsc --noEmit && npm test`
+- [x] `SP130-T5` Workbench UX：capability/model 双视图 node library、implementation inspector（requested/resolved model、binding revision、不可运行原因）、澄清面板、proposal topology 预览。Owner: frontend lane。Done when: 用户能区分 capability、model、mode、connector 和 topology；澄清不伪装成功。Verify: `cd web && npx tsc --noEmit && npm test`
 - [ ] `SP130-T6` 切换默认路径与清理 legacy：灰度启用 intent 路径、停止低层 Agent proposal 输出、移除 `params.model` 与运行期 `image_generate` 兼容、迁移存量图。Owner: coordinator。Done when: 全部 feature flag 默认开启、legacy 写入路径删除、存量图迁移完成或明确隔离、回滚演练通过。Verify: `cargo test --workspace && cd web && npm test`
 
 ## 并行拆分
@@ -53,6 +53,12 @@ T0 完成后，T1（后端 catalog）与 T5 的纯 UI 骨架（静态双视图�
 - T2 实现决策：迁移时无声明模型的节点转成显式 `Policy(capability_default)`，只能
   经配置的默认 binding 解析（P5），与"采用 provider 内部默认值"有本质区别；
   `needs_resolution` 保留给 capability 缺失、无默认 binding、模型不可解析三类。
+- T5 实现决策：inspector 的"将解析为"通过 `POST /api/catalog/resolve`（无
+  connector 偏好，展示全局默认解析并显式标注 connector）；按 workspace 选中
+  provider 细化偏好在 T6 与语义层持久化一起接。
+- T5 实现决策：澄清（clarify_first）专用 UI 按 U-26 推迟到 T6 与真实生产者
+  （agent intent 路径切换）一起接线，避免无调用方的死代码；当前 409 澄清仍走
+  通用错误气泡。
 - T4 实现决策：实现快照直接冻结在 `runs.plan_json`（`ExecutionStep.resolved` +
   `ExecutionPlan.catalog_revision`）——它本就是 retry/self-heal/sweep 复用的不可变
   run 级事实源（P11/P12），无需新表。
