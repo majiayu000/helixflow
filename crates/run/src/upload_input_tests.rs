@@ -91,6 +91,54 @@ async fn input_image_resolves_upload_uri_to_persisted_file() {
 }
 
 #[tokio::test]
+async fn input_image_rejects_upload_from_another_workspace() {
+    let (store, dir) = open_temp_store().await;
+    let (owner_workspace_id, _) = workspace_version(&store).await;
+    let (other_workspace_id, other_version_id) = workspace_version(&store).await;
+    let upload_relative = format!("uploads/{owner_workspace_id}/secret.png");
+    let upload_path = dir.path().join(&upload_relative);
+    tokio::fs::create_dir_all(upload_path.parent().expect("upload parent"))
+        .await
+        .expect("create upload dir");
+    tokio::fs::write(&upload_path, valid_png_bytes())
+        .await
+        .expect("write upload file");
+    let upload = store
+        .create_upload(helixflow_store::NewUpload {
+            workspace_id: &owner_workspace_id,
+            filename: "secret.png",
+            file_path: &upload_relative,
+            sha256: "sha256:secret",
+            mime: Some("image/png"),
+        })
+        .await
+        .expect("create upload");
+
+    let service = RunService::with_provider_events_and_artifact_root(
+        store.clone(),
+        MockProvider::new(),
+        EventBus::new(16),
+        dir.path().to_path_buf(),
+    );
+
+    let outcome = service
+        .execute_manual_run(ManualRunRequest {
+            workspace_id: other_workspace_id,
+            version_id: other_version_id,
+            group_id: None,
+            label: "Cross-workspace upload".to_owned(),
+            provider: "mock".to_owned(),
+            graph: upload_image_graph(format!("upload://{}", upload.id)),
+            force_rerun: false,
+        })
+        .await;
+    assert!(
+        outcome.is_err(),
+        "a run must not resolve another workspace's upload"
+    );
+}
+
+#[tokio::test]
 async fn input_image_with_missing_upload_file_fails_run() {
     let (store, dir) = open_temp_store().await;
     let (workspace_id, version_id) = workspace_version(&store).await;

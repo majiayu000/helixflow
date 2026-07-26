@@ -482,7 +482,9 @@ where
                 // file so image inputs are real bytes, not opaque strings
                 // (HF-008).
                 let resolved = if let Some(upload_id) = storage_uri.strip_prefix("upload://") {
-                    let upload = self.store.upload(upload_id).await?;
+                    // Scope the lookup to the run's workspace so a graph
+                    // cannot reference another workspace's uploads.
+                    let upload = self.store.workspace_upload(workspace_id, upload_id).await?;
                     let full_path = self.artifact_root.join(&upload.file_path);
                     if tokio::fs::metadata(&full_path).await.is_err() {
                         return Err(RunError::ArtifactPersistence(format!(
