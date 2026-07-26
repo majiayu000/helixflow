@@ -17,6 +17,9 @@ mod proposal_records_apply_tests;
 #[cfg(test)]
 mod proposal_records_auto_apply_tests;
 mod retry_records;
+mod run_claim;
+#[cfg(test)]
+mod run_claim_tests;
 mod run_cleanup;
 mod run_records;
 #[cfg(test)]

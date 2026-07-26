@@ -35,6 +35,7 @@ pub enum RunError {
         param: String,
     },
     RunNotActive(String),
+    RunClaimContention(String),
     WorkspaceBusy {
         workspace_id: String,
         active_run_id: String,
@@ -80,6 +81,10 @@ impl fmt::Display for RunError {
                 write!(f, "missing builtin param `{param}` for node `{node_id}`")
             }
             Self::RunNotActive(run_id) => write!(f, "run is not active: {run_id}"),
+            Self::RunClaimContention(run_id) => write!(
+                f,
+                "run `{run_id}` lost a concurrent claim for its workspace; retry the confirmation"
+            ),
             Self::WorkspaceBusy {
                 workspace_id,
                 active_run_id,

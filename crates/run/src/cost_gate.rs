@@ -156,25 +156,46 @@ where
             .as_deref()
             .ok_or_else(|| RunError::InvalidSweepPlan("run has no execution plan".to_owned()))?;
         let plan = serde_json::from_str(plan_json)?;
+        // The busy check and the status transition happen in one atomic
+        // UPDATE: a separate check-then-act pair lets two concurrent claims
+        // for the same workspace both pass the check (HF-018).
         let Some(run) = self
             .store
-            .update_run_status_if_current(
+            .claim_run_if_workspace_idle(
                 run_id,
                 RunStatus::WaitingConfirmation.as_str(),
                 RunStatus::Running.as_str(),
-                None,
+                &run.workspace_id,
+                run.group_id.as_deref(),
             )
             .await?
         else {
-            let current = self.store.run(run_id).await?;
-            return Err(RunError::InvalidRunStatus {
+            return Err(self.claim_rejection(run_id).await?);
+        };
+
+        Ok((run, plan))
+    }
+
+    /// Explain why an atomic claim returned no row: either the run left
+    /// `waiting_confirmation`, or another run holds the workspace.
+    async fn claim_rejection(&self, run_id: &str) -> RunResult<RunError> {
+        let current = self.store.run(run_id).await?;
+        if current.status != RunStatus::WaitingConfirmation.as_str() {
+            return Ok(RunError::InvalidRunStatus {
                 run_id: current.id,
                 expected: RunStatus::WaitingConfirmation.as_str(),
                 actual: current.status,
             });
-        };
-
-        Ok((run, plan))
+        }
+        if let Err(busy) = self
+            .ensure_workspace_not_busy(&current.workspace_id, current.group_id.as_deref(), Some(&current.id))
+            .await
+        {
+            return Ok(busy);
+        }
+        // The blocking run finished between the claim and this probe; the
+        // caller can simply retry.
+        Ok(RunError::RunClaimContention(current.id))
     }
 
     pub(crate) async fn claim_run_for_background(
@@ -201,23 +222,20 @@ where
             .lock()
             .await
             .insert(run.id.clone(), interrupt.clone());
+        // Atomic busy-check + transition; see claim_run_for_confirmation.
         let Some(run) = self
             .store
-            .update_run_status_if_current(
+            .claim_run_if_workspace_idle(
                 run_id,
                 RunStatus::WaitingConfirmation.as_str(),
                 RunStatus::Running.as_str(),
-                None,
+                &run.workspace_id,
+                run.group_id.as_deref(),
             )
             .await?
         else {
             self.interrupts.lock().await.remove(run_id);
-            let current = self.store.run(run_id).await?;
-            return Err(RunError::InvalidRunStatus {
-                run_id: current.id,
-                expected: RunStatus::WaitingConfirmation.as_str(),
-                actual: current.status,
-            });
+            return Err(self.claim_rejection(run_id).await?);
         };
 
         Ok((run, plan, interrupt))
