@@ -397,6 +397,66 @@ export const NodeCatalogSchema = z.object({
   nodes: z.array(NodeDefinitionSchema),
 });
 
+export const CatalogModelSchema = z.object({
+  modelId: z.string(),
+  familyId: z.string(),
+  displayName: z.string(),
+  vendor: z.string(),
+  lifecycle: z.string(),
+  aliases: z.array(z.string()),
+});
+
+export const CatalogCapabilitySchema = z.object({
+  capabilityId: z.string(),
+  category: z.string(),
+  displayName: z.string(),
+});
+
+const CatalogImplementationSchema = z.union([
+  z.object({
+    apiConnector: z.object({ connectorId: z.string(), operationId: z.string() }),
+  }),
+  z.object({
+    workflowTemplate: z.object({
+      backendId: z.string(),
+      templateId: z.string(),
+      templateRevision: z.string(),
+    }),
+  }),
+]);
+
+export const CatalogBindingSchema = z.object({
+  bindingId: z.string(),
+  capabilityId: z.string(),
+  modelId: z.string(),
+  mode: z.string(),
+  implementation: CatalogImplementationSchema,
+  bindingRevision: z.string(),
+});
+
+export const ModelCatalogSchema = z.object({
+  catalogRevision: z.string(),
+  capabilities: z.array(CatalogCapabilitySchema.loose()),
+  models: z.array(CatalogModelSchema),
+  bindings: z.array(CatalogBindingSchema.loose()),
+  defaultBindings: z.record(z.string(), z.string()),
+});
+
+export const ResolvedImplementationSchema = z.object({
+  capabilityId: z.string(),
+  requestedModelId: z.string().nullable(),
+  resolvedModelId: z.string(),
+  bindingId: z.string(),
+  bindingRevision: z.string(),
+  target: CatalogImplementationSchema,
+});
+
+/// Structured outcome of POST /api/catalog/resolve: either the resolved
+/// implementation or the stable failure code, never a bare error string.
+export type ImplementationResolution =
+  | { status: 'resolved'; resolved: ResolvedImplementation }
+  | { status: 'unresolvable'; code: string; message: string; recoverable: boolean };
+
 export const CanvasSelectionContextSchema = z
   .object({
     nodeIds: z.array(z.string()),
@@ -499,6 +559,10 @@ export type WorkspaceMessageResponse = z.infer<typeof WorkspaceMessageResponseSc
 export type RunConfirmationResponse = z.infer<typeof RunConfirmationResponseSchema>;
 export type WorkspaceSummary = z.infer<typeof WorkspaceSummarySchema>;
 export type NodeCatalog = z.infer<typeof NodeCatalogSchema>;
+export type ModelCatalog = z.infer<typeof ModelCatalogSchema>;
+export type CatalogModel = z.infer<typeof CatalogModelSchema>;
+export type CatalogBinding = z.infer<typeof CatalogBindingSchema>;
+export type ResolvedImplementation = z.infer<typeof ResolvedImplementationSchema>;
 export type NodeDefinition = z.infer<typeof NodeDefinitionSchema>;
 export type CanvasMessageContext = z.infer<typeof CanvasMessageContextSchema>;
 export type GraphState = WorkbenchState['graph'];

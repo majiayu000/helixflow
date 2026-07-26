@@ -1253,3 +1253,13 @@
   padding: 8px 10px;
   overflow-wrap: anywhere;
 }
+
+.inspector-implementation {
+  border-top: 1px dashed var(--line, #d8d8e2);
+  margin-top: 6px;
+  padding-top: 6px;
+}
+
+.inspector-unresolvable {
+  color: var(--danger, #c0392b);
+}

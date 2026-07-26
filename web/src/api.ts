@@ -1,5 +1,9 @@
 import {
   CanvasDocumentSchema,
+  type ImplementationResolution,
+  type ModelCatalog,
+  ModelCatalogSchema,
+  ResolvedImplementationSchema,
   CanvasPresenceSchema,
   CanvasTicketResponseSchema,
   RunConfirmationResponseSchema,
@@ -204,6 +208,40 @@ export async function fetchNodeCatalog(): Promise<NodeCatalog> {
   }
 
   return NodeCatalogSchema.parse(await response.json());
+}
+
+export async function fetchModelCatalog(): Promise<ModelCatalog> {
+  const response = await fetch('/api/catalog');
+  if (!response.ok) {
+    throw new Error(`model catalog request failed: ${response.status}`);
+  }
+
+  return ModelCatalogSchema.parse(await response.json());
+}
+
+export async function resolveImplementation(
+  capabilityId: string,
+  requestedModel?: string,
+): Promise<ImplementationResolution> {
+  const response = await fetch('/api/catalog/resolve', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ capabilityId, requestedModel: requestedModel ?? null }),
+  });
+  const body: unknown = await response.json().catch(() => null);
+  if (response.ok) {
+    return { status: 'resolved', resolved: ResolvedImplementationSchema.parse(body) };
+  }
+  const record = (body ?? {}) as {
+    error?: unknown;
+    details?: { code?: unknown; recoverable?: unknown };
+  };
+  return {
+    status: 'unresolvable',
+    code: typeof record.details?.code === 'string' ? record.details.code : 'UNKNOWN',
+    message: typeof record.error === 'string' ? record.error : `resolve failed: ${response.status}`,
+    recoverable: record.details?.recoverable === true,
+  };
 }
 
 export async function createWorkspace(name?: string): Promise<WorkspaceSummary> {

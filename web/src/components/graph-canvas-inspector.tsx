@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { Icon } from '../icons';
-import type { GraphNodeState, NodeDefinition, WorkflowGraph } from '../types';
+import type {
+  GraphNodeState,
+  ImplementationResolution,
+  NodeDefinition,
+  WorkflowGraph,
+} from '../types';
+import { canonicalCapability } from './model-catalog-tray';
 import { graphNodeHeight, graphNodeWidth, type ViewState, type ViewportSize } from './graph-canvas-navigation';
 import { categorySwatch } from './graph-canvas-rendering';
 
@@ -10,10 +16,68 @@ type InspectorErrorMap = Record<string, string | undefined>;
 
 export type InspectorControlKind = 'text' | 'number' | 'select' | 'checkbox' | 'readonly';
 
+/// Shows what the node will actually execute (GH130 T5): capability, the
+/// resolved model/binding via the catalog, or the stable reason it cannot
+/// run. A clarify-grade failure is presented as exactly that — never as a
+/// resolved implementation.
+function ImplementationSection({
+  capability,
+  resolution,
+}: {
+  capability: string;
+  resolution: ImplementationResolution | null;
+}) {
+  return (
+    <div className="inspector-implementation" data-testid="implementation-section">
+      <div className="field">
+        <span className="field-label">capability</span>
+        <span className="field-input">{canonicalCapability(capability)}</span>
+      </div>
+      {!resolution && (
+        <div className="field">
+          <span className="field-label">implementation</span>
+          <span className="field-input">解析中…</span>
+        </div>
+      )}
+      {resolution?.status === 'resolved' && (
+        <>
+          <div className="field">
+            <span className="field-label">model</span>
+            <span className="field-input">{resolution.resolved.resolvedModelId}</span>
+          </div>
+          <div className="field">
+            <span className="field-label">binding</span>
+            <span className="field-input">
+              {resolution.resolved.bindingId} ({resolution.resolved.bindingRevision})
+            </span>
+          </div>
+          {'apiConnector' in resolution.resolved.target && (
+            <div className="field">
+              <span className="field-label">connector</span>
+              <span className="field-input">
+                {resolution.resolved.target.apiConnector.connectorId}
+              </span>
+            </div>
+          )}
+        </>
+      )}
+      {resolution?.status === 'unresolvable' && (
+        <div className="field">
+          <span className="field-label">不可运行</span>
+          <span className="field-input inspector-unresolvable">
+            [{resolution.code}] {resolution.message}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 type GraphInspectorProps = {
   catalogError?: string | null;
   definition?: NodeDefinition;
   node: GraphNodeState;
+  resolution?: ImplementationResolution | null;
   workflowNode?: WorkflowNode;
   onClose: () => void;
   onRequestProposal?: (nodeId: string) => Promise<void>;
@@ -32,6 +96,7 @@ export function GraphInspector({
   onSetParam,
   view,
   viewportSize,
+  resolution,
 }: GraphInspectorProps) {
   const paramObject = useMemo(() => paramsObject(workflowNode), [workflowNode]);
   const fields = useMemo(
@@ -131,6 +196,12 @@ export function GraphInspector({
                 <span className="field-label">provider</span>
                 <span className="field-input">{node.provider ?? 'local/builtin'}</span>
               </div>
+              {definition?.capability && (
+                <ImplementationSection
+                  capability={definition.capability}
+                  resolution={resolution ?? null}
+                />
+              )}
               {fields.length === 0 && (
                 <div className="field">
                   <span className="field-label">params</span>

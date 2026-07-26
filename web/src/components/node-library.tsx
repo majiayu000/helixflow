@@ -1,15 +1,25 @@
 import { useMemo, useState } from 'react';
 import { Icon, Port, type IconName } from '../icons';
-import type { NodeCatalog, NodeDefinition } from '../types';
+import type { ModelCatalog, NodeCatalog, NodeDefinition } from '../types';
+import { ModelCatalogTray } from './model-catalog-tray';
 
 type NodeLibraryProps = {
   catalog: NodeCatalog | null;
+  modelCatalog: ModelCatalog | null;
+  modelCatalogError: string | null;
   error: string | null;
   disabled: boolean;
   onAddNode: (definition: NodeDefinition) => void;
 };
 
-export function NodeLibrary({ catalog, error, disabled, onAddNode }: NodeLibraryProps) {
+export function NodeLibrary({
+  catalog,
+  modelCatalog,
+  modelCatalogError,
+  error,
+  disabled,
+  onAddNode,
+}: NodeLibraryProps) {
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('select');
   const [open, setOpen] = useState(false);
@@ -40,7 +50,12 @@ export function NodeLibrary({ catalog, error, disabled, onAddNode }: NodeLibrary
 
     const categoryDefinitions =
       tool.category === 'all' ? definitions : definitionsByCategory.get(tool.category) ?? [];
-    if (!disabled && tool.category !== 'all' && categoryDefinitions.length === 1) {
+    if (
+      !disabled &&
+      tool.category !== 'all' &&
+      tool.category !== 'models' &&
+      categoryDefinitions.length === 1
+    ) {
       setOpen(false);
       onAddNode(categoryDefinitions[0]!);
       return;
@@ -69,20 +84,33 @@ export function NodeLibrary({ catalog, error, disabled, onAddNode }: NodeLibrary
             <strong>{toolLabel(category)}</strong>
             {disabled && <span>待处理变更</span>}
           </div>
-          <input
-            aria-label="搜索节点"
-            className="node-library-search"
-            disabled={disabled}
-            placeholder="搜索节点"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-          {error && <div className="node-library-empty">{error}</div>}
-          {!error && definitions.length === 0 && <div className="node-library-empty">暂无节点</div>}
-          {!error && definitions.length > 0 && filtered.length === 0 && (
+          {category === 'models' && (
+            <ModelCatalogTray
+              disabled={disabled}
+              error={modelCatalogError}
+              modelCatalog={modelCatalog}
+              nodeCatalog={catalog}
+              onAddNode={onAddNode}
+            />
+          )}
+          {category !== 'models' && (
+            <input
+              aria-label="搜索节点"
+              className="node-library-search"
+              disabled={disabled}
+              placeholder="搜索节点"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          )}
+          {category !== 'models' && error && <div className="node-library-empty">{error}</div>}
+          {category !== 'models' && !error && definitions.length === 0 && (
+            <div className="node-library-empty">暂无节点</div>
+          )}
+          {category !== 'models' && !error && definitions.length > 0 && filtered.length === 0 && (
             <div className="node-library-empty">无匹配节点</div>
           )}
-          {!error && filtered.length > 0 && (
+          {category !== 'models' && !error && filtered.length > 0 && (
             <div className="node-library-list">
               {visibleItems.map((definition) => (
                 <button
@@ -166,6 +194,7 @@ function toolbarItems(categories: string[]): ToolbarItem[] {
     { category: 'image', icon: 'image', key: 'image', label: '图像节点' },
     { category: 'video', icon: 'play', key: 'video', label: '视频节点' },
     { category: 'audio', icon: 'music', key: 'audio', label: '音频节点' },
+    { category: 'models', icon: 'folder', key: 'models', label: '模型目录', text: '模型' },
     { category: 'input', dividerBefore: true, icon: 'export', key: 'input', label: '导入节点', text: '导入' },
     { category: 'output', icon: 'folder', key: 'output', label: '素材库', text: '素材库' },
   ];
@@ -173,7 +202,7 @@ function toolbarItems(categories: string[]): ToolbarItem[] {
     ...item,
     disabled:
       item.disabled ||
-      (!['select', 'all', 'undo', 'redo', 'style', 'erase'].includes(item.category) &&
+      (!['select', 'all', 'undo', 'redo', 'style', 'erase', 'models'].includes(item.category) &&
         !available.has(item.category)),
   }));
 }
@@ -189,6 +218,7 @@ function toolClassName(active: boolean, tool: ToolbarItem): string {
 
 function toolLabel(category: string): string {
   if (category === 'all') return '全部节点';
+  if (category === 'models') return '模型目录';
   if (category === 'input') return '输入节点';
   if (category === 'output') return '输出节点';
   if (category === 'text') return '文本节点';
