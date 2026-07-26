@@ -14,6 +14,7 @@ GH-144
 | --- | --- | --- | --- |
 | Graph migrator | `crates/graph/src/graph_v2.rs`、`graph_v2_tests.rs` | `migrate_v1_to_v2` 返回 `Option<WorkflowGraphV2> + MigrationReport`；保持 topology，只有全部 executable node 可解析时才返回 migrated graph | 复用确定性核心；补稳定 reason code，禁止 server 解析自由文本错误 |
 | Catalog | `crates/server/src/catalog_routes.rs`、`crates/registry/src/catalog.rs` | `shared_catalog()` 提供进程内 canonical `CatalogSnapshot`；migrator 根据 catalog 数据而非 connector runtime health 决策 | dry-run/apply 必须绑定同一 `catalogRevision`，catalog 变化使报告过期 |
+| Workspace connector | `crates/server/src/app_state.rs`、`crates/store/src/workspace_records.rs` | `workspaces.runtime_provider_id` 持久化 workspace 选择；`ProviderRegistry::selected_provider` 在未选择时解析 server default；瞬时 health 不属于配置 identity | migrator 只能选择与该有效 connector 兼容的 binding；workspace 选择或 server default 变化使报告过期 |
 | Version store | `crates/store/src/lib.rs`、`version_records.rs`、migration `0006_version_semantics.sql` | version graph 存文件，record 保存 `graph_path`/`graph_hash`；v2 语义层保存于 `semantics_json`；current version 用事务 CAS 推进 | apply 创建新 version，不能原地改写旧 v1 record |
 | File commit | `crates/server/src/version_file_consistency.rs` | `VersionFileCandidate` 先安全发布 immutable graph 文件，store 失败后检查引用并清理；启动时 reconciliation 处理一致性 | migration apply 必须复用同一 publish→DB commit→mark/cleanup 协议 |
 | Version routes | `crates/server/src/version_routes.rs`、`main.rs` | undo/restore/apply 均围绕 workspace current version；全 Router 由 `app_with_auth` 统一保护 | 新 endpoint 放在同一 Router，复用 current-version conflict 语义 |
@@ -44,6 +45,7 @@ dry-run 无 request body，不接受客户端 catalog、graph 或 model mapping�
   "reportHash": "sha256:...",
   "sourceGraphHash": "sha256:...",
   "catalogRevision": "catalog-v2",
+  "workspaceConnectorId": "fal",
   "migrationVersion": "1"
 }
 ```
@@ -59,12 +61,16 @@ API 边界使用 camelCase；Rust 字段、数据库列和稳定内部 ID 使用
 ```rust
 struct VersionMigrationReport {
     status: VersionMigrationStatus,
+    code: Option<MigrationReasonCode>,
+    message: Option<String>,
     migration_version: String,
     workspace_id: String,
     source_version_id: String,
     source_graph_hash: String,
     source_schema_version: u32,
     catalog_revision: String,
+    workspace_connector_id: String,
+    apply_enabled: bool,
     report_hash: String,
     nodes: Vec<NodeMigrationResult>,
 }
@@ -86,7 +92,10 @@ struct NodeMigrationResult {
 ```
 
 `nodes` 按 source graph 的稳定 node ID 顺序输出；`candidates` 排序并去重。
-`reportHash` 是排除自身字段后，对完整安全 DTO canonical JSON 计算的 SHA-256。
+顶层 `code/message` 仅承载 graph missing/hash/JSON/structure 等 source 级失败；node
+级问题留在 `nodes`，不得为 source 级失败合成虚假 node。`reportHash` 是排除自身与
+部署态 `applyEnabled` 字段后，对其余完整安全 DTO canonical JSON 计算的 SHA-256；
+其中包含 `workspaceConnectorId`。
 
 `MigrationAction::NeedsResolution` 从自由文本 `reason` 改为 typed
 `MigrationReasonCode + safe message`。首批稳定 code 至少覆盖：
@@ -103,7 +112,10 @@ DEFAULT_BINDING_MISSING
 SOURCE_GRAPH_MISSING
 SOURCE_GRAPH_HASH_MISMATCH
 SOURCE_GRAPH_INVALID
+SOURCE_GRAPH_STRUCTURAL_INVALID
+MIGRATED_GRAPH_INVALID
 SEMANTICS_INVALID
+WORKSPACE_CONNECTOR_INCOMPATIBLE
 ```
 
 server 根据 typed value 映射 DTO，不按 message 字符串匹配。message 只作人类说明，
@@ -113,14 +125,26 @@ server 根据 typed value 映射 DTO，不按 message 字符串匹配。message 
 
 `version_migration_routes.rs::dry_run_version_migration` 按以下顺序执行：
 
-1. 读取 workspace、确认 current version 与 path `version_id` 一致。
+1. 读取 workspace、确认 current version 与 path `version_id` 一致，并通过
+   `ProviderRegistry::selected_provider(workspace.runtime_provider_id.as_deref())` 获取
+   有效 workspace connector identity（持久化选择，否则 server default）；不得使用
+   瞬时 connector health 形成 report identity。
 2. 读取 version record；若 `semantics_json` 存在，反序列化并用当前 graph/catalog
    validator 验证。合法则返回 `already_migrated`；无效则返回 `failed`，不能当作 v1。
-3. 通过 `read_version_graph` 验证 safe path、canonical hash 与 JSON。
-4. 获取 `shared_catalog()`；migrator 继续只使用 catalog declarations，不把临时
-   connector health 当作 migration mapping。
-5. 调用 `migrate_v1_to_v2`，将 typed report 转为外部 DTO 并计算 `reportHash`。
-6. 返回 DTO；不写 database、graph file、event、message 或临时 report。
+3. 通过 `read_version_graph` 验证 safe path、canonical hash 与 JSON，并在迁移前调用
+   `GraphService::validate_graph`；结构无效返回顶层
+   `SOURCE_GRAPH_STRUCTURAL_INVALID`。
+4. 获取 `shared_catalog()`；构造包含 workspace connector identity/允许 binding 集合的
+   migration context。migrator 只使用 catalog declarations 与该 context，不把瞬时
+   connector health 当作 mapping；跨 connector binding 返回
+   `WORKSPACE_CONNECTOR_INCOMPATIBLE`。
+5. 调用 `migrate_v1_to_v2`；得到 candidate 时再调用 `WorkflowGraphV2::validate`，
+   失败返回顶层 `MIGRATED_GRAPH_INVALID`，禁止标记为 `migratable`。
+6. 将 typed report 转为外部 DTO，填充 server truth `applyEnabled` 并计算
+   `reportHash`。
+7. 返回 DTO，并追加一条 secret-free assessment audit/聚合记录。不得写 graph file、
+   version/workspace/proposal/run 状态或临时完整 report；assessment 不保存 raw params、
+   graph payload、credential、endpoint 或自由文本 provider 响应。
 
 任一 node unresolved 时顶层为 `needs_resolution` 且不返回可提交的 graph。
 graph/file 可预期损坏以 `failed` 报告返回；数据库不可用等基础设施错误使用现有
@@ -128,9 +152,17 @@ graph/file 可预期损坏以 `failed` 报告返回；数据库不可用等基�
 
 ### 4. apply、并发与幂等
 
-apply 先按 dry-run pipeline 重新计算 server report，然后逐项比较
-`reportHash`、`sourceGraphHash`、`catalogRevision`、`migrationVersion`。任一不一致
-返回 `REPORT_STALE` conflict。report 非 `migratable` 时不进入写路径。
+apply 收到请求后，先用 `(workspace_id, operation_id)` 查询已提交 migration，并用
+请求 precondition 计算 fingerprint。已存在且 fingerprint 相同则立即返回原 target；
+已存在但不同则返回 `OperationIdConflict`。这个 replay lookup 必须发生在读取/校验
+current version、重算 dry-run、写 assessment 或发布 candidate 之前，确保成功响应丢失
+后的重放不会因 current 已推进而失败，也不会发布孤儿 candidate。
+
+仅对新 operation 按 dry-run pipeline 重新计算 server report，然后逐项比较
+`reportHash`、`sourceGraphHash`、`catalogRevision`、`workspaceConnectorId`、
+`migrationVersion`。任一不一致返回 `REPORT_STALE` conflict。report 非 `migratable`
+时不进入写路径。apply endpoint 在 replay miss 后重新检查
+`HELIXFLOW_V1_MIGRATION_APPLY`；flag 不参与 report hash。
 
 成功写入流程：
 
@@ -139,7 +171,7 @@ apply 先按 dry-run pipeline 重新计算 server report，然后逐项比较
 2. publish candidate，获得新的 `graph_path` 与 `graph_hash`。
 3. 调用单一 store transaction `apply_version_migration`：
    - `BEGIN IMMEDIATE`；
-   - 查询 `(workspace_id, operation_id)`；
+   - 再次查询 `(workspace_id, operation_id)`，封闭并发 replay race；
    - 已存在且 fingerprint 相同则返回已提交 record；
    - 已存在但 fingerprint 不同则返回 `OperationIdConflict`；
    - CAS 校验 `workspaces.cur_version_id == source_version_id`；
@@ -152,9 +184,10 @@ apply 先按 dry-run pipeline 重新计算 server report，然后逐项比较
 5. 返回 target version identity 和 fresh `workspace_state_value`。
 
 operation fingerprint 覆盖 workspace/source version/source graph hash/report hash/catalog
-revision/migration version，不覆盖 server 生成的 target ID。同 operation 重试从 audit
-record 返回原 target，不创建 candidate；并发不同 operation 由 current-version CAS
-保证最多一个提交成功。
+revision/workspace connector identity/migration version，不覆盖 server 生成的 target
+ID。同 operation 重试在 route 入口从 audit record 返回原 target，不创建 candidate；
+transaction 内二次 lookup 处理并发同 operation；并发不同 operation 由 current-version
+CAS 保证最多一个提交成功。
 
 ### 5. 持久化
 
@@ -177,15 +210,61 @@ created_at
 UNIQUE(workspace_id, operation_id)
 ```
 
-`report_json` 只保存已经过 secret-free DTO 转换的成功 apply report。dry-run 不落库。
-新增 `VersionSource::Migration`，字符串值固定为 `migration`。audit record 与 target
-version 在同一 transaction 插入，禁止出现“已迁移 audit、但 target version 不存在”
-或反向状态。
+`report_json` 只保存已经过 secret-free DTO 转换的成功 apply report。dry-run 不写
+`version_migrations`，而是写入 append-only
+`version_migration_assessments`（或保持同等约束的聚合表）：
+
+```text
+id
+workspace_id
+source_version_id
+source_graph_hash
+migration_version
+catalog_revision
+workspace_connector_id
+status
+top_level_code
+reason_code_counts_json
+created_at
+```
+
+assessment 不保存完整 graph、node params、credential、自由文本 message 或 provider
+payload；允许重复 dry-run 各追加一条，从而计算 status/reason 分布。apply 的 stale
+precondition 与 CAS conflict 追加 secret-free conflict outcome，不能只记录成功。
+
+新增 `VersionSource::Migration`，字符串值固定为 `migration`。由于
+`0001_initial.sql` 的 `versions.source` CHECK 只允许 `manual/proposal/restore`，下一条
+SQL migration 必须在事务内按 SQLite table-rebuild 模式重建 `versions`，保留全部
+现有 row、column（含 `semantics_json`）、index、foreign key 与约束，只把 CHECK 扩展为
+包含 `migration`；禁止仅修改 Rust enum。升级测试必须从旧 schema fixture 迁移，逐项
+证明 row/index/FK/`semantics_json` 无损且可插入 `source='migration'`。
+
+成功 audit record 与 target version 在同一 transaction 插入，禁止出现“已迁移
+audit、但 target version 不存在”或反向状态。
 
 不更新 source version 的 `semantics_json`、graph file、label 或 hash。原 v1 version
 继续作为 immutable history；新 v2 version 的 `parent_id` 指向 source version。
 
-### 6. Web 结构与状态机
+### 6. 派生 version 的 semantics 保真
+
+迁移成功后，所有从 current/target version 派生新 version 的 production writer 都
+必须显式处理 `semantics_json`，不能继续无条件写 `None`。实现前审计
+`proposal_routes.rs`、`ops_routes.rs`、`version_routes.rs`、`layout_routes.rs`、
+`workbench_message_graph.rs`、`workspace_events.rs`、`sweep_support.rs` 与
+`workspace_canvas.rs` 及搜索到的其他 writer，并遵循：
+
+- layout-only 写入原样复制 current semantics。
+- restore 复制目标 version semantics。
+- ops/proposal 对未变节点保留 semantics，删除节点同步删除条目；新增或改变类型的
+  executable node 必须提供并验证显式 semantics，否则 fail-closed 拒绝写 version。
+- 首次创建/明确生成 v1 的路径可以是 `None`，但必须由测试证明不是从 migrated v2
+  派生。
+
+每条 writer 都增加回归测试，证明 migrated current 后再执行 layout、restore、
+ops/proposal 等操作不会丢失 pinned semantics；无法安全传播的路径必须显式报错，
+禁止静默降级回 legacy resolver。
+
+### 7. Web 结构与状态机
 
 为避免现有大文件继续膨胀，新增：
 
@@ -214,12 +293,13 @@ request。apply 网络结果未知时保留 `operationId`，通过相同 operati
 workspace；不得本地猜测 target version。node 结果用语义化列表呈现，状态和按钮具备
 文本标签、键盘可达性与 `aria-live` 更新。
 
-### 7. Rollout gate
+### 8. Rollout gate
 
 新增 server config `HELIXFLOW_V1_MIGRATION_APPLY`，默认 `0`：
 
 - dry-run endpoint 与报告 UI 随功能发布。
-- flag 为 `0` 时 apply route 返回带 `MIGRATION_APPLY_DISABLED` 的 503，UI 只展示报告。
+- dry-run 报告始终携带 server truth `applyEnabled`；flag 为 `0` 时该值为 false，
+  apply route 仍返回带 `MIGRATION_APPLY_DISABLED` 的 503，UI 只展示报告。
 - 观察 dry-run reason code 分布和 secret-free contract 后，由维护者显式设为 `1`。
 - #145 接手 migration coverage gate，并决定何时移除本临时 flag；#146 不复用此 flag
   作为 legacy proposal 回滚开关。
@@ -230,36 +310,39 @@ flag 只控制 apply，不改变 graph read、run 或 existing v2 write 行为�
 
 | Product invariant | Implementation area | Verification |
 | --- | --- | --- |
-| P1 | route path validation、workspace/current lookup | workspace/version mismatch、historical/nonexistent version route tests |
-| P2 | dry-run handler | DB/file snapshot before/after；assert 零 row/file/current 变化 |
-| P3 | graph migrator、DTO canonical encoding | repeated dry-run byte equality test |
-| P4 | DTO status/node mapping | exhaustive status/action schema tests，node 一一对应 |
-| P5 | typed migration reasons、resolver | missing/ambiguous/model mismatch/default binding fixtures |
+| P1 | route path validation、workspace/current/connector lookup | workspace/version mismatch、historical/nonexistent version、connector identity tests |
+| P2 | dry-run handler、assessment store | workflow row/file/current snapshot 不变；仅允许 secret-free assessment append |
+| P3 | graph migrator/context、DTO canonical encoding | repeated dry-run byte equality；connector identity 变化使 hash 变化 |
+| P4 | DTO status/node mapping | node 一一对应；source-level failure 使用顶层 code 且无 synthetic node |
+| P5 | typed migration reasons、connector-restricted resolver | missing/ambiguous/model mismatch/default binding/cross-connector fixtures |
 | P6 | migrated base graph | node/edge/topology canonical comparison，legacy model field only allowed delta |
 | P7 | UI node report、apply guard | unresolved node rendering + apply disabled integration tests |
-| P8 | apply request/precondition validation | tampered/missing report precondition rejected |
-| P9 | current CAS、report recomputation | graph/catalog/migration/current stale conflict tests |
+| P8 | apply request/precondition validation | tampered/missing report/connector precondition rejected |
+| P9 | current CAS、report recomputation | graph/catalog/connector/migration/current stale conflict tests |
 | P10 | candidate + store transaction | injected publish/store/current-update failures，无 orphan/half commit |
-| P11 | append-only version creation | source version row/file/hash unchanged，target parent 正确 |
-| P12 | `version_migrations` unique key/fingerprint | same operation replay、different payload conflict、concurrent operation tests |
+| P11 | append-only version creation、writer semantics propagation | source version 不变；target parent 正确；后续 layout/restore/ops/proposal 不丢 semantics |
+| P12 | route-first replay + `version_migrations` unique key/fingerprint | current 已推进后 same operation replay；different payload conflict；并发 tests |
 | P13 | v2 detection/validation | valid v2 returns already；invalid semantics returns failed；零新 version |
-| P14 | migration slice/panel | loading/success/conflict/failure + workspace switch stale-response tests |
+| P14 | migration slice/panel | server `applyEnabled`、loading/success/conflict/failure + workspace switch stale-response tests |
 | P15 | `app_with_auth` route placement | authenticated/unauthenticated route contract tests |
 | P16 | typed safe errors、DTO serialization | secret/endpoint/header/path sentinel absence tests |
-| P17 | migration audit store/query | source/target/hash/revision/report round-trip and coverage aggregation tests |
+| P17 | assessment + migration audit store/query | dry-run status/reason、conflict、success coverage aggregation 与 secret-free tests |
 
 ## 数据流
 
 ```text
 UI current workspace/version
   → POST dry-run
-    → verify workspace + current version
-    → verify graph file/hash
-    → shared catalog + migrate_v1_to_v2
-    → safe deterministic report + reportHash
+    → verify workspace + current version + configured connector
+    → verify graph file/hash/JSON + source graph structure
+    → shared catalog + connector-restricted migrate_v1_to_v2
+    → validate WorkflowGraphV2 candidate
+    → safe deterministic report + reportHash + applyEnabled
+    → append secret-free assessment outcome
   → user explicit confirm
   → POST apply(operationId + preconditions)
-    → recompute and compare report
+    → lookup committed operation before current/report validation
+    → on replay miss, recompute and compare report + connector identity
     → stage/publish migrated base graph candidate
     → one SQLite transaction:
          new migration version
@@ -271,7 +354,8 @@ UI current workspace/version
 ```
 
 无 provider 调用、Agent 调用或外部网络调用。migration mapping 只依赖 source graph、
-`NodeRegistry::builtin()` 与 canonical catalog snapshot。
+`NodeRegistry::builtin()`、canonical catalog snapshot 与持久化的 workspace connector
+identity，不依赖瞬时 runtime health。
 
 ## 备选方案
 
@@ -299,6 +383,12 @@ UI current workspace/version
 - Data integrity: file publish 与 SQLite 不能组成单一原子事务。必须复用 candidate
   ownership、store-reference-aware cleanup 和 startup reconciliation，不能自行
   `write` 后忽略失败。
+- Schema upgrade: `versions.source` 的旧 CHECK 会拒绝 `migration`。必须以真实旧库
+  fixture 验证 table rebuild 完整保留数据、index、FK 与 `semantics_json`，不能只在
+  fresh database 上测试。
+- Semantic continuity: migrated version 若经 layout/ops/proposal/restore writer 写回
+  `semantics_json=None`，会静默回退 legacy 解析。所有 production version writer
+  必须被审计并有继承/拒绝测试。
 - Concurrency: dry-run 后的任何 edit/proposal/restore 都使报告 stale。server 以 current
   version CAS 为最终真相，UI disabled 状态不是并发保护。
 - Maintenance: typed reason code 是外部 contract；新增 code 可扩展，已有 code 不得静默
@@ -306,15 +396,21 @@ UI current workspace/version
 
 ## 测试计划
 
-- [ ] Unit tests: graph typed reason code、report canonicalization/hash、operation
-      fingerprint、DTO secret-free serialization、web Zod/state machine。
-- [ ] Store tests: migration audit round-trip、same-operation replay、operation conflict、
-      current CAS、transaction fault injection、source immutability。
-- [ ] Server integration tests: dry-run 零写入、apply success、unresolved、already migrated、
-      stale graph/catalog/current、missing/corrupt graph、auth、flag disabled、candidate cleanup。
+- [ ] Unit tests: graph typed reason code、source/result structural validation、connector-
+      restricted migration、report canonicalization/hash、operation fingerprint、DTO
+      secret-free serialization、web Zod/state machine。
+- [ ] Store tests: old-schema `versions` rebuild、assessment/migration audit round-trip、
+      same-operation replay、operation conflict、current CAS、transaction fault injection、
+      source immutability。
+- [ ] Server integration tests: dry-run 仅追加 assessment、不改 workflow state；apply
+      success、unresolved、already migrated、stale graph/catalog/connector/current、
+      missing/corrupt/structurally invalid graph、auth、flag disabled、candidate cleanup。
 - [ ] Concurrency tests: same operation 与不同 operation 双请求，验证最多一个 target
-      version、无 orphan file、replay 返回同一 target。
-- [ ] Web tests: report node rendering、explicit confirm、apply disabled、conflict refresh、
+      version、无 orphan file、current 已推进后 replay 仍返回同一 target。
+- [ ] Writer regression tests: migrated current 经 layout、restore、ops/proposal 及其他
+      production writer 后 semantics 保留；新建/重类型 executable 缺 semantics 时拒绝。
+- [ ] Web tests: report node/top-level failure rendering、explicit confirm、
+      server `applyEnabled`、conflict refresh、
       network unknown retry、workspace/version switch 丢弃 stale response、accessibility labels。
 - [ ] Deterministic commands:
       `cargo test -p helixflow-graph -p helixflow-store -p helixflow-server`；
