@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { connectWorkspaceEvents } from './api';
+import {
+  applyVersionMigration,
+  connectWorkspaceEvents,
+  dryRunVersionMigration,
+} from './api';
 import type { RunEventEnvelope } from './types';
 import { jsonResponse, runEvent as baseRunEvent, waitUntil } from './test-utils';
 
@@ -157,9 +161,103 @@ describe('connectWorkspaceEvents', () => {
   });
 });
 
+describe('version migration API', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('parses the server dry-run report and encodes route identifiers', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(migrationReport())));
+
+    const report = await dryRunVersionMigration('ws/a', 'ver b');
+
+    expect(report.status).toBe('migratable');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/workspaces/ws%2Fa/versions/ver%20b/migration/dry-run',
+      { method: 'POST', signal: undefined },
+    );
+  });
+
+  it('sends all report preconditions when applying a migration', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse({
+        targetVersionId: 'ver_v2',
+        targetGraphHash: 'sha256:target',
+        replayed: false,
+        workspaceState: emptyWorkbenchState(),
+      })),
+    );
+
+    const report = migrationReport();
+    const result = await applyVersionMigration('ws_1', 'ver_v1', {
+      operationId: 'op_1',
+      reportHash: report.reportHash,
+      sourceGraphHash: report.sourceGraphHash,
+      catalogRevision: report.catalogRevision,
+      workspaceConnectorId: report.workspaceConnectorId,
+      migrationVersion: report.migrationVersion,
+    });
+
+    expect(result.targetVersionId).toBe('ver_v2');
+    const options = vi.mocked(fetch).mock.calls[0]?.[1];
+    expect(JSON.parse(String(options?.body))).toEqual({
+      operationId: 'op_1',
+      reportHash: 'sha256:report',
+      sourceGraphHash: 'sha256:source',
+      catalogRevision: 'catalog-1',
+      workspaceConnectorId: 'atlas',
+      migrationVersion: '1',
+    });
+  });
+});
+
 function stubBrowser(): void {
   vi.stubGlobal('window', { location: { protocol: 'http:', host: 'localhost' } });
   vi.stubGlobal('WebSocket', MockWebSocket);
+}
+
+function migrationReport() {
+  return {
+    status: 'migratable' as const,
+    migrationVersion: '1',
+    workspaceId: 'ws_1',
+    sourceVersionId: 'ver_v1',
+    sourceGraphHash: 'sha256:source',
+    sourceSchemaVersion: 1,
+    catalogRevision: 'catalog-1',
+    workspaceConnectorId: 'atlas',
+    applyEnabled: true,
+    reportHash: 'sha256:report',
+    nodes: [],
+  };
+}
+
+function emptyWorkbenchState() {
+  return {
+    eventSeq: 0,
+    workspace: {
+      id: 'ws_1',
+      name: 'Migration',
+      versionId: 'ver_v2',
+      updatedAt: '2026-07-27T00:00:00Z',
+    },
+    providers: {
+      defaultProvider: 'atlas',
+      selectedProvider: 'atlas',
+      runtimeProviders: [],
+      workflowBackends: [],
+      apiConnectors: [],
+    },
+    chat: { messages: [] },
+    graph: { nodes: [], edges: [] },
+    run: null,
+    outputs: [],
+    history: [],
+    pendingConfirmation: null,
+    pendingProposal: null,
+  };
 }
 
 function ticketFetch(mode: 'disabled' | 'required') {

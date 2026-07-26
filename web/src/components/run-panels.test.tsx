@@ -1,7 +1,14 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { act, create, type ReactTestRenderer } from 'react-test-renderer';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { dryRunVersionMigration } from '../api';
 import { HistoryPanel, OutputsStrip } from './run-panels';
 import type { WorkbenchState } from '../types';
+
+vi.mock('../api', () => ({
+  applyVersionMigration: vi.fn(),
+  dryRunVersionMigration: vi.fn(),
+}));
 
 type Output = WorkbenchState['outputs'][number];
 
@@ -70,10 +77,12 @@ describe('HistoryPanel navigation lock', () => {
         busy
         currentVersionId="ver_a"
         currentWorkspaceId="ws_a"
+        currentConnectorId="atlas"
         history={[]}
         onClose={noop}
         onOpenWorkspace={noop}
         onRestoreVersion={noop}
+        onMigrationApplied={noop}
         open
         workspaceListError={null}
         workspaces={[
@@ -86,3 +95,65 @@ describe('HistoryPanel navigation lock', () => {
     expect(markup.match(/class="workspace-history-row[^"]*" disabled=""/g)).toHaveLength(2);
   });
 });
+
+describe('HistoryPanel version migration', () => {
+  let renderer: ReactTestRenderer | null = null;
+
+  afterEach(async () => {
+    if (renderer) await act(async () => renderer?.unmount());
+    renderer = null;
+    vi.clearAllMocks();
+  });
+
+  it('discards a completed report when the connector changes', async () => {
+    vi.mocked(dryRunVersionMigration).mockResolvedValue({
+      status: 'migratable',
+      migrationVersion: '1',
+      workspaceId: 'ws_a',
+      sourceVersionId: 'ver_a',
+      sourceGraphHash: 'sha256:source',
+      sourceSchemaVersion: 1,
+      catalogRevision: 'catalog-1',
+      workspaceConnectorId: 'atlas',
+      applyEnabled: true,
+      reportHash: 'sha256:report',
+      nodes: [],
+    });
+    await act(async () => {
+      renderer = create(historyPanel('atlas'));
+    });
+    const view = renderer;
+    if (!view) throw new Error('renderer was not created');
+    const check = view.root
+      .findAllByType('button')
+      .find((button) => button.children.includes('检查'));
+    await act(async () => {
+      check?.props.onClick();
+      await Promise.resolve();
+    });
+    expect(JSON.stringify(view.toJSON())).toContain('可以迁移');
+
+    await act(async () => view.update(historyPanel('fal')));
+    expect(JSON.stringify(view.toJSON())).not.toContain('可以迁移');
+    expect(JSON.stringify(view.toJSON())).toContain('先检查当前版本');
+  });
+});
+
+function historyPanel(connectorId: string) {
+  return (
+    <HistoryPanel
+      busy={false}
+      currentConnectorId={connectorId}
+      currentVersionId="ver_a"
+      currentWorkspaceId="ws_a"
+      history={[]}
+      onClose={noop}
+      onMigrationApplied={noop}
+      onOpenWorkspace={noop}
+      onRestoreVersion={noop}
+      open
+      workspaceListError={null}
+      workspaces={[]}
+    />
+  );
+}
