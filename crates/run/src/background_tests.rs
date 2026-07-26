@@ -129,6 +129,64 @@ async fn start_manual_run_returns_before_provider_finishes() {
 }
 
 #[tokio::test]
+async fn concurrent_confirms_claim_workspace_atomically() {
+    let (store, _dir) = open_background_store().await;
+    let (workspace_id, version_id) = background_workspace_version(&store).await;
+    let provider = BlockingProvider::default();
+    let service = RunService::with_provider(store.clone(), provider.clone());
+    let pending_a = service
+        .request_agent_run(AgentRunRequest {
+            workspace_id: workspace_id.clone(),
+            version_id: version_id.clone(),
+            group_id: None,
+            label: "Claim A".to_owned(),
+            provider: "mock".to_owned(),
+            graph: background_graph(),
+        })
+        .await
+        .expect("request run a");
+    let pending_b = service
+        .request_agent_run(AgentRunRequest {
+            workspace_id,
+            version_id,
+            group_id: None,
+            label: "Claim B".to_owned(),
+            provider: "mock".to_owned(),
+            graph: background_graph(),
+        })
+        .await
+        .expect("request run b");
+
+    let (result_a, result_b) = tokio::join!(
+        service.start_confirmed_run(&pending_a.run.id),
+        service.start_confirmed_run(&pending_b.run.id)
+    );
+
+    let winners = usize::from(result_a.is_ok()) + usize::from(result_b.is_ok());
+    assert_eq!(
+        winners, 1,
+        "exactly one concurrent confirm may claim the workspace"
+    );
+    let (winner_id, loser) = if result_a.is_ok() {
+        (pending_a.run.id.clone(), result_b)
+    } else {
+        (pending_b.run.id.clone(), result_a)
+    };
+    match loser.expect_err("loser must be rejected") {
+        RunError::WorkspaceBusy { .. } | RunError::RunClaimContention(_) => {}
+        other => panic!("unexpected loser error: {other}"),
+    }
+
+    provider.wait_until_blocked().await;
+    service
+        .interrupt_run(&winner_id)
+        .await
+        .expect("interrupt winner");
+    provider.release();
+    wait_for_status(&store, &winner_id, "interrupted").await;
+}
+
+#[tokio::test]
 async fn prepare_manual_run_persists_force_rerun_and_estimate() {
     let (store, _dir) = open_background_store().await;
     let (workspace_id, version_id) = background_workspace_version(&store).await;
