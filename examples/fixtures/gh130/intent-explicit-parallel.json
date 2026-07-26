@@ -1,0 +1,45 @@
+{
+  "description": "用户明确要求并行：两个模型各生成一张图、分别做视频（验收场景 20.3）",
+  "utterance": "同时用 GPT Image 和 Nano Banana 各生成一张图，再分别做成视频",
+  "intent": {
+    "intentVersion": "1",
+    "topology": "parallel",
+    "stages": [
+      {
+        "stageId": "a1",
+        "capabilityId": "text_to_image",
+        "requestedModel": "GPT Image",
+        "inputFrom": [],
+        "params": { "prompt": "一张干净的产品图" }
+      },
+      {
+        "stageId": "a2",
+        "capabilityId": "image_to_video",
+        "requestedModel": "Seedance 2",
+        "inputFrom": [{ "stageId": "a1", "output": "image" }],
+        "params": {}
+      },
+      {
+        "stageId": "b1",
+        "capabilityId": "text_to_image",
+        "requestedModel": "Nano Banana",
+        "inputFrom": [],
+        "params": { "prompt": "一张干净的产品图" }
+      },
+      {
+        "stageId": "b2",
+        "capabilityId": "image_to_video",
+        "requestedModel": "Seedance 2",
+        "inputFrom": [{ "stageId": "b1", "output": "image" }],
+        "params": {}
+      }
+    ],
+    "outputStageIds": ["a2", "b2"],
+    "assumptions": []
+  },
+  "expected": {
+    "outcome": "compiled",
+    "topologyShape": "two_branches",
+    "notes": "只有 topology=parallel 且分支在 intent 中明确列出时才允许 fan-out；分支数必须恰为 2"
+  }
+}
