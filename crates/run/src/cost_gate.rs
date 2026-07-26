@@ -188,7 +188,11 @@ where
             });
         }
         if let Err(busy) = self
-            .ensure_workspace_not_busy(&current.workspace_id, current.group_id.as_deref(), Some(&current.id))
+            .ensure_workspace_not_busy(
+                &current.workspace_id,
+                current.group_id.as_deref(),
+                Some(&current.id),
+            )
             .await
         {
             return Ok(busy);

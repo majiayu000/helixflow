@@ -17,13 +17,7 @@ async fn seed_workspace_run(
 ) -> (String, RunRecord) {
     let workspace_id = match workspace_id {
         Some(id) => id.to_owned(),
-        None => {
-            store
-                .create_workspace("Claim")
-                .await
-                .expect("workspace")
-                .id
-        }
+        None => store.create_workspace("Claim").await.expect("workspace").id,
     };
     let version = store
         .create_version(NewVersion {
