@@ -27,6 +27,15 @@ async fn startup_verifies_references_and_removes_only_owned_orphans() {
         uuid::Uuid::now_v7().simple(),
         uuid::Uuid::now_v7().simple()
     );
+    let migration_orphan = format!(
+        "workspaces/{workspace_id}/graphs/migration-{}.json",
+        uuid::Uuid::now_v7().simple()
+    );
+    let migration_temp = format!(
+        "workspaces/{workspace_id}/graphs/.hf-migration-{}-{}.tmp",
+        uuid::Uuid::now_v7().simple(),
+        uuid::Uuid::now_v7().simple()
+    );
     let legacy = format!("workspaces/{workspace_id}/graphs/legacy-graph.json");
     let keyed = format!(
         "workspaces/{workspace_id}/graphs/ops-key-{}.json",
@@ -34,6 +43,8 @@ async fn startup_verifies_references_and_removes_only_owned_orphans() {
     );
     fixture.write(&orphan, b"orphan").await;
     fixture.write(&orphan_temp, b"temp").await;
+    fixture.write(&migration_orphan, b"orphan").await;
+    fixture.write(&migration_temp, b"temp").await;
     fixture.write(&legacy, b"legacy").await;
     fixture.write(&keyed, b"keyed").await;
 
@@ -43,12 +54,14 @@ async fn startup_verifies_references_and_removes_only_owned_orphans() {
 
     assert_eq!(report.verified_versions, 1);
     assert_eq!(report.verified_proposal_files, 2);
-    assert_eq!(report.removed_orphans, 2);
+    assert_eq!(report.removed_orphans, 4);
     assert_eq!(report.retained_unknown, 2);
     assert_eq!(report.corrupt_references, 0);
     assert_eq!(report.path_categories["referenced_candidate"], 3);
     assert!(!fixture.root().join(orphan).exists());
     assert!(!fixture.root().join(orphan_temp).exists());
+    assert!(!fixture.root().join(migration_orphan).exists());
+    assert!(!fixture.root().join(migration_temp).exists());
     assert!(fixture.root().join(legacy).exists());
     assert!(fixture.root().join(keyed).exists());
     let versions = fixture

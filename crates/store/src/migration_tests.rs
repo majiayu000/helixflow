@@ -71,3 +71,96 @@ async fn upgrades_pre_0004_database_and_backfills_historical_data() {
         "accepted"
     );
 }
+
+#[tokio::test]
+async fn version_migration_rebuild_preserves_old_rows_semantics_and_foreign_keys() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("pre-0007.sqlite");
+    let database_url = format!("sqlite://{}", db_path.display());
+    let pool = connect_pool(&database_url)
+        .await
+        .expect("connect old store");
+    let all = sqlx::migrate!("./migrations");
+    let prior = Migrator {
+        migrations: Cow::Owned(all.iter().take(6).cloned().collect()),
+        ..Migrator::DEFAULT
+    };
+    prior.run(&pool).await.expect("apply through 0006");
+
+    sqlx::query(
+        r#"
+        INSERT INTO workspaces (
+            id, name, cur_version_id, runtime_provider_id, created_at, updated_at
+        ) VALUES (
+            'ws_old', 'Old', 'ver_child', 'atlas', current_timestamp, current_timestamp
+        );
+        INSERT INTO versions (
+            id, workspace_id, idx, label, source, graph_path, graph_hash, parent_id,
+            created_at, semantics_json
+        ) VALUES (
+            'ver_parent', 'ws_old', 1, 'Parent', 'manual', 'parent.json', 'sha256:parent',
+            NULL, current_timestamp, NULL
+        ), (
+            'ver_child', 'ws_old', 2, 'Child', 'proposal', 'child.json', 'sha256:child',
+            'ver_parent', current_timestamp, '{"node":{"capabilityId":"text_to_image"}}'
+        );
+        INSERT INTO runs (
+            id, workspace_id, version_id, label, trigger, status, attempt, force_rerun,
+            created_at
+        ) VALUES (
+            'run_old', 'ws_old', 'ver_child', 'Old run', 'manual', 'succeeded', 0, 0,
+            current_timestamp
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("seed old rows");
+    pool.close().await;
+
+    let store = Store::open(&database_url)
+        .await
+        .expect("upgrade through 0007");
+    let child = store.version("ver_child").await.expect("child");
+    let run = store.run("run_old").await.expect("run");
+    let foreign_key_violations: Vec<(String, i64, String, i64)> =
+        sqlx::query_as("PRAGMA foreign_key_check")
+            .fetch_all(store.pool())
+            .await
+            .expect("foreign key check");
+    let indexes: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'versions'",
+    )
+    .fetch_all(store.pool())
+    .await
+    .expect("indexes");
+
+    assert_eq!(child.parent_id.as_deref(), Some("ver_parent"));
+    assert!(
+        child
+            .semantics_json
+            .as_deref()
+            .is_some_and(|value| { value.contains("\"capabilityId\":\"text_to_image\"") })
+    );
+    assert_eq!(run.version_id, "ver_child");
+    assert!(foreign_key_violations.is_empty());
+    assert!(
+        indexes
+            .iter()
+            .any(|name| name == "idx_versions_workspace_id")
+    );
+
+    let migrated = store
+        .create_version(super::NewVersion {
+            workspace_id: "ws_old",
+            label: "Migration",
+            source: super::VersionSource::Migration,
+            graph_path: "migration.json",
+            graph_hash: "sha256:migration",
+            parent_id: Some("ver_child"),
+            semantics_json: Some("{}"),
+        })
+        .await
+        .expect("insert migration source");
+    assert_eq!(migrated.source, "migration");
+}

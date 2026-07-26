@@ -54,11 +54,11 @@ fn hex_nibble(byte: u8) -> Option<u8> {
 pub(crate) enum CandidateKind {
     Initial,
     Layout,
-    MigratedGraph,
     Ops,
     ProposalApplied,
     ProposalOps,
     ProposalPreview,
+    Migration,
 }
 
 impl CandidateKind {
@@ -66,11 +66,11 @@ impl CandidateKind {
         match self {
             Self::Initial => "initial",
             Self::Layout => "layout",
-            Self::MigratedGraph => "migrated-graph",
             Self::Ops => "ops",
             Self::ProposalApplied => "proposal-applied",
             Self::ProposalOps => "proposal-ops",
             Self::ProposalPreview => "proposal-preview",
+            Self::Migration => "migration",
         }
     }
 }

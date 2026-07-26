@@ -116,6 +116,36 @@ fn validates_node_schema_and_edges() {
 }
 
 #[test]
+fn migration_validation_reports_unknown_nodes_without_skipping_graph_integrity() {
+    let mut graph = sample_graph();
+    graph.nodes.get_mut("video").expect("video").node_type = "vendor.unknown".to_owned();
+    assert!(matches!(
+        service().validate_graph(&graph),
+        Err(GraphError::Registry(_))
+    ));
+    service()
+        .validate_graph_for_migration(&graph)
+        .expect("unknown node reaches migration mapping");
+
+    let mut missing_endpoint = graph.clone();
+    missing_endpoint.edges[0].from[0] = "ghost".to_owned();
+    assert!(matches!(
+        service().validate_graph_for_migration(&missing_endpoint),
+        Err(GraphError::MissingEndpoint(id)) if id == "ghost"
+    ));
+
+    graph.edges.push(GraphEdge {
+        from: ["video".to_owned(), "unknown".to_owned()],
+        to: ["input".to_owned(), "unknown".to_owned()],
+        edge_type: "unknown".to_owned(),
+    });
+    assert!(matches!(
+        service().validate_graph_for_migration(&graph),
+        Err(GraphError::CycleDetected)
+    ));
+}
+
+#[test]
 fn validates_proposal_ops_and_preview_graph() {
     let graph = sample_graph();
     let draft = ProposalDraft {
@@ -306,6 +336,7 @@ async fn applying_proposal_can_create_immutable_child_version() {
                 version_label: "Applied proposal",
                 graph_path: "graphs/applied.json",
                 graph_hash: "sha256:applied",
+                semantics_json: None,
             },
         )
         .await
@@ -388,6 +419,7 @@ async fn store_backed_apply_rejects_stale_workspace_version() {
                 version_label: "Stale proposal",
                 graph_path: "graphs/stale.json",
                 graph_hash: "sha256:stale",
+                semantics_json: None,
             },
         )
         .await

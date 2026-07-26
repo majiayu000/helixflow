@@ -70,10 +70,12 @@ describe('HistoryPanel navigation lock', () => {
         busy
         currentVersionId="ver_a"
         currentWorkspaceId="ws_a"
+        currentConnectorId="atlas"
         history={[]}
         onClose={noop}
         onOpenWorkspace={noop}
         onRestoreVersion={noop}
+        onMigrationApplied={noop}
         open
         workspaceListError={null}
         workspaces={[
@@ -85,6 +87,49 @@ describe('HistoryPanel navigation lock', () => {
 
     expect(markup.match(/class="workspace-history-row[^"]*" disabled=""/g)).toHaveLength(2);
   });
+
+  it('omits migration controls when the workspace has no current version', () => {
+    const markup = renderToStaticMarkup(
+      <HistoryPanel
+        busy={false}
+        currentVersionId=""
+        currentWorkspaceId="ws_a"
+        currentConnectorId="atlas"
+        history={[]}
+        onClose={noop}
+        onOpenWorkspace={noop}
+        onRestoreVersion={noop}
+        onMigrationApplied={noop}
+        open
+        workspaceListError={null}
+        workspaces={[]}
+      />,
+    );
+
+    expect(markup).not.toContain('v1 → v2 版本迁移');
+  });
+
+  it('disables migration controls while manual edits are pending', () => {
+    const markup = renderToStaticMarkup(
+      <HistoryPanel
+        busy={false}
+        currentVersionId="ver_a"
+        currentWorkspaceId="ws_a"
+        currentConnectorId="atlas"
+        history={[]}
+        migrationBlocked
+        onClose={noop}
+        onOpenWorkspace={noop}
+        onRestoreVersion={noop}
+        onMigrationApplied={noop}
+        open
+        workspaceListError={null}
+        workspaces={[]}
+      />,
+    );
+
+    expect(markup).toMatch(/aria-label="检查"[^>]*disabled=""/);
+  });
 });
 
 describe('HistoryPanel version source badge', () => {
@@ -92,6 +137,7 @@ describe('HistoryPanel version source badge', () => {
     const markup = renderToStaticMarkup(
       <HistoryPanel
         busy={false}
+        currentConnectorId="atlas"
         currentVersionId="ver_a"
         currentWorkspaceId="ws_a"
         history={[
@@ -102,6 +148,7 @@ describe('HistoryPanel version source badge', () => {
         ]}
         onClose={noop}
         onOpenWorkspace={noop}
+        onMigrationApplied={noop}
         onRestoreVersion={noop}
         open
         workspaceListError={null}

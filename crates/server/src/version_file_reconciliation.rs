@@ -11,9 +11,10 @@ use uuid::Uuid;
 
 use crate::version_file_consistency::{VersionFileConsistencyError, read_version_graph};
 
-const CANDIDATE_KINDS: [&str; 6] = [
+const CANDIDATE_KINDS: [&str; 7] = [
     "initial",
     "layout",
+    "migration",
     "ops",
     "proposal-applied",
     "proposal-ops",

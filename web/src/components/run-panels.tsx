@@ -1,6 +1,7 @@
 import { Icon } from '../icons';
 import type { RunStepState, WorkbenchState, WorkspaceSummary } from '../types';
 import { formatTime } from './chat-pane';
+import { VersionMigrationPanel } from './version-migration-panel';
 
 type RunDockProps = {
   run: NonNullable<WorkbenchState['run']>;
@@ -18,12 +19,15 @@ type HistoryPanelProps = {
   workspaces: WorkspaceSummary[];
   currentWorkspaceId: string;
   currentVersionId: string;
+  currentConnectorId: string;
   busy: boolean;
+  migrationBlocked?: boolean;
   workspaceListError: string | null;
   open: boolean;
   onClose: () => void;
   onOpenWorkspace: (id: string) => void;
   onRestoreVersion: (id: string) => void;
+  onMigrationApplied: (state: WorkbenchState) => void;
 };
 
 export function RunDock({ run }: RunDockProps) {
@@ -213,12 +217,15 @@ export function HistoryPanel({
   workspaces,
   currentWorkspaceId,
   currentVersionId,
+  currentConnectorId,
   busy,
+  migrationBlocked = false,
   workspaceListError,
   open,
   onClose,
   onOpenWorkspace,
   onRestoreVersion,
+  onMigrationApplied,
 }: HistoryPanelProps) {
   if (!open) return null;
   return (
@@ -258,6 +265,16 @@ export function HistoryPanel({
           ))
         )}
         <div className="history-section-title">版本与运行历史</div>
+        {currentVersionId && (
+          <VersionMigrationPanel
+            busy={busy || migrationBlocked}
+            connectorId={currentConnectorId}
+            onApplied={onMigrationApplied}
+            open={open}
+            versionId={currentVersionId}
+            workspaceId={currentWorkspaceId}
+          />
+        )}
         {history.length === 0 ? (
           <div className="empty-history">暂无版本或运行记录</div>
         ) : (
@@ -303,6 +320,8 @@ function sourceLabel(source: NonNullable<WorkbenchState['history'][number]['sour
       return 'Agent';
     case 'restore':
       return '回滚';
+    case 'migration':
+      return '迁移';
   }
 }
 

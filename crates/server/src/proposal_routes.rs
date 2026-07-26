@@ -19,6 +19,7 @@ use crate::graph_files::{read_graph_file, read_json_file};
 use crate::version_file_consistency::{
     CandidateKind, VersionFileCandidate, VersionFileConsistencyError, read_version_graph,
 };
+use crate::version_semantics::derive_semantics_json;
 use crate::workbench_payload::proposal_kind_from_str;
 use crate::workspace_state::workspace_state_value;
 
@@ -91,6 +92,7 @@ async fn apply_workspace_proposal_inner(
         .map_err(candidate_error)?
         .to_owned();
     let graph_hash = candidate.graph_hash().to_owned();
+    let semantics_json = derive_semantics_json(&current_version, &current_graph, &applied_graph)?;
     candidate
         .publish(&state.data_dir)
         .map_err(candidate_error)?;
@@ -112,7 +114,7 @@ async fn apply_workspace_proposal_inner(
                 graph_path: &graph_path,
                 graph_hash: &graph_hash,
                 parent_id: Some(&proposal.base_version_id),
-                semantics_json: None,
+                semantics_json: semantics_json.as_deref(),
             },
             message_text: &message_text,
         })

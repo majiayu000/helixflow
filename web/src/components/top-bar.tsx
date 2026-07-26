@@ -20,7 +20,6 @@ type TopBarProps = {
   running: boolean;
   busy: boolean;
   onHistory: () => void;
-  onMigration: () => void;
   onNewWorkspace: () => void;
   onAgentRun: () => void;
   onCommitEdits?: () => void;
@@ -44,7 +43,6 @@ export function TopBar({
   running,
   busy,
   onHistory,
-  onMigration,
   onNewWorkspace,
   onAgentRun,
   onCommitEdits,
@@ -149,13 +147,6 @@ export function TopBar({
           onClick={onHistory}
         >
           <HistoryIcon />
-        </button>
-        <button
-          className="ibtn ibtn--icon"
-          title="v1 图迁移检查"
-          onClick={onMigration}
-        >
-          <Icon n="export" s={16} />
         </button>
         {!editing && (
           <button

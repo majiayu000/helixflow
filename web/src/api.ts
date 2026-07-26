@@ -1,9 +1,5 @@
 import {
   CanvasDocumentSchema,
-  type MigrationApply,
-  MigrationApplySchema,
-  type MigrationDryRun,
-  MigrationDryRunSchema,
   type ImplementationResolution,
   type ModelCatalog,
   ModelCatalogSchema,
@@ -246,34 +242,6 @@ export async function resolveImplementation(
     message: typeof record.error === 'string' ? record.error : `resolve failed: ${response.status}`,
     recoverable: record.details?.recoverable === true,
   };
-}
-
-export async function runGraphMigrationDryRun(workspaceId: string): Promise<MigrationDryRun> {
-  const response = await fetch(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/graph-migration/dry-run`,
-    { method: 'POST' },
-  );
-  if (!response.ok) {
-    throw new Error(`migration dry-run failed: ${response.status}`);
-  }
-  return MigrationDryRunSchema.parse(await response.json());
-}
-
-export async function applyGraphMigration(workspaceId: string): Promise<MigrationApply> {
-  const response = await fetch(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/graph-migration/apply`,
-    { method: 'POST' },
-  );
-  const body: unknown = await response.json().catch(() => null);
-  if (!response.ok) {
-    const record = (body ?? {}) as { error?: unknown };
-    throw new Error(
-      typeof record.error === 'string'
-        ? record.error
-        : `migration apply failed: ${response.status}`,
-    );
-  }
-  return MigrationApplySchema.parse(body);
 }
 
 export async function createWorkspace(name?: string): Promise<WorkspaceSummary> {

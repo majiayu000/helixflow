@@ -275,7 +275,6 @@ describe('App', () => {
         onAgentRun={() => {}}
         onExport={() => {}}
         onHistory={() => {}}
-        onMigration={() => {}}
         onNewWorkspace={() => {}}
         onProviderSelect={() => {}}
         onForceRerunChange={() => {}}
@@ -307,7 +306,6 @@ describe('App', () => {
         onCommitEdits={() => {}}
         onExport={() => {}}
         onHistory={() => {}}
-        onMigration={() => {}}
         onNewWorkspace={() => {}}
         onProviderSelect={() => {}}
         onForceRerunChange={() => {}}
@@ -343,7 +341,6 @@ describe('App', () => {
         onAgentRun={() => {}}
         onExport={() => {}}
         onHistory={() => {}}
-        onMigration={() => {}}
         onNewWorkspace={() => {}}
         onProviderSelect={() => {}}
         onForceRerunChange={() => {}}
@@ -395,7 +392,6 @@ describe('App', () => {
         onAgentRun={() => {}}
         onExport={() => {}}
         onHistory={() => {}}
-        onMigration={() => {}}
         onNewWorkspace={() => {}}
         onProviderSelect={() => {}}
         onForceRerunChange={() => {}}
@@ -1361,6 +1357,7 @@ describe('App', () => {
         busy={false}
         currentVersionId="ver_current"
         currentWorkspaceId="ws_test"
+        currentConnectorId="atlas"
         history={[
           { id: 'ver_base', kind: 'version', label: 'Base graph', time: '09:01', summary: 'manual graph', source: 'manual' },
           { id: 'ver_current', kind: 'version', label: 'Current graph', time: '09:05', summary: 'proposal graph', source: 'proposal' },
@@ -1368,6 +1365,7 @@ describe('App', () => {
         onClose={() => undefined}
         onOpenWorkspace={() => undefined}
         onRestoreVersion={() => undefined}
+        onMigrationApplied={() => undefined}
         open
         workspaceListError={null}
         workspaces={[]}

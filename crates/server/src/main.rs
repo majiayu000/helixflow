@@ -18,7 +18,6 @@ mod capability_preflight;
 mod catalog_routes;
 mod graph_files;
 mod layout_routes;
-mod migration_routes;
 mod ops_routes;
 #[cfg(test)]
 mod ops_routes_tests;
@@ -41,7 +40,11 @@ mod version_file_consistency_tests;
 mod version_file_reconciliation;
 #[cfg(test)]
 mod version_file_reconciliation_tests;
+mod version_migration_routes;
+#[cfg(test)]
+mod version_migration_routes_tests;
 mod version_routes;
+mod version_semantics;
 mod workbench_message;
 mod workbench_message_canvas;
 mod workbench_message_graph;
@@ -73,13 +76,13 @@ use catalog_routes::{
     capability_models, catalog_snapshot, compile_intent, model_capabilities, resolve_implementation,
 };
 use layout_routes::save_workspace_layout;
-use migration_routes::{migration_apply, migration_dry_run};
 use ops_routes::apply_workspace_ops;
 use proposal_routes::{apply_workspace_proposal, dismiss_workspace_proposal};
 use registry_routes::node_registry_catalog;
 use run_routes::{confirm_run, hold_run, interrupt_active_run, queue_workspace_run};
 use upload_routes::upload_workspace_image;
 use version_file_reconciliation::ReconciliationReport;
+use version_migration_routes::{apply_version_migration, dry_run_version_migration};
 use version_routes::{export_workflow_version, restore_workspace_version, undo_workspace_version};
 use workbench_message::post_workspace_message;
 use workspace_canvas::workspace_canvas;
@@ -166,14 +169,6 @@ fn app(state: AppState) -> Router {
         .route("/api/catalog/resolve", post(resolve_implementation))
         .route("/api/workflows/compile-intent", post(compile_intent))
         .route(
-            "/api/workspaces/{workspace_id}/graph-migration/dry-run",
-            post(migration_dry_run),
-        )
-        .route(
-            "/api/workspaces/{workspace_id}/graph-migration/apply",
-            post(migration_apply),
-        )
-        .route(
             "/api/workspaces",
             get(list_workspaces).post(create_workspace),
         )
@@ -256,6 +251,14 @@ fn app(state: AppState) -> Router {
         .route(
             "/api/workspaces/{workspace_id}/versions/{version_id}/restore",
             post(restore_workspace_version),
+        )
+        .route(
+            "/api/workspaces/{workspace_id}/versions/{version_id}/migration/dry-run",
+            post(dry_run_version_migration),
+        )
+        .route(
+            "/api/workspaces/{workspace_id}/versions/{version_id}/migration/apply",
+            post(apply_version_migration),
         )
         .route("/ws", get(ws_handler))
         .with_state(state)

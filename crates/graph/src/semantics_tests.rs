@@ -101,6 +101,42 @@ fn migrates_nodes_without_model_to_explicit_policy() {
 }
 
 #[test]
+fn migration_restricts_bindings_to_the_workspace_connector() {
+    let catalog = builtin_catalog();
+    let registry = NodeRegistry::builtin();
+    let (migrated, report) = migrate_v1_for_connector(&v1_graph(), &registry, &catalog, "fal");
+
+    assert!(migrated.is_none());
+    assert!(report.nodes.iter().any(|node| matches!(
+        &node.action,
+        MigrationAction::NeedsResolution {
+            code: MigrationReasonCode::WorkspaceConnectorIncompatible,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn migration_reports_unknown_node_type_at_the_node_boundary() {
+    let catalog = builtin_catalog();
+    let registry = NodeRegistry::builtin();
+    let mut graph = v1_graph();
+    graph.nodes.get_mut("image").expect("image").node_type = "vendor.unknown".to_owned();
+
+    let (migrated, report) = migrate_v1_for_connector(&graph, &registry, &catalog, "atlas");
+
+    assert!(migrated.is_none());
+    assert!(!report.resolvable);
+    assert!(report.nodes.iter().any(|node| matches!(
+        &node.action,
+        MigrationAction::NeedsResolution {
+            code: MigrationReasonCode::UnknownNodeType,
+            ..
+        } if node.node_id == "image"
+    )));
+}
+
+#[test]
 fn migration_is_deterministic() {
     let catalog = builtin_catalog();
     let registry = NodeRegistry::builtin();
@@ -174,7 +210,10 @@ fn model_capability_mismatch_needs_resolution_not_silent_swap() {
     assert!(!report.resolvable);
     assert!(report.nodes.iter().any(|node| matches!(
         &node.action,
-        MigrationAction::NeedsResolution { reason } if reason.contains("no binding")
+        MigrationAction::NeedsResolution {
+            code: MigrationReasonCode::ModelCapabilityMismatch,
+            ..
+        }
     )));
 }
 
@@ -199,8 +238,10 @@ fn missing_default_binding_needs_resolution() {
     assert!(!report.resolvable);
     assert!(report.nodes.iter().any(|node| matches!(
         &node.action,
-        MigrationAction::NeedsResolution { reason }
-            if reason.contains("no configured default binding")
+        MigrationAction::NeedsResolution {
+            code: MigrationReasonCode::DefaultBindingMissing,
+            ..
+        }
     )));
 }
 
@@ -241,7 +282,10 @@ fn ambiguous_legacy_model_needs_user_choice() {
     assert!(migrated.is_none());
     assert!(report.nodes.iter().any(|node| matches!(
         &node.action,
-        MigrationAction::NeedsUserChoice { candidates } if candidates.len() == 2
+        MigrationAction::NeedsUserChoice {
+            code: MigrationReasonCode::ModelAmbiguous,
+            candidates,
+        } if candidates.len() == 2
     )));
 }
 

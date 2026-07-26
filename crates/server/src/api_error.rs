@@ -44,6 +44,17 @@ impl ApiError {
         }
     }
 
+    pub(crate) fn service_unavailable_with_details(
+        message: impl Into<String>,
+        details: serde_json::Value,
+    ) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: message.into(),
+            details: Some(details),
+        }
+    }
+
     pub(crate) fn unauthorized(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::UNAUTHORIZED,

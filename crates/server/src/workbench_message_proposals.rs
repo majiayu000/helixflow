@@ -5,6 +5,7 @@ use crate::version_file_consistency::{
     CandidateKind, VersionFileCandidate, VersionFileCandidateSet, VersionFileConsistencyError,
     read_version_graph,
 };
+use crate::version_semantics::derive_semantics_json;
 use helixflow_agent::ValidatedAgentProposal;
 use helixflow_graph::{GraphService, ProposalKind};
 use helixflow_registry::NodeRegistry;
@@ -104,6 +105,14 @@ async fn persist_and_apply_agent_proposal_inner(
     let applied_graph = GraphService::new(NodeRegistry::builtin())
         .apply_proposal(&current_graph, current_version_id, &proposal.proposal)
         .map_err(graph_apply_error)?;
+    let derived_semantics;
+    let semantics_json = if semantics_json.is_some() {
+        semantics_json
+    } else {
+        derived_semantics =
+            derive_semantics_json(&current_version, &current_graph, &applied_graph)?;
+        derived_semantics.as_deref()
+    };
     let ops_candidate = VersionFileCandidate::from_json(
         workspace_id,
         CandidateKind::ProposalOps,
