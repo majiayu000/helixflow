@@ -9,6 +9,16 @@ fn request(capability: &str) -> ProviderRequest {
         inputs: BTreeMap::new(),
         input_texts: BTreeMap::new(),
         params: json!({ "prompt": "a product image", "aspect_ratio": "1:1" }),
+        resolved_model_id: Some("google/nano-banana-2".to_owned()),
+        operation_id: Some("fal-ai/nano-banana-2".to_owned()),
+    }
+}
+
+fn unresolved_request(capability: &str) -> ProviderRequest {
+    ProviderRequest {
+        resolved_model_id: None,
+        operation_id: None,
+        ..request(capability)
     }
 }
 
@@ -25,7 +35,6 @@ async fn fal_rejects_unsupported_capability() {
     let provider = FalProvider::new(FalProviderConfig::new(
         "test-key".to_owned(),
         DEFAULT_FAL_API_BASE.to_owned(),
-        DEFAULT_FAL_IMAGE_MODEL.to_owned(),
     ));
 
     let err = provider
@@ -68,7 +77,6 @@ async fn fal_queue_image_generation_returns_remote_image() -> Result<(), Box<dyn
     let provider = FalProvider::new(FalProviderConfig::new(
         "test-key".to_owned(),
         format!("http://{addr}"),
-        DEFAULT_FAL_IMAGE_MODEL.to_owned(),
     ));
 
     let result = provider
@@ -103,7 +111,6 @@ async fn fal_errors_redact_api_key() -> Result<(), Box<dyn std::error::Error>> {
     let provider = FalProvider::new(FalProviderConfig::new(
         "test-key".to_owned(),
         format!("http://{addr}"),
-        DEFAULT_FAL_IMAGE_MODEL.to_owned(),
     ));
 
     let err = provider
@@ -136,7 +143,6 @@ async fn fal_rate_limit_errors_are_generic() -> Result<(), Box<dyn std::error::E
     let provider = FalProvider::new(FalProviderConfig::new(
         "test-key".to_owned(),
         format!("http://{addr}"),
-        DEFAULT_FAL_IMAGE_MODEL.to_owned(),
     ));
 
     let err = provider
@@ -174,7 +180,6 @@ async fn fal_status_errors_redact_api_key() -> Result<(), Box<dyn std::error::Er
     let provider = FalProvider::new(FalProviderConfig::new(
         "test-key".to_owned(),
         format!("http://{addr}"),
-        DEFAULT_FAL_IMAGE_MODEL.to_owned(),
     ));
 
     let err = provider
@@ -206,7 +211,6 @@ async fn fal_rejects_cross_base_callback_urls() -> Result<(), Box<dyn std::error
     let provider = FalProvider::new(FalProviderConfig::new(
         "test-key".to_owned(),
         format!("http://{addr}"),
-        DEFAULT_FAL_IMAGE_MODEL.to_owned(),
     ));
 
     let err = provider
@@ -223,11 +227,24 @@ async fn fal_rejects_cross_base_callback_urls() -> Result<(), Box<dyn std::error
 }
 
 #[tokio::test]
-async fn gh130_baseline_image_submit_targets_config_default_model()
--> Result<(), Box<dyn std::error::Error>> {
-    // GH130 T0 baseline: with no `params.model` the submit URL and artifact
-    // meta silently target the provider-config default model the user never
-    // chose in the graph. SP130-T4 replaces this with resolved bindings.
+async fn gh130_failclosed_image_without_resolved_operation_errors() {
+    // GH130 T4: with no resolved binding the provider refuses to invoke —
+    // the old config-default fallback is gone.
+    let provider = FalProvider::new(FalProviderConfig::new(
+        "test-key".to_owned(),
+        DEFAULT_FAL_API_BASE.to_owned(),
+    ));
+
+    let err = provider
+        .invoke(unresolved_request("image_generate"))
+        .await
+        .expect_err("unresolved model must fail");
+
+    assert!(matches!(err, ProviderError::ModelUnresolved { .. }));
+}
+
+#[tokio::test]
+async fn gh130_resolved_operation_drives_submit_path() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
     let server = tokio::spawn(async move {
@@ -254,9 +271,7 @@ async fn gh130_baseline_image_submit_targets_config_default_model()
     let provider = FalProvider::new(FalProviderConfig::new(
         "test-key".to_owned(),
         format!("http://{addr}"),
-        String::new(),
     ));
-
     let result = provider
         .invoke(request("image_generate"))
         .await
@@ -264,12 +279,12 @@ async fn gh130_baseline_image_submit_targets_config_default_model()
     let submit_head = server.await??;
 
     assert!(
-        submit_head.starts_with(&format!("POST /{DEFAULT_FAL_IMAGE_MODEL} ")),
+        submit_head.starts_with("POST /fal-ai/nano-banana-2 "),
         "submit line was: {}",
         submit_head.lines().next().unwrap_or("")
     );
     let image = result.outputs.get("image").expect("image output");
-    assert_eq!(image.meta["model"], DEFAULT_FAL_IMAGE_MODEL);
+    assert_eq!(image.meta["model"], "fal-ai/nano-banana-2");
     Ok(())
 }
 

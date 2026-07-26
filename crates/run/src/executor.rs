@@ -98,6 +98,10 @@ where
             json!({ "version_id": plan.version_id }),
         )
         .await?;
+        if let Some(data) = crate::resolved::resolved_implementations_event(plan) {
+            self.emit(workspace_id, &run.id, "run.resolved_implementations", data)
+                .await?;
+        }
 
         let mut outputs = BTreeMap::new();
         let mut ready = dag.initial_ready();
@@ -364,6 +368,14 @@ where
                 inputs: inputs.clone(),
                 input_texts,
                 params: step.params.clone(),
+                resolved_model_id: step
+                    .resolved
+                    .as_ref()
+                    .map(|resolved| resolved.resolved_model_id.clone()),
+                operation_id: step
+                    .resolved
+                    .as_ref()
+                    .map(|resolved| resolved.operation_id.clone()),
             };
             let result = tokio::select! {
                 result = self.provider.invoke(request) => result?,

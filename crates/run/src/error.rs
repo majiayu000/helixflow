@@ -20,6 +20,11 @@ pub enum RunError {
         actual: String,
     },
     InvalidSweepPlan(String),
+    ResolutionFailed {
+        node_id: String,
+        code: String,
+        message: String,
+    },
     MixedCostCurrency {
         expected: String,
         actual: String,
@@ -66,6 +71,14 @@ impl fmt::Display for RunError {
                 )
             }
             Self::InvalidSweepPlan(message) => write!(f, "invalid sweep plan: {message}"),
+            Self::ResolutionFailed {
+                node_id,
+                code,
+                message,
+            } => write!(
+                f,
+                "implementation resolution failed for node `{node_id}` [{code}]: {message}"
+            ),
             Self::MixedCostCurrency { expected, actual } => {
                 write!(
                     f,

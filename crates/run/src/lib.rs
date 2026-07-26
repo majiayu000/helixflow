@@ -12,6 +12,8 @@ use serde_json::Value;
 use tokio::sync::{Mutex, Notify, broadcast};
 
 mod artifact_path;
+mod resolved;
+pub use resolved::{resolve_step_binding_for, shared_catalog};
 #[cfg(test)]
 mod artifact_path_tests;
 mod artifact_remote;
@@ -350,9 +352,11 @@ where
     }
 
     pub async fn execute_manual_run(&self, request: ManualRunRequest) -> RunResult<RunOutcome> {
-        let plan =
+        let mut plan =
             self.graph
                 .compile_plan(&request.graph, &request.version_id, &request.provider)?;
+        resolved::attach_resolved_bindings(&mut plan, &request.provider, None)?;
+        let plan = plan;
         if plan.steps.is_empty() {
             return Err(RunError::NoExecutableSteps);
         }

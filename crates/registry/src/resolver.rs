@@ -20,6 +20,11 @@ pub struct ResolveRequest {
     pub capability_id: String,
     #[serde(default)]
     pub requested_model: Option<String>,
+    /// Restricts binding selection to one connector (tech.md §5 input
+    /// `backend_preference`): used at run time so the workspace-selected
+    /// provider only executes bindings it actually implements.
+    #[serde(default)]
+    pub connector_preference: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -156,9 +161,10 @@ impl<'a> CapabilityResolver<'a> {
             });
         }
 
+        let preference = request.connector_preference.as_deref();
         match request.requested_model.as_deref() {
-            Some(query) => self.resolve_pinned(capability_id, query, availability),
-            None => self.resolve_policy(capability_id, availability),
+            Some(query) => self.resolve_pinned(capability_id, query, preference, availability),
+            None => self.resolve_policy(capability_id, preference, availability),
         }
     }
 
@@ -166,10 +172,14 @@ impl<'a> CapabilityResolver<'a> {
         &self,
         capability_id: &str,
         query: &str,
+        preference: Option<&str>,
         availability: &ConnectorAvailability,
     ) -> Result<ResolvedImplementation, ResolveError> {
         let model_id = self.normalize_model(query)?;
-        let candidates = self.catalog.bindings_for_pair(capability_id, &model_id);
+        let mut candidates = self.catalog.bindings_for_pair(capability_id, &model_id);
+        if let Some(preference) = preference {
+            candidates.retain(|binding| binding_connector(binding) == Some(preference));
+        }
         if candidates.is_empty() {
             return Err(ResolveError::BindingNotFound {
                 capability_id: capability_id.to_owned(),
@@ -184,9 +194,13 @@ impl<'a> CapabilityResolver<'a> {
     fn resolve_policy(
         &self,
         capability_id: &str,
+        preference: Option<&str>,
         availability: &ConnectorAvailability,
     ) -> Result<ResolvedImplementation, ResolveError> {
-        let candidates = self.catalog.bindings_for_capability(capability_id);
+        let mut candidates = self.catalog.bindings_for_capability(capability_id);
+        if let Some(preference) = preference {
+            candidates.retain(|binding| binding_connector(binding) == Some(preference));
+        }
         if candidates.is_empty() {
             return Err(ResolveError::BindingNotFound {
                 capability_id: capability_id.to_owned(),
@@ -194,21 +208,29 @@ impl<'a> CapabilityResolver<'a> {
             });
         }
 
-        // Policy selection may only use an explicitly configured default (P5).
-        let Some(default_id) = self.catalog.default_bindings.get(capability_id) else {
-            return Err(ResolveError::BindingAmbiguous {
-                capability_id: capability_id.to_owned(),
-                candidates: binding_ids(&candidates),
-            });
-        };
-        let Some(binding) = candidates
-            .iter()
-            .find(|binding| &binding.binding_id == default_id)
-        else {
-            return Err(ResolveError::BindingNotFound {
-                capability_id: capability_id.to_owned(),
-                model_id: None,
-            });
+        // Policy selection uses the explicitly configured default (P5). With
+        // a connector preference the default may live on another connector;
+        // then a unique preferred candidate is still an explicit choice —
+        // multiple candidates remain ambiguous.
+        let default_binding =
+            self.catalog
+                .default_bindings
+                .get(capability_id)
+                .and_then(|default_id| {
+                    candidates
+                        .iter()
+                        .find(|binding| &binding.binding_id == default_id)
+                        .copied()
+                });
+        let binding = match default_binding {
+            Some(binding) => binding,
+            None if preference.is_some() && candidates.len() == 1 => candidates[0],
+            None => {
+                return Err(ResolveError::BindingAmbiguous {
+                    capability_id: capability_id.to_owned(),
+                    candidates: binding_ids(&candidates),
+                });
+            }
         };
         if !self.binding_available(binding, availability) {
             return Err(ResolveError::BindingUnavailable {
@@ -332,6 +354,13 @@ fn resolved(
         binding_id: binding.binding_id.clone(),
         binding_revision: binding.binding_revision.clone(),
         target: binding.implementation.clone(),
+    }
+}
+
+fn binding_connector(binding: &CapabilityBinding) -> Option<&str> {
+    match &binding.implementation {
+        ImplementationTarget::ApiConnector { connector_id, .. } => Some(connector_id),
+        ImplementationTarget::WorkflowTemplate { .. } => None,
     }
 }
 

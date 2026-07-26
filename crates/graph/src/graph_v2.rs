@@ -496,6 +496,7 @@ fn migrate_executable_node(
             let request = ResolveRequest {
                 capability_id: capability_id.to_owned(),
                 requested_model: Some(model.to_owned()),
+                connector_preference: None,
             };
             match resolver.resolve(&request, all_available) {
                 Ok(resolved) => Ok((

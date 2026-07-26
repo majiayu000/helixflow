@@ -192,8 +192,13 @@ impl AtlasProvider {
 
     async fn invoke_chat(&self, req: ProviderRequest) -> ProviderResultValue<ProviderResult> {
         let prompt = wired_or_param_string(&req, "text", "prompt")?;
-        let model = optional_string(&req.params, "model")
-            .unwrap_or_else(|| "deepseek-ai/DeepSeek-V3-0324".to_owned());
+        // GH130 T4: the model comes only from the run's resolved binding.
+        let model = req
+            .operation_id
+            .clone()
+            .ok_or_else(|| ProviderError::ModelUnresolved {
+                capability: req.capability.clone(),
+            })?;
         let mut messages = Vec::new();
         if let Some(system) = optional_string(&req.params, "system") {
             messages.push(json!({ "role": "system", "content": system }));
@@ -239,8 +244,13 @@ impl AtlasProvider {
 
     async fn invoke_image(&self, req: ProviderRequest) -> ProviderResultValue<ProviderResult> {
         let prompt = wired_or_param_string(&req, "prompt", "prompt")?;
-        let model = optional_string(&req.params, "model")
-            .unwrap_or_else(|| "google/nano-banana-2/text-to-image".to_owned());
+        // GH130 T4: the model comes only from the run's resolved binding.
+        let model = req
+            .operation_id
+            .clone()
+            .ok_or_else(|| ProviderError::ModelUnresolved {
+                capability: req.capability.clone(),
+            })?;
         let response = self
             .post_json(
                 format!("{}/api/v1/model/generateImage", self.api_root()),
@@ -266,8 +276,13 @@ impl AtlasProvider {
 
     async fn invoke_video(&self, req: ProviderRequest) -> ProviderResultValue<ProviderResult> {
         let prompt = wired_or_param_string(&req, "prompt", "prompt")?;
-        let model = optional_string(&req.params, "model")
-            .unwrap_or_else(|| "bytedance/seedance-v1.5-pro/text-to-video-fast".to_owned());
+        // GH130 T4: the model comes only from the run's resolved binding.
+        let model = req
+            .operation_id
+            .clone()
+            .ok_or_else(|| ProviderError::ModelUnresolved {
+                capability: req.capability.clone(),
+            })?;
         let duration = req
             .params
             .get("duration_sec")

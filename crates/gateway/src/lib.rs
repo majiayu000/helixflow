@@ -115,6 +115,15 @@ pub struct ProviderRequest {
     #[serde(default)]
     pub input_texts: BTreeMap<String, String>,
     pub params: Value,
+    /// Canonical model id resolved at run creation (GH130 T4). Providers
+    /// never choose a model themselves.
+    #[serde(default)]
+    pub resolved_model_id: Option<String>,
+    /// Provider-native operation for the resolved binding (e.g. the atlas
+    /// model path or the fal queue path). Required for model-bearing
+    /// capabilities; absence is an explicit error, never a default.
+    #[serde(default)]
+    pub operation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -191,6 +200,7 @@ pub enum ProviderError {
     InvalidRequest(String),
     InvalidResponse(String),
     RequestFailed(String),
+    ModelUnresolved { capability: String },
 }
 
 impl fmt::Display for ProviderError {
@@ -210,6 +220,12 @@ impl fmt::Display for ProviderError {
             }
             Self::Unavailable { provider, reason } => {
                 write!(f, "runtime provider `{provider}` is unavailable: {reason}")
+            }
+            Self::ModelUnresolved { capability } => {
+                write!(
+                    f,
+                    "no resolved model binding for capability `{capability}`; run preflight must resolve implementations before invoke"
+                )
             }
             Self::InvalidRequest(message) => {
                 write!(
@@ -524,6 +540,8 @@ mod tests {
                 "duration_sec": 5,
                 "aspect_ratio": "9:16"
             }),
+            resolved_model_id: None,
+            operation_id: None,
         }
     }
 

@@ -64,11 +64,30 @@ async fn atlas_request_failures_redact_auth_material() -> Result<(), Box<dyn std
 }
 
 #[tokio::test]
-async fn gh130_baseline_image_request_defaults_model_when_param_missing()
--> Result<(), Box<dyn std::error::Error>> {
-    // GH130 T0 baseline: with no `params.model` the outbound request and the
-    // artifact meta silently carry an internal default model the user never
-    // chose. SP130-T4 removes this fallback in favor of resolved bindings.
+async fn gh130_failclosed_invokes_require_resolved_operation() {
+    // GH130 T4: every model-bearing capability refuses to invoke without a
+    // resolved binding — the internal defaults are gone.
+    let provider = AtlasProvider::new(ApiProviderConfig::atlas(
+        "test-key".to_owned(),
+        DEFAULT_ATLAS_API_BASE.to_owned(),
+    ));
+    for capability in ["prompt_writer", "image_generate", "text_to_video"] {
+        let err = provider
+            .invoke(unresolved_request(
+                capability,
+                json!({ "prompt": "hello", "aspect_ratio": "1:1" }),
+            ))
+            .await
+            .expect_err("unresolved model must fail");
+        assert!(
+            matches!(err, ProviderError::ModelUnresolved { .. }),
+            "capability {capability}: {err}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn gh130_resolved_operation_drives_request_model() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
     let server = capture_request_and_respond(
@@ -80,7 +99,6 @@ async fn gh130_baseline_image_request_defaults_model_when_param_missing()
         "test-key".to_owned(),
         format!("http://{addr}/v1"),
     ));
-
     let result = provider
         .invoke(request(
             "image_generate",
@@ -96,33 +114,12 @@ async fn gh130_baseline_image_request_defaults_model_when_param_missing()
     Ok(())
 }
 
-#[tokio::test]
-async fn gh130_baseline_video_request_defaults_model_when_param_missing()
--> Result<(), Box<dyn std::error::Error>> {
-    // GH130 T0 baseline: the submit request already carries the silent default
-    // video model before the (here invalid) response fails the invoke.
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let addr = listener.local_addr()?;
-    let server = capture_request_and_respond(listener, 200, r#"{"data":{}}"#);
-    let provider = AtlasProvider::new(ApiProviderConfig::atlas(
-        "test-key".to_owned(),
-        format!("http://{addr}/v1"),
-    ));
-
-    let result = provider
-        .invoke(request("text_to_video", json!({ "prompt": "hello" })))
-        .await;
-    let request_body = server.await??;
-
-    assert_eq!(
-        request_body["model"],
-        "bytedance/seedance-v1.5-pro/text-to-video-fast"
-    );
-    result.expect_err("submit response without data.id must fail");
-    Ok(())
-}
-
 fn request(capability: &str, params: Value) -> ProviderRequest {
+    let operation_id = match capability {
+        "prompt_writer" => "deepseek-ai/DeepSeek-V3-0324",
+        "image_generate" => "google/nano-banana-2/text-to-image",
+        _ => "bytedance/seedance-v1.5-pro/text-to-video-fast",
+    };
     ProviderRequest {
         provider: "atlas".to_owned(),
         capability: capability.to_owned(),
@@ -131,6 +128,16 @@ fn request(capability: &str, params: Value) -> ProviderRequest {
         inputs: BTreeMap::new(),
         input_texts: BTreeMap::new(),
         params,
+        resolved_model_id: Some("resolved/model".to_owned()),
+        operation_id: Some(operation_id.to_owned()),
+    }
+}
+
+fn unresolved_request(capability: &str, params: Value) -> ProviderRequest {
+    ProviderRequest {
+        resolved_model_id: None,
+        operation_id: None,
+        ..request(capability, params)
     }
 }
 

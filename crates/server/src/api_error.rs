@@ -124,6 +124,18 @@ impl ApiError {
                 message: err.to_string(),
                 details: None,
             },
+            RunError::ResolutionFailed {
+                ref node_id,
+                ref code,
+                ..
+            } => Self {
+                status: StatusCode::CONFLICT,
+                message: err.to_string(),
+                details: Some(serde_json::json!({
+                    "code": code,
+                    "nodeId": node_id,
+                })),
+            },
             RunError::InvalidRunStatus { .. }
             | RunError::RunNotActive(_)
             | RunError::WorkspaceBusy { .. }
