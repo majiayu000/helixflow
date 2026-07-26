@@ -265,7 +265,14 @@ export function HistoryPanel({
             <div className="history-row" data-kind={item.kind} key={item.id}>
               <span className="history-dot" />
               <div>
-                <div className="history-label">{item.label}</div>
+                <div className="history-label">
+                  {item.label}
+                  {item.source && (
+                    <span className="history-source" data-source={item.source}>
+                      {sourceLabel(item.source)}
+                    </span>
+                  )}
+                </div>
                 <div className="history-summary">{item.summary}</div>
               </div>
               <div className="history-tail">
@@ -286,6 +293,17 @@ export function HistoryPanel({
       </div>
     </div>
   );
+}
+
+function sourceLabel(source: NonNullable<WorkbenchState['history'][number]['source']>): string {
+  switch (source) {
+    case 'manual':
+      return '手动';
+    case 'proposal':
+      return 'Agent';
+    case 'restore':
+      return '回滚';
+  }
 }
 
 function workspaceTitle(workspace: WorkspaceSummary): string {

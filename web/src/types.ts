@@ -533,6 +533,7 @@ export const WorkbenchStateSchema = z.object({
       label: z.string(),
       time: z.string(),
       summary: z.string(),
+      source: z.enum(['manual', 'proposal', 'restore']).optional(),
     }),
   ),
   pendingConfirmation: PendingConfirmationSchema.nullable(),

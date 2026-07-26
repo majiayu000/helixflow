@@ -380,6 +380,7 @@ fn history_payload(
                 "label": version.label,
                 "time": version.created_at,
                 "summary": format!("{} graph", version.source),
+                "source": version.source,
             })
         })
         .collect::<Vec<_>>();
