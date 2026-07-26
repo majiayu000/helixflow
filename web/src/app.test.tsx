@@ -275,6 +275,7 @@ describe('App', () => {
         onAgentRun={() => {}}
         onExport={() => {}}
         onHistory={() => {}}
+        onMigration={() => {}}
         onNewWorkspace={() => {}}
         onProviderSelect={() => {}}
         onForceRerunChange={() => {}}
@@ -306,6 +307,7 @@ describe('App', () => {
         onCommitEdits={() => {}}
         onExport={() => {}}
         onHistory={() => {}}
+        onMigration={() => {}}
         onNewWorkspace={() => {}}
         onProviderSelect={() => {}}
         onForceRerunChange={() => {}}
@@ -341,6 +343,7 @@ describe('App', () => {
         onAgentRun={() => {}}
         onExport={() => {}}
         onHistory={() => {}}
+        onMigration={() => {}}
         onNewWorkspace={() => {}}
         onProviderSelect={() => {}}
         onForceRerunChange={() => {}}
@@ -392,6 +395,7 @@ describe('App', () => {
         onAgentRun={() => {}}
         onExport={() => {}}
         onHistory={() => {}}
+        onMigration={() => {}}
         onNewWorkspace={() => {}}
         onProviderSelect={() => {}}
         onForceRerunChange={() => {}}
