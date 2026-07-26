@@ -13,3 +13,5 @@ target/
 .design-canvas.state.json
 .thumbnail
 web/bun.lock
+.gstack/
+__pycache__/
