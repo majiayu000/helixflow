@@ -1,7 +1,7 @@
 use super::version_migration_routes::{
-    ApplyVersionMigrationRequest, VersionMigrationReasonCode, derive_semantics_json,
-    operation_fingerprint,
+    ApplyVersionMigrationRequest, VersionMigrationReasonCode, operation_fingerprint,
 };
+use crate::version_semantics::derive_semantics_json;
 
 #[test]
 fn operation_fingerprint_is_deterministic_and_connector_bound() {
@@ -133,6 +133,47 @@ async fn dry_run_apply_and_lost_response_replay_use_server_truth() {
     assert_eq!(dry_run["applyEnabled"], true);
     assert_eq!(dry_run["workspaceConnectorId"], "atlas");
 
+    let connector_stale_request = json!({
+        "operationId": "op-connector-stale",
+        "reportHash": dry_run["reportHash"],
+        "sourceGraphHash": dry_run["sourceGraphHash"],
+        "catalogRevision": dry_run["catalogRevision"],
+        "workspaceConnectorId": dry_run["workspaceConnectorId"],
+        "migrationVersion": dry_run["migrationVersion"],
+    });
+    store
+        .set_workspace_runtime_provider(&workspace.id, Some("fal"))
+        .await
+        .expect("switch provider");
+    let connector_stale = client
+        .post(format!("{endpoint}/apply"))
+        .json(&connector_stale_request)
+        .send()
+        .await
+        .expect("connector stale apply");
+    assert_eq!(connector_stale.status(), reqwest::StatusCode::CONFLICT);
+    assert_eq!(
+        store
+            .versions_for_workspace(&workspace.id)
+            .await
+            .expect("versions after connector conflict")
+            .len(),
+        1
+    );
+    let connector_conflict_code: String = sqlx::query_scalar(
+        "SELECT top_level_code FROM version_migration_assessments \
+         WHERE workspace_id = ? AND status = 'conflict' ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(&workspace.id)
+    .fetch_one(store.pool())
+    .await
+    .expect("connector conflict assessment");
+    assert_eq!(connector_conflict_code, "WORKSPACE_CONNECTOR_STALE");
+    store
+        .set_workspace_runtime_provider(&workspace.id, Some("atlas"))
+        .await
+        .expect("restore provider");
+
     let stale_request = json!({
         "operationId": "op-stale-report",
         "reportHash": "sha256:stale",
@@ -197,6 +238,91 @@ async fn dry_run_apply_and_lost_response_replay_use_server_truth() {
             .expect("source")
             .semantics_json
             .is_none()
+    );
+
+    let layout: Value = client
+        .post(format!(
+            "http://{address}/api/workspaces/{}/versions/layout",
+            workspace.id
+        ))
+        .json(&json!({
+            "baseVersionId": target_id,
+            "positions": [{"id": "image", "x": 12.0, "y": 34.0}],
+        }))
+        .send()
+        .await
+        .expect("layout")
+        .error_for_status()
+        .expect("layout status")
+        .json()
+        .await
+        .expect("layout json");
+    let layout_id = layout["workspace"]["versionId"]
+        .as_str()
+        .expect("layout version id")
+        .to_owned();
+    assert!(
+        store
+            .version(&layout_id)
+            .await
+            .expect("layout version")
+            .semantics_json
+            .is_some()
+    );
+
+    let ops: Value = client
+        .post(format!(
+            "http://{address}/api/workspaces/{}/versions/ops",
+            workspace.id
+        ))
+        .json(&json!({
+            "baseVersionId": layout_id,
+            "ops": [{"op": "move_node", "id": "image", "pos": [56.0, 78.0]}],
+        }))
+        .send()
+        .await
+        .expect("ops")
+        .error_for_status()
+        .expect("ops status")
+        .json()
+        .await
+        .expect("ops json");
+    let ops_id = ops["workspace"]["versionId"]
+        .as_str()
+        .expect("ops version id")
+        .to_owned();
+    assert!(
+        store
+            .version(&ops_id)
+            .await
+            .expect("ops version")
+            .semantics_json
+            .is_some()
+    );
+
+    let restored: Value = client
+        .post(format!(
+            "http://{address}/api/workspaces/{}/versions/{target_id}/restore",
+            workspace.id
+        ))
+        .send()
+        .await
+        .expect("restore")
+        .error_for_status()
+        .expect("restore status")
+        .json()
+        .await
+        .expect("restore json");
+    let restored_id = restored["workspace"]["versionId"]
+        .as_str()
+        .expect("restored version id");
+    assert!(
+        store
+            .version(restored_id)
+            .await
+            .expect("restored version")
+            .semantics_json
+            .is_some()
     );
 
     let replay: Value = client

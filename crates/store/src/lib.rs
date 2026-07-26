@@ -109,6 +109,11 @@ pub enum StoreError {
         workspace_id: String,
         operation_id: String,
     },
+    WorkspaceConnectorConflict {
+        workspace_id: String,
+        expected_connector_id: Option<String>,
+        actual_connector_id: Option<String>,
+    },
     SchemaMigrationCleanup {
         migration_error: String,
         cleanup_error: String,
@@ -197,6 +202,14 @@ impl fmt::Display for StoreError {
             } => write!(
                 f,
                 "workspace `{workspace_id}` operation `{operation_id}` was already used with different input"
+            ),
+            Self::WorkspaceConnectorConflict {
+                workspace_id,
+                expected_connector_id,
+                actual_connector_id,
+            } => write!(
+                f,
+                "workspace `{workspace_id}` expected migration connector `{expected_connector_id:?}` but found `{actual_connector_id:?}`"
             ),
             Self::SchemaMigrationCleanup {
                 migration_error,

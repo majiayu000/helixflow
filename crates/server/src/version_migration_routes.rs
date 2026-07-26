@@ -4,11 +4,11 @@ use axum::{
     Json,
     extract::{Path, State},
 };
+use helixflow_graph::GraphService;
 use helixflow_graph::graph_v2::{
     GRAPH_SCHEMA_V2, MIGRATION_VERSION, MigrationAction, MigrationContext, MigrationReasonCode,
     NodeSemanticsEntry, WorkflowGraphV2, migrate_v1_to_v2,
 };
-use helixflow_graph::{GraphService, WorkflowGraph};
 use helixflow_registry::NodeRegistry;
 use helixflow_store::{
     ApplyVersionMigration, NewVersionMigrationAssessment, StoreError, VersionRecord,
@@ -178,6 +178,14 @@ pub(crate) async fn apply_version_migration(
     }
 
     let assessment = assess_current_version(&state, &workspace_id, &version_id, true).await?;
+    if assessment.report.workspace_connector_id != request.workspace_connector_id {
+        persist_conflict_assessment(&state, &assessment.report, "WORKSPACE_CONNECTOR_STALE")
+            .await?;
+        return Err(ApiError::conflict_with_details(
+            "workspace connector changed during migration",
+            json!({"code": "WORKSPACE_CONNECTOR_STALE"}),
+        ));
+    }
     if let Err(error) = ensure_report_preconditions(&assessment.report, &request) {
         persist_conflict_assessment(&state, &assessment.report, "REPORT_STALE").await?;
         return Err(error);
@@ -188,6 +196,21 @@ pub(crate) async fn apply_version_migration(
             json!({"code": "MIGRATION_NOT_READY"}),
         ));
     }
+    let workspace = state
+        .store
+        .workspace(&workspace_id)
+        .await
+        .map_err(ApiError::store)?;
+    if state.selected_provider_for_workspace(&workspace) != assessment.report.workspace_connector_id
+    {
+        persist_conflict_assessment(&state, &assessment.report, "WORKSPACE_CONNECTOR_STALE")
+            .await?;
+        return Err(ApiError::conflict_with_details(
+            "workspace connector changed during migration",
+            json!({"code": "WORKSPACE_CONNECTOR_STALE"}),
+        ));
+    }
+    let expected_runtime_provider_id = workspace.runtime_provider_id;
     let migrated = assessment.migrated.ok_or_else(|| {
         ApiError::server_error("migratable report did not produce a migration candidate")
     })?;
@@ -215,6 +238,7 @@ pub(crate) async fn apply_version_migration(
             operation_fingerprint: &fingerprint,
             source_version_id: &version_id,
             source_graph_hash: &request.source_graph_hash,
+            expected_runtime_provider_id: expected_runtime_provider_id.as_deref(),
             target_label: "Migrated to graph v2",
             target_graph_path: &target_path,
             target_graph_hash: &target_hash,
@@ -246,10 +270,14 @@ pub(crate) async fn apply_version_migration(
                 .map_err(candidate_error)?;
             if matches!(
                 error,
-                StoreError::OperationIdConflict { .. } | StoreError::VersionConflict { .. }
+                StoreError::OperationIdConflict { .. }
+                    | StoreError::VersionConflict { .. }
+                    | StoreError::WorkspaceConnectorConflict { .. }
             ) {
                 let code = if matches!(error, StoreError::OperationIdConflict { .. }) {
                     "OPERATION_ID_CONFLICT"
+                } else if matches!(error, StoreError::WorkspaceConnectorConflict { .. }) {
+                    "WORKSPACE_CONNECTOR_STALE"
                 } else {
                     "CURRENT_VERSION_CONFLICT"
                 };
@@ -688,6 +716,10 @@ fn migration_store_error(error: StoreError) -> ApiError {
             "workspace current version changed during migration",
             json!({"code": "SOURCE_VERSION_STALE"}),
         ),
+        StoreError::WorkspaceConnectorConflict { .. } => ApiError::conflict_with_details(
+            "workspace connector changed during migration",
+            json!({"code": "WORKSPACE_CONNECTOR_STALE"}),
+        ),
         other => ApiError::store(other),
     }
 }
@@ -713,58 +745,4 @@ async fn migration_response(
         replayed,
         workspace_state: workspace_state_value(state, workspace_id).await?,
     })
-}
-
-pub(crate) fn derive_semantics_json(
-    source: &VersionRecord,
-    before: &WorkflowGraph,
-    after: &WorkflowGraph,
-) -> Result<Option<String>, ApiError> {
-    let Some(encoded) = source.semantics_json.as_deref() else {
-        return Ok(None);
-    };
-    let mut semantics: BTreeMap<String, NodeSemanticsEntry> = serde_json::from_str(encoded)
-        .map_err(|_| ApiError::conflict("source version semantics are invalid"))?;
-    let registry = NodeRegistry::builtin();
-
-    semantics.retain(|node_id, _| after.nodes.contains_key(node_id));
-    for (node_id, node) in &after.nodes {
-        let executable = registry
-            .definition(&node.node_type)
-            .map_err(|_| ApiError::conflict("derived graph contains an unknown node type"))?
-            .capability
-            .is_some();
-        if executable {
-            let unchanged_type = before
-                .nodes
-                .get(node_id)
-                .is_some_and(|old| old.node_type == node.node_type);
-            if !unchanged_type || !semantics.contains_key(node_id) {
-                return Err(ApiError::conflict_with_details(
-                    "derived executable node requires explicit graph v2 semantics",
-                    json!({"code": "EXPLICIT_SEMANTICS_REQUIRED", "nodeId": node_id}),
-                ));
-            }
-        } else {
-            semantics.remove(node_id);
-        }
-    }
-
-    WorkflowGraphV2 {
-        schema_version: GRAPH_SCHEMA_V2,
-        catalog_revision: shared_catalog().catalog_revision.clone(),
-        base: after.clone(),
-        semantics: semantics.clone(),
-    }
-    .validate(&GraphService::new(registry), shared_catalog())
-    .map_err(|error| {
-        ApiError::conflict_with_details(
-            "derived graph v2 semantics are invalid",
-            json!({"code": error.code()}),
-        )
-    })?;
-
-    serde_json::to_string(&semantics)
-        .map(Some)
-        .map_err(|error| ApiError::server_error(format!("encode derived semantics: {error}")))
 }

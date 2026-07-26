@@ -44,6 +44,7 @@ mod version_migration_routes;
 #[cfg(test)]
 mod version_migration_routes_tests;
 mod version_routes;
+mod version_semantics;
 mod workbench_message;
 mod workbench_message_canvas;
 mod workbench_message_graph;

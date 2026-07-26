@@ -1,13 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
-import { applyVersionMigration, dryRunVersionMigration } from '../api';
 import { Icon } from '../icons';
-import type {
-  RunStepState,
-  VersionMigrationReport,
-  WorkbenchState,
-  WorkspaceSummary,
-} from '../types';
+import type { RunStepState, WorkbenchState, WorkspaceSummary } from '../types';
 import { formatTime } from './chat-pane';
+import { VersionMigrationPanel } from './version-migration-panel';
 
 type RunDockProps = {
   run: NonNullable<WorkbenchState['run']>;
@@ -231,89 +225,7 @@ export function HistoryPanel({
   onRestoreVersion,
   onMigrationApplied,
 }: HistoryPanelProps) {
-  const [migrationReport, setMigrationReport] = useState<VersionMigrationReport | null>(null);
-  const [migrationBusy, setMigrationBusy] = useState(false);
-  const [migrationError, setMigrationError] = useState<string | null>(null);
-  const [migrationSuccess, setMigrationSuccess] = useState<string | null>(null);
-  const [confirmMigration, setConfirmMigration] = useState(false);
-  const requestGeneration = useRef(0);
-  const requestAbort = useRef<AbortController | null>(null);
-  const operationId = useRef<string | null>(null);
-  const expectedVersion = useRef<string | null>(null);
-  useEffect(() => {
-    const appliedVersionArrived = expectedVersion.current === currentVersionId;
-    requestAbort.current?.abort();
-    requestGeneration.current += 1;
-    setMigrationReport(null);
-    setMigrationError(null);
-    if (!appliedVersionArrived) setMigrationSuccess(null);
-    setMigrationBusy(false);
-    setConfirmMigration(false);
-    operationId.current = null;
-    expectedVersion.current = null;
-  }, [currentConnectorId, currentVersionId, currentWorkspaceId, open]);
-
   if (!open) return null;
-  const inspectMigration = async () => {
-    const generation = ++requestGeneration.current;
-    requestAbort.current?.abort();
-    const controller = new AbortController();
-    requestAbort.current = controller;
-    setMigrationBusy(true);
-    setMigrationError(null);
-    setConfirmMigration(false);
-    try {
-      const report = await dryRunVersionMigration(
-        currentWorkspaceId,
-        currentVersionId,
-        controller.signal,
-      );
-      if (requestGeneration.current === generation) setMigrationReport(report);
-    } catch (error) {
-      if (requestGeneration.current === generation) {
-        setMigrationError(error instanceof Error ? error.message : '迁移检查失败');
-      }
-    } finally {
-      if (requestGeneration.current === generation) setMigrationBusy(false);
-    }
-  };
-  const applyMigration = async () => {
-    if (!migrationReport || migrationReport.status !== 'migratable') return;
-    const generation = requestGeneration.current;
-    const id = operationId.current ?? crypto.randomUUID();
-    operationId.current = id;
-    setMigrationBusy(true);
-    setMigrationError(null);
-    try {
-      const result = await applyVersionMigration(currentWorkspaceId, currentVersionId, {
-        operationId: id,
-        reportHash: migrationReport.reportHash,
-        sourceGraphHash: migrationReport.sourceGraphHash,
-        catalogRevision: migrationReport.catalogRevision,
-        workspaceConnectorId: migrationReport.workspaceConnectorId,
-        migrationVersion: migrationReport.migrationVersion,
-      });
-      if (requestGeneration.current === generation) {
-        expectedVersion.current = result.targetVersionId;
-        setMigrationReport(null);
-        setConfirmMigration(false);
-        setMigrationSuccess(`已迁移到 ${result.targetVersionId}`);
-        onMigrationApplied(result.workspaceState);
-      }
-    } catch (error) {
-      if (requestGeneration.current === generation) {
-        const message = error instanceof Error ? error.message : '迁移应用失败';
-        setMigrationError(message);
-        if (message === '迁移前提已变化，请重新检查') {
-          setMigrationReport(null);
-          setConfirmMigration(false);
-          operationId.current = null;
-        }
-      }
-    } finally {
-      if (requestGeneration.current === generation) setMigrationBusy(false);
-    }
-  };
   return (
     <div className="history-panel-pop">
       <div className="history-head">
@@ -351,43 +263,14 @@ export function HistoryPanel({
           ))
         )}
         <div className="history-section-title">版本与运行历史</div>
-        <div className="history-row" data-kind="migration">
-          <span className="history-dot" />
-          <div>
-            <div className="history-label">v1 → v2 版本迁移</div>
-            <div aria-live="polite" className="history-summary">
-              {migrationSummary(migrationReport, migrationError, migrationSuccess)}
-            </div>
-            {migrationReport?.nodes
-              .filter((node) => node.code)
-              .map((node) => (
-                <div className="history-summary" key={node.nodeId}>
-                  {node.nodeId}: {node.code}
-                  {node.message ? `：${node.message}` : ''}
-                  {node.candidates.length > 0 ? `（候选：${node.candidates.join('、')}）` : ''}
-                </div>
-              ))}
-          </div>
-          <div className="history-tail">
-            {migrationReport?.status === 'migratable' ? (
-              <button
-                className="history-action"
-                disabled={busy || migrationBusy || !migrationReport.applyEnabled}
-                onClick={() => confirmMigration ? void applyMigration() : setConfirmMigration(true)}
-              >
-                {confirmMigration ? '确认迁移' : '迁移'}
-              </button>
-            ) : (
-              <button
-                className="history-action"
-                disabled={busy || migrationBusy}
-                onClick={() => void inspectMigration()}
-              >
-                {migrationBusy ? '检查中' : '检查'}
-              </button>
-            )}
-          </div>
-        </div>
+        <VersionMigrationPanel
+          busy={busy}
+          connectorId={currentConnectorId}
+          onApplied={onMigrationApplied}
+          open={open}
+          versionId={currentVersionId}
+          workspaceId={currentWorkspaceId}
+        />
         {history.length === 0 ? (
           <div className="empty-history">暂无版本或运行记录</div>
         ) : (
@@ -416,22 +299,6 @@ export function HistoryPanel({
       </div>
     </div>
   );
-}
-
-function migrationSummary(
-  report: VersionMigrationReport | null,
-  error: string | null,
-  success: string | null,
-): string {
-  if (error) return error;
-  if (success) return success;
-  if (!report) return '先检查当前版本；只有服务端判定可迁移时才能应用。';
-  if (report.status === 'migratable') {
-    return report.applyEnabled ? '可以迁移；请再次确认。' : '可以迁移，但服务端尚未开放 apply。';
-  }
-  if (report.status === 'already_migrated') return '当前版本已经是 v2，无需迁移。';
-  if (report.status === 'needs_resolution') return '存在需要人工选择的节点，暂不能迁移。';
-  return `${report.code ?? 'MIGRATION_FAILED'}${report.message ? `：${report.message}` : ''}`;
 }
 
 function workspaceTitle(workspace: WorkspaceSummary): string {

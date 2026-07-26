@@ -34,6 +34,7 @@ pub struct ApplyVersionMigration<'a> {
     pub operation_fingerprint: &'a str,
     pub source_version_id: &'a str,
     pub source_graph_hash: &'a str,
+    pub expected_runtime_provider_id: Option<&'a str>,
     pub target_label: &'a str,
     pub target_graph_path: &'a str,
     pub target_graph_hash: &'a str,
@@ -177,25 +178,35 @@ impl Store {
             r#"
             UPDATE workspaces
             SET cur_version_id = ?, updated_at = current_timestamp
-            WHERE id = ? AND cur_version_id = ?
+            WHERE id = ? AND cur_version_id = ? AND runtime_provider_id IS ?
             "#,
         )
         .bind(&target_version_id)
         .bind(input.workspace_id)
         .bind(input.source_version_id)
+        .bind(input.expected_runtime_provider_id)
         .execute(&mut *tx)
         .await?;
         if current_update.rows_affected() != 1 {
-            let actual_version_id =
-                sqlx::query_scalar("SELECT cur_version_id FROM workspaces WHERE id = ?")
-                    .bind(input.workspace_id)
-                    .fetch_optional(&mut *tx)
-                    .await?
-                    .flatten();
+            let actual: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+                "SELECT cur_version_id, runtime_provider_id FROM workspaces WHERE id = ?",
+            )
+            .bind(input.workspace_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            if actual.as_ref().is_some_and(|(version_id, _)| {
+                version_id.as_deref() == Some(input.source_version_id)
+            }) {
+                return Err(StoreError::WorkspaceConnectorConflict {
+                    workspace_id: input.workspace_id.to_owned(),
+                    expected_connector_id: input.expected_runtime_provider_id.map(str::to_owned),
+                    actual_connector_id: actual.and_then(|(_, connector_id)| connector_id),
+                });
+            }
             return Err(StoreError::VersionConflict {
                 workspace_id: input.workspace_id.to_owned(),
                 expected_version_id: input.source_version_id.to_owned(),
-                actual_version_id,
+                actual_version_id: actual.and_then(|(version_id, _)| version_id),
             });
         }
 

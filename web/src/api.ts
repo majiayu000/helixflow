@@ -13,8 +13,6 @@ import {
   WorkspaceSummarySchema,
   WorkspaceMessageResponseSchema,
   WorkbenchStateSchema,
-  ApplyVersionMigrationResponseSchema,
-  VersionMigrationReportSchema,
   NodeCatalogSchema,
   type CanvasDocument,
   type CanvasCommentOpInput,
@@ -29,59 +27,10 @@ import {
   type WorkspaceSummary,
   type WorkspaceMessageResponse,
   type WorkbenchState,
-  type ApplyVersionMigrationResponse,
-  type VersionMigrationReport,
 } from './types';
 import { manualProposalWithIdempotency } from './workbench-edit-session';
 
 export type ConnectionStatus = 'connecting' | 'live' | 'offline';
-
-export type ApplyVersionMigrationInput = {
-  operationId: string;
-  reportHash: string;
-  sourceGraphHash: string;
-  catalogRevision: string;
-  workspaceConnectorId: string;
-  migrationVersion: string;
-};
-
-export async function dryRunVersionMigration(
-  workspaceId: string,
-  versionId: string,
-  signal?: AbortSignal,
-): Promise<VersionMigrationReport> {
-  const response = await fetch(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/versions/${encodeURIComponent(versionId)}/migration/dry-run`,
-    { method: 'POST', signal },
-  );
-  if (!response.ok) {
-    throw new Error(`version migration dry-run failed: ${response.status}`);
-  }
-  return VersionMigrationReportSchema.parse(await response.json());
-}
-
-export async function applyVersionMigration(
-  workspaceId: string,
-  versionId: string,
-  input: ApplyVersionMigrationInput,
-): Promise<ApplyVersionMigrationResponse> {
-  const response = await fetch(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/versions/${encodeURIComponent(versionId)}/migration/apply`,
-    {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(input),
-    },
-  );
-  if (!response.ok) {
-    throw new Error(
-      response.status === 409
-        ? '迁移前提已变化，请重新检查'
-        : `version migration apply failed: ${response.status}`,
-    );
-  }
-  return ApplyVersionMigrationResponseSchema.parse(await response.json());
-}
 
 type EventHandlers = {
   onEvent: (event: RunEventEnvelope) => void;

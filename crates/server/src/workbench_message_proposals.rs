@@ -5,7 +5,7 @@ use crate::version_file_consistency::{
     CandidateKind, VersionFileCandidate, VersionFileCandidateSet, VersionFileConsistencyError,
     read_version_graph,
 };
-use crate::version_migration_routes::derive_semantics_json;
+use crate::version_semantics::derive_semantics_json;
 use helixflow_agent::ValidatedAgentProposal;
 use helixflow_graph::{GraphService, ProposalKind};
 use helixflow_registry::NodeRegistry;

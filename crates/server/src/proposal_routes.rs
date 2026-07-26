@@ -19,7 +19,7 @@ use crate::graph_files::{read_graph_file, read_json_file};
 use crate::version_file_consistency::{
     CandidateKind, VersionFileCandidate, VersionFileConsistencyError, read_version_graph,
 };
-use crate::version_migration_routes::derive_semantics_json;
+use crate::version_semantics::derive_semantics_json;
 use crate::workbench_payload::proposal_kind_from_str;
 use crate::workspace_state::workspace_state_value;
 

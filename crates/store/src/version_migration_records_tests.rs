@@ -37,6 +37,7 @@ fn migration_input<'a>(
         operation_fingerprint: fingerprint,
         source_version_id,
         source_graph_hash: "sha256:legacy",
+        expected_runtime_provider_id: None,
         target_label: "Migrated v2",
         target_graph_path: "workspaces/ws/graphs/migrated.json",
         target_graph_hash: "sha256:migrated",
@@ -152,6 +153,7 @@ async fn competing_operations_only_advance_current_once() {
                     operation_fingerprint: operation_id,
                     source_version_id: &source_version_id,
                     source_graph_hash: "sha256:legacy",
+                    expected_runtime_provider_id: None,
                     target_label: "Migrated v2",
                     target_graph_path: graph_hash,
                     target_graph_hash: graph_hash,
@@ -174,4 +176,34 @@ async fn competing_operations_only_advance_current_once() {
     assert_eq!(usize::from(left.is_ok()) + usize::from(right.is_ok()), 1);
     let loser = if left.is_err() { left } else { right };
     assert!(matches!(loser, Err(StoreError::VersionConflict { .. })));
+}
+
+#[tokio::test]
+async fn apply_rejects_connector_switch_without_creating_a_target() {
+    let (store, _dir, workspace_id, source_version_id) = fixture().await;
+    store
+        .set_workspace_runtime_provider(&workspace_id, Some("atlas"))
+        .await
+        .expect("switch connector");
+
+    let error = store
+        .apply_version_migration(migration_input(
+            &workspace_id,
+            &source_version_id,
+            "sha256:connector-switch",
+        ))
+        .await
+        .expect_err("stale connector must fail");
+    assert!(matches!(
+        error,
+        StoreError::WorkspaceConnectorConflict { .. }
+    ));
+    assert_eq!(
+        store
+            .versions_for_workspace(&workspace_id)
+            .await
+            .expect("versions")
+            .len(),
+        1
+    );
 }
