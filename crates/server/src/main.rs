@@ -68,7 +68,7 @@ use auth::{AuthConfig, require_auth, validate_bind_auth};
 use canvas_collaboration::{apply_canvas_comment_op, update_canvas_presence};
 use canvas_ticket::create_canvas_ticket;
 use catalog_routes::{
-    capability_models, catalog_snapshot, model_capabilities, resolve_implementation,
+    capability_models, catalog_snapshot, compile_intent, model_capabilities, resolve_implementation,
 };
 use layout_routes::save_workspace_layout;
 use ops_routes::apply_workspace_ops;
@@ -161,6 +161,7 @@ fn app(state: AppState) -> Router {
             get(model_capabilities),
         )
         .route("/api/catalog/resolve", post(resolve_implementation))
+        .route("/api/workflows/compile-intent", post(compile_intent))
         .route(
             "/api/workspaces",
             get(list_workspaces).post(create_workspace),

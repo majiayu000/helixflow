@@ -1,10 +1,11 @@
+use helixflow_compiler::IntentPlan;
 use helixflow_graph::{
     GraphService, PreparedProposal, ProposalDraft, ProposalKind, ProposalOp, WorkflowGraph,
 };
 use helixflow_registry::NodeRegistry;
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentResult, AgentSession, read_output_file};
+use crate::{AgentError, AgentResult, AgentSession, read_output_file};
 
 #[derive(Debug, Clone)]
 pub struct ValidatedAgentProposal {
@@ -96,6 +97,24 @@ pub fn read_validated_proposal(
         agent_logs: Vec::new(),
         proposal,
     })
+}
+
+/// Reads and validates `out/intent.json` (GH130 T3). The IntentPlan schema
+/// rejects unknown fields and the structural validator rejects topology and
+/// reference errors before anything reaches the compiler. The runtime keeps
+/// emitting `proposal.json` until the T6 switchover; this contract entry is
+/// flag-gated groundwork.
+pub fn read_validated_intent(session: &AgentSession) -> AgentResult<IntentPlan> {
+    let output_path = session.out_dir.join("intent.json");
+    let intent: IntentPlan =
+        serde_json::from_slice(&read_output_file(&session.out_dir, &output_path)?)?;
+    intent
+        .validate()
+        .map_err(|err| AgentError::InvalidOutputFile {
+            path: output_path,
+            reason: err.to_string(),
+        })?;
+    Ok(intent)
 }
 
 pub fn read_validated_reply(session: &AgentSession) -> AgentResult<ValidatedAgentReply> {

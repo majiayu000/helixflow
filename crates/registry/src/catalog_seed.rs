@@ -269,7 +269,7 @@ fn bindings() -> Vec<CapabilityBinding> {
                 ],
             ),
             output_schema: schema(&[], [("prompt", ParamSpec::string())]),
-            defaults: json!({}),
+            defaults: json!({ "style": "plain" }),
             availability: BindingAvailability::Enabled,
             binding_revision: "v1".to_owned(),
         },

@@ -111,3 +111,30 @@ async fn connector_availability_maps_health_fail_closed() {
     assert_eq!(availability.get("atlas"), None);
     assert_eq!(availability.get("fal"), None);
 }
+
+#[tokio::test]
+async fn compile_intent_clarifies_when_no_connector_is_healthy() {
+    let (_dir, state) = mock_state().await;
+    let request: CompileIntentRequest = serde_json::from_value(serde_json::json!({
+        "intent": {
+            "intentVersion": "1",
+            "topology": "linear",
+            "stages": [{
+                "stageId": "s1",
+                "capabilityId": "text_to_image",
+                "requestedModel": "Nano Banana",
+                "inputFrom": [],
+                "params": { "prompt": "a product image" }
+            }],
+            "outputStageIds": ["s1"]
+        }
+    }))
+    .expect("request parses");
+
+    let err = compile_intent(State(state), Json(request))
+        .await
+        .expect_err("no healthy connectors");
+
+    assert_eq!(err.status, StatusCode::CONFLICT);
+    assert!(err.message.contains("BINDING_UNAVAILABLE"));
+}

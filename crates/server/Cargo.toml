@@ -16,6 +16,7 @@ tower-http.workspace = true
 uuid.workspace = true
 
 helixflow-agent = { path = "../agent" }
+helixflow-compiler = { path = "../compiler" }
 helixflow-gateway = { path = "../gateway" }
 helixflow-graph = { path = "../graph" }
 helixflow-registry = { path = "../registry" }
