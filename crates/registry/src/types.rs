@@ -8,11 +8,6 @@ use serde_json::Value;
 use crate::RegistryResult;
 use crate::error::RegistryError;
 
-pub struct RegistryCatalog {
-    pub schema_version: u32,
-    pub nodes: Vec<NodeDefinition>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NodeDefinition {
     #[serde(rename = "type")]

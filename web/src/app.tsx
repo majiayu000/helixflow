@@ -6,6 +6,7 @@ import { DirtyNavigationDialog } from './components/dirty-navigation-dialog';
 import { GraphCanvas } from './components/graph-canvas';
 import { ManualProposalPanel } from './components/manual-proposal-panel';
 import { ConfirmModal, HistoryPanel, OutputsStrip, RunDock } from './components/run-panels';
+import { MigrationPanel } from './components/migration-panel';
 import { TopBar } from './components/top-bar';
 import { useWorkbenchStore } from './store';
 import {
@@ -38,6 +39,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const showAdvancedEditPanel = useMemo(() => advancedEditPanelEnabledFromUrl(), []);
   const [forceRerun, setForceRerun] = useState(false);
   const [selectedCanvasNodeIds, setSelectedCanvasNodeIds] = useState<string[]>([]);
+  const [migrationOpen, setMigrationOpen] = useState(false);
   const status = useWorkbenchStore((store) => store.status);
   const error = useWorkbenchStore((store) => store.error);
   const connection = useWorkbenchStore((store) => store.connection);
@@ -47,6 +49,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const storeEditSession = useWorkbenchStore((store) => store.editSession);
   const editSession = initialEditSession ?? storeEditSession;
   const bootstrap = useWorkbenchStore((store) => store.bootstrap);
+  const hydrate = useWorkbenchStore((store) => store.hydrate);
   const createWorkspaceAction = useWorkbenchStore((store) => store.createWorkspace);
   const setInitialState = useWorkbenchStore((store) => store.setInitialState);
   const setConnection = useWorkbenchStore((store) => store.setConnection);
@@ -212,6 +215,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
         onCommitEdits={() => void runAction(() => commitManualEdits())}
         onExport={exportCurrentWorkflow}
         onHistory={() => setHistoryOpen((open) => !open)}
+        onMigration={() => setMigrationOpen((current) => !current)}
         onNewWorkspace={() => requestNavigation({ kind: 'create_workspace' })}
         onProviderSelect={(providerId) => void runAction(() => selectProvider(providerId))}
         onQueue={() => {

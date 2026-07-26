@@ -398,6 +398,43 @@ export const NodeCatalogSchema = z.object({
   nodes: z.array(NodeDefinitionSchema),
 });
 
+const MigrationActionSchema = z.union([
+  z.literal('structural'),
+  z.object({ mappedPolicy: z.object({ capabilityId: z.string() }) }),
+  z.object({
+    mappedPinned: z.object({
+      capabilityId: z.string(),
+      modelId: z.string(),
+      bindingId: z.string(),
+    }),
+  }),
+  z.object({ needsResolution: z.object({ reason: z.string() }) }),
+  z.object({ needsUserChoice: z.object({ candidates: z.array(z.string()) }) }),
+]);
+
+export const MigrationReportSchema = z.object({
+  migrationVersion: z.string(),
+  sourceSchemaVersion: z.number(),
+  catalogRevision: z.string(),
+  nodes: z.array(z.object({ nodeId: z.string(), action: MigrationActionSchema })),
+  resolvable: z.boolean(),
+});
+
+export const MigrationDryRunSchema = z.object({
+  status: z.enum(['ready', 'needsResolution', 'alreadyMigrated', 'migrated']),
+  versionId: z.string(),
+  report: MigrationReportSchema.optional(),
+  counts: z.object({
+    mapped: z.number(),
+    structural: z.number(),
+    needsResolution: z.number(),
+  }),
+});
+
+export const MigrationApplySchema = MigrationDryRunSchema.omit({ report: true }).extend({
+  migratedVersionId: z.string().optional(),
+});
+
 export const CatalogModelSchema = z.object({
   modelId: z.string(),
   familyId: z.string(),
@@ -561,6 +598,8 @@ export type RunConfirmationResponse = z.infer<typeof RunConfirmationResponseSche
 export type WorkspaceSummary = z.infer<typeof WorkspaceSummarySchema>;
 export type NodeCatalog = z.infer<typeof NodeCatalogSchema>;
 export type ModelCatalog = z.infer<typeof ModelCatalogSchema>;
+export type MigrationDryRun = z.infer<typeof MigrationDryRunSchema>;
+export type MigrationApply = z.infer<typeof MigrationApplySchema>;
 export type CatalogModel = z.infer<typeof CatalogModelSchema>;
 export type CatalogBinding = z.infer<typeof CatalogBindingSchema>;
 export type ResolvedImplementation = z.infer<typeof ResolvedImplementationSchema>;

@@ -18,6 +18,7 @@ mod capability_preflight;
 mod catalog_routes;
 mod graph_files;
 mod layout_routes;
+mod migration_routes;
 mod ops_routes;
 #[cfg(test)]
 mod ops_routes_tests;
@@ -72,6 +73,7 @@ use catalog_routes::{
     capability_models, catalog_snapshot, compile_intent, model_capabilities, resolve_implementation,
 };
 use layout_routes::save_workspace_layout;
+use migration_routes::{migration_apply, migration_dry_run};
 use ops_routes::apply_workspace_ops;
 use proposal_routes::{apply_workspace_proposal, dismiss_workspace_proposal};
 use registry_routes::node_registry_catalog;
@@ -163,6 +165,14 @@ fn app(state: AppState) -> Router {
         )
         .route("/api/catalog/resolve", post(resolve_implementation))
         .route("/api/workflows/compile-intent", post(compile_intent))
+        .route(
+            "/api/workspaces/{workspace_id}/graph-migration/dry-run",
+            post(migration_dry_run),
+        )
+        .route(
+            "/api/workspaces/{workspace_id}/graph-migration/apply",
+            post(migration_apply),
+        )
         .route(
             "/api/workspaces",
             get(list_workspaces).post(create_workspace),
