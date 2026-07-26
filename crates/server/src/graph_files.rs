@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path};
 
 use helixflow_graph::WorkflowGraph;
-use serde::{Serialize, de::DeserializeOwned};
+#[cfg(test)]
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 
 use crate::api_error::ApiError;
@@ -41,6 +43,9 @@ where
     })
 }
 
+/// Test fixture writer. Production graph writes go through the
+/// `VersionFileCandidate` publish/commit flow instead.
+#[cfg(test)]
 pub(crate) async fn write_json_file<T>(
     data_dir: &Path,
     relative_path: &Path,
@@ -96,6 +101,7 @@ fn safe_read_path(data_dir: &Path, relative_path: &str) -> Result<std::path::Pat
     Ok(canonical)
 }
 
+#[cfg(test)]
 async fn safe_write_path(
     data_dir: &Path,
     relative_path: &Path,
