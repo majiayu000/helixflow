@@ -55,6 +55,7 @@ fn executable_graph() -> WorkflowGraph {
                     params: json!({ "text": "launch teaser" }),
                     pos: [0.0, 0.0],
                     size: None,
+                    semantics: None,
                 },
             ),
             (
@@ -65,6 +66,7 @@ fn executable_graph() -> WorkflowGraph {
                     params: json!({ "style": "cinematic" }),
                     pos: [240.0, 0.0],
                     size: None,
+                    semantics: None,
                 },
             ),
             (
@@ -79,6 +81,7 @@ fn executable_graph() -> WorkflowGraph {
                     }),
                     pos: [480.0, 0.0],
                     size: None,
+                    semantics: None,
                 },
             ),
             (
@@ -89,6 +92,7 @@ fn executable_graph() -> WorkflowGraph {
                     params: json!({}),
                     pos: [720.0, 0.0],
                     size: None,
+                    semantics: None,
                 },
             ),
         ]),
@@ -109,6 +113,7 @@ fn executable_graph() -> WorkflowGraph {
                 edge_type: "artifact".to_owned(),
             },
         ],
+        catalog_revision: None,
     }
 }
 

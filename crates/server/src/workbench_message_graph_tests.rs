@@ -326,9 +326,11 @@ fn verified_graph() -> WorkflowGraph {
                 params: json!({ "text": "verified" }),
                 pos: [0.0, 0.0],
                 size: None,
+                semantics: None,
             },
         )]),
         edges: Vec::new(),
+        catalog_revision: None,
     }
 }
 

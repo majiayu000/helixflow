@@ -714,9 +714,11 @@ mod tests {
                     params: json!({ "text": "launch teaser" }),
                     pos: [0.0, 0.0],
                     size: None,
+                    semantics: None,
                 },
             )]),
             edges: Vec::new(),
+            catalog_revision: None,
         }
     }
 

@@ -728,6 +728,7 @@ fn ops_graph() -> WorkflowGraph {
                     params: json!({ "text": "old" }),
                     pos: [0.0, 0.0],
                     size: None,
+                    semantics: None,
                 },
             ),
             (
@@ -738,6 +739,7 @@ fn ops_graph() -> WorkflowGraph {
                     params: json!({ "style": "plain" }),
                     pos: [240.0, 0.0],
                     size: None,
+                    semantics: None,
                 },
             ),
         ]),
@@ -746,6 +748,7 @@ fn ops_graph() -> WorkflowGraph {
             to: ["writer".to_owned(), "text".to_owned()],
             edge_type: "text".to_owned(),
         }],
+        catalog_revision: None,
     }
 }
 

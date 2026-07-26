@@ -55,6 +55,7 @@ fn parallel_branches_graph() -> WorkflowGraph {
                     params: json!({ "text": "launch teaser" }),
                     pos: [0.0, 0.0],
                     size: None,
+                    semantics: None,
                 },
             ),
             (
@@ -65,6 +66,7 @@ fn parallel_branches_graph() -> WorkflowGraph {
                     params: json!({ "style": "cinematic" }),
                     pos: [240.0, -80.0],
                     size: None,
+                    semantics: None,
                 },
             ),
             (
@@ -75,6 +77,7 @@ fn parallel_branches_graph() -> WorkflowGraph {
                     params: json!({ "style": "product" }),
                     pos: [240.0, 80.0],
                     size: None,
+                    semantics: None,
                 },
             ),
         ]),
@@ -90,6 +93,7 @@ fn parallel_branches_graph() -> WorkflowGraph {
                 edge_type: "text".to_owned(),
             },
         ],
+        catalog_revision: None,
     }
 }
 

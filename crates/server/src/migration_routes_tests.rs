@@ -23,9 +23,11 @@ fn v1_graph(image_params: serde_json::Value) -> WorkflowGraph {
                 params: image_params,
                 pos: [0.0, 0.0],
                 size: None,
+                semantics: None,
             },
         )]),
         edges: Vec::new(),
+        catalog_revision: None,
     }
 }
 
@@ -168,7 +170,7 @@ async fn legacy_model_param_migrates_to_pinned_semantics() {
         .0;
     let migrated_id = applied.migrated_version_id.expect("new version id");
     let migrated = state.store.version(&migrated_id).await.expect("version");
-    let semantics: BTreeMap<String, helixflow_graph::graph_v2::NodeSemanticsEntry> =
+    let semantics: BTreeMap<String, helixflow_graph::semantics::NodeSemanticsEntry> =
         serde_json::from_str(migrated.semantics_json.as_deref().expect("semantics"))
             .expect("parse semantics");
     assert!(matches!(

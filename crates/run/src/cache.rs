@@ -163,12 +163,14 @@ where
             input_hashes.insert(port.clone(), artifact_fingerprint(&artifact)?);
         }
         let input_hash_json = serde_json::to_string(&input_hashes)?;
-        // schemaVersion 3: cache keys include the resolved implementation
-        // (GH130 T4) — the model identity lives on the step now, so two runs
-        // resolving different bindings can never share an artifact. Provider
-        // config still participates for API-base changes (HF-021).
+        // schemaVersion 4: the capability id renamed to canonical
+        // `text_to_image` (GH145), so pre-rename cache entries must never be
+        // reused. v3 added the resolved implementation (GH130 T4) — the model
+        // identity lives on the step, so two runs resolving different
+        // bindings can never share an artifact. Provider config still
+        // participates for API-base changes (HF-021).
         let material = canonicalize_value(&json!({
-            "schemaVersion": 3,
+            "schemaVersion": 4,
             "providerConfig": self.provider.config_fingerprint(&provider),
             "provider": &provider,
             "capability": step.capability.as_deref(),

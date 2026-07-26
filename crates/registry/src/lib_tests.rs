@@ -13,7 +13,7 @@ fn serializes_node_definition_boundary() {
         title: "Generate Image".to_string(),
         category: "mock".to_string(),
         provider: Some("mock".to_string()),
-        capability: Some("image_generate".to_string()),
+        capability: Some("text_to_image".to_string()),
         description: "A mock image node.".to_string(),
         inputs: vec![PortDefinition {
             name: "prompt".to_string(),
@@ -28,7 +28,7 @@ fn serializes_node_definition_boundary() {
         params_schema: schema(&["prompt"], [("prompt", ParamSpec::string())]),
         estimated_cost: Some(EstimatedCostRef {
             unit: "call".to_string(),
-            catalog_key: "mock.image_generate".to_string(),
+            catalog_key: "mock.text_to_image".to_string(),
         }),
     };
 

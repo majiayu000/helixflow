@@ -51,7 +51,7 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
             "Generate Image",
             "image",
             None,
-            Some("image_generate"),
+            Some("text_to_image"),
             "Generates an image artifact from a prompt.",
             vec![port("prompt", PortType::Text, true)],
             vec![port("image", PortType::Image, true)],

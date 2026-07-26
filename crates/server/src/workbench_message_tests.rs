@@ -587,6 +587,7 @@ pub(super) fn sample_graph() -> WorkflowGraph {
         schema_version: 1,
         nodes: BTreeMap::new(),
         edges: Vec::new(),
+        catalog_revision: None,
     }
 }
 
@@ -764,7 +765,7 @@ async fn intent_turn_compiles_and_persists_semantics() {
         .expect("semantics persisted");
     let semantics: std::collections::BTreeMap<
         String,
-        helixflow_graph::graph_v2::NodeSemanticsEntry,
+        helixflow_graph::semantics::NodeSemanticsEntry,
     > = serde_json::from_str(semantics_json).expect("semantics parse");
     let entry = semantics.get("s1").expect("s1 semantics");
     assert_eq!(entry.capability_id, "text_to_image");

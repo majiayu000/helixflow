@@ -26,7 +26,7 @@ fn unresolved_request(capability: &str) -> ProviderRequest {
 fn fal_catalog_exposes_image_generation_only() {
     let catalog = FalProvider::catalog_value();
 
-    assert!(catalog.capabilities.contains_key("image_generate"));
+    assert!(catalog.capabilities.contains_key("text_to_image"));
     assert!(!catalog.capabilities.contains_key("text_to_video"));
 }
 
@@ -80,7 +80,7 @@ async fn fal_queue_image_generation_returns_remote_image() -> Result<(), Box<dyn
     ));
 
     let result = provider
-        .invoke(request("image_generate"))
+        .invoke(request("text_to_image"))
         .await
         .expect("fal image result");
     server.await??;
@@ -114,7 +114,7 @@ async fn fal_errors_redact_api_key() -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     let err = provider
-        .invoke(request("image_generate"))
+        .invoke(request("text_to_image"))
         .await
         .expect_err("auth failure");
     server.await??;
@@ -146,7 +146,7 @@ async fn fal_rate_limit_errors_are_generic() -> Result<(), Box<dyn std::error::E
     ));
 
     let err = provider
-        .invoke(request("image_generate"))
+        .invoke(request("text_to_image"))
         .await
         .expect_err("rate limit failure");
     server.await??;
@@ -183,7 +183,7 @@ async fn fal_status_errors_redact_api_key() -> Result<(), Box<dyn std::error::Er
     ));
 
     let err = provider
-        .invoke(request("image_generate"))
+        .invoke(request("text_to_image"))
         .await
         .expect_err("status failure");
     server.await??;
@@ -214,7 +214,7 @@ async fn fal_rejects_cross_base_callback_urls() -> Result<(), Box<dyn std::error
     ));
 
     let err = provider
-        .invoke(request("image_generate"))
+        .invoke(request("text_to_image"))
         .await
         .expect_err("callback URL validation failure");
     server.await??;
@@ -236,7 +236,7 @@ async fn gh130_failclosed_image_without_resolved_operation_errors() {
     ));
 
     let err = provider
-        .invoke(unresolved_request("image_generate"))
+        .invoke(unresolved_request("text_to_image"))
         .await
         .expect_err("unresolved model must fail");
 
@@ -273,7 +273,7 @@ async fn gh130_resolved_operation_drives_submit_path() -> Result<(), Box<dyn std
         format!("http://{addr}"),
     ));
     let result = provider
-        .invoke(request("image_generate"))
+        .invoke(request("text_to_image"))
         .await
         .expect("fal image result");
     let submit_head = server.await??;
@@ -338,4 +338,25 @@ async fn serve_status_response(
     );
     stream.write_all(response.as_bytes()).await?;
     Ok(())
+}
+
+#[tokio::test]
+async fn fal_rejects_legacy_capability_id_from_pre_rename_runs() {
+    // Runs created before the GH145 rename persist `image_generate` in their
+    // plan_json; retries must fail explicitly instead of silently executing
+    // under the canonical capability (product invariant 2).
+    let provider = FalProvider::new(FalProviderConfig::new(
+        "test-key".to_owned(),
+        DEFAULT_FAL_API_BASE.to_owned(),
+    ));
+
+    let err = provider
+        .invoke(request("image_generate"))
+        .await
+        .expect_err("legacy capability id");
+
+    assert_eq!(
+        err,
+        ProviderError::UnsupportedCapability("image_generate".to_owned())
+    );
 }

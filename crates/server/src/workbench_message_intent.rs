@@ -61,7 +61,7 @@ pub(crate) async fn handle_intent_turn(
         &availability,
     ) {
         Ok(CompileOutcome::Compiled(compiled)) => {
-            let semantics_json = serde_json::to_string(&compiled.semantics)
+            let semantics_json = serde_json::to_string(&compiled.target.collected_semantics())
                 .map_err(|err| ApiError::server_error(err.to_string()))?;
             let draft = ProposalDraft {
                 base_version_id: base_version_id.to_owned(),

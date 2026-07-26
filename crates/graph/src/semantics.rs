@@ -1,10 +1,10 @@
-//! Graph schema V2: semantic layer over the structural v1 graph (GH130 T2).
+//! Node-embedded semantic layer over the structural graph (GH145).
 //!
-//! V2 keeps the untouched v1 graph as its structural base and adds a
-//! catalog-pinned semantic layer keyed by node id. Embedding the semantic
-//! fields directly into `GraphNode` happens at SP130-T6 when the v1 write
-//! path is deleted; until then the layered shape keeps every v1 consumer
-//! working unchanged (decision recorded in `specs/GH130/tasks.md`).
+//! The former layered `WorkflowGraphV2` (base + side-car semantics map) is
+//! merged into `WorkflowGraph`: each executable node carries its own
+//! catalog-pinned [`NodeSemanticsEntry`], and the graph carries the catalog
+//! revision those entries were resolved against. Legacy graphs deserialize
+//! with both fields absent and migrate through [`migrate_v1`].
 
 use std::collections::BTreeMap;
 
@@ -18,20 +18,7 @@ use serde_json::Value;
 
 use crate::{GraphService, WorkflowGraph};
 
-pub const GRAPH_SCHEMA_V2: u32 = 2;
 pub const MIGRATION_VERSION: &str = "1";
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct WorkflowGraphV2 {
-    pub schema_version: u32,
-    pub catalog_revision: String,
-    /// Structural layer: nodes, edges, params, positions — byte-for-byte a
-    /// valid v1 graph. Titles and positions never carry semantics (P1).
-    pub base: WorkflowGraph,
-    /// Semantic layer: one entry per executable node.
-    pub semantics: BTreeMap<String, NodeSemanticsEntry>,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -42,8 +29,8 @@ pub struct NodeSemanticsEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GraphV2Error {
-    UnsupportedSchema(u32),
+pub enum SemanticsError {
+    CatalogRevisionMissing,
     CatalogRevisionStale {
         graph_revision: String,
         catalog_revision: String,
@@ -84,10 +71,10 @@ pub enum GraphV2Error {
     },
 }
 
-impl GraphV2Error {
+impl SemanticsError {
     pub fn code(&self) -> &'static str {
         match self {
-            Self::UnsupportedSchema(_) => "UNSUPPORTED_SCHEMA",
+            Self::CatalogRevisionMissing => "CATALOG_REVISION_MISSING",
             Self::CatalogRevisionStale { .. } => "CATALOG_REVISION_STALE",
             Self::StructuralInvalid(_) => "STRUCTURAL_INVALID",
             Self::MissingSemantics(_) => "MISSING_SEMANTICS",
@@ -102,11 +89,11 @@ impl GraphV2Error {
     }
 }
 
-impl std::fmt::Display for GraphV2Error {
+impl std::fmt::Display for SemanticsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::UnsupportedSchema(version) => {
-                write!(f, "unsupported graph schema version: {version}")
+            Self::CatalogRevisionMissing => {
+                write!(f, "graph carries node semantics but no catalog revision")
             }
             Self::CatalogRevisionStale {
                 graph_revision,
@@ -122,10 +109,7 @@ impl std::fmt::Display for GraphV2Error {
                 write!(f, "executable node `{node_id}` has no semantics entry")
             }
             Self::UnexpectedSemantics(node_id) => {
-                write!(
-                    f,
-                    "semantics entry for non-executable or unknown node `{node_id}`"
-                )
+                write!(f, "semantics entry on non-executable node `{node_id}`")
             }
             Self::CapabilityNotFound {
                 node_id,
@@ -182,10 +166,12 @@ impl std::fmt::Display for GraphV2Error {
     }
 }
 
-impl std::error::Error for GraphV2Error {}
+impl std::error::Error for SemanticsError {}
 
-/// Maps a legacy registry capability id to its canonical V2 capability id.
-/// `image_generate` was renamed to `text_to_image` with no runtime alias.
+/// Maps a legacy registry capability id to its canonical id. The registry
+/// itself is canonical since GH145 (`image_generate` → `text_to_image`), so
+/// this is an identity map for live data; it stays only for stage-B deletion
+/// (#145) once migration evidence lands.
 pub fn canonical_capability(legacy: &str) -> &str {
     match legacy {
         "image_generate" => "text_to_image",
@@ -193,157 +179,164 @@ pub fn canonical_capability(legacy: &str) -> &str {
     }
 }
 
-impl WorkflowGraphV2 {
-    /// Validates the structural base and the semantic layer against a
-    /// specific catalog revision. Fail-closed on every inconsistency (P8).
-    pub fn validate(
+impl WorkflowGraph {
+    /// Collects the embedded semantic layer keyed by node id. Empty for
+    /// legacy graphs that never migrated.
+    pub fn collected_semantics(&self) -> BTreeMap<String, NodeSemanticsEntry> {
+        self.nodes
+            .iter()
+            .filter_map(|(node_id, node)| {
+                node.semantics
+                    .as_ref()
+                    .map(|entry| (node_id.clone(), entry.clone()))
+            })
+            .collect()
+    }
+
+    /// Validates the structural layer and every embedded semantics entry
+    /// against a specific catalog revision. Fail-closed on every
+    /// inconsistency (P8).
+    pub fn validate_semantics(
         &self,
         service: &GraphService,
         catalog: &CatalogSnapshot,
-    ) -> Result<(), GraphV2Error> {
-        if self.schema_version != GRAPH_SCHEMA_V2 {
-            return Err(GraphV2Error::UnsupportedSchema(self.schema_version));
-        }
-        if self.catalog_revision != catalog.catalog_revision {
-            return Err(GraphV2Error::CatalogRevisionStale {
-                graph_revision: self.catalog_revision.clone(),
+    ) -> Result<(), SemanticsError> {
+        let Some(graph_revision) = self.catalog_revision.as_deref() else {
+            return Err(SemanticsError::CatalogRevisionMissing);
+        };
+        if graph_revision != catalog.catalog_revision {
+            return Err(SemanticsError::CatalogRevisionStale {
+                graph_revision: graph_revision.to_owned(),
                 catalog_revision: catalog.catalog_revision.clone(),
             });
         }
         service
-            .validate_graph(&self.base)
-            .map_err(|err| GraphV2Error::StructuralInvalid(err.to_string()))?;
+            .validate_graph(self)
+            .map_err(|err| SemanticsError::StructuralInvalid(err.to_string()))?;
 
         let registry = service.registry();
-        for (node_id, node) in &self.base.nodes {
+        for (node_id, node) in &self.nodes {
             let definition = registry
                 .definition(&node.node_type)
-                .map_err(|err| GraphV2Error::StructuralInvalid(err.to_string()))?;
+                .map_err(|err| SemanticsError::StructuralInvalid(err.to_string()))?;
             match &definition.capability {
-                Some(legacy_capability) => {
-                    let Some(entry) = self.semantics.get(node_id) else {
-                        return Err(GraphV2Error::MissingSemantics(node_id.clone()));
+                Some(capability) => {
+                    let Some(entry) = node.semantics.as_ref() else {
+                        return Err(SemanticsError::MissingSemantics(node_id.clone()));
                     };
                     let wired: std::collections::BTreeSet<String> = self
-                        .base
                         .edges
                         .iter()
                         .filter(|edge| edge.to[0] == *node_id)
                         .map(|edge| edge.to[1].clone())
                         .collect();
-                    self.validate_entry(
+                    validate_entry(
                         node_id,
                         &node.node_type,
                         &node.params,
                         &wired,
-                        canonical_capability(legacy_capability),
+                        canonical_capability(capability),
                         entry,
                         catalog,
                     )?;
                 }
                 None => {
-                    if self.semantics.contains_key(node_id) {
-                        return Err(GraphV2Error::UnexpectedSemantics(node_id.clone()));
+                    if node.semantics.is_some() {
+                        return Err(SemanticsError::UnexpectedSemantics(node_id.clone()));
                     }
                 }
             }
         }
-        for node_id in self.semantics.keys() {
-            if !self.base.nodes.contains_key(node_id) {
-                return Err(GraphV2Error::UnexpectedSemantics(node_id.clone()));
-            }
-        }
         Ok(())
     }
+}
 
-    #[allow(clippy::too_many_arguments)]
-    fn validate_entry(
-        &self,
-        node_id: &str,
-        node_type: &str,
-        params: &Value,
-        wired: &std::collections::BTreeSet<String>,
-        expected_capability: &str,
-        entry: &NodeSemanticsEntry,
-        catalog: &CatalogSnapshot,
-    ) -> Result<(), GraphV2Error> {
-        if entry.capability_id != expected_capability {
-            return Err(GraphV2Error::CapabilityMismatch {
-                node_id: node_id.to_owned(),
-                node_type: node_type.to_owned(),
-                capability_id: entry.capability_id.clone(),
-            });
-        }
-        if catalog.capability(&entry.capability_id).is_none() {
-            return Err(GraphV2Error::CapabilityNotFound {
-                node_id: node_id.to_owned(),
-                capability_id: entry.capability_id.clone(),
-            });
-        }
-
-        match &entry.implementation {
-            ImplementationSelection::Pinned {
-                requested_model_id,
-                binding_id,
-            } => {
-                let Some(binding) = catalog.binding(binding_id) else {
-                    return Err(GraphV2Error::BindingNotFound {
-                        node_id: node_id.to_owned(),
-                        binding_id: binding_id.clone(),
-                    });
-                };
-                if binding.capability_id != entry.capability_id {
-                    return Err(GraphV2Error::BindingMismatch {
-                        node_id: node_id.to_owned(),
-                        binding_id: binding_id.clone(),
-                        reason: format!(
-                            "binding implements `{}`, node declares `{}`",
-                            binding.capability_id, entry.capability_id
-                        ),
-                    });
-                }
-                if &binding.model_id != requested_model_id {
-                    return Err(GraphV2Error::PinnedModelMismatch {
-                        node_id: node_id.to_owned(),
-                        requested_model_id: requested_model_id.clone(),
-                        binding_model_id: binding.model_id.clone(),
-                    });
-                }
-                if binding.mode != entry.mode {
-                    return Err(GraphV2Error::BindingMismatch {
-                        node_id: node_id.to_owned(),
-                        binding_id: binding_id.clone(),
-                        reason: format!(
-                            "binding mode `{}` does not match node mode `{}`",
-                            binding.mode, entry.mode
-                        ),
-                    });
-                }
-                binding
-                    .input_schema
-                    .validate_value_with_wired(binding_id, params, wired)
-                    .map_err(|err| GraphV2Error::ParamsInvalid {
-                        node_id: node_id.to_owned(),
-                        message: err.to_string(),
-                    })?;
-            }
-            ImplementationSelection::Policy { .. } => {
-                let Some(default_id) = catalog.default_bindings.get(&entry.capability_id) else {
-                    return Err(GraphV2Error::PolicyDefaultMissing {
-                        node_id: node_id.to_owned(),
-                        capability_id: entry.capability_id.clone(),
-                    });
-                };
-                if catalog.binding(default_id).is_none() {
-                    return Err(GraphV2Error::BindingNotFound {
-                        node_id: node_id.to_owned(),
-                        binding_id: default_id.clone(),
-                    });
-                }
-            }
-        }
-        Ok(())
+#[allow(clippy::too_many_arguments)]
+fn validate_entry(
+    node_id: &str,
+    node_type: &str,
+    params: &Value,
+    wired: &std::collections::BTreeSet<String>,
+    expected_capability: &str,
+    entry: &NodeSemanticsEntry,
+    catalog: &CatalogSnapshot,
+) -> Result<(), SemanticsError> {
+    if entry.capability_id != expected_capability {
+        return Err(SemanticsError::CapabilityMismatch {
+            node_id: node_id.to_owned(),
+            node_type: node_type.to_owned(),
+            capability_id: entry.capability_id.clone(),
+        });
     }
+    if catalog.capability(&entry.capability_id).is_none() {
+        return Err(SemanticsError::CapabilityNotFound {
+            node_id: node_id.to_owned(),
+            capability_id: entry.capability_id.clone(),
+        });
+    }
+
+    match &entry.implementation {
+        ImplementationSelection::Pinned {
+            requested_model_id,
+            binding_id,
+        } => {
+            let Some(binding) = catalog.binding(binding_id) else {
+                return Err(SemanticsError::BindingNotFound {
+                    node_id: node_id.to_owned(),
+                    binding_id: binding_id.clone(),
+                });
+            };
+            if binding.capability_id != entry.capability_id {
+                return Err(SemanticsError::BindingMismatch {
+                    node_id: node_id.to_owned(),
+                    binding_id: binding_id.clone(),
+                    reason: format!(
+                        "binding implements `{}`, node declares `{}`",
+                        binding.capability_id, entry.capability_id
+                    ),
+                });
+            }
+            if &binding.model_id != requested_model_id {
+                return Err(SemanticsError::PinnedModelMismatch {
+                    node_id: node_id.to_owned(),
+                    requested_model_id: requested_model_id.clone(),
+                    binding_model_id: binding.model_id.clone(),
+                });
+            }
+            if binding.mode != entry.mode {
+                return Err(SemanticsError::BindingMismatch {
+                    node_id: node_id.to_owned(),
+                    binding_id: binding_id.clone(),
+                    reason: format!(
+                        "binding mode `{}` does not match node mode `{}`",
+                        binding.mode, entry.mode
+                    ),
+                });
+            }
+            binding
+                .input_schema
+                .validate_value_with_wired(binding_id, params, wired)
+                .map_err(|err| SemanticsError::ParamsInvalid {
+                    node_id: node_id.to_owned(),
+                    message: err.to_string(),
+                })?;
+        }
+        ImplementationSelection::Policy { .. } => {
+            let Some(default_id) = catalog.default_bindings.get(&entry.capability_id) else {
+                return Err(SemanticsError::PolicyDefaultMissing {
+                    node_id: node_id.to_owned(),
+                    capability_id: entry.capability_id.clone(),
+                });
+            };
+            if catalog.binding(default_id).is_none() {
+                return Err(SemanticsError::BindingNotFound {
+                    node_id: node_id.to_owned(),
+                    binding_id: default_id.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -387,17 +380,18 @@ pub enum MigrationAction {
     },
 }
 
-/// Migrates a v1 graph to the layered v2 shape. Deterministic and dry-run
-/// friendly: the report is always produced; the graph is only produced when
-/// every executable node is resolvable. Never infers a model from titles
-/// (P14) and never adopts a provider-internal default: nodes without a
-/// declared model become explicit `Policy` selections, which resolve only
-/// through the configured default binding (P5).
-pub fn migrate_v1_to_v2(
+/// Migrates a legacy graph (no embedded semantics) into the canonical
+/// embedded shape. Deterministic and dry-run friendly: the report is always
+/// produced; the graph is only produced when every executable node is
+/// resolvable. Never infers a model from titles (P14) and never adopts a
+/// provider-internal default: nodes without a declared model become explicit
+/// `Policy` selections, which resolve only through the configured default
+/// binding (P5).
+pub fn migrate_v1(
     graph: &WorkflowGraph,
     registry: &NodeRegistry,
     catalog: &CatalogSnapshot,
-) -> (Option<WorkflowGraphV2>, MigrationReport) {
+) -> (Option<WorkflowGraph>, MigrationReport) {
     // Migration decides against catalog data, not runtime health, so every
     // declared connector counts as reachable for binding selection.
     let all_available: ConnectorAvailability = catalog
@@ -407,8 +401,7 @@ pub fn migrate_v1_to_v2(
         .collect();
     let resolver = CapabilityResolver::new(catalog);
 
-    let mut base = graph.clone();
-    let mut semantics = BTreeMap::new();
+    let mut migrated = graph.clone();
     let mut nodes = Vec::new();
     let mut resolvable = true;
 
@@ -422,8 +415,8 @@ pub fn migrate_v1_to_v2(
             }
             Ok(definition) => match &definition.capability {
                 None => MigrationAction::Structural,
-                Some(legacy_capability) => {
-                    let capability_id = canonical_capability(legacy_capability).to_owned();
+                Some(capability) => {
+                    let capability_id = canonical_capability(capability).to_owned();
                     let legacy_model = node
                         .params
                         .get("model")
@@ -437,15 +430,14 @@ pub fn migrate_v1_to_v2(
                         catalog,
                     ) {
                         Ok((entry, action)) => {
-                            if legacy_model.is_some()
-                                && let Some(params) = base
-                                    .nodes
-                                    .get_mut(node_id)
-                                    .and_then(|node| node.params.as_object_mut())
-                            {
-                                params.remove("model");
+                            if let Some(node) = migrated.nodes.get_mut(node_id) {
+                                if legacy_model.is_some()
+                                    && let Some(params) = node.params.as_object_mut()
+                                {
+                                    params.remove("model");
+                                }
+                                node.semantics = Some(entry);
                             }
-                            semantics.insert(node_id.clone(), entry);
                             action
                         }
                         Err(action) => {
@@ -469,11 +461,9 @@ pub fn migrate_v1_to_v2(
         nodes,
         resolvable,
     };
-    let migrated = resolvable.then(|| WorkflowGraphV2 {
-        schema_version: GRAPH_SCHEMA_V2,
-        catalog_revision: catalog.catalog_revision.clone(),
-        base,
-        semantics,
+    let migrated = resolvable.then(|| {
+        migrated.catalog_revision = Some(catalog.catalog_revision.clone());
+        migrated
     });
     (migrated, report)
 }
@@ -549,5 +539,5 @@ fn migrate_executable_node(
 }
 
 #[cfg(test)]
-#[path = "graph_v2_tests.rs"]
+#[path = "semantics_tests.rs"]
 mod tests;
