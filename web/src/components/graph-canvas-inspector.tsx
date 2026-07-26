@@ -6,7 +6,6 @@ import type {
   NodeDefinition,
   WorkflowGraph,
 } from '../types';
-import { canonicalCapability } from './model-catalog-tray';
 import { graphNodeHeight, graphNodeWidth, type ViewState, type ViewportSize } from './graph-canvas-navigation';
 import { categorySwatch } from './graph-canvas-rendering';
 
@@ -31,7 +30,7 @@ function ImplementationSection({
     <div className="inspector-implementation" data-testid="implementation-section">
       <div className="field">
         <span className="field-label">capability</span>
-        <span className="field-input">{canonicalCapability(capability)}</span>
+        <span className="field-input">{capability}</span>
       </div>
       {!resolution && (
         <div className="field">

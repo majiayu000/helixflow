@@ -168,17 +168,6 @@ impl std::fmt::Display for SemanticsError {
 
 impl std::error::Error for SemanticsError {}
 
-/// Maps a legacy registry capability id to its canonical id. The registry
-/// itself is canonical since GH145 (`image_generate` → `text_to_image`), so
-/// this is an identity map for live data; it stays only for stage-B deletion
-/// (#145) once migration evidence lands.
-pub fn canonical_capability(legacy: &str) -> &str {
-    match legacy {
-        "image_generate" => "text_to_image",
-        other => other,
-    }
-}
-
 impl WorkflowGraph {
     /// Collects the embedded semantic layer keyed by node id. Empty for
     /// legacy graphs that never migrated.
@@ -235,7 +224,7 @@ impl WorkflowGraph {
                         &node.node_type,
                         &node.params,
                         &wired,
-                        canonical_capability(capability),
+                        capability,
                         entry,
                         catalog,
                     )?;
@@ -416,7 +405,7 @@ pub fn migrate_v1(
             Ok(definition) => match &definition.capability {
                 None => MigrationAction::Structural,
                 Some(capability) => {
-                    let capability_id = canonical_capability(capability).to_owned();
+                    let capability_id = capability.to_owned();
                     let legacy_model = node
                         .params
                         .get("model")
