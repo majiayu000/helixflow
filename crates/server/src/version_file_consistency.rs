@@ -320,6 +320,9 @@ impl CandidateIo for FsCandidateIo {
 #[derive(Debug)]
 pub(crate) struct VersionFileCandidate {
     workspace_id: String,
+    /// Consumed at construction time to derive file names; retained only for
+    /// test assertions.
+    #[cfg_attr(not(test), allow(dead_code))]
     kind: CandidateKind,
     relative_temp_path: PathBuf,
     relative_final_path: PathBuf,
@@ -436,6 +439,7 @@ impl VersionFileCandidate {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn relative_path(&self) -> &Path {
         &self.relative_final_path
     }
@@ -452,10 +456,12 @@ impl VersionFileCandidate {
         &self.graph_hash
     }
 
+    #[cfg(test)]
     pub(crate) fn workspace_id(&self) -> &str {
         &self.workspace_id
     }
 
+    #[cfg(test)]
     pub(crate) fn kind(&self) -> CandidateKind {
         self.kind
     }
@@ -710,6 +716,7 @@ impl VersionFileCandidateSet {
         self.candidates.push(candidate);
     }
 
+    #[cfg(test)]
     pub(crate) fn candidates(&self) -> &[VersionFileCandidate] {
         &self.candidates
     }
