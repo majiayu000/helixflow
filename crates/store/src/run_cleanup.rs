@@ -94,6 +94,7 @@ mod tests {
                 graph_path: "graphs/current.json",
                 graph_hash: "sha256:graph",
                 parent_id: None,
+                semantics_json: None,
             })
             .await
             .expect("create version");

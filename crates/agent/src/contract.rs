@@ -14,6 +14,13 @@ pub struct ValidatedAgentProposal {
     pub proposal: PreparedProposal,
 }
 
+#[derive(Debug, Clone)]
+pub struct ValidatedAgentIntent {
+    pub session_id: String,
+    pub agent_logs: Vec<AgentLogEntry>,
+    pub intent: IntentPlan,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedAgentReply {
     pub session_id: String,

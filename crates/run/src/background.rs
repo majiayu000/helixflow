@@ -13,7 +13,13 @@ where
         let mut plan =
             self.graph
                 .compile_plan(&request.graph, &request.version_id, &request.provider)?;
-        crate::resolved::attach_resolved_bindings(&mut plan, &request.provider, None)?;
+        let semantics =
+            crate::resolved::load_version_semantics(&self.store, &request.version_id).await?;
+        crate::resolved::attach_resolved_bindings(
+            &mut plan,
+            &request.provider,
+            semantics.as_ref(),
+        )?;
         let plan = plan;
         if plan.steps.is_empty() {
             return Err(super::RunError::NoExecutableSteps);

@@ -291,6 +291,7 @@ async fn assert_non_exact_reference_collision(multiple_references: bool) {
                 graph_path: &graph_path,
                 graph_hash: &candidate_hash,
                 parent_id: None,
+                semantics_json: None,
             })
             .await
             .expect("create non-exact reference");
@@ -701,6 +702,7 @@ async fn state_with_graph() -> (AppState, String, String, tempfile::TempDir) {
             graph_path: graph_path.to_string_lossy().as_ref(),
             graph_hash: &graph_hash,
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create version");

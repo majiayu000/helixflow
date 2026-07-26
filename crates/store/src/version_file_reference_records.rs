@@ -17,7 +17,8 @@ impl Store {
     ) -> StoreResult<Vec<VersionRecord>> {
         Ok(sqlx::query_as::<_, VersionRecord>(
             r#"
-            SELECT id, workspace_id, idx, label, source, graph_path, graph_hash, parent_id, created_at
+            SELECT id, workspace_id, idx, label, source, graph_path, graph_hash, parent_id,
+                   semantics_json, created_at
             FROM versions
             WHERE graph_path = ?
             ORDER BY workspace_id, idx, id

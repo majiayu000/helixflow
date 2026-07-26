@@ -8,8 +8,8 @@ use serde_json::{Value, json};
 use crate::{
     AgentError, AgentLogEntry, AgentResult, AgentRuntime, AgentSession, AgentSessionRequest,
     AgentTurn, OutputContract, PromptStackMetadata, RuntimeEvent, RuntimeHandle,
-    ValidatedAgentProposal, ValidatedAgentReply, create_session_contract, read_validated_proposal,
-    read_validated_reply,
+    ValidatedAgentIntent, ValidatedAgentProposal, ValidatedAgentReply, create_session_contract,
+    read_validated_intent, read_validated_proposal, read_validated_reply,
 };
 
 const DEFAULT_MAX_PROPOSAL_ROUNDS: usize = 3;
@@ -36,6 +36,94 @@ where
     pub fn with_max_proposal_rounds(mut self, max_proposal_rounds: usize) -> Self {
         self.max_proposal_rounds = max_proposal_rounds.max(1);
         self
+    }
+
+    /// GH130 T6: the IntentPlan contract. Same bounded retry loop as the
+    /// proposal path, but validation errors come from the intent schema and
+    /// structural validator instead of graph preview.
+    pub async fn propose_intent(
+        &self,
+        request: AgentSessionRequest,
+    ) -> AgentResult<ValidatedAgentIntent> {
+        ensure_output_contract(&request, OutputContract::IntentJson)?;
+        let mut run = self.start_agent_session(&request).await?;
+        let max_rounds = self.max_proposal_rounds.max(1);
+        let mut next_message = request.user_message.clone();
+        let mut last_error;
+
+        for round in 1..=max_rounds {
+            self.record_status(
+                &mut run,
+                "intent.round.started",
+                json!({
+                    "round": round,
+                    "max_rounds": max_rounds,
+                    "message": format!("intent round {round}/{max_rounds} started")
+                }),
+            );
+
+            let turn = AgentTurn {
+                message: next_message.clone(),
+                mode: request.mode,
+                output_contract: OutputContract::IntentJson,
+                skill: request.skill,
+            };
+            let outcome = self.send_agent_turn(&mut run, turn).await?;
+
+            if let TurnRunOutcome::RuntimeFailed(message) = outcome {
+                last_error = sanitize_retry_feedback(&message);
+            } else {
+                match read_validated_intent(&run.session) {
+                    Ok(intent) => {
+                        self.record_status(
+                            &mut run,
+                            "intent.ready",
+                            json!({
+                                "round": round,
+                                "stages": intent.stages.len(),
+                                "message": format!("intent ready after round {round}")
+                            }),
+                        );
+                        self.emit_status(
+                            &run.session.workspace_id,
+                            &run.session.id,
+                            run.seq,
+                            "agent.status.end",
+                            json!({ "intent_stages": intent.stages.len() }),
+                        );
+                        return Ok(ValidatedAgentIntent {
+                            session_id: run.session.id.clone(),
+                            agent_logs: run.agent_logs,
+                            intent,
+                        });
+                    }
+                    Err(err) => {
+                        last_error = sanitize_retry_feedback(&err.to_string());
+                        self.record_status(
+                            &mut run,
+                            "intent.validation_failed",
+                            json!({
+                                "round": round,
+                                "max_rounds": max_rounds,
+                                "message": format!("intent validation failed: {last_error}")
+                            }),
+                        );
+                    }
+                }
+            }
+
+            if round == max_rounds {
+                return Err(AgentError::ProposalRetryExhausted {
+                    rounds: max_rounds,
+                    last_error,
+                });
+            }
+            next_message = format!(
+                "Your previous out/intent.json was invalid: {last_error}\nRewrite out/intent.json following the Intent output contract exactly. Original request: {}",
+                request.user_message
+            );
+        }
+        unreachable!("intent rounds always return or error")
     }
 
     pub async fn propose_graph_change(
@@ -65,7 +153,9 @@ where
             let turn = AgentTurn {
                 message: next_message.clone(),
                 mode: request.mode,
-                output_contract: request.mode.output_contract(),
+                output_contract: request
+                    .mode
+                    .output_contract_with(request.use_intent_contract),
                 skill: request.skill,
             };
             let outcome = self.send_agent_turn(&mut run, turn).await?;
@@ -414,7 +504,9 @@ fn ensure_output_contract(
     request: &AgentSessionRequest,
     expected: OutputContract,
 ) -> AgentResult<()> {
-    let actual = request.mode.output_contract();
+    let actual = request
+        .mode
+        .output_contract_with(request.use_intent_contract);
     if actual == expected {
         return Ok(());
     }

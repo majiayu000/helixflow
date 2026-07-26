@@ -13,6 +13,7 @@ use crate::app_state::AppState;
 use crate::sweep_support::handle_run_request;
 use crate::workbench_message_canvas::{WorkspaceCanvasContext, prepare_agent_canvas_context};
 use crate::workbench_message_graph::{VerifiedMessageGraph, verified_message_graph};
+use crate::workbench_message_intent::handle_intent_turn;
 use crate::workbench_message_metadata::turn_metadata_json;
 use crate::workbench_message_proposals::persist_and_apply_agent_proposal;
 use crate::workbench_payload::{PendingConfirmationPayload, ProposalPayload, RunPayload};
@@ -105,6 +106,9 @@ pub(crate) async fn post_workspace_message(
         .map_err(ApiError::store)?;
     let provider_catalog = state.provider_catalog_for_workspace(&workspace);
     let run_context = debug_run_context(&state, &workspace_id, classification.mode).await?;
+    let use_intent_contract = state.use_intent_contract;
+    let base_version_id = version.id.clone();
+    let base_graph = graph.clone();
     let request = AgentSessionRequest {
         workspace_id: workspace_id.clone(),
         base_version_id: version.id,
@@ -117,6 +121,7 @@ pub(crate) async fn post_workspace_message(
         mode: classification.mode,
         skill: classification.mode.agent_skill(),
         canvas_context,
+        use_intent_contract,
     };
 
     match classification.mode {
@@ -148,6 +153,18 @@ pub(crate) async fn post_workspace_message(
             }))
         }
         TurnMode::CreateWorkflow | TurnMode::ModifyWorkflow | TurnMode::DebugWorkflow => {
+            if use_intent_contract {
+                let response = handle_intent_turn(
+                    &state,
+                    &workspace_id,
+                    &base_version_id,
+                    &base_graph,
+                    classification.mode,
+                    request,
+                )
+                .await?;
+                return Ok(Json(response));
+            }
             let proposal = state
                 .agent
                 .propose_graph_change(request)
@@ -161,7 +178,7 @@ pub(crate) async fn post_workspace_message(
             )
             .await?;
             let message =
-                persist_and_apply_agent_proposal(&state, &workspace_id, &proposal).await?;
+                persist_and_apply_agent_proposal(&state, &workspace_id, &proposal, None).await?;
             Ok(Json(WorkspaceMessageResponse {
                 turn_mode: classification.mode,
                 messages: vec![ChatMessagePayload::from_record(message)],
@@ -183,7 +200,7 @@ pub(crate) async fn post_workspace_message(
     }
 }
 
-async fn persist_agent_logs(
+pub(crate) async fn persist_agent_logs(
     state: &AppState,
     workspace_id: &str,
     session_id: &str,
@@ -207,7 +224,7 @@ async fn persist_agent_logs(
 }
 
 impl ChatMessagePayload {
-    fn from_record(record: MessageRecord) -> Self {
+    pub(crate) fn from_record(record: MessageRecord) -> Self {
         let turn_mode = message_turn_mode(&record);
         Self {
             id: record.id,

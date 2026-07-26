@@ -67,6 +67,7 @@ mod tests {
             graph_path: "graphs/foreign.json".to_owned(),
             graph_hash: format!("sha256:{}", "0".repeat(64)),
             parent_id: None,
+            semantics_json: None,
             created_at: "now".to_owned(),
         };
 

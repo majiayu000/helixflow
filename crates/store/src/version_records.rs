@@ -62,9 +62,10 @@ impl Store {
         sqlx::query(
             r#"
             INSERT INTO versions (
-                id, workspace_id, idx, label, source, graph_path, graph_hash, parent_id, created_at
+                id, workspace_id, idx, label, source, graph_path, graph_hash, parent_id,
+                semantics_json, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)
             "#,
         )
         .bind(&version_id)
@@ -75,6 +76,7 @@ impl Store {
         .bind(input.graph_path)
         .bind(input.graph_hash)
         .bind(input.parent_id)
+        .bind(input.semantics_json)
         .execute(&mut *tx)
         .await?;
 
@@ -186,7 +188,8 @@ impl Store {
     pub async fn version(&self, version_id: &str) -> StoreResult<VersionRecord> {
         let version = sqlx::query_as::<_, VersionRecord>(
             r#"
-            SELECT id, workspace_id, idx, label, source, graph_path, graph_hash, parent_id, created_at
+            SELECT id, workspace_id, idx, label, source, graph_path, graph_hash, parent_id,
+                   semantics_json, created_at
             FROM versions
             WHERE id = ?
             "#,

@@ -276,9 +276,10 @@ impl Store {
         let version_insert = sqlx::query(
             r#"
             INSERT INTO versions (
-                id, workspace_id, idx, label, source, graph_path, graph_hash, parent_id, created_at
+                id, workspace_id, idx, label, source, graph_path, graph_hash, parent_id,
+                semantics_json, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)
             "#,
         )
         .bind(&version_id)
@@ -289,6 +290,7 @@ impl Store {
         .bind(input.version.graph_path)
         .bind(input.version.graph_hash)
         .bind(input.version.parent_id)
+        .bind(input.version.semantics_json)
         .execute(&mut *tx)
         .await?;
         require_one_write(
@@ -379,7 +381,8 @@ impl Store {
 
         let version = sqlx::query_as::<_, VersionRecord>(
             r#"
-            SELECT id, workspace_id, idx, label, source, graph_path, graph_hash, parent_id, created_at
+            SELECT id, workspace_id, idx, label, source, graph_path, graph_hash, parent_id,
+                   semantics_json, created_at
             FROM versions
             WHERE id = ?
             "#,
@@ -435,12 +438,13 @@ impl Store {
         let version_insert = sqlx::query(
             r#"
             INSERT INTO versions (
-                id, workspace_id, idx, label, source, graph_path, graph_hash, parent_id, created_at
+                id, workspace_id, idx, label, source, graph_path, graph_hash, parent_id,
+                semantics_json, created_at
             )
             VALUES (
                 ?, ?,
                 (SELECT COALESCE(MAX(idx), 0) + 1 FROM versions WHERE workspace_id = ?),
-                ?, ?, ?, ?, ?, current_timestamp
+                ?, ?, ?, ?, ?, ?, current_timestamp
             )
             "#,
         )
@@ -452,6 +456,7 @@ impl Store {
         .bind(input.version.graph_path)
         .bind(input.version.graph_hash)
         .bind(input.version.parent_id)
+        .bind(input.version.semantics_json)
         .execute(&mut *tx)
         .await?;
         require_one_write(
@@ -553,7 +558,8 @@ impl Store {
         .await?;
         let version = sqlx::query_as::<_, VersionRecord>(
             r#"
-            SELECT id, workspace_id, idx, label, source, graph_path, graph_hash, parent_id, created_at
+            SELECT id, workspace_id, idx, label, source, graph_path, graph_hash, parent_id,
+                   semantics_json, created_at
             FROM versions
             WHERE id = ?
             "#,

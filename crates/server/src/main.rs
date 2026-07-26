@@ -46,6 +46,7 @@ mod workbench_message_canvas;
 mod workbench_message_graph;
 #[cfg(test)]
 mod workbench_message_graph_tests;
+mod workbench_message_intent;
 mod workbench_message_metadata;
 mod workbench_message_proposals;
 #[cfg(test)]

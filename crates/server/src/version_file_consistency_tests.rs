@@ -127,6 +127,7 @@ fn version_record(path: &str, hash: &str) -> VersionRecord {
         graph_path: path.to_owned(),
         graph_hash: hash.to_owned(),
         parent_id: None,
+        semantics_json: None,
         created_at: "2026-07-16T00:00:00Z".to_owned(),
     }
 }
@@ -468,6 +469,7 @@ async fn cleanup_commit_then_error_preserves_exact_version_reference() {
             graph_path: candidate.relative_path_text().expect("candidate path"),
             graph_hash: candidate.graph_hash(),
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("commit version");
@@ -506,6 +508,7 @@ async fn cleanup_preserves_exact_proposal_reference() {
             graph_path: "legacy/base.json",
             graph_hash: &graph_hash(b"base"),
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create base");
@@ -683,6 +686,7 @@ async fn cleanup_candidate_set_continues_and_preserves_references_after_earlier_
                 .expect("referenced path"),
             graph_hash: set.candidates()[2].graph_hash(),
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create exact version reference");

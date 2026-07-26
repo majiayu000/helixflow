@@ -177,7 +177,8 @@ impl Store {
     ) -> StoreResult<Vec<VersionRecord>> {
         Ok(sqlx::query_as::<_, VersionRecord>(
             r#"
-            SELECT id, workspace_id, idx, label, source, graph_path, graph_hash, parent_id, created_at
+            SELECT id, workspace_id, idx, label, source, graph_path, graph_hash, parent_id,
+                   semantics_json, created_at
             FROM versions
             WHERE workspace_id = ?
             ORDER BY idx, created_at, id
@@ -278,6 +279,7 @@ mod tests {
                 graph_path: "graphs/first.json",
                 graph_hash: "sha256:first",
                 parent_id: None,
+                semantics_json: None,
             })
             .await
             .expect("create first version");
@@ -290,6 +292,7 @@ mod tests {
                     graph_path: "graphs/second.json",
                     graph_hash: "sha256:second",
                     parent_id: Some(&first.id),
+                    semantics_json: None,
                 },
                 &first.id,
             )

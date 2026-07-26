@@ -36,6 +36,7 @@ async fn creates_and_lists_pending_proposals() {
             graph_path: "graphs/base.json",
             graph_hash: "sha256:base",
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create version");
@@ -78,6 +79,7 @@ async fn resolving_proposal_rejects_repeated_resolution() {
             graph_path: "graphs/base.json",
             graph_hash: "sha256:base",
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create version");
@@ -134,6 +136,7 @@ async fn applying_proposal_creates_version_and_marks_applied() {
             graph_path: "graphs/base.json",
             graph_hash: "sha256:base",
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create version");
@@ -162,6 +165,7 @@ async fn applying_proposal_creates_version_and_marks_applied() {
                 graph_path: "graphs/applied.json",
                 graph_hash: "sha256:applied",
                 parent_id: Some(&base.id),
+                semantics_json: None,
             },
             message_text: "Applied proposal",
         })
@@ -234,6 +238,7 @@ async fn applying_proposal_rejects_proposal_base_mismatch_before_writes() {
                 graph_path: "graphs/new-current.json",
                 graph_hash: "sha256:new-current",
                 parent_id: Some(&base_id),
+                semantics_json: None,
             },
             &base_id,
         )
@@ -282,6 +287,7 @@ async fn applying_proposal_rejects_stale_current_without_partial_writes() {
                 graph_path: "graphs/newer.json",
                 graph_hash: "sha256:newer",
                 parent_id: Some(&base_id),
+                semantics_json: None,
             },
             &base_id,
         )
@@ -682,6 +688,7 @@ async fn apply_proposal(
                 graph_path: "graphs/applied-atomic.json",
                 graph_hash: "sha256:applied-atomic",
                 parent_id,
+                semantics_json: None,
             },
             message_text: "Applied atomically",
         })
@@ -702,6 +709,7 @@ async fn apply_fixture() -> (Store, String, String, String, tempfile::TempDir) {
             graph_path: "graphs/base-atomic.json",
             graph_hash: "sha256:base-atomic",
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create base");

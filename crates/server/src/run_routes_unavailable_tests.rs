@@ -54,6 +54,7 @@ async fn state_with_workspace_provider(
             graph_path: "graphs/run.json",
             graph_hash: "sha256:run",
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create version");

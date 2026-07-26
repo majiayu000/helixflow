@@ -134,6 +134,7 @@ async fn create_restore_version(
                 graph_path: &target.graph_path,
                 graph_hash: &target.graph_hash,
                 parent_id: Some(&current.id),
+                semantics_json: None,
             },
             &current.id,
         )
@@ -619,6 +620,7 @@ mod tests {
                 graph_path: &base_path_string,
                 graph_hash: &base_hash,
                 parent_id: None,
+                semantics_json: None,
             })
             .await
             .expect("create base version");
@@ -631,6 +633,7 @@ mod tests {
                     graph_path: &current_path_string,
                     graph_hash: &current_hash,
                     parent_id: Some(&base.id),
+                    semantics_json: None,
                 },
                 &base.id,
             )
@@ -676,6 +679,7 @@ mod tests {
                 graph_path: &graph_path_string,
                 graph_hash: &stored_graph_hash,
                 parent_id: None,
+                semantics_json: None,
             })
             .await
             .expect("create version");

@@ -181,6 +181,7 @@ mod tests {
                 graph_path: &graph_path_string,
                 graph_hash: "sha256:message",
                 parent_id: None,
+                semantics_json: None,
             })
             .await
             .expect("create version");

@@ -24,6 +24,7 @@ async fn select_run_artifact_clears_sibling_artifacts() {
             graph_path: "graphs/current.json",
             graph_hash: "sha256:graph",
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create version");
@@ -153,6 +154,7 @@ async fn seed_run(store: &Store, status: &str) -> (String, String, RunRecord) {
             graph_path: "graphs/current.json",
             graph_hash: "sha256:graph",
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create version");

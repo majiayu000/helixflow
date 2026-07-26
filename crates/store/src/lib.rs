@@ -341,6 +341,9 @@ pub struct NewVersion<'a> {
     pub graph_path: &'a str,
     pub graph_hash: &'a str,
     pub parent_id: Option<&'a str>,
+    /// Serialized semantic layer (node id -> capability/model/binding
+    /// selection) for compiler-produced versions; None for legacy v1.
+    pub semantics_json: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, sqlx::FromRow)]
@@ -353,6 +356,7 @@ pub struct VersionRecord {
     pub graph_path: String,
     pub graph_hash: String,
     pub parent_id: Option<String>,
+    pub semantics_json: Option<String>,
     pub created_at: String,
 }
 
@@ -459,6 +463,7 @@ mod tests {
                 graph_path: "workspaces/ws_other/graphs/ver_1.json",
                 graph_hash: "sha256:other",
                 parent_id: None,
+                semantics_json: None,
             })
             .await
             .expect("create version");

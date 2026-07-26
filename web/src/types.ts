@@ -26,6 +26,7 @@ const CostSchema = z.object({
 const PrimaryChatMessageKindSchema = z.enum([
   'text',
   'chat',
+  'clarify',
   'proposal_pending',
   'proposal_applied',
   'proposal_dismissed',

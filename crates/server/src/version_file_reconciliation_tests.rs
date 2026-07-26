@@ -102,6 +102,7 @@ async fn startup_retains_physical_targets_referenced_through_safe_aliases() {
             graph_path: &graph_alias,
             graph_hash: &graph_hash(&graph_bytes),
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("version");
@@ -238,6 +239,7 @@ async fn startup_corrupt_reference_fails_before_orphan_cleanup() {
             graph_path: &missing,
             graph_hash: &graph_hash(b"missing"),
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("version");
@@ -461,6 +463,7 @@ async fn startup_reconciliation_precedes_stale_run_cleanup() {
             graph_path: "missing.json",
             graph_hash: &graph_hash(b"missing"),
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("version");
@@ -577,6 +580,7 @@ impl Fixture {
                 graph_path: &path,
                 graph_hash: &graph_hash(&bytes),
                 parent_id: None,
+                semantics_json: None,
             })
             .await
             .expect("version");

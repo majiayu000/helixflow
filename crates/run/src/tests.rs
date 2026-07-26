@@ -38,6 +38,7 @@ pub(crate) async fn workspace_version(store: &Store) -> (String, String) {
             graph_path: "workspaces/ws_run/graphs/ver_run.json",
             graph_hash: "sha256:run",
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create version");

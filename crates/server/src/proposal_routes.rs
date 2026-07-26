@@ -112,6 +112,7 @@ async fn apply_workspace_proposal_inner(
                 graph_path: &graph_path,
                 graph_hash: &graph_hash,
                 parent_id: Some(&proposal.base_version_id),
+                semantics_json: None,
             },
             message_text: &message_text,
         })
@@ -557,6 +558,7 @@ mod tests {
                     graph_path: &next_graph_path_string,
                     graph_hash: &graph_hash(&next_graph_bytes),
                     parent_id: Some(&base_version_id),
+                    semantics_json: None,
                 },
                 &base_version_id,
             )
@@ -605,6 +607,7 @@ mod tests {
                 graph_path: &graph_path_string,
                 graph_hash: &graph_hash(&graph_bytes),
                 parent_id: None,
+                semantics_json: None,
             })
             .await
             .expect("create version");
