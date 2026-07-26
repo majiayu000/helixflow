@@ -87,7 +87,7 @@ impl FalProvider {
         ProviderCatalog {
             provider: "fal".to_owned(),
             capabilities: BTreeMap::from([(
-                "image_generate".to_owned(),
+                "text_to_image".to_owned(),
                 ProviderCapability {
                     artifact_kind: ArtifactKind::Image,
                     output_name: "image".to_owned(),
@@ -311,7 +311,7 @@ impl Provider for FalProvider {
 
     async fn estimate(&self, req: ProviderRequest) -> ProviderResultValue<CostEstimate> {
         self.ensure_provider(&req)?;
-        if req.capability != "image_generate" {
+        if req.capability != "text_to_image" {
             return Err(ProviderError::UnsupportedCapability(req.capability));
         }
         Ok(CostEstimate {
@@ -325,7 +325,7 @@ impl Provider for FalProvider {
     async fn invoke(&self, req: ProviderRequest) -> ProviderResultValue<ProviderResult> {
         self.ensure_provider(&req)?;
         match req.capability.as_str() {
-            "image_generate" => self.invoke_image(req).await,
+            "text_to_image" => self.invoke_image(req).await,
             capability => Err(ProviderError::UnsupportedCapability(capability.to_owned())),
         }
     }

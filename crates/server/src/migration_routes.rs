@@ -1,13 +1,13 @@
 //! v1→v2 graph migration entry points (GH144).
 //!
-//! Dry-run is a pure, deterministic projection of `migrate_v1_to_v2`; apply
+//! Dry-run is a pure, deterministic projection of `migrate_v1`; apply
 //! atomically creates a new version carrying the semantic layer. The
 //! original version stays in history, so rollback is a plain restore.
 
 use axum::Json;
 use axum::extract::{Path, State};
 use helixflow_graph::WorkflowGraph;
-use helixflow_graph::graph_v2::{MigrationAction, MigrationReport, migrate_v1_to_v2};
+use helixflow_graph::semantics::{MigrationAction, MigrationReport, migrate_v1};
 use helixflow_registry::NodeRegistry;
 use helixflow_store::{NewVersion, VersionRecord, VersionSource};
 use serde::Serialize;
@@ -71,7 +71,7 @@ pub(crate) async fn migration_dry_run(
     }
 
     let registry = NodeRegistry::builtin();
-    let (_migrated, report) = migrate_v1_to_v2(&graph, &registry, helixflow_run::shared_catalog());
+    let (_migrated, report) = migrate_v1(&graph, &registry, helixflow_run::shared_catalog());
     let counts = count_actions(&report);
     Ok(Json(MigrationDryRunResponse {
         status: if report.resolvable {
@@ -100,7 +100,7 @@ pub(crate) async fn migration_apply(
     }
 
     let registry = NodeRegistry::builtin();
-    let (migrated, report) = migrate_v1_to_v2(&graph, &registry, helixflow_run::shared_catalog());
+    let (migrated, report) = migrate_v1(&graph, &registry, helixflow_run::shared_catalog());
     let counts = count_actions(&report);
     let Some(migrated) = migrated else {
         return Err(ApiError::conflict_with_details(
@@ -109,12 +109,9 @@ pub(crate) async fn migration_apply(
         ));
     };
 
-    let candidate = VersionFileCandidate::from_graph(
-        &workspace_id,
-        CandidateKind::MigratedGraph,
-        &migrated.base,
-    )
-    .map_err(|err| ApiError::server_error(err.to_string()))?;
+    let candidate =
+        VersionFileCandidate::from_graph(&workspace_id, CandidateKind::MigratedGraph, &migrated)
+            .map_err(|err| ApiError::server_error(err.to_string()))?;
     let graph_path = candidate
         .relative_path_text()
         .map_err(|err| ApiError::server_error(err.to_string()))?
@@ -126,7 +123,7 @@ pub(crate) async fn migration_apply(
         .publish_all(&state.data_dir)
         .map_err(|err| ApiError::server_error(err.to_string()))?;
 
-    let semantics_json = serde_json::to_string(&migrated.semantics)
+    let semantics_json = serde_json::to_string(&migrated.collected_semantics())
         .map_err(|err| ApiError::server_error(err.to_string()))?;
     let version = state
         .store

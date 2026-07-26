@@ -164,6 +164,7 @@ fn review_graph() -> WorkflowGraph {
                     params: json!({ "prompt": "review", "duration_sec": 4, "aspect_ratio": "9:16" }),
                     pos: [0.0, 0.0],
                     size: None,
+                    semantics: None,
                 },
             ),
             (
@@ -174,6 +175,7 @@ fn review_graph() -> WorkflowGraph {
                     params: json!({}),
                     pos: [240.0, 0.0],
                     size: None,
+                    semantics: None,
                 },
             ),
         ]),
@@ -182,6 +184,7 @@ fn review_graph() -> WorkflowGraph {
             to: ["save".to_owned(), "artifact".to_owned()],
             edge_type: "artifact".to_owned(),
         }],
+        catalog_revision: None,
     }
 }
 

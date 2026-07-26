@@ -14,7 +14,8 @@ where
             self.graph
                 .compile_plan(&request.graph, &request.version_id, &request.provider)?;
         let semantics =
-            crate::resolved::load_version_semantics(&self.store, &request.version_id).await?;
+            crate::resolved::version_semantics(&request.graph, &self.store, &request.version_id)
+                .await?;
         crate::resolved::attach_resolved_bindings(
             &mut plan,
             &request.provider,

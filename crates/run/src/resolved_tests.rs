@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use helixflow_graph::graph_v2::NodeSemanticsEntry;
+use helixflow_graph::semantics::NodeSemanticsEntry;
 use helixflow_registry::catalog::ImplementationSelection;
 use serde_json::json;
 
@@ -10,7 +10,7 @@ use super::*;
 fn atlas_policy_resolves_configured_defaults() {
     let catalog = shared_catalog();
 
-    let image = resolve_step_binding(catalog, "image_generate", "atlas", None).expect("image");
+    let image = resolve_step_binding(catalog, "text_to_image", "atlas", None).expect("image");
     assert_eq!(image.capability_id, "text_to_image");
     assert_eq!(image.resolved_model_id, "google/nano-banana-2");
     assert_eq!(image.operation_id, "google/nano-banana-2/text-to-image");
@@ -33,7 +33,7 @@ fn fal_preference_selects_the_fal_binding() {
 
     // The configured default lives on atlas; with the fal connector selected
     // the unique fal binding is the explicit choice.
-    let image = resolve_step_binding(catalog, "image_generate", "fal", None).expect("image");
+    let image = resolve_step_binding(catalog, "text_to_image", "fal", None).expect("image");
     assert_eq!(image.connector_id, "fal");
     assert_eq!(image.operation_id, "fal-ai/nano-banana-2");
     assert_eq!(image.resolved_model_id, "google/nano-banana-2");
@@ -63,7 +63,7 @@ fn pinned_semantics_mismatch_fails_run_creation() {
         },
     };
 
-    let err = resolve_step_binding(catalog, "image_generate", "atlas", Some(&entry))
+    let err = resolve_step_binding(catalog, "text_to_image", "atlas", Some(&entry))
         .expect_err("pinned mismatch");
     assert_eq!(err.0, "PINNED_MODEL_MISMATCH");
 }
@@ -80,7 +80,7 @@ fn pinned_semantics_matching_binding_resolves() {
         },
     };
 
-    let resolved = resolve_step_binding(catalog, "image_generate", "atlas", Some(&entry))
+    let resolved = resolve_step_binding(catalog, "text_to_image", "atlas", Some(&entry))
         .expect("pinned resolves");
     assert_eq!(
         resolved.requested_model_id.as_deref(),
@@ -102,9 +102,11 @@ fn mock_provider_skips_resolution_and_catalog_provider_freezes_revision() {
                 params: json!({ "prompt": "p", "aspect_ratio": "1:1" }),
                 pos: [0.0, 0.0],
                 size: None,
+                semantics: None,
             },
         )]),
         edges: Vec::new(),
+        catalog_revision: None,
     };
     let service = helixflow_graph::GraphService::new(helixflow_registry::NodeRegistry::builtin());
 

@@ -23,6 +23,7 @@ fn sample_graph() -> WorkflowGraph {
                     params: json!({ "text": "make a product clip" }),
                     pos: [0.0, 0.0],
                     size: None,
+                    semantics: None,
                 },
             ),
             (
@@ -37,6 +38,7 @@ fn sample_graph() -> WorkflowGraph {
                     }),
                     pos: [220.0, 0.0],
                     size: None,
+                    semantics: None,
                 },
             ),
         ]),
@@ -45,6 +47,7 @@ fn sample_graph() -> WorkflowGraph {
             to: ["video".to_owned(), "prompt".to_owned()],
             edge_type: "text".to_owned(),
         }],
+        catalog_revision: None,
     }
 }
 
@@ -287,6 +290,7 @@ fn classifies_modify_requests_before_broad_workflow_creation() {
         schema_version: 1,
         nodes: BTreeMap::new(),
         edges: Vec::new(),
+        catalog_revision: None,
     };
     assert_eq!(
         classify_turn_mode("workflow", &empty_graph)

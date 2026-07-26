@@ -275,7 +275,7 @@ impl MockProvider {
                     },
                 ),
                 (
-                    "image_generate".to_owned(),
+                    "text_to_image".to_owned(),
                     ProviderCapability {
                         artifact_kind: ArtifactKind::Image,
                         output_name: "image".to_owned(),
@@ -630,6 +630,23 @@ mod tests {
         assert_eq!(
             err,
             ProviderError::UnsupportedCapability("missing".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn mock_provider_rejects_legacy_capability_id_from_pre_rename_runs() {
+        // Pre-GH145 plans carry `image_generate`; retries fail explicitly
+        // instead of silently executing under `text_to_image`.
+        let provider = MockProvider::new();
+
+        let err = provider
+            .invoke(request("image_generate"))
+            .await
+            .expect_err("legacy capability id should fail");
+
+        assert_eq!(
+            err,
+            ProviderError::UnsupportedCapability("image_generate".to_owned())
         );
     }
 

@@ -30,9 +30,11 @@ fn upload_image_graph(storage_uri: String) -> WorkflowGraph {
                 params: json!({ "storage_uri": storage_uri }),
                 pos: [0.0, 0.0],
                 size: None,
+                semantics: None,
             },
         )]),
         edges: Vec::new(),
+        catalog_revision: None,
     }
 }
 

@@ -97,6 +97,7 @@ fn executable_graph() -> WorkflowGraph {
                     }),
                     pos: [0.0, 0.0],
                     size: None,
+                    semantics: None,
                 },
             ),
             (
@@ -107,6 +108,7 @@ fn executable_graph() -> WorkflowGraph {
                     params: json!({}),
                     pos: [240.0, 0.0],
                     size: None,
+                    semantics: None,
                 },
             ),
         ]),
@@ -115,5 +117,6 @@ fn executable_graph() -> WorkflowGraph {
             to: ["save".to_owned(), "artifact".to_owned()],
             edge_type: "artifact".to_owned(),
         }],
+        catalog_revision: None,
     }
 }

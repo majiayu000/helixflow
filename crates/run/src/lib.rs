@@ -355,7 +355,8 @@ where
         let mut plan =
             self.graph
                 .compile_plan(&request.graph, &request.version_id, &request.provider)?;
-        let semantics = resolved::load_version_semantics(&self.store, &request.version_id).await?;
+        let semantics =
+            resolved::version_semantics(&request.graph, &self.store, &request.version_id).await?;
         resolved::attach_resolved_bindings(&mut plan, &request.provider, semantics.as_ref())?;
         let plan = plan;
         if plan.steps.is_empty() {

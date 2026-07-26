@@ -335,6 +335,7 @@ fn self_heal_graph(node_id: &str) -> WorkflowGraph {
                     params: json!({ "text": "retry" }),
                     pos: [0.0, 0.0],
                     size: None,
+                    semantics: None,
                 },
             ),
             (
@@ -345,6 +346,7 @@ fn self_heal_graph(node_id: &str) -> WorkflowGraph {
                     params: json!({ "style": "cinematic" }),
                     pos: [240.0, 0.0],
                     size: None,
+                    semantics: None,
                 },
             ),
         ]),
@@ -353,6 +355,7 @@ fn self_heal_graph(node_id: &str) -> WorkflowGraph {
             to: [node_id.to_owned(), "text".to_owned()],
             edge_type: "text".to_owned(),
         }],
+        catalog_revision: None,
     }
 }
 

@@ -596,6 +596,7 @@ mod tests {
                         }),
                         pos: [0.0, 0.0],
                         size: None,
+                        semantics: None,
                     },
                 ),
                 (
@@ -606,6 +607,7 @@ mod tests {
                         params: json!({}),
                         pos: [240.0, 0.0],
                         size: None,
+                        semantics: None,
                     },
                 ),
             ]),
@@ -614,6 +616,7 @@ mod tests {
                 to: ["save".to_owned(), "artifact".to_owned()],
                 edge_type: "artifact".to_owned(),
             }],
+            catalog_revision: None,
         }
     }
 

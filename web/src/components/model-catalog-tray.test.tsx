@@ -72,7 +72,7 @@ function nodeCatalog(): NodeCatalog {
         title: 'Generate Image',
         category: 'image',
         provider: null,
-        capability: 'image_generate',
+        capability: 'text_to_image',
         description: '',
         inputs: [],
         outputs: [],

@@ -74,9 +74,11 @@ fn graph_payload_populates_provider_from_node_registry_before_run_steps() {
                 }),
                 pos: [10.0, 20.0],
                 size: None,
+                semantics: None,
             },
         )]),
         edges: Vec::new(),
+        catalog_revision: None,
     };
 
     let body = graph_payload(&graph, &BTreeMap::new(), &NodeRegistry::builtin(), "mock");
@@ -454,6 +456,7 @@ fn sample_graph() -> WorkflowGraph {
                 params: json!({ "summary": "Source text" }),
                 pos: [10.0, 20.0],
                 size: None,
+                semantics: None,
             },
         )]),
         edges: vec![GraphEdge {
@@ -461,5 +464,6 @@ fn sample_graph() -> WorkflowGraph {
             to: ["input".to_owned(), "text".to_owned()],
             edge_type: "text".to_owned(),
         }],
+        catalog_revision: None,
     }
 }

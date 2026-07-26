@@ -145,6 +145,7 @@ fn sample_graph() -> WorkflowGraph {
         schema_version: 1,
         nodes: BTreeMap::new(),
         edges: Vec::new(),
+        catalog_revision: None,
     }
 }
 
@@ -190,6 +191,7 @@ fn candidate_publish_collision_preserves_existing_bytes_and_removes_loser_temp()
         schema_version: 2,
         nodes: BTreeMap::new(),
         edges: Vec::new(),
+        catalog_revision: None,
     };
     let mut loser = VersionFileCandidate::from_graph_with_ids(
         "ws_collision",

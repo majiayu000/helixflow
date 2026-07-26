@@ -152,7 +152,8 @@ export function modelGroups(catalog: ModelCatalog): CatalogGroup[] {
     .filter((group) => group.entries.length > 0);
 }
 
-/// Mirrors the backend legacy→canonical capability rename (graph_v2).
+/// Mirrors the backend legacy→canonical capability rename. Identity for live
+/// data since GH145; deleted with the backend map in stage B (#145).
 export function canonicalCapability(legacy: string): string {
   return legacy === 'image_generate' ? 'text_to_image' : legacy;
 }
