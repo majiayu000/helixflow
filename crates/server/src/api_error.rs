@@ -74,6 +74,17 @@ impl ApiError {
         }
     }
 
+    pub(crate) fn not_found_with_details(
+        message: impl Into<String>,
+        details: serde_json::Value,
+    ) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            message: message.into(),
+            details: Some(details),
+        }
+    }
+
     pub(crate) fn store(err: StoreError) -> Self {
         if err.is_not_found() {
             return Self::not_found("workspace record was not found");

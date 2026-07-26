@@ -4,6 +4,10 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub mod catalog;
+pub mod catalog_seed;
+pub mod resolver;
+
 pub fn module_name() -> &'static str {
     "registry"
 }
@@ -447,7 +451,7 @@ fn node(
     }
 }
 
-fn port(name: &str, port_type: PortType, required: bool) -> PortDefinition {
+pub(crate) fn port(name: &str, port_type: PortType, required: bool) -> PortDefinition {
     PortDefinition {
         name: name.to_owned(),
         port_type,
@@ -455,7 +459,10 @@ fn port(name: &str, port_type: PortType, required: bool) -> PortDefinition {
     }
 }
 
-fn schema<const N: usize>(required: &[&str], properties: [(&str, ParamSpec); N]) -> ParamsSchema {
+pub(crate) fn schema<const N: usize>(
+    required: &[&str],
+    properties: [(&str, ParamSpec); N],
+) -> ParamsSchema {
     ParamsSchema {
         required: required.iter().map(|value| (*value).to_owned()).collect(),
         properties: properties
