@@ -69,23 +69,31 @@ pub(crate) fn canonical_semantics_graph(
 }
 
 pub(crate) fn derive_semantics_json(
-    _source: &VersionRecord,
+    source: &VersionRecord,
     _before: &WorkflowGraph,
     after: &WorkflowGraph,
 ) -> Result<Option<String>, ApiError> {
     let embedded = after.catalog_revision.is_some()
         || after.nodes.values().any(|node| node.semantics.is_some());
-    if !embedded {
+    let canonical = if embedded {
+        after.clone()
+    } else if let Some(sidecar_json) = source.semantics_json.as_deref() {
+        canonical_semantics_graph(after, Some(sidecar_json))
+            .map_err(derived_semantics_error)?
+            .ok_or_else(|| derived_semantics_error("missing sidecar semantics".to_owned()))?
+    } else {
         return Ok(None);
-    }
-    validate_migration_candidate(after).map_err(|error| {
-        ApiError::conflict_with_details(
-            "derived executable graph requires valid embedded semantics",
-            serde_json::json!({"code": "SEMANTICS_INVALID", "reason": error}),
-        )
-    })?;
+    };
+    validate_migration_candidate(&canonical).map_err(derived_semantics_error)?;
 
-    serde_json::to_string(&after.collected_semantics())
+    serde_json::to_string(&canonical.collected_semantics())
         .map(Some)
         .map_err(|error| ApiError::server_error(format!("encode derived semantics: {error}")))
+}
+
+fn derived_semantics_error(error: String) -> ApiError {
+    ApiError::conflict_with_details(
+        "derived executable graph requires valid embedded semantics",
+        serde_json::json!({"code": "SEMANTICS_INVALID", "reason": error}),
+    )
 }

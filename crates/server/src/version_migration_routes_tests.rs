@@ -273,13 +273,40 @@ async fn dry_run_apply_and_lost_response_replay_use_server_truth() {
         .await
         .expect("restore derived sidecar");
 
+    let mut sidecar_only_graph = target_graph.clone();
+    strip_embedded_semantics(&mut sidecar_only_graph);
+    let sidecar_only_path = PathBuf::from("workspaces")
+        .join(&workspace.id)
+        .join("graphs")
+        .join("sidecar-only.json");
+    let sidecar_only_hash = write_json_file(
+        &data_dir,
+        &sidecar_only_path,
+        &sidecar_only_graph,
+        "sidecar-only graph",
+    )
+    .await
+    .expect("sidecar-only graph");
+    let sidecar_only = store
+        .create_version(NewVersion {
+            workspace_id: &workspace.id,
+            label: "Sidecar only",
+            source: VersionSource::Migration,
+            graph_path: sidecar_only_path.to_string_lossy().as_ref(),
+            graph_hash: &sidecar_only_hash,
+            parent_id: Some(&target_id),
+            semantics_json: Some(&target_semantics),
+        })
+        .await
+        .expect("sidecar-only version");
+
     let layout: Value = client
         .post(format!(
             "http://{address}/api/workspaces/{}/versions/layout",
             workspace.id
         ))
         .json(&json!({
-            "baseVersionId": target_id,
+            "baseVersionId": sidecar_only.id,
             "positions": [{"id": "image", "x": 12.0, "y": 34.0}],
         }))
         .send()
@@ -335,8 +362,8 @@ async fn dry_run_apply_and_lost_response_replay_use_server_truth() {
 
     let restored: Value = client
         .post(format!(
-            "http://{address}/api/workspaces/{}/versions/{target_id}/restore",
-            workspace.id
+            "http://{address}/api/workspaces/{}/versions/{}/restore",
+            workspace.id, sidecar_only.id
         ))
         .send()
         .await
@@ -418,8 +445,32 @@ fn derived_semantics_reject_new_executable_nodes_without_explicit_meaning() {
     );
 }
 
+#[test]
+fn sidecar_only_semantics_are_propagated_or_fail_closed() {
+    let (source, mut before) = semantic_source();
+    strip_embedded_semantics(&mut before);
+    let mut cosmetic = before.clone();
+    cosmetic.nodes.get_mut("image").expect("image").title = "Renamed".to_owned();
+    let encoded = derive_semantics_json(&source, &before, &cosmetic)
+        .expect("cosmetic edit")
+        .expect("semantics");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&encoded).expect("json"),
+        serde_json::from_str::<serde_json::Value>(
+            source.semantics_json.as_deref().expect("source semantics")
+        )
+        .expect("source json")
+    );
+
+    let mut deleted = before.clone();
+    deleted.nodes.remove("image");
+    let error =
+        derive_semantics_json(&source, &before, &deleted).expect_err("delete must fail closed");
+    assert_eq!(error.status, axum::http::StatusCode::CONFLICT);
+}
+
 #[tokio::test]
-async fn ordinary_agent_proposal_preserves_migrated_semantics() {
+async fn ordinary_agent_proposal_preserves_sidecar_only_semantics() {
     use std::path::PathBuf;
     use std::sync::Arc;
 
@@ -445,7 +496,8 @@ async fn ordinary_agent_proposal_preserves_migrated_semantics() {
         .create_workspace("V2 proposal")
         .await
         .expect("workspace");
-    let (semantic_record, graph) = semantic_source();
+    let (semantic_record, mut graph) = semantic_source();
+    strip_embedded_semantics(&mut graph);
     let graph_path = PathBuf::from("workspaces")
         .join(&workspace.id)
         .join("graphs")
@@ -505,6 +557,13 @@ async fn ordinary_agent_proposal_preserves_migrated_semantics() {
             .semantics_json,
         semantic_record.semantics_json
     );
+}
+
+fn strip_embedded_semantics(graph: &mut helixflow_graph::WorkflowGraph) {
+    graph.catalog_revision = None;
+    for node in graph.nodes.values_mut() {
+        node.semantics = None;
+    }
 }
 
 fn semantic_source() -> (
