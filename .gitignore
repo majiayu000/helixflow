@@ -12,3 +12,4 @@ target/
 .helixflow/
 .design-canvas.state.json
 .thumbnail
+web/bun.lock
