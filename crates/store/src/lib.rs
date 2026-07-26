@@ -29,6 +29,10 @@ mod upload_records;
 mod version_file_reference_records;
 #[cfg(test)]
 mod version_file_reference_records_tests;
+mod version_migration_records;
+#[cfg(test)]
+mod version_migration_records_tests;
+mod version_migration_schema;
 mod version_records;
 #[cfg(test)]
 mod version_records_tests;
@@ -43,6 +47,7 @@ pub use proposal_records::*;
 pub use run_records::*;
 pub use upload_records::*;
 pub use version_file_reference_records::*;
+pub use version_migration_records::*;
 pub use workspace_initialization_records::*;
 pub use workspace_records::*;
 
@@ -99,6 +104,14 @@ pub enum StoreError {
         operation: &'static str,
         expected_rows: u64,
         actual_rows: u64,
+    },
+    OperationIdConflict {
+        workspace_id: String,
+        operation_id: String,
+    },
+    SchemaMigrationCleanup {
+        migration_error: String,
+        cleanup_error: String,
     },
 }
 
@@ -178,6 +191,20 @@ impl fmt::Display for StoreError {
                 f,
                 "store operation `{operation}` expected {expected_rows} changed row(s), found {actual_rows}"
             ),
+            Self::OperationIdConflict {
+                workspace_id,
+                operation_id,
+            } => write!(
+                f,
+                "workspace `{workspace_id}` operation `{operation_id}` was already used with different input"
+            ),
+            Self::SchemaMigrationCleanup {
+                migration_error,
+                cleanup_error,
+            } => write!(
+                f,
+                "version schema migration failed: {migration_error}; restoring foreign keys also failed: {cleanup_error}"
+            ),
         }
     }
 }
@@ -221,6 +248,7 @@ impl Store {
 
     pub async fn run_migrations(&self) -> StoreResult<()> {
         sqlx::migrate!("./migrations").run(&self.pool).await?;
+        version_migration_schema::ensure_migration_version_source(&self.pool).await?;
         Ok(())
     }
 
@@ -321,6 +349,7 @@ pub enum VersionSource {
     Manual,
     Proposal,
     Restore,
+    Migration,
 }
 
 impl VersionSource {
@@ -329,6 +358,7 @@ impl VersionSource {
             Self::Manual => "manual",
             Self::Proposal => "proposal",
             Self::Restore => "restore",
+            Self::Migration => "migration",
         }
     }
 }
