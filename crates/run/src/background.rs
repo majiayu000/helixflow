@@ -10,9 +10,11 @@ where
     P: Provider + Clone + Send + Sync + 'static,
 {
     pub async fn start_manual_run(&self, request: ManualRunRequest) -> RunResult<RunOutcome> {
-        let plan =
+        let mut plan =
             self.graph
                 .compile_plan(&request.graph, &request.version_id, &request.provider)?;
+        crate::resolved::attach_resolved_bindings(&mut plan, &request.provider, None)?;
+        let plan = plan;
         if plan.steps.is_empty() {
             return Err(super::RunError::NoExecutableSteps);
         }

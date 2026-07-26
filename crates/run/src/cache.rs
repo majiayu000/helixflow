@@ -163,15 +163,18 @@ where
             input_hashes.insert(port.clone(), artifact_fingerprint(&artifact)?);
         }
         let input_hash_json = serde_json::to_string(&input_hashes)?;
-        // schemaVersion 2: cache keys include the effective provider config
-        // so model/API-base changes invalidate stale entries (HF-021).
+        // schemaVersion 3: cache keys include the resolved implementation
+        // (GH130 T4) — the model identity lives on the step now, so two runs
+        // resolving different bindings can never share an artifact. Provider
+        // config still participates for API-base changes (HF-021).
         let material = canonicalize_value(&json!({
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "providerConfig": self.provider.config_fingerprint(&provider),
             "provider": &provider,
             "capability": step.capability.as_deref(),
             "nodeType": &step.node_type,
             "nodeId": &step.node_id,
+            "resolved": &step.resolved,
             "params": &step.params,
             "inputs": input_hashes,
         }));

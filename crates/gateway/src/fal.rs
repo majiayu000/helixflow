@@ -11,24 +11,20 @@ use crate::{
 };
 
 const DEFAULT_FAL_API_BASE: &str = "https://queue.fal.run";
-const DEFAULT_FAL_IMAGE_MODEL: &str = "fal-ai/nano-banana-2";
 
 #[derive(Debug, Clone)]
 pub struct FalProviderConfig {
     pub api_key: String,
     pub api_base: String,
-    pub image_model: String,
     pub poll_interval: Duration,
     pub poll_timeout: Duration,
 }
 
 impl FalProviderConfig {
-    pub fn new(api_key: String, api_base: String, image_model: String) -> Self {
+    pub fn new(api_key: String, api_base: String) -> Self {
         Self {
             api_key,
             api_base: normalize_api_base(&api_base),
-            image_model: normalize_model_path(&image_model)
-                .unwrap_or_else(|| DEFAULT_FAL_IMAGE_MODEL.to_owned()),
             poll_interval: env_duration_ms("HELIXFLOW_FAL_POLL_INTERVAL_MS", 2_000),
             poll_timeout: env_duration_secs("HELIXFLOW_FAL_POLL_TIMEOUT_SECS", 300),
         }
@@ -52,13 +48,7 @@ impl FalProvider {
             .filter(|value| !value.is_empty())?;
         let api_base =
             std::env::var("FAL_API_BASE").unwrap_or_else(|_| DEFAULT_FAL_API_BASE.to_owned());
-        let image_model =
-            std::env::var("FAL_IMAGE_MODEL").unwrap_or_else(|_| DEFAULT_FAL_IMAGE_MODEL.to_owned());
-        Some(Self::new(FalProviderConfig::new(
-            api_key,
-            api_base,
-            image_model,
-        )))
+        Some(Self::new(FalProviderConfig::new(api_key, api_base)))
     }
 
     pub fn new(config: FalProviderConfig) -> Self {
@@ -153,9 +143,21 @@ impl FalProvider {
 
     async fn invoke_image(&self, req: ProviderRequest) -> ProviderResultValue<ProviderResult> {
         let prompt = wired_or_param_string(&req, "prompt", "prompt")?;
-        let model = optional_string(&req.params, "model")
-            .and_then(|value| normalize_model_path(&value))
-            .unwrap_or_else(|| self.config.image_model.clone());
+        // GH130 T4: the queue path comes only from the run's resolved
+        // binding; it must still be a safe single model path.
+        let model = req
+            .operation_id
+            .clone()
+            .ok_or_else(|| ProviderError::ModelUnresolved {
+                capability: req.capability.clone(),
+            })
+            .and_then(|operation| {
+                normalize_model_path(&operation).ok_or_else(|| {
+                    ProviderError::InvalidRequest(format!(
+                        "resolved operation `{operation}` is not a valid fal model path"
+                    ))
+                })
+            })?;
         let body = image_request_body(&req.params, prompt);
         let submit = self
             .post_json(format!("{}/{}", self.config.api_base, model), body)
@@ -253,7 +255,6 @@ impl Provider for FalProvider {
         hasher.update(b"fal-catalog-v1");
         hasher.update(self.config.api_base.as_bytes());
         hasher.update([0]);
-        hasher.update(self.config.image_model.as_bytes());
         format!("sha256:{:x}", hasher.finalize())
     }
 

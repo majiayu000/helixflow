@@ -34,6 +34,20 @@ pub(crate) fn preflight_provider_capabilities(
                 node.node_type
             )));
         }
+        // GH130 T4: for catalog connectors the implementation must resolve
+        // before the run is queued — the same resolution the run will freeze
+        // into its plan, so nothing can drift between preflight and execute.
+        if helixflow_run::shared_catalog()
+            .connector(provider)
+            .is_some()
+            && let Err((code, message)) =
+                helixflow_run::resolve_step_binding_for(capability, provider, None)
+        {
+            return Err(ApiError::conflict_with_details(
+                format!("implementation for node `{node_id}` cannot be resolved: {message}"),
+                serde_json::json!({ "code": code, "nodeId": node_id }),
+            ));
+        }
     }
     Ok(())
 }

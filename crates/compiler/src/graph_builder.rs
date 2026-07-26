@@ -63,6 +63,7 @@ pub(crate) fn build(
             &ResolveRequest {
                 capability_id: stage.capability_id.clone(),
                 requested_model: stage.requested_model.clone(),
+                connector_preference: None,
             },
             availability,
         ) {

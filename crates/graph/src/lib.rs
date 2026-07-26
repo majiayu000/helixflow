@@ -315,12 +315,14 @@ impl GraphService {
                 capability: definition.capability.clone(),
                 inputs,
                 params: node.params.clone(),
+                resolved: None,
             });
         }
 
         Ok(ExecutionPlan {
             schema_version: 1,
             version_id: version_id.to_owned(),
+            catalog_revision: None,
             steps,
         })
     }
@@ -423,6 +425,11 @@ pub enum ProposalOp {
 pub struct ExecutionPlan {
     pub schema_version: u32,
     pub version_id: String,
+    /// Catalog revision the step bindings were resolved against (GH130 T4).
+    /// Persisted with the run via `plan_json`, so the snapshot is immutable
+    /// and later catalog updates cannot change this run (P11/P12).
+    #[serde(default)]
+    pub catalog_revision: Option<String>,
     pub steps: Vec<ExecutionStep>,
 }
 
@@ -434,6 +441,24 @@ pub struct ExecutionStep {
     pub capability: Option<String>,
     pub inputs: BTreeMap<String, [String; 2]>,
     pub params: Value,
+    /// Immutable implementation resolved at run creation. `None` only for
+    /// steps whose provider is not a catalog connector (e.g. mock) or for
+    /// non-model steps; catalog providers refuse to execute without it.
+    #[serde(default)]
+    pub resolved: Option<ResolvedStepBinding>,
+}
+
+/// The per-step slice of the run's implementation snapshot (tech.md §8).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResolvedStepBinding {
+    pub capability_id: String,
+    pub requested_model_id: Option<String>,
+    pub resolved_model_id: String,
+    pub binding_id: String,
+    pub binding_revision: String,
+    pub connector_id: String,
+    pub operation_id: String,
 }
 
 pub type GraphResult<T> = Result<T, GraphError>;

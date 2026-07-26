@@ -28,9 +28,11 @@ where
     }
 
     pub async fn prepare_manual_run(&self, request: ManualRunRequest) -> RunResult<PendingRun> {
-        let plan =
+        let mut plan =
             self.graph
                 .compile_plan(&request.graph, &request.version_id, &request.provider)?;
+        crate::resolved::attach_resolved_bindings(&mut plan, &request.provider, None)?;
+        let plan = plan;
         if plan.steps.is_empty() {
             return Err(RunError::NoExecutableSteps);
         }
@@ -489,9 +491,11 @@ where
     ) -> RunResult<PendingRun> {
         self.ensure_workspace_not_busy(&request.workspace_id, request.group_id.as_deref(), None)
             .await?;
-        let plan =
+        let mut plan =
             self.graph
                 .compile_plan(&request.graph, &request.version_id, &request.provider)?;
+        crate::resolved::attach_resolved_bindings(&mut plan, &request.provider, None)?;
+        let plan = plan;
         let plan_json = serde_json::to_string(&plan)?;
         let run = self
             .store
@@ -626,6 +630,14 @@ where
                 inputs: BTreeMap::<String, ArtifactRef>::new(),
                 input_texts: BTreeMap::new(),
                 params: step.params.clone(),
+                resolved_model_id: step
+                    .resolved
+                    .as_ref()
+                    .map(|resolved| resolved.resolved_model_id.clone()),
+                operation_id: step
+                    .resolved
+                    .as_ref()
+                    .map(|resolved| resolved.operation_id.clone()),
             };
             let estimate = tokio::select! {
                 estimate = self.provider.estimate(request) => estimate?,

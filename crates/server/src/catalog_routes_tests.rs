@@ -91,6 +91,7 @@ async fn resolve_fails_closed_when_no_catalog_connector_is_healthy() {
         Json(ResolveRequest {
             capability_id: "text_to_image".to_owned(),
             requested_model: Some("Nano Banana".to_owned()),
+            connector_preference: None,
         }),
     )
     .await

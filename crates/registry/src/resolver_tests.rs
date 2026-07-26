@@ -13,6 +13,7 @@ fn pinned(capability_id: &str, model: &str) -> ResolveRequest {
     ResolveRequest {
         capability_id: capability_id.to_owned(),
         requested_model: Some(model.to_owned()),
+        connector_preference: None,
     }
 }
 
@@ -20,6 +21,7 @@ fn policy(capability_id: &str) -> ResolveRequest {
     ResolveRequest {
         capability_id: capability_id.to_owned(),
         requested_model: None,
+        connector_preference: None,
     }
 }
 

@@ -9,6 +9,7 @@ use super::*;
 fn dag_counts_shared_upstream_once_and_releases_join_node_last() {
     let plan = ExecutionPlan {
         schema_version: 1,
+        catalog_revision: None,
         version_id: "ver".to_owned(),
         steps: vec![
             step("a", []),
@@ -50,5 +51,6 @@ fn step<const N: usize>(node_id: &str, inputs: [(&str, [&str; 2]); N]) -> Execut
             })
             .collect::<BTreeMap<_, _>>(),
         params: json!({}),
+        resolved: None,
     }
 }
