@@ -116,10 +116,19 @@ function migrationSummary(
   if (phase === 'pending_elsewhere') return '另一个工作区的迁移结果待确认，请先返回原工作区。';
   if (error) return error;
   if (!report) return '先检查当前版本；只有服务端判定可迁移时才能应用。';
+  const mapped = report.nodes.filter((node) => node.action.startsWith('mapped_')).length;
+  const structural = report.nodes.filter((node) => node.action === 'structural').length;
+  const unresolved = report.nodes.filter((node) => node.action.startsWith('needs_')).length;
+  const preview =
+    `连接器 ${report.workspaceConnectorId}；影响：映射 ${mapped}、结构 ${structural}、待处理 ${unresolved}。`;
   if (report.status === 'migratable') {
-    return report.applyEnabled ? '可以迁移；请再次确认。' : '可以迁移，但服务端尚未开放 apply。';
+    return report.applyEnabled
+      ? `${preview} 可以迁移；请再次确认。`
+      : `${preview} 可以迁移，但服务端尚未开放 apply。`;
   }
-  if (report.status === 'already_migrated') return '当前版本已经是 v2，无需迁移。';
-  if (report.status === 'needs_resolution') return '存在需要人工选择的节点，暂不能迁移。';
-  return `${report.code ?? 'MIGRATION_FAILED'}${report.message ? `：${report.message}` : ''}`;
+  if (report.status === 'already_migrated') return `${preview} 当前版本已经是 v2，无需迁移。`;
+  if (report.status === 'needs_resolution') {
+    return `${preview} 存在需要人工选择的节点，暂不能迁移。`;
+  }
+  return `${preview} ${report.code ?? 'MIGRATION_FAILED'}${report.message ? `：${report.message}` : ''}`;
 }

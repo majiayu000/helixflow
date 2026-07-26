@@ -29,7 +29,7 @@ pub(crate) fn validate_legacy_migration_source(graph: &WorkflowGraph) -> Result<
         }
     }
     service
-        .validate_graph(&validation)
+        .validate_graph_for_migration(&validation)
         .map_err(|error| error.to_string())
 }
 

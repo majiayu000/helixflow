@@ -14,11 +14,11 @@ GH-144
 | ID | Owner | Dependencies | Task | Done When | Verify |
 | --- | --- | --- | --- | --- | --- |
 | `SP144-T0` | graph | none | 将 legacy migrator 适配 GH145 embedded schema，增加 typed reason 与 workspace connector restriction。 | mapping 确定、topology 不变、跨 connector fail-closed。 | `cargo test -p helixflow-graph semantics` |
-| `SP144-T1` | store | none | 0007 schema、assessment/audit、`source=migration`、operation replay 与 current+connector CAS。 | upgrade 无损；apply 原子；同 ID 重放；并发最多一个 current。 | `cargo test -p helixflow-store version_migration` |
-| `SP144-T2` | server | `T0`,`T1` | version-bound dry-run/apply、canonical hash、replay-first、apply flag、candidate lifecycle。 | stale/disabled/unresolved 零 target；成功 source 不变；embedded-only 不重复迁移。 | `cargo test -p helixflow-server version_migration` |
+| `SP144-T1` | store | none | 0007 schema、assessment/audit、`source=migration`、operation replay 与 current+connector+pending CAS。 | upgrade 无损；workspace 删除级联；apply 原子；同 ID 重放；并发最多一个 current。 | `cargo test -p helixflow-store version_migration` |
+| `SP144-T2` | server | `T0`,`T1` | version-bound dry-run/apply、canonical hash、replay-first、apply flag、candidate lifecycle/reconciliation。 | stale/disabled/unresolved 零 target；成功 source 不变；embedded-only 不重复迁移；migration orphan 可回收。 | `cargo test -p helixflow-server version_migration` |
 | `SP144-T3` | writers | `T2` | 审计 layout、restore、ops、manual/agent proposal 的 embedded semantics 与 sidecar 派生。 | 所有 derived version 保持 canonical semantics；缺失时 fail-closed。 | `cargo test -p helixflow-server` |
 | `SP144-T4` | frontend data | `T2` | 独立 Zod/API/Zustand migration state machine。 | stale dry-run abort；unknown 同 ID retry；late success 延迟 hydrate；确定错误不伪装 unknown。 | `cd web && npx tsc --noEmit && npm test -- --run` |
-| `SP144-T5` | frontend UI | `T4` | version history migration panel、确认、node/top-level failure 与 accessibility。 | server applyEnabled、全部互斥状态与 aria 测试通过。 | `cd web && npm test -- --run && npm run build` |
+| `SP144-T5` | frontend UI | `T4` | version history migration panel、确认、connector/影响计数、dirty/no-current guard、node/top-level failure 与 accessibility。 | server applyEnabled、operation ID fallback、全部互斥状态与 aria 测试通过。 | `cd web && npm test -- --run && npm run build` |
 | `SP144-T6` | coordinator | `T0`–`T5` | merge 最新 main，移除无门禁旧 endpoint/UI，执行 exact-head review、CI 与 PR gate。 | diff 与当前 embedded architecture/spec 一致；fresh checks green；无 actionable review finding。 | `cargo check --workspace && cargo test --workspace && python3 checks/check_workflow.py --repo . --all-specs` |
 
 ## 验证

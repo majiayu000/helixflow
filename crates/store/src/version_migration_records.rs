@@ -179,6 +179,11 @@ impl Store {
             UPDATE workspaces
             SET cur_version_id = ?, updated_at = current_timestamp
             WHERE id = ? AND cur_version_id = ? AND runtime_provider_id IS ?
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM proposals
+                  WHERE workspace_id = workspaces.id AND state = 'pending'
+              )
             "#,
         )
         .bind(&target_version_id)
@@ -188,25 +193,55 @@ impl Store {
         .execute(&mut *tx)
         .await?;
         if current_update.rows_affected() != 1 {
-            let actual: Option<(Option<String>, Option<String>)> = sqlx::query_as(
-                "SELECT cur_version_id, runtime_provider_id FROM workspaces WHERE id = ?",
+            let actual: Option<(Option<String>, Option<String>, bool)> = sqlx::query_as(
+                r#"
+                SELECT
+                    cur_version_id,
+                    runtime_provider_id,
+                    EXISTS (
+                        SELECT 1
+                        FROM proposals
+                        WHERE workspace_id = workspaces.id AND state = 'pending'
+                    )
+                FROM workspaces
+                WHERE id = ?
+                "#,
             )
             .bind(input.workspace_id)
             .fetch_optional(&mut *tx)
             .await?;
-            if actual.as_ref().is_some_and(|(version_id, _)| {
-                version_id.as_deref() == Some(input.source_version_id)
-            }) {
-                return Err(StoreError::WorkspaceConnectorConflict {
-                    workspace_id: input.workspace_id.to_owned(),
-                    expected_connector_id: input.expected_runtime_provider_id.map(str::to_owned),
-                    actual_connector_id: actual.and_then(|(_, connector_id)| connector_id),
+            if let Some((actual_version_id, actual_connector_id, has_pending_proposal)) = actual {
+                if actual_version_id.as_deref() != Some(input.source_version_id) {
+                    return Err(StoreError::VersionConflict {
+                        workspace_id: input.workspace_id.to_owned(),
+                        expected_version_id: input.source_version_id.to_owned(),
+                        actual_version_id,
+                    });
+                }
+                if actual_connector_id.as_deref() != input.expected_runtime_provider_id {
+                    return Err(StoreError::WorkspaceConnectorConflict {
+                        workspace_id: input.workspace_id.to_owned(),
+                        expected_connector_id: input
+                            .expected_runtime_provider_id
+                            .map(str::to_owned),
+                        actual_connector_id,
+                    });
+                }
+                if has_pending_proposal {
+                    return Err(StoreError::PendingProposalConflict {
+                        workspace_id: input.workspace_id.to_owned(),
+                    });
+                }
+                return Err(StoreError::StatementInvariant {
+                    operation: "apply_version_migration_atomic_predicate",
+                    expected_rows: 1,
+                    actual_rows: 0,
                 });
             }
             return Err(StoreError::VersionConflict {
                 workspace_id: input.workspace_id.to_owned(),
                 expected_version_id: input.source_version_id.to_owned(),
-                actual_version_id: actual.and_then(|(version_id, _)| version_id),
+                actual_version_id: None,
             });
         }
 

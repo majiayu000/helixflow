@@ -138,7 +138,7 @@ export const useVersionMigrationStore = create<VersionMigrationStore>((set, get)
     const matchingPending = pending && sameContext(context, pending.context) ? pending : null;
     const report = matchingPending?.report ?? state.report;
     if (!report || report.status !== 'migratable' || !report.applyEnabled) return;
-    const operationId = matchingPending?.operationId ?? crypto.randomUUID();
+    const operationId = matchingPending?.operationId ?? createVersionMigrationOperationId();
     const applyState: PendingApply = { context, operationId, report, status: 'applying' };
     const key = contextKey(context);
     set({ phase: 'applying', pendingApply: applyState, error: null });
@@ -204,6 +204,13 @@ export const useVersionMigrationStore = create<VersionMigrationStore>((set, get)
     onApplied(completedApply.workspaceState);
   },
 }));
+
+export function createVersionMigrationOperationId(): string {
+  const randomUuid = globalThis.crypto?.randomUUID?.();
+  if (randomUuid) return `migration_${randomUuid}`;
+  const suffix = Math.random().toString(36).slice(2, 12);
+  return `migration_${Date.now()}_${suffix}`;
+}
 
 function sameContext(left: VersionMigrationContext, right: VersionMigrationContext): boolean {
   return contextKey(left) === contextKey(right);

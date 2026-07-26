@@ -1,7 +1,10 @@
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { VersionMigrationPanel } from './components/version-migration-panel';
-import { useVersionMigrationStore } from './store-version-migration';
+import {
+  createVersionMigrationOperationId,
+  useVersionMigrationStore,
+} from './store-version-migration';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 import { jsonResponse } from './test-utils';
@@ -29,6 +32,25 @@ afterEach(() => {
 });
 
 describe('version migration store', () => {
+  it('creates a stable-shape operation ID when randomUUID is unavailable', async () => {
+    vi.stubGlobal('crypto', {});
+    vi.spyOn(Date, 'now').mockReturnValue(1234);
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    expect(createVersionMigrationOperationId()).toBe('migration_1234_i');
+
+    const applyBodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/dry-run')) return jsonResponse(report());
+      applyBodies.push(JSON.parse(String(init?.body)));
+      return jsonResponse(applyResponse());
+    }));
+    const store = useVersionMigrationStore.getState();
+    store.setContext(context);
+    await store.inspect();
+    await useVersionMigrationStore.getState().apply(() => undefined);
+    expect(applyBodies[0]?.operationId).toBe('migration_1234_i');
+  });
+
   it('retries an unknown apply result with the same operation ID', async () => {
     const applyBodies: Array<Record<string, unknown>> = [];
     let applyAttempt = 0;
@@ -224,6 +246,34 @@ describe('VersionMigrationPanel', () => {
     const failed = JSON.stringify(view.toJSON());
     expect(failed).toContain('SOURCE_GRAPH_INVALID');
     expect(failed).not.toContain('迁移节点');
+    await act(async () => view.unmount());
+  });
+
+  it('shows the bound connector and migration impact counts', async () => {
+    const view = await mountPanel();
+    await act(async () => {
+      useVersionMigrationStore.setState({
+        phase: 'ready',
+        report: report({
+          nodes: [
+            {
+              nodeId: 'image',
+              action: 'mapped_pinned',
+              candidates: [],
+            },
+            {
+              nodeId: 'input',
+              action: 'structural',
+              candidates: [],
+            },
+          ],
+        }),
+        error: null,
+      });
+    });
+    const markup = JSON.stringify(view.toJSON());
+    expect(markup).toContain('连接器 atlas');
+    expect(markup).toContain('映射 1、结构 1、待处理 0');
     await act(async () => view.unmount());
   });
 });

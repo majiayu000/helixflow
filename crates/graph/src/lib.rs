@@ -65,19 +65,35 @@ impl GraphService {
     }
 
     pub fn validate_graph(&self, graph: &WorkflowGraph) -> GraphResult<()> {
+        self.validate_graph_inner(graph, false)
+    }
+
+    pub fn validate_graph_for_migration(&self, graph: &WorkflowGraph) -> GraphResult<()> {
+        self.validate_graph_inner(graph, true)
+    }
+
+    fn validate_graph_inner(
+        &self,
+        graph: &WorkflowGraph,
+        allow_unknown_nodes: bool,
+    ) -> GraphResult<()> {
         if graph.schema_version != 1 {
             return Err(GraphError::UnsupportedSchema(graph.schema_version));
         }
 
         for (node_id, node) in &graph.nodes {
-            let definition = self.registry.definition(&node.node_type)?;
-            self.registry
-                .validate_node_params(&node.node_type, &node.params)?;
             if let Some(size) = node.size
                 && (size.iter().any(|value| !value.is_finite()) || size[0] <= 0.0 || size[1] <= 0.0)
             {
                 return Err(GraphError::InvalidNodeSize(node_id.clone()));
             }
+            let definition = match self.registry.definition(&node.node_type) {
+                Ok(definition) => definition,
+                Err(_) if allow_unknown_nodes => continue,
+                Err(error) => return Err(error.into()),
+            };
+            self.registry
+                .validate_node_params(&node.node_type, &node.params)?;
 
             for required_input in definition.inputs.iter().filter(|input| input.required) {
                 let connected = graph
@@ -115,8 +131,16 @@ impl GraphService {
                 .nodes
                 .get(&edge.to[0])
                 .ok_or_else(|| GraphError::MissingEndpoint(edge.to[0].clone()))?;
-            let from_def = self.registry.definition(&from_node.node_type)?;
-            let to_def = self.registry.definition(&to_node.node_type)?;
+            let from_def = match self.registry.definition(&from_node.node_type) {
+                Ok(definition) => definition,
+                Err(_) if allow_unknown_nodes => continue,
+                Err(error) => return Err(error.into()),
+            };
+            let to_def = match self.registry.definition(&to_node.node_type) {
+                Ok(definition) => definition,
+                Err(_) if allow_unknown_nodes => continue,
+                Err(error) => return Err(error.into()),
+            };
             let from_port = from_def
                 .outputs
                 .iter()

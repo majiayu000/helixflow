@@ -1,6 +1,6 @@
 use super::{
-    ApplyVersionMigration, NewVersion, NewVersionMigrationAssessment, Store, StoreError,
-    VersionSource,
+    ApplyVersionMigration, NewProposal, NewVersion, NewVersionMigrationAssessment, Store,
+    StoreError, VersionSource,
 };
 
 async fn fixture() -> (Store, tempfile::TempDir, String, String) {
@@ -206,4 +206,88 @@ async fn apply_rejects_connector_switch_without_creating_a_target() {
             .len(),
         1
     );
+}
+
+#[tokio::test]
+async fn apply_rejects_pending_proposal_without_creating_a_target() {
+    let (store, _dir, workspace_id, source_version_id) = fixture().await;
+    store
+        .create_proposal(NewProposal {
+            workspace_id: &workspace_id,
+            base_version_id: &source_version_id,
+            kind: "modify",
+            title: "Pending",
+            summary: "Pending proposal",
+            ops_path: "workspaces/ws/graphs/proposal-ops.json",
+            preview_graph_path: None,
+            message_id: None,
+        })
+        .await
+        .expect("pending proposal");
+
+    let error = store
+        .apply_version_migration(migration_input(
+            &workspace_id,
+            &source_version_id,
+            "sha256:pending",
+        ))
+        .await
+        .expect_err("pending proposal must fail");
+    assert!(matches!(error, StoreError::PendingProposalConflict { .. }));
+    assert_eq!(
+        store
+            .versions_for_workspace(&workspace_id)
+            .await
+            .expect("versions")
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn workspace_delete_cascades_migration_records_without_fk_conflict() {
+    let (store, _dir, workspace_id, source_version_id) = fixture().await;
+    store
+        .record_version_migration_assessment(NewVersionMigrationAssessment {
+            workspace_id: &workspace_id,
+            source_version_id: &source_version_id,
+            source_graph_hash: "sha256:legacy",
+            migration_version: "1",
+            catalog_revision: "catalog-1",
+            workspace_connector_id: "atlas",
+            status: "migratable",
+            top_level_code: None,
+            reason_code_counts_json: "{}",
+        })
+        .await
+        .expect("assessment");
+    store
+        .apply_version_migration(migration_input(
+            &workspace_id,
+            &source_version_id,
+            "sha256:delete",
+        ))
+        .await
+        .expect("apply");
+
+    sqlx::query("DELETE FROM workspaces WHERE id = ?")
+        .bind(&workspace_id)
+        .execute(store.pool())
+        .await
+        .expect("workspace cascade");
+    let count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT
+          (SELECT COUNT(*) FROM versions WHERE workspace_id = ?)
+          + (SELECT COUNT(*) FROM version_migrations WHERE workspace_id = ?)
+          + (SELECT COUNT(*) FROM version_migration_assessments WHERE workspace_id = ?)
+        "#,
+    )
+    .bind(&workspace_id)
+    .bind(&workspace_id)
+    .bind(&workspace_id)
+    .fetch_one(store.pool())
+    .await
+    .expect("migration records after cascade");
+    assert_eq!(count, 0);
 }

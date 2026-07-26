@@ -21,6 +21,7 @@ type HistoryPanelProps = {
   currentVersionId: string;
   currentConnectorId: string;
   busy: boolean;
+  migrationBlocked?: boolean;
   workspaceListError: string | null;
   open: boolean;
   onClose: () => void;
@@ -218,6 +219,7 @@ export function HistoryPanel({
   currentVersionId,
   currentConnectorId,
   busy,
+  migrationBlocked = false,
   workspaceListError,
   open,
   onClose,
@@ -263,14 +265,16 @@ export function HistoryPanel({
           ))
         )}
         <div className="history-section-title">版本与运行历史</div>
-        <VersionMigrationPanel
-          busy={busy}
-          connectorId={currentConnectorId}
-          onApplied={onMigrationApplied}
-          open={open}
-          versionId={currentVersionId}
-          workspaceId={currentWorkspaceId}
-        />
+        {currentVersionId && (
+          <VersionMigrationPanel
+            busy={busy || migrationBlocked}
+            connectorId={currentConnectorId}
+            onApplied={onMigrationApplied}
+            open={open}
+            versionId={currentVersionId}
+            workspaceId={currentWorkspaceId}
+          />
+        )}
         {history.length === 0 ? (
           <div className="empty-history">暂无版本或运行记录</div>
         ) : (

@@ -117,6 +117,26 @@ fn migration_restricts_bindings_to_the_workspace_connector() {
 }
 
 #[test]
+fn migration_reports_unknown_node_type_at_the_node_boundary() {
+    let catalog = builtin_catalog();
+    let registry = NodeRegistry::builtin();
+    let mut graph = v1_graph();
+    graph.nodes.get_mut("image").expect("image").node_type = "vendor.unknown".to_owned();
+
+    let (migrated, report) = migrate_v1_for_connector(&graph, &registry, &catalog, "atlas");
+
+    assert!(migrated.is_none());
+    assert!(!report.resolvable);
+    assert!(report.nodes.iter().any(|node| matches!(
+        &node.action,
+        MigrationAction::NeedsResolution {
+            code: MigrationReasonCode::UnknownNodeType,
+            ..
+        } if node.node_id == "image"
+    )));
+}
+
+#[test]
 fn migration_is_deterministic() {
     let catalog = builtin_catalog();
     let registry = NodeRegistry::builtin();

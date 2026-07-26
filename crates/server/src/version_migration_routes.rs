@@ -11,7 +11,6 @@ use helixflow_graph::{GraphService, WorkflowGraph};
 use helixflow_registry::NodeRegistry;
 use helixflow_store::{
     ApplyVersionMigration, NewVersionMigrationAssessment, StoreError, VersionRecord,
-    WorkspaceRecord,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -268,19 +267,14 @@ pub(crate) async fn apply_version_migration(
                 .cleanup_after_store_error(&state.store)
                 .await
                 .map_err(candidate_error)?;
-            if matches!(
-                error,
-                StoreError::OperationIdConflict { .. }
-                    | StoreError::VersionConflict { .. }
-                    | StoreError::WorkspaceConnectorConflict { .. }
-            ) {
-                let code = if matches!(error, StoreError::OperationIdConflict { .. }) {
-                    "OPERATION_ID_CONFLICT"
-                } else if matches!(error, StoreError::WorkspaceConnectorConflict { .. }) {
-                    "WORKSPACE_CONNECTOR_STALE"
-                } else {
-                    "CURRENT_VERSION_CONFLICT"
-                };
+            let conflict_code = match &error {
+                StoreError::OperationIdConflict { .. } => Some("OPERATION_ID_CONFLICT"),
+                StoreError::VersionConflict { .. } => Some("CURRENT_VERSION_CONFLICT"),
+                StoreError::WorkspaceConnectorConflict { .. } => Some("WORKSPACE_CONNECTOR_STALE"),
+                StoreError::PendingProposalConflict { .. } => Some("PENDING_PROPOSAL"),
+                _ => None,
+            };
+            if let Some(code) = conflict_code {
                 persist_conflict_assessment(&state, &assessment.report, code).await?;
             }
             return Err(migration_store_error(error));
@@ -303,8 +297,46 @@ async fn assess_current_version(
     version_id: &str,
     persist: bool,
 ) -> Result<Assessment, ApiError> {
-    let (workspace, version) = current_version(state, workspace_id, version_id).await?;
+    let workspace = state
+        .store
+        .workspace(workspace_id)
+        .await
+        .map_err(ApiError::store)?;
+    let version = state
+        .store
+        .version(version_id)
+        .await
+        .map_err(ApiError::store)?;
+    if version.workspace_id != workspace_id {
+        return Err(ApiError::not_found(
+            "version was not found in this workspace",
+        ));
+    }
     let workspace_connector_id = state.selected_provider_for_workspace(&workspace);
+    if workspace.cur_version_id.as_deref() != Some(version_id) {
+        if persist {
+            let report = finalize_report(VersionMigrationReport {
+                status: VersionMigrationStatus::Failed,
+                code: None,
+                message: None,
+                migration_version: MIGRATION_VERSION.to_owned(),
+                workspace_id: workspace_id.to_owned(),
+                source_version_id: version_id.to_owned(),
+                source_graph_hash: version.graph_hash.clone(),
+                source_schema_version: 0,
+                catalog_revision: shared_catalog().catalog_revision.clone(),
+                workspace_connector_id,
+                apply_enabled: state.migration_apply_enabled,
+                report_hash: String::new(),
+                nodes: Vec::new(),
+            })?;
+            persist_conflict_assessment(state, &report, "SOURCE_VERSION_STALE").await?;
+        }
+        return Err(ApiError::conflict_with_details(
+            "migration source is not the workspace current version",
+            json!({"code": "SOURCE_VERSION_STALE"}),
+        ));
+    }
     let catalog = shared_catalog();
     let graph = match read_version_graph(&state.data_dir, &version).await {
         Ok(graph) => graph,
@@ -478,35 +510,6 @@ async fn validation_failure_assessment(
         report,
         migrated: None,
     })
-}
-
-async fn current_version(
-    state: &AppState,
-    workspace_id: &str,
-    version_id: &str,
-) -> Result<(WorkspaceRecord, VersionRecord), ApiError> {
-    let workspace = state
-        .store
-        .workspace(workspace_id)
-        .await
-        .map_err(ApiError::store)?;
-    if workspace.cur_version_id.as_deref() != Some(version_id) {
-        return Err(ApiError::conflict_with_details(
-            "migration source is not the workspace current version",
-            json!({"code": "SOURCE_VERSION_STALE"}),
-        ));
-    }
-    let version = state
-        .store
-        .version(version_id)
-        .await
-        .map_err(ApiError::store)?;
-    if version.workspace_id != workspace_id {
-        return Err(ApiError::not_found(
-            "version was not found in this workspace",
-        ));
-    }
-    Ok((workspace, version))
 }
 
 fn map_node_result(node_id: String, action: MigrationAction) -> NodeMigrationResult {
@@ -738,6 +741,10 @@ fn migration_store_error(error: StoreError) -> ApiError {
         StoreError::WorkspaceConnectorConflict { .. } => ApiError::conflict_with_details(
             "workspace connector changed during migration",
             json!({"code": "WORKSPACE_CONNECTOR_STALE"}),
+        ),
+        StoreError::PendingProposalConflict { .. } => ApiError::conflict_with_details(
+            "workspace has a pending proposal",
+            json!({"code": "PENDING_PROPOSAL"}),
         ),
         other => ApiError::store(other),
     }

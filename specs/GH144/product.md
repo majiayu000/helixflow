@@ -34,7 +34,8 @@ canonical graph version。GH145 已把 `WorkflowGraph.catalog_revision` 与
    逐字节稳定报告；`applyEnabled` 不参与 `reportHash`。
 2. dry-run 不改变 graph file、version、workspace current、proposal 或 run；每次调用只
    追加 secret-free assessment。
-3. source file 缺失、hash/JSON/结构错误使用顶层稳定 code，禁止伪造 node result。
+3. source file 缺失、hash/JSON/结构错误使用顶层稳定 code；unknown node type 保留为
+   可定位的逐节点 `UNKNOWN_NODE_TYPE`，同时仍校验 schema、endpoint、重复输入与 cycle。
 4. node unresolved 使用 typed reason code 和稳定候选顺序；禁止从 title、瞬时 health
    或其他 connector 的 binding 猜测。
 5. node-embedded semantics 与 `catalog_revision` 是 canonical truth；合法
@@ -47,15 +48,19 @@ canonical graph version。GH145 已把 `WorkflowGraph.catalog_revision` 与
 10. 同一 `operationId` + 同一 fingerprint 返回同一 target；同 ID 不同输入显式冲突。
 11. committed operation replay 发生在 flag/current/report/candidate 检查之前，支持丢
     响应恢复。
-12. store transaction 同时 CAS current version 与 persisted runtime provider；target、
-    current pointer 和 audit 要么全部提交，要么全部回滚。
+12. store transaction 同时 CAS current version、persisted runtime provider 与不存在
+    pending proposal；target、current pointer 和 audit 要么全部提交，要么全部回滚。
 13. 并发不同 operation 最多一个推进 current；失败 candidate 必须清理或显式报错。
+    migration final/temp orphan 必须由启动 reconciliation 识别并回收；workspace 删除不得
+    被 migration audit/assessment 的 version 外键阻塞。
 14. 原 legacy version 和 graph file 保持不变；回滚沿用 restore。
 15. layout、restore、ops、manual proposal 与 agent proposal 保持 embedded semantics，
-    并将 `semantics_json` 作为派生索引重建；新 executable node 缺 semantics 时
-    fail-closed。
+    并将 `semantics_json` 作为派生索引重建；sidecar-only 历史版本规范化传播，
+    不兼容或新 executable node 缺 semantics 时 fail-closed。
 16. UI 在 workspace/version/connector 变化时 abort stale dry-run；apply 结果未知时
-    保留 operation；晚到成功只在返回原 context 后 hydrate 对应 workspace state。
+    保留 operation；晚到成功只在返回原 context 后 hydrate 对应 workspace state；
+    无 current version 时不渲染入口，有未提交手工编辑时禁用迁移，预览显示绑定
+    connector 与 mapped/structural/unresolved 计数。
 17. API、UI、日志与 audit 不包含 credential、auth header、内部 endpoint、raw params
     或 provider 原始响应。
 
@@ -65,11 +70,12 @@ canonical graph version。GH145 已把 `WorkflowGraph.catalog_revision` 与
       mapping 有 Rust/API 测试。
 - [ ] embedded-only、sidecar-only、needs_resolution、already_migrated 和成功迁移均有
       明确测试，且 pinned semantics 不被 policy 覆盖。
-- [ ] apply flag、report stale、connector stale、current stale、同/不同 operation 重放
-      与并发原子性有测试。
+- [ ] apply flag、report stale、connector stale、current stale、pending proposal、
+      同/不同 operation 重放与并发原子性有测试。
 - [ ] 迁移后 layout、ops、restore、manual/agent proposal 不丢 embedded semantics。
-- [ ] UI 覆盖 server `applyEnabled`、逐节点问题、explicit confirm、unknown retry、
-      context switch、late success hydrate、确定 4xx/503 与 accessibility。
+- [ ] UI 覆盖 server `applyEnabled`、connector/影响计数、逐节点问题、无 current/dirty
+      guard、operation ID fallback、explicit confirm、unknown retry、context switch、
+      late success hydrate、确定 4xx/503 与 accessibility。
 - [ ] Rust workspace、Web type/test/build 与 SpecRail 全量校验通过。
 
 ## 发布说明

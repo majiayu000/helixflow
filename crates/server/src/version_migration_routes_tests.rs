@@ -247,6 +247,22 @@ async fn dry_run_apply_and_lost_response_replay_use_server_truth() {
             .is_none()
     );
 
+    let stale_source = client
+        .post(format!("{endpoint}/dry-run"))
+        .send()
+        .await
+        .expect("stale source dry-run");
+    assert_eq!(stale_source.status(), reqwest::StatusCode::CONFLICT);
+    let stale_source_code: String = sqlx::query_scalar(
+        "SELECT top_level_code FROM version_migration_assessments \
+         WHERE workspace_id = ? AND status = 'conflict' ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(&workspace.id)
+    .fetch_one(store.pool())
+    .await
+    .expect("stale source assessment");
+    assert_eq!(stale_source_code, "SOURCE_VERSION_STALE");
+
     sqlx::query("UPDATE versions SET semantics_json = NULL WHERE id = ?")
         .bind(&target_id)
         .execute(store.pool())

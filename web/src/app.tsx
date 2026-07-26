@@ -324,6 +324,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
             currentWorkspaceId={activeState.workspace.id}
             currentVersionId={activeState.workspace.versionId}
             currentConnectorId={selectedProvider?.id ?? activeState.providers.defaultProvider}
+            migrationBlocked={dirtyEditCount > 0}
             onClose={() => setHistoryOpen(false)}
             onOpenWorkspace={(workspaceId) => requestNavigation({ kind: 'workspace', workspaceId })}
             onRestoreVersion={(versionId) => requestNavigation({ kind: 'restore', versionId })}

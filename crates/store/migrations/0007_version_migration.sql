@@ -20,8 +20,10 @@ CREATE TABLE version_migrations (
   report_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
   FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
-  FOREIGN KEY (source_version_id) REFERENCES versions(id) ON DELETE RESTRICT,
-  FOREIGN KEY (target_version_id) REFERENCES versions(id) ON DELETE RESTRICT,
+  FOREIGN KEY (source_version_id) REFERENCES versions(id)
+    ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED,
+  FOREIGN KEY (target_version_id) REFERENCES versions(id)
+    ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED,
   UNIQUE (workspace_id, operation_id)
 );
 
@@ -49,7 +51,8 @@ CREATE TABLE version_migration_assessments (
   reason_code_counts_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
   FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
-  FOREIGN KEY (source_version_id) REFERENCES versions(id) ON DELETE RESTRICT
+  FOREIGN KEY (source_version_id) REFERENCES versions(id)
+    ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED
 );
 
 CREATE INDEX idx_version_migration_assessments_workspace_created

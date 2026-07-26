@@ -44,6 +44,7 @@ describe('App dirty navigation integration', () => {
     renderer = await renderDirtyApp();
     const topBar = renderer.root.findByType(TopBar);
     const history = renderer.root.findByType(HistoryPanel);
+    expect(history.props.migrationBlocked).toBe(true);
 
     await expectTarget(() => topBar.props.onNewWorkspace(), { kind: 'create_workspace' });
     await expectTarget(() => topBar.props.onUndo(), { kind: 'undo' });

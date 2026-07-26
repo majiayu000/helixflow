@@ -79,7 +79,8 @@ server 验证 path version 是 workspace current，读取并校验 graph file，
 - restore/undo：验证 target embedded graph并重建 sidecar。
 - ops/manual proposal/agent proposal：验证 edited graph；删除 node 同步删除 semantics，
   新增或重类型 executable 没有 embedded semantics 时返回 conflict。
-- legacy graph 没有 embedded semantics 时 sidecar 保持 NULL，不制造假的 v2。
+- legacy graph 同时没有 embedded semantics 与 sidecar 时保持 NULL，不制造假的 v2；
+  sidecar-only 历史版本通过兼容视图验证并继续传播，不兼容变更 fail-closed。
 
 ## Frontend State Machine
 
@@ -90,6 +91,10 @@ server 验证 path version 是 workspace current，读取并校验 graph file，
 - apply 在其他 context 可见时晚到成功，缓存 target 与 `workspaceState`；返回原 context
   后 hydrate，禁止覆盖当前其他 workspace。
 - panel 直接使用 server `applyEnabled`，二次点击确认，状态区域使用 `aria-live`。
+- 无 current version 时不挂载 panel；dirty manual edits 时 action disabled；报告摘要显示
+  server-bound connector 与 mapped/structural/unresolved 计数。
+- operation ID 优先使用 `globalThis.crypto.randomUUID`，不可用时生成稳定前缀的本地
+  fallback，ID 在 unknown retry 期间保持不变。
 
 ## Product-to-Test Mapping
 
@@ -97,7 +102,8 @@ server 验证 path version 是 workspace current，读取并校验 graph file，
 | --- | --- |
 | connector-bound typed migration | graph semantics tests + server HTTP integration |
 | embedded canonical detection | embedded-only dry-run returns already_migrated |
-| atomic audit/replay/CAS | store version migration tests |
+| atomic audit/replay/CAS/pending guard | store version migration tests |
+| audit FK 与 migration orphan cleanup | store cascade + server reconciliation tests |
 | source immutability/candidate cleanup | server/store integration tests |
 | derived writer semantics | layout/ops/restore/agent proposal integration |
 | UI unknown/context recovery | `web/src/version-migration.test.tsx` |
@@ -105,6 +111,7 @@ server 验证 path version 是 workspace current，读取并校验 graph file，
 ## 风险与回滚
 
 - Security：不持久化 graph payload/raw params/secret；错误摘要稳定。
-- Concurrency：current 与 connector 由同一 SQL CAS 封闭 assessment 后的竞态。
+- Concurrency：current、connector 与 pending proposal 由同一 SQL CAS 封闭 assessment
+  后的竞态。
 - Compatibility：保留 sidecar-only runtime fallback，但新写入以 embedded graph 为真相。
 - Rollback：关闭 `HELIXFLOW_V1_MIGRATION_APPLY`；不删除已提交 migration version。
