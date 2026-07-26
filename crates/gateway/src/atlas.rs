@@ -439,6 +439,11 @@ impl Provider for AtlasProvider {
     }
 
     async fn cancel(&self, handle: ProviderTaskHandle) -> ProviderResultValue<()> {
+        // The Atlas API only exposes submit (generateImage/generateVideo) and
+        // poll (prediction/{id}) endpoints; there is no cancel endpoint, so an
+        // already-submitted prediction keeps running (and billing) remotely.
+        // Fail with CancelUnsupported so interrupt_run surfaces the billing
+        // consequence to the user instead of pretending the task stopped.
         Err(ProviderError::CancelUnsupported(handle.provider_task_id))
     }
 }

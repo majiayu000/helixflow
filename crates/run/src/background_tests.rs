@@ -547,3 +547,107 @@ async fn interrupt_cancels_remote_provider_tasks() {
     blocking.release();
     wait_for_status(&store, &outcome.run.id, "interrupted").await;
 }
+
+/// Like RemoteHandleProvider, but the remote API has no cancel endpoint
+/// (the real Atlas provider) — cancel always fails with CancelUnsupported.
+#[derive(Clone, Default)]
+struct UncancellableRemoteProvider {
+    inner: BlockingProvider,
+}
+
+#[async_trait]
+impl Provider for UncancellableRemoteProvider {
+    fn id(&self) -> &str {
+        self.inner.id()
+    }
+
+    async fn health(&self) -> ProviderHealth {
+        self.inner.health().await
+    }
+
+    async fn active_handles(&self, run_id: &str) -> Vec<ProviderTaskHandle> {
+        vec![ProviderTaskHandle {
+            provider: "mock".to_owned(),
+            provider_task_id: format!("remote-{run_id}"),
+        }]
+    }
+
+    async fn catalog(&self) -> ProviderResultValue<ProviderCatalog> {
+        self.inner.catalog().await
+    }
+
+    async fn estimate(&self, req: ProviderRequest) -> ProviderResultValue<CostEstimate> {
+        self.inner.estimate(req).await
+    }
+
+    async fn invoke(&self, req: ProviderRequest) -> ProviderResultValue<ProviderResult> {
+        self.inner.invoke(req).await
+    }
+
+    async fn cancel(&self, handle: ProviderTaskHandle) -> ProviderResultValue<()> {
+        Err(helixflow_gateway::ProviderError::CancelUnsupported(
+            handle.provider_task_id,
+        ))
+    }
+}
+
+#[tokio::test]
+async fn interrupt_surfaces_unsupported_remote_cancel() {
+    let (store, _dir) = open_background_store().await;
+    let (workspace_id, version_id) = background_workspace_version(&store).await;
+    let provider = UncancellableRemoteProvider::default();
+    let blocking = provider.inner.clone();
+    let service = RunService::with_provider(store.clone(), provider);
+    let mut receiver = service.events().subscribe();
+
+    let outcome = service
+        .start_manual_run(ManualRunRequest {
+            workspace_id,
+            version_id,
+            group_id: None,
+            label: "Remote cancel unsupported".to_owned(),
+            provider: "mock".to_owned(),
+            graph: background_graph(),
+            force_rerun: false,
+        })
+        .await
+        .expect("start manual run");
+    blocking.wait_until_blocked().await;
+
+    service
+        .interrupt_run(&outcome.run.id)
+        .await
+        .expect("interrupt run");
+
+    let mut unsupported_event = None;
+    let mut saw_cancelled_event = false;
+    while let Ok(event) = receiver.try_recv() {
+        match event.ev.as_str() {
+            "run.remote_cancel_unsupported" => unsupported_event = Some(event),
+            "run.remote_cancelled" => saw_cancelled_event = true,
+            _ => {}
+        }
+    }
+    let unsupported_event =
+        unsupported_event.expect("run.remote_cancel_unsupported event must be emitted");
+    assert!(
+        !saw_cancelled_event,
+        "must not claim the remote task was cancelled"
+    );
+    let message = unsupported_event
+        .data
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .expect("unsupported event carries a user-facing message");
+    assert!(message.contains("incur charges"));
+    assert_eq!(
+        unsupported_event
+            .data
+            .get("provider_task_id")
+            .and_then(serde_json::Value::as_str),
+        Some(format!("remote-{}", outcome.run.id).as_str())
+    );
+
+    blocking.release();
+    wait_for_status(&store, &outcome.run.id, "interrupted").await;
+}

@@ -203,7 +203,10 @@ impl fmt::Display for ProviderError {
                 write!(f, "unsupported provider capability: {capability}")
             }
             Self::CancelUnsupported(provider_task_id) => {
-                write!(f, "cancel is unsupported for mock task: {provider_task_id}")
+                write!(
+                    f,
+                    "provider does not support cancelling remote task: {provider_task_id}"
+                )
             }
             Self::Unavailable { provider, reason } => {
                 write!(f, "runtime provider `{provider}` is unavailable: {reason}")
