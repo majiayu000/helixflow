@@ -130,3 +130,26 @@ fn api_boundary_serializes_camel_case() {
     let roundtrip: CatalogSnapshot = serde_json::from_value(encoded).expect("deserialize catalog");
     assert_eq!(roundtrip, catalog);
 }
+
+#[test]
+fn wired_ports_satisfy_required_schema_params() {
+    let catalog = builtin_catalog();
+    let binding = catalog
+        .binding("google.nano-banana-2.text-to-image.atlas.v1")
+        .expect("binding");
+    let wired = std::collections::BTreeSet::from(["prompt".to_owned()]);
+
+    binding
+        .input_schema
+        .validate_value_with_wired(
+            "binding",
+            &serde_json::json!({ "aspect_ratio": "1:1" }),
+            &wired,
+        )
+        .expect("wired prompt satisfies required");
+
+    binding
+        .input_schema
+        .validate_value("binding", &serde_json::json!({ "aspect_ratio": "1:1" }))
+        .expect_err("without wiring the required param is enforced");
+}

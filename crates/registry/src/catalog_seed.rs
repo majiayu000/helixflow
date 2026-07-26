@@ -156,6 +156,14 @@ fn models() -> Vec<ModelDefinition> {
             aliases: vec!["nano banana".to_owned(), "nano banana 2".to_owned()],
         },
         ModelDefinition {
+            model_id: "deepseek-ai/DeepSeek-V3-0324".to_owned(),
+            family_id: "deepseek-v3".to_owned(),
+            display_name: "DeepSeek V3".to_owned(),
+            vendor: "deepseek-ai".to_owned(),
+            lifecycle: ModelLifecycle::Active,
+            aliases: vec!["deepseek".to_owned(), "deepseek v3".to_owned()],
+        },
+        ModelDefinition {
             model_id: "bytedance/seedance-v1.5-pro".to_owned(),
             family_id: "seedance".to_owned(),
             display_name: "Seedance 1.5 Pro".to_owned(),
@@ -242,6 +250,30 @@ fn bindings() -> Vec<CapabilityBinding> {
             binding_revision: "v1".to_owned(),
         },
         CapabilityBinding {
+            binding_id: "deepseek-ai.deepseek-v3.prompt-writer.atlas.v1".to_owned(),
+            capability_id: "prompt_writer".to_owned(),
+            model_id: "deepseek-ai/DeepSeek-V3-0324".to_owned(),
+            implementation: ImplementationTarget::ApiConnector {
+                connector_id: "atlas".to_owned(),
+                operation_id: "deepseek-ai/DeepSeek-V3-0324".to_owned(),
+            },
+            mode: "prompt_writer".to_owned(),
+            input_schema: schema(
+                &[],
+                [
+                    ("prompt", ParamSpec::string()),
+                    (
+                        "style",
+                        ParamSpec::string_enum(&["cinematic", "product", "plain"]),
+                    ),
+                ],
+            ),
+            output_schema: schema(&[], [("prompt", ParamSpec::string())]),
+            defaults: json!({}),
+            availability: BindingAvailability::Enabled,
+            binding_revision: "v1".to_owned(),
+        },
+        CapabilityBinding {
             binding_id: "bytedance.seedance-v1-5-pro.text-to-video.atlas.v1".to_owned(),
             capability_id: "text_to_video".to_owned(),
             model_id: "bytedance/seedance-v1.5-pro".to_owned(),
@@ -271,6 +303,10 @@ fn bindings() -> Vec<CapabilityBinding> {
 
 fn default_bindings() -> BTreeMap<String, String> {
     BTreeMap::from([
+        (
+            "prompt_writer".to_owned(),
+            "deepseek-ai.deepseek-v3.prompt-writer.atlas.v1".to_owned(),
+        ),
         (
             "text_to_image".to_owned(),
             "google.nano-banana-2.text-to-image.atlas.v1".to_owned(),
