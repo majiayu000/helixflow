@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use helixflow_gateway::{ArtifactRef, MockProvider, Provider};
+use helixflow_gateway::{ArtifactRef, MockProvider, Provider, ProviderError};
 use helixflow_graph::{ExecutionPlan, GraphService, WorkflowGraph};
 use helixflow_registry::NodeRegistry;
 use helixflow_store::{ArtifactRecord, NewRun, NewRunStep, RunRecord, RunStepRecord, Store};
@@ -300,6 +300,31 @@ where
                         run_id,
                         "run.remote_cancelled",
                         serde_json::json!({ "provider": handle.provider }),
+                    )
+                    .await?;
+                }
+                // A provider without a remote cancel endpoint (e.g. Atlas) is
+                // not a transient failure: the remote task will keep running
+                // and billing, and the user must be told explicitly.
+                Err(ProviderError::CancelUnsupported(provider_task_id)) => {
+                    eprintln!(
+                        "run `{run_id}`: provider `{}` does not support remote cancel; \
+                         task `{provider_task_id}` keeps running remotely",
+                        handle.provider
+                    );
+                    self.emit(
+                        &run.workspace_id,
+                        run_id,
+                        "run.remote_cancel_unsupported",
+                        serde_json::json!({
+                            "provider": handle.provider,
+                            "provider_task_id": provider_task_id,
+                            "message": format!(
+                                "Provider `{}` cannot cancel already-submitted remote tasks; \
+                                 the remote task may keep running and incur charges.",
+                                handle.provider
+                            ),
+                        }),
                     )
                     .await?;
                 }

@@ -23,6 +23,10 @@ export function applyRunEvent(state: WorkbenchState, event: RunEventEnvelope): W
     return applyRetryNotice(state, event);
   }
 
+  if (event.ev === 'run.remote_cancel_unsupported' || event.ev === 'run.remote_cancel_failed') {
+    return applyRemoteCancelNotice(state, event);
+  }
+
   if (!state.run || event.run_id !== state.run.id || event.seq <= state.eventSeq) {
     return state;
   }
@@ -77,7 +81,9 @@ export function preserveRetryNotices(
 ): WorkbenchState {
   const existingIds = new Set(snapshot.chat.messages.map((message) => message.id));
   const notices = current.chat.messages.filter(
-    (message) => message.id.startsWith('run-retry-') && !existingIds.has(message.id),
+    (message) =>
+      (message.id.startsWith('run-retry-') || message.id.startsWith('run-remote-cancel-')) &&
+      !existingIds.has(message.id),
   );
   if (notices.length === 0) {
     return snapshot;
@@ -87,6 +93,36 @@ export function preserveRetryNotices(
     chat: {
       ...snapshot.chat,
       messages: [...snapshot.chat.messages, ...notices],
+    },
+  };
+}
+
+function applyRemoteCancelNotice(state: WorkbenchState, event: RunEventEnvelope): WorkbenchState {
+  const provider = stringData(event, 'provider') ?? 'remote provider';
+  const messageId = `run-remote-cancel-${event.ev}-${event.run_id}-${event.seq}`;
+  const text =
+    event.ev === 'run.remote_cancel_unsupported'
+      ? (stringData(event, 'message') ??
+        `Provider \`${provider}\` cannot cancel already-submitted remote tasks; the remote task may keep running and incur charges.`)
+      : `Failed to cancel the remote ${provider} task: ${stringData(event, 'error') ?? 'unknown error'}. It may keep running and incur charges.`;
+  if (state.chat.messages.some((item) => item.id === messageId)) {
+    return state;
+  }
+  return {
+    ...state,
+    eventSeq: Math.max(state.eventSeq, event.seq),
+    chat: {
+      ...state.chat,
+      messages: [
+        ...state.chat.messages,
+        {
+          id: messageId,
+          role: 'system',
+          kind: 'run_failed',
+          text,
+          time: event.server_time,
+        },
+      ],
     },
   };
 }

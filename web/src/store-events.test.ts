@@ -13,6 +13,55 @@ const state = {
   chat: { messages: [] },
 } as unknown as WorkbenchState;
 
+describe('remote cancel events', () => {
+  it('shows a billing warning when the provider cannot cancel remote tasks', () => {
+    const updated = applyRunEvent(state, {
+      workspace_id: 'ws_1',
+      run_id: 'run_parent',
+      seq: 5,
+      server_time: '2026-07-26T00:00:00Z',
+      ev: 'run.remote_cancel_unsupported',
+      data: {
+        provider: 'atlas',
+        provider_task_id: 'pred_1',
+        message:
+          'Provider `atlas` cannot cancel already-submitted remote tasks; the remote task may keep running and incur charges.',
+      },
+    });
+    const notice = updated.chat.messages.at(-1);
+    expect(notice?.role).toBe('system');
+    expect(notice?.text).toContain('incur charges');
+  });
+
+  it('shows the error when remote cancellation fails', () => {
+    const updated = applyRunEvent(state, {
+      workspace_id: 'ws_1',
+      run_id: 'run_parent',
+      seq: 5,
+      server_time: '2026-07-26T00:00:00Z',
+      ev: 'run.remote_cancel_failed',
+      data: { provider: 'fal', error: 'fal cancel returned HTTP 500' },
+    });
+    expect(updated.chat.messages.at(-1)?.text).toContain('fal cancel returned HTTP 500');
+  });
+
+  it('preserves remote cancel notices after a server snapshot refresh', () => {
+    const withNotice = applyRunEvent(state, {
+      workspace_id: 'ws_1',
+      run_id: 'run_parent',
+      seq: 6,
+      server_time: '2026-07-26T00:00:01Z',
+      ev: 'run.remote_cancel_unsupported',
+      data: { provider: 'atlas', provider_task_id: 'pred_1' },
+    });
+    const snapshot = { ...state, chat: { messages: [] } } as unknown as WorkbenchState;
+
+    const merged = preserveRetryNotices(withNotice, snapshot);
+    expect(merged.chat.messages).toHaveLength(1);
+    expect(merged.chat.messages[0]?.text).toContain('incur charges');
+  });
+});
+
 describe('run retry events', () => {
   it('adds a visible retry notice and requests the child snapshot', () => {
     const event = {
