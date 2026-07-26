@@ -255,6 +255,7 @@ async fn message_fixture(payload: StoredPayload) -> MessageFixture {
             graph_path: &graph_path,
             graph_hash: &stored_hash,
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create version");
@@ -294,6 +295,7 @@ async fn create_new_current(fixture: &MessageFixture, suffix: &str, graph: &Work
                 graph_path: &path,
                 graph_hash: &hash,
                 parent_id: Some(&fixture.base_version_id),
+                semantics_json: None,
             },
             &fixture.base_version_id,
         )

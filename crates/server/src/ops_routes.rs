@@ -161,6 +161,7 @@ pub(crate) async fn apply_workspace_ops(
                 graph_path: &graph_path,
                 graph_hash: &graph_hash,
                 parent_id: Some(&input.base_version_id),
+                semantics_json: None,
             },
             &input.base_version_id,
         )

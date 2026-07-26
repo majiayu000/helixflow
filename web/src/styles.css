@@ -1256,3 +1256,12 @@ textarea:disabled {
     border-bottom: 1px solid var(--border);
   }
 }
+
+.clarify-bubble {
+  border-left: 3px solid var(--warn, #e6a23c);
+  background: color-mix(in srgb, var(--warn, #e6a23c) 8%, transparent);
+}
+
+.clarify-text {
+  white-space: pre-line;
+}

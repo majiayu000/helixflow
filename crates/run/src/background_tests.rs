@@ -35,6 +35,7 @@ async fn background_workspace_version(store: &Store) -> (String, String) {
             graph_path: "workspaces/ws_background/graphs/ver_run.json",
             graph_hash: "sha256:background",
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create version");

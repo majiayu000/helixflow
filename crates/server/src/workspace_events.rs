@@ -124,6 +124,7 @@ mod tests {
                 graph_path: graph_path.to_string_lossy().as_ref(),
                 graph_hash: &graph_hash,
                 parent_id: None,
+                semantics_json: None,
             })
             .await
             .expect("version");

@@ -521,10 +521,18 @@ function AssistantTurn({
       <div className="msg-body">
         <div className="msg-name">Agent</div>
         {message ? (
-          <div className="assistant-bubble">
+          <div
+            className={
+              message.kind === 'clarify' ? 'assistant-bubble clarify-bubble' : 'assistant-bubble'
+            }
+          >
             {isStatus ? (
               <div className="status-line">
                 <span className="spin p-rotating" />
+                {message.text}
+              </div>
+            ) : message.kind === 'clarify' ? (
+              <div className="msg-text clarify-text" data-testid="clarify-message">
                 {message.text}
               </div>
             ) : (

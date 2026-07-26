@@ -132,7 +132,7 @@ fn conversation_history_body(request: &AgentSessionRequest) -> String {
 
 pub fn build_prompt_stack(request: &AgentSessionRequest) -> PromptStack {
     let mode = request.mode;
-    let output_contract = mode.output_contract();
+    let output_contract = mode.output_contract_with(request.use_intent_contract);
     let mut sections = vec![
         section(
             PromptSectionKey::ModeOverride,
@@ -267,25 +267,49 @@ fn mode_override(mode: TurnMode, output_contract: OutputContract) -> String {
             output_contract.file_name()
         ),
         TurnMode::CreateWorkflow => format!(
-            "Mode: CreateWorkflow. Read the graph and catalogs, design a valid workflow from the user's intent, and write `out/{}`. Do not mutate the graph directly; the backend validates and applies the proposal as a version transaction.\n\n{}",
+            "Mode: CreateWorkflow. Read the graph and catalogs, design a valid workflow from the user's intent, and write `out/{}`. Do not mutate the graph directly; the backend validates and applies the result as a version transaction.\n\n{}",
             output_contract.file_name(),
-            proposal_output_contract()
+            graph_output_contract(output_contract)
         ),
         TurnMode::ModifyWorkflow => format!(
-            "Mode: ModifyWorkflow. Preserve the current graph and write the smallest valid proposal diff to `out/{}`. Do not apply changes directly; the backend validates and applies the proposal as a version transaction.\n\n{}",
+            "Mode: ModifyWorkflow. Preserve the current graph and express the smallest valid change in `out/{}`. Do not apply changes directly; the backend validates and applies the result as a version transaction.\n\n{}",
             output_contract.file_name(),
-            proposal_output_contract()
+            graph_output_contract(output_contract)
         ),
         TurnMode::DebugWorkflow => format!(
-            "Mode: DebugWorkflow. Inspect the declared graph/run context and write a fix proposal to `out/{}`. If context is insufficient, produce a proposal that clearly explains the blocker. The backend validates and applies successful fixes as version transactions.\n\n{}",
+            "Mode: DebugWorkflow. Inspect the declared graph/run context and express the fix in `out/{}`. If context is insufficient, explain the blocker instead of guessing. The backend validates and applies successful fixes as version transactions.\n\n{}",
             output_contract.file_name(),
-            proposal_output_contract()
+            graph_output_contract(output_contract)
         ),
         TurnMode::RunRequest => format!(
             "Mode: RunRequest. Validate that the user wants to run the current graph and write `out/{}`. Do not redesign or modify the graph; backend owns provider execution.",
             output_contract.file_name()
         ),
     }
+}
+
+fn graph_output_contract(output_contract: OutputContract) -> &'static str {
+    if output_contract == OutputContract::IntentJson {
+        intent_output_contract()
+    } else {
+        proposal_output_contract()
+    }
+}
+
+/// GH130 T6: the IntentPlan contract. The agent expresses stages,
+/// capabilities, requested models, wiring, and topology — node ids, edges,
+/// coordinates, binding ids, and layout are compiled deterministically by
+/// the backend and never written by the agent.
+fn intent_output_contract() -> &'static str {
+    r#"Intent output contract:
+- Write an IntentPlan JSON, not a proposal and not a graph.
+- Top-level keys must be exactly: "intentVersion" (always "1"), "topology" ("linear" or "parallel"), "stages", "outputStageIds", optional "assumptions".
+- Each stage: {"stageId":"s1","capabilityId":"text_to_image","requestedModel":"Nano Banana","inputFrom":[],"params":{"prompt":"..."}}.
+- Valid capabilityId values come from `ctx/node_defs/catalog.json` capabilities (canonical ids: prompt_writer, text_to_image, image_edit, text_to_video, image_to_video, video_extend, upscale_image, upscale_video, image_analyze).
+- "requestedModel": set ONLY when the user named a model; otherwise omit it and the backend applies the configured default. Never invent model names.
+- "inputFrom" references earlier stages only: [{"stageId":"s1","output":"image"}]. Use "linear" unless the user explicitly asked for parallel branches.
+- Stage ids are lowercase short labels (s1, s2, ...). Do not write node ids, edges, coordinates, binding ids, connector names, or credentials.
+- If a required input cannot come from the user's message or an earlier stage, still write the intent — the backend returns a structured clarification."#
 }
 
 fn proposal_output_contract() -> &'static str {

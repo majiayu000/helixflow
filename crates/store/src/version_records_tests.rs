@@ -50,6 +50,7 @@ async fn creates_workspace_and_version() {
             graph_path: "workspaces/ws_1/graphs/ver_1.json",
             graph_hash: "sha256:graph",
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create version");
@@ -81,6 +82,7 @@ async fn conditional_version_creation_rejects_stale_parent() {
             graph_path: "workspaces/ws_1/graphs/ver_1.json",
             graph_hash: "sha256:graph-1",
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create first version");
@@ -93,6 +95,7 @@ async fn conditional_version_creation_rejects_stale_parent() {
                 graph_path: "workspaces/ws_1/graphs/ver_2.json",
                 graph_hash: "sha256:graph-2",
                 parent_id: Some(&first.id),
+                semantics_json: None,
             },
             &first.id,
         )
@@ -107,6 +110,7 @@ async fn conditional_version_creation_rejects_stale_parent() {
                 graph_path: "workspaces/ws_1/graphs/ver_stale.json",
                 graph_hash: "sha256:stale",
                 parent_id: Some(&first.id),
+                semantics_json: None,
             },
             &first.id,
         )
@@ -163,6 +167,7 @@ async fn pending_guard_rejects_existing_pending_proposal_and_rolls_back_insert()
                 graph_path: "workspaces/pending/guarded.json",
                 graph_hash: "sha256:guarded",
                 parent_id: Some(&base.id),
+                semantics_json: None,
             },
             &base.id,
         )
@@ -196,6 +201,7 @@ async fn pending_guard_rejects_existing_pending_proposal_and_rolls_back_insert()
                 graph_path: "workspaces/pending/normal.json",
                 graph_hash: "sha256:normal",
                 parent_id: Some(&base.id),
+                semantics_json: None,
             },
             &base.id,
         )
@@ -267,6 +273,7 @@ async fn assert_parent_mismatch_is_write_free(
         graph_path: "workspaces/parent-mismatch/rejected.json",
         graph_hash: "sha256:rejected",
         parent_id: declared_parent_id,
+        semantics_json: None,
     };
 
     let error = if reject_pending_proposal {
@@ -326,6 +333,7 @@ async fn assert_version_statement_fault_rolls_back(trigger: &str) {
                 graph_path: "workspaces/fault/rejected.json",
                 graph_hash: "sha256:rejected",
                 parent_id: Some(&base.id),
+                semantics_json: None,
             },
             &base.id,
         )
@@ -442,6 +450,7 @@ async fn concurrent_version_attempt(
         graph_path: &graph_path,
         graph_hash: &graph_hash,
         parent_id: Some(&base_version_id),
+        semantics_json: None,
     };
     if reject_pending_proposal {
         store
@@ -463,6 +472,7 @@ async fn create_base_version(store: &Store, workspace_id: &str, suffix: &str) ->
             graph_path: &graph_path,
             graph_hash: &graph_hash,
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create base version")

@@ -137,6 +137,7 @@ async fn review_state() -> (AppState, String, String, tempfile::TempDir) {
             graph_path: graph_path.to_str().expect("graph path"),
             graph_hash: &stored_graph_hash,
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("version");

@@ -17,7 +17,7 @@ GH-130
 - [x] `SP130-T3` IntentPlan 与 compiler：`out/intent.json` contract 与 schema validation；新增 `crates/compiler`（intent/resolver/topology/graph_builder/proposal_diff/layout/errors）；clarify handoff；`POST /api/workflows/compile-intent`。Owner: compiler lane。Done when: 相同 intent + catalog + current graph 产生相同 proposal；Agent 不再输出低层图；六类澄清场景返回 `clarify_first`。Verify: `cargo test -p helixflow-compiler -p helixflow-agent`
 - [x] `SP130-T4` ResolvedExecutionPlan 与 run preflight：`ResolvedExecutionStep` 不可变快照持久化；10 步 preflight；删除 `crates/gateway/src/atlas.rs:242`/`:269` 与 `crates/gateway/src/fal.rs:14` 的默认模型分支；审计字段写入 run trace。Owner: run lane。Done when: pinned 模型不一致时 run 创建失败（`PINNED_MODEL_MISMATCH`）；provider 代码零隐式默认模型。Verify: `cargo test -p helixflow-run -p helixflow-gateway -p helixflow-server`
 - [x] `SP130-T5` Workbench UX：capability/model 双视图 node library、implementation inspector（requested/resolved model、binding revision、不可运行原因）、澄清面板、proposal topology 预览。Owner: frontend lane。Done when: 用户能区分 capability、model、mode、connector 和 topology；澄清不伪装成功。Verify: `cd web && npx tsc --noEmit && npm test`
-- [ ] `SP130-T6` 切换默认路径与清理 legacy：灰度启用 intent 路径、停止低层 Agent proposal 输出、移除 `params.model` 与运行期 `image_generate` 兼容、迁移存量图。Owner: coordinator。Done when: 全部 feature flag 默认开启、legacy 写入路径删除、存量图迁移完成或明确隔离、回滚演练通过。Verify: `cargo test --workspace && cd web && npm test`
+- [x] `SP130-T6` 切换默认路径与清理 legacy：灰度启用 intent 路径、停止低层 Agent proposal 输出、移除 `params.model` 与运行期 `image_generate` 兼容、迁移存量图。Owner: coordinator。Done when: 全部 feature flag 默认开启、legacy 写入路径删除、存量图迁移完成或明确隔离、回滚演练通过。Verify: `cargo test --workspace && cd web && npm test`
 
 ## 并行拆分
 
@@ -53,6 +53,18 @@ T0 完成后，T1（后端 catalog）与 T5 的纯 UI 骨架（静态双视图�
 - T2 实现决策：迁移时无声明模型的节点转成显式 `Policy(capability_default)`，只能
   经配置的默认 binding 解析（P5），与"采用 provider 内部默认值"有本质区别；
   `needs_resolution` 保留给 capability 缺失、无默认 binding、模型不可解析三类。
+- T6 实现决策：intent 契约默认开启，`HELIXFLOW_AGENT_INTENT_CONTRACT=0` 一键回滚
+  到 legacy proposal 契约（回滚演练=既有 proposal 测试在 flag off 下全绿）；测试态
+  AppState 默认 legacy、intent 测试显式开启，保证两条路径都有确定性覆盖。
+- T6 实现决策：语义层持久化在 `versions.semantics_json`（migration 0006）；run
+  创建时按 version 加载语义并冻结（pinned → PINNED_MODEL_MISMATCH 端到端生效）；
+  v1 老版本 semantics 为 NULL，走 policy 默认解析，即"明确隔离"。
+- T6 实现决策：澄清以 `kind="clarify"` 消息落库（稳定 reason code 领行），前端
+  专用样式渲染，绝不伪装成 proposal。
+- T6 遗留（按 issue #130 已记录的两个 release 窗口执行，另立 issue）：
+  `image_generate`→`text_to_image` 的 registry/gateway capability 改名、
+  `canonical_capability` 映射删除、v1 存量图迁移工具的用户入口、legacy proposal
+  契约代码删除。
 - T5 实现决策：inspector 的"将解析为"通过 `POST /api/catalog/resolve`（无
   connector 偏好，展示全局默认解析并显式标注 connector）；按 workspace 选中
   provider 细化偏好在 T6 与语义层持久化一起接。

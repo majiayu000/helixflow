@@ -53,6 +53,7 @@ async fn auto_apply_commits_proposal_version_workspace_and_message_together() {
             graph_path: "graphs/base.json",
             graph_hash: "sha256:base",
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create base");
@@ -76,6 +77,7 @@ async fn auto_apply_commits_proposal_version_workspace_and_message_together() {
                 graph_path: "proposals/atomic/applied.json",
                 graph_hash: "sha256:applied",
                 parent_id: Some(&base.id),
+                semantics_json: None,
             },
             message_text: "Applied",
         })
@@ -133,6 +135,7 @@ async fn auto_apply_version_conflict_rolls_back_all_database_records() {
             graph_path: "graphs/base.json",
             graph_hash: "sha256:base",
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create base");
@@ -172,6 +175,7 @@ async fn auto_apply_version_conflict_rolls_back_all_database_records() {
                 graph_path: "graphs/newer.json",
                 graph_hash: "sha256:newer",
                 parent_id: Some(&base.id),
+                semantics_json: None,
             },
             &base.id,
         )
@@ -197,6 +201,7 @@ async fn auto_apply_version_conflict_rolls_back_all_database_records() {
                 graph_path: "proposals/stale/applied.json",
                 graph_hash: "sha256:stale",
                 parent_id: Some(&base.id),
+                semantics_json: None,
             },
             message_text: "Should not persist",
         })
@@ -249,6 +254,7 @@ async fn concurrent_same_base_auto_apply_has_one_winner_and_one_explicit_version
             graph_path: "graphs/base.json",
             graph_hash: "sha256:base",
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create base");
@@ -336,6 +342,7 @@ async fn suppressed_current_update_is_classified_and_rolls_back() {
             graph_path: "graphs/base-suppressed.json",
             graph_hash: "sha256:base-suppressed",
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create base");
@@ -418,6 +425,7 @@ async fn diverged_current_after_suppressed_update_is_version_conflict_and_rolls_
             graph_path: "graphs/base-diverged.json",
             graph_hash: "sha256:base-diverged",
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create base");
@@ -560,6 +568,7 @@ async fn assert_auto_apply_fault_rolls_back(trigger_sql: &str) {
             graph_path: "graphs/base-fault.json",
             graph_hash: "sha256:base-fault",
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create base");
@@ -668,6 +677,7 @@ async fn submit_auto_apply_with_parent(
                 graph_path: &graph_path,
                 graph_hash: &graph_hash,
                 parent_id,
+                semantics_json: None,
             },
             message_text: suffix,
         })

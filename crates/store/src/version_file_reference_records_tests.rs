@@ -22,6 +22,7 @@ async fn version_file_references_return_every_exact_path_match() {
             graph_path: "graphs/shared.json",
             graph_hash: "sha256:first",
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create first version");
@@ -34,6 +35,7 @@ async fn version_file_references_return_every_exact_path_match() {
                 graph_path: "graphs/shared.json",
                 graph_hash: "sha256:second",
                 parent_id: Some(&first.id),
+                semantics_json: None,
             },
             &first.id,
         )
@@ -76,6 +78,7 @@ async fn proposal_file_references_match_ops_or_preview_path_exactly() {
             graph_path: "graphs/base.json",
             graph_hash: "sha256:base",
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create base");

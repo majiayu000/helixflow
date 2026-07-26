@@ -25,6 +25,7 @@ async fn stale_agent_proposal_returns_conflict_without_pending_record() {
                 graph_path: &base.graph_path,
                 graph_hash: &base.graph_hash,
                 parent_id: Some(&base_version_id),
+                semantics_json: None,
             },
             &base_version_id,
         )

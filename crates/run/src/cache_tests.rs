@@ -34,6 +34,7 @@ async fn workspace_version(store: &Store) -> (String, String) {
             graph_path: "workspaces/ws_cache/graphs/ver_cache.json",
             graph_hash: "sha256:cache",
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create version");

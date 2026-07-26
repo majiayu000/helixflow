@@ -18,9 +18,9 @@ mod turn_mode;
 
 pub use canvas_ops::{CanvasGateState, CanvasOpsContext, CanvasOpsContract, CanvasSelection};
 pub use contract::{
-    AgentLogEntry, RunRequestAction, RunRequestOutput, ValidatedAgentProposal, ValidatedAgentReply,
-    ValidatedRunRequest, read_validated_intent, read_validated_proposal, read_validated_reply,
-    read_validated_run_request,
+    AgentLogEntry, RunRequestAction, RunRequestOutput, ValidatedAgentIntent,
+    ValidatedAgentProposal, ValidatedAgentReply, ValidatedRunRequest, read_validated_intent,
+    read_validated_proposal, read_validated_reply, read_validated_run_request,
 };
 pub use prompt_stack::{
     PromptSection, PromptSectionKey, PromptStack, PromptStackMetadata, build_prompt_stack,
@@ -67,6 +67,10 @@ pub struct AgentSessionRequest {
     pub mode: TurnMode,
     pub skill: AgentSkill,
     pub canvas_context: Option<CanvasOpsContext>,
+    /// GH130 T6: graph-editing turns request the IntentPlan contract
+    /// (`out/intent.json`) instead of low-level proposals. Rollback path:
+    /// the server flips this off via HELIXFLOW_AGENT_INTENT_CONTRACT=0.
+    pub use_intent_contract: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -139,7 +143,7 @@ pub fn create_session_contract(request: &AgentSessionRequest) -> AgentResult<Age
                 "message": request.user_message,
                 "mode": request.mode,
                 "skill": request.skill,
-                "output_contract": request.mode.output_contract()
+                "output_contract": request.mode.output_contract_with(request.use_intent_contract)
             })
         ),
     )?;
@@ -152,7 +156,9 @@ pub fn create_session_contract(request: &AgentSessionRequest) -> AgentResult<Age
         out_dir,
         base_version_id: request.base_version_id.clone(),
         mode: request.mode,
-        output_contract: request.mode.output_contract(),
+        output_contract: request
+            .mode
+            .output_contract_with(request.use_intent_contract),
         prompt_metadata,
     })
 }

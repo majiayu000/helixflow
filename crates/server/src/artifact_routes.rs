@@ -641,6 +641,7 @@ mod tests {
                 graph_path: &graph_path_string,
                 graph_hash: &stored_graph_hash,
                 parent_id: None,
+                semantics_json: None,
             })
             .await
             .expect("create version");

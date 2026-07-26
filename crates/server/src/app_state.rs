@@ -5,8 +5,8 @@ use std::{error::Error, fmt};
 
 use async_trait::async_trait;
 use helixflow_agent::{
-    AgentError, AgentService, AgentSessionRequest, CodexRuntime, ValidatedAgentProposal,
-    ValidatedAgentReply,
+    AgentError, AgentService, AgentSessionRequest, CodexRuntime, ValidatedAgentIntent,
+    ValidatedAgentProposal, ValidatedAgentReply,
 };
 #[cfg(test)]
 use helixflow_gateway::RuntimeProvider;
@@ -34,6 +34,10 @@ pub(crate) struct AppState {
     pub(crate) runner: RunService<ProviderRegistry>,
     pub(crate) run_queue_locks: Arc<Mutex<BTreeMap<String, Arc<Mutex<()>>>>>,
     pub(crate) reconciliation_report: Arc<ReconciliationReport>,
+    /// GH130 T6: IntentPlan contract switch. Production reads the env flag
+    /// (default on); test states default to the legacy path so proposal
+    /// mechanics stay deterministically covered, and intent tests opt in.
+    pub(crate) use_intent_contract: bool,
 }
 
 impl AppState {
@@ -103,6 +107,7 @@ impl AppState {
             runner,
             run_queue_locks,
             reconciliation_report,
+            use_intent_contract: crate::workbench_message_intent::intent_contract_enabled(),
         }
     }
 
@@ -134,6 +139,7 @@ impl AppState {
             provider_registry,
             run_queue_locks,
             reconciliation_report,
+            use_intent_contract: false,
         }
     }
 
@@ -166,6 +172,7 @@ impl AppState {
             provider_registry,
             run_queue_locks,
             reconciliation_report,
+            use_intent_contract: false,
         }
     }
 
@@ -254,6 +261,22 @@ pub(crate) trait WorkbenchAgent: Send + Sync {
         &self,
         request: AgentSessionRequest,
     ) -> Result<ValidatedAgentProposal, AgentError>;
+
+    /// GH130 T6: IntentPlan contract. Test doubles that never exercise the
+    /// intent path keep this default, which fails closed instead of
+    /// pretending to produce an intent.
+    async fn propose_intent(
+        &self,
+        request: AgentSessionRequest,
+    ) -> Result<ValidatedAgentIntent, AgentError> {
+        Err(AgentError::InvalidMode {
+            mode: request.mode,
+            expected: helixflow_agent::OutputContract::IntentJson,
+            actual: request
+                .mode
+                .output_contract_with(request.use_intent_contract),
+        })
+    }
 }
 
 struct CodexWorkbenchAgent {
@@ -278,6 +301,15 @@ impl WorkbenchAgent for CodexWorkbenchAgent {
     ) -> Result<ValidatedAgentProposal, AgentError> {
         AgentService::new(CodexRuntime::new(self.program.clone()), self.events.clone())
             .propose_graph_change(request)
+            .await
+    }
+
+    async fn propose_intent(
+        &self,
+        request: AgentSessionRequest,
+    ) -> Result<ValidatedAgentIntent, AgentError> {
+        AgentService::new(CodexRuntime::new(self.program.clone()), self.events.clone())
+            .propose_intent(request)
             .await
     }
 }
@@ -517,6 +549,7 @@ mod tests {
                 graph_path: "graphs/current.json",
                 graph_hash: "sha256:graph",
                 parent_id: None,
+                semantics_json: None,
             })
             .await
             .expect("create version");

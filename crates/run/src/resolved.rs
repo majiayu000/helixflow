@@ -104,6 +104,20 @@ pub fn resolve_step_binding_for(
     resolve_step_binding(shared_catalog(), legacy_capability, connector_id, semantics)
 }
 
+/// Loads the persisted semantic layer for a version, if any. Legacy v1
+/// versions return `None` and resolve through configured policy defaults.
+pub async fn load_version_semantics(
+    store: &helixflow_store::Store,
+    version_id: &str,
+) -> Result<Option<BTreeMap<String, NodeSemanticsEntry>>, RunError> {
+    let version = store.version(version_id).await?;
+    let Some(raw) = version.semantics_json.as_deref() else {
+        return Ok(None);
+    };
+    let semantics = serde_json::from_str(raw)?;
+    Ok(Some(semantics))
+}
+
 /// Freezes resolved implementations into a freshly compiled plan. Providers
 /// outside the catalog (e.g. mock) are skipped; catalog connectors fail
 /// closed on any unresolvable step. `semantics` carries the graph's semantic

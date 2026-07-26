@@ -404,6 +404,7 @@ async fn state_with_state_payload(
             graph_path,
             graph_hash: &stored_graph_hash,
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create version");

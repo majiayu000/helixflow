@@ -315,6 +315,7 @@ async fn self_heal_workspace_version(store: &Store) -> (String, String) {
             graph_path: "graph.json",
             graph_hash: "sha256:self-heal",
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("version");

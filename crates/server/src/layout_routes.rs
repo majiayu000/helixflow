@@ -147,6 +147,7 @@ async fn save_workspace_layout_inner(
                 graph_path: &graph_path,
                 graph_hash: &graph_hash,
                 parent_id: Some(current_version_id),
+                semantics_json: None,
             },
             current_version_id,
         )
@@ -611,6 +612,7 @@ mod tests {
                 graph_path: &graph_path_string,
                 graph_hash: &stored_graph_hash,
                 parent_id: None,
+                semantics_json: None,
             })
             .await
             .expect("create version");
@@ -650,6 +652,7 @@ mod tests {
                     graph_path: &graph_path_string,
                     graph_hash: &stored_graph_hash,
                     parent_id: Some(base_version_id),
+                    semantics_json: None,
                 },
                 base_version_id,
             )

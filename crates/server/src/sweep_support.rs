@@ -497,6 +497,7 @@ mod tests {
                 mode: TurnMode::RunRequest,
                 skill: TurnMode::RunRequest.agent_skill(),
                 canvas_context: None,
+                use_intent_contract: false,
             },
         )
         .await
@@ -565,6 +566,7 @@ mod tests {
                 graph_path: "graphs/sweep.json",
                 graph_hash: "sha256:sweep",
                 parent_id: None,
+                semantics_json: None,
             })
             .await
             .expect("create version");

@@ -47,14 +47,16 @@ pub(crate) async fn persist_and_apply_agent_proposal(
     state: &AppState,
     workspace_id: &str,
     proposal: &ValidatedAgentProposal,
+    semantics_json: Option<&str>,
 ) -> Result<MessageRecord, ApiError> {
     #[cfg(test)]
     {
-        persist_and_apply_agent_proposal_inner(state, workspace_id, proposal, None).await
+        persist_and_apply_agent_proposal_inner(state, workspace_id, proposal, semantics_json, None)
+            .await
     }
     #[cfg(not(test))]
     {
-        persist_and_apply_agent_proposal_inner(state, workspace_id, proposal).await
+        persist_and_apply_agent_proposal_inner(state, workspace_id, proposal, semantics_json).await
     }
 }
 
@@ -65,13 +67,14 @@ pub(crate) async fn persist_and_apply_agent_proposal_with_hook(
     proposal: &ValidatedAgentProposal,
     hook: &AutoApplyCommitHook,
 ) -> Result<MessageRecord, ApiError> {
-    persist_and_apply_agent_proposal_inner(state, workspace_id, proposal, Some(hook)).await
+    persist_and_apply_agent_proposal_inner(state, workspace_id, proposal, None, Some(hook)).await
 }
 
 async fn persist_and_apply_agent_proposal_inner(
     state: &AppState,
     workspace_id: &str,
     proposal: &ValidatedAgentProposal,
+    semantics_json: Option<&str>,
     #[cfg(test)] commit_hook: Option<&AutoApplyCommitHook>,
 ) -> Result<MessageRecord, ApiError> {
     let workspace = state
@@ -169,6 +172,7 @@ async fn persist_and_apply_agent_proposal_inner(
                 graph_path: &applied_path,
                 graph_hash: &applied_hash,
                 parent_id: Some(&proposal.proposal.base_version_id),
+                semantics_json,
             },
             message_text: &message_text,
         })

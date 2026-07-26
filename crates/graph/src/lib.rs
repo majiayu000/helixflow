@@ -195,6 +195,7 @@ impl GraphService {
                     graph_path: input.graph_path,
                     graph_hash: input.graph_hash,
                     parent_id: Some(&input.proposal.base_version_id),
+                    semantics_json: None,
                 },
                 &input.proposal.base_version_id,
             )

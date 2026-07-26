@@ -61,6 +61,7 @@ fn modify_request(dir: &tempfile::TempDir) -> AgentSessionRequest {
         mode: TurnMode::ModifyWorkflow,
         skill: AgentSkill::ModifyWorkflow,
         canvas_context: None,
+        use_intent_contract: false,
     }
 }
 
@@ -77,6 +78,7 @@ fn chat_request(dir: &tempfile::TempDir) -> AgentSessionRequest {
         mode: TurnMode::Chat,
         skill: AgentSkill::Chat,
         canvas_context: None,
+        use_intent_contract: false,
     }
 }
 

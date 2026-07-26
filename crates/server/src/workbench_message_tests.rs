@@ -315,6 +315,7 @@ async fn post_message_auto_applies_store_conflict_cleans_three_candidates() {
                 graph_path: &base.graph_path,
                 graph_hash: &base.graph_hash,
                 parent_id: Some(&base_version_id),
+                semantics_json: None,
             },
             &base_version_id,
         )
@@ -561,6 +562,7 @@ pub(super) async fn state_with_workspace() -> (AppState, String, String, tempfil
             graph_path: "graphs/message.json",
             graph_hash: &stored_graph_hash,
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create version");
@@ -655,4 +657,161 @@ impl WorkbenchAgent for FakeWorkbenchAgent {
             },
         })
     }
+}
+
+struct IntentWorkbenchAgent {
+    intent: helixflow_compiler::IntentPlan,
+}
+
+#[async_trait]
+impl WorkbenchAgent for IntentWorkbenchAgent {
+    async fn answer_chat(
+        &self,
+        _request: AgentSessionRequest,
+    ) -> Result<ValidatedAgentReply, AgentError> {
+        Err(AgentError::Runtime("chat is not under test".to_owned()))
+    }
+
+    async fn propose_graph_change(
+        &self,
+        _request: AgentSessionRequest,
+    ) -> Result<ValidatedAgentProposal, AgentError> {
+        Err(AgentError::Runtime(
+            "legacy proposal contract must not be used when the intent flag is on".to_owned(),
+        ))
+    }
+
+    async fn propose_intent(
+        &self,
+        request: AgentSessionRequest,
+    ) -> Result<helixflow_agent::ValidatedAgentIntent, AgentError> {
+        assert!(request.use_intent_contract, "flag must reach the request");
+        Ok(helixflow_agent::ValidatedAgentIntent {
+            session_id: format!("{}_intent", request.workspace_id),
+            agent_logs: Vec::new(),
+            intent: self.intent.clone(),
+        })
+    }
+}
+
+fn intent_plan(json: serde_json::Value) -> helixflow_compiler::IntentPlan {
+    serde_json::from_value(json).expect("intent parses")
+}
+
+async fn intent_state(
+    intent: helixflow_compiler::IntentPlan,
+) -> (AppState, String, String, tempfile::TempDir) {
+    let (mut state, workspace_id, version_id, dir) = state_with_workspace().await;
+    state.agent = std::sync::Arc::new(IntentWorkbenchAgent { intent });
+    state.use_intent_contract = true;
+    // A healthy atlas connector so catalog resolution succeeds in tests.
+    let atlas = helixflow_gateway::RuntimeProvider::Atlas(helixflow_gateway::AtlasProvider::new(
+        helixflow_gateway::ApiProviderConfig::atlas(
+            "test-key".to_owned(),
+            "https://atlas.invalid/v1".to_owned(),
+        ),
+    ));
+    state.provider_registry = helixflow_gateway::ProviderRegistry::new("atlas", vec![atlas]);
+    (state, workspace_id, version_id, dir)
+}
+
+#[tokio::test]
+async fn intent_turn_compiles_and_persists_semantics() {
+    let intent = intent_plan(serde_json::json!({
+        "intentVersion": "1",
+        "topology": "linear",
+        "stages": [{
+            "stageId": "s1",
+            "capabilityId": "text_to_image",
+            "requestedModel": "Nano Banana",
+            "inputFrom": [],
+            "params": { "prompt": "a product image" }
+        }],
+        "outputStageIds": ["s1"]
+    }));
+    let (state, workspace_id, version_id, _dir) = intent_state(intent).await;
+
+    let response = post_workspace_message(
+        Path(workspace_id.clone()),
+        State(state.clone()),
+        Json(WorkspaceMessageRequest {
+            base_version_id: version_id.clone(),
+            user_message: "用 Nano Banana 创建一个生成图片的 workflow".to_owned(),
+            graph: sample_graph(),
+            canvas_context: None,
+        }),
+    )
+    .await
+    .expect("intent response")
+    .0;
+
+    assert_eq!(response.turn_mode, TurnMode::CreateWorkflow);
+    assert_eq!(response.messages[0].kind, "proposal_applied");
+
+    // The applied version carries the frozen semantic layer.
+    let versions = state
+        .store
+        .versions_for_workspace(&workspace_id)
+        .await
+        .expect("versions");
+    let applied = versions
+        .iter()
+        .find(|version| version.id != version_id)
+        .expect("applied version");
+    let semantics_json = applied
+        .semantics_json
+        .as_deref()
+        .expect("semantics persisted");
+    let semantics: std::collections::BTreeMap<
+        String,
+        helixflow_graph::graph_v2::NodeSemanticsEntry,
+    > = serde_json::from_str(semantics_json).expect("semantics parse");
+    let entry = semantics.get("s1").expect("s1 semantics");
+    assert_eq!(entry.capability_id, "text_to_image");
+    assert!(matches!(
+        entry.implementation,
+        helixflow_registry::catalog::ImplementationSelection::Pinned { ref requested_model_id, .. }
+            if requested_model_id == "google/nano-banana-2"
+    ));
+}
+
+#[tokio::test]
+async fn intent_turn_missing_input_produces_clarify_message() {
+    let intent = intent_plan(serde_json::json!({
+        "intentVersion": "1",
+        "topology": "linear",
+        "stages": [{
+            "stageId": "s1",
+            "capabilityId": "text_to_image",
+            "inputFrom": [],
+            "params": {}
+        }],
+        "outputStageIds": ["s1"]
+    }));
+    let (state, workspace_id, version_id, _dir) = intent_state(intent).await;
+
+    let response = post_workspace_message(
+        Path(workspace_id.clone()),
+        State(state.clone()),
+        Json(WorkspaceMessageRequest {
+            base_version_id: version_id.clone(),
+            user_message: "创建一个生成图片的 workflow".to_owned(),
+            graph: sample_graph(),
+            canvas_context: None,
+        }),
+    )
+    .await
+    .expect("clarify response")
+    .0;
+
+    assert_eq!(response.messages[0].kind, "clarify");
+    assert!(response.messages[0].text.contains("REQUIRED_INPUT_MISSING"));
+    assert!(response.messages[0].text.contains("s1.prompt"));
+    // A clarification never masquerades as an applied proposal.
+    let proposals = state
+        .store
+        .workspace_proposals(&workspace_id)
+        .await
+        .expect("proposals");
+    assert!(proposals.is_empty());
 }

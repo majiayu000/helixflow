@@ -36,6 +36,7 @@ async fn workspace_version(store: &Store) -> (String, String) {
             graph_path: "workspaces/ws_sweep/graphs/ver_sweep.json",
             graph_hash: "sha256:sweep",
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create version");

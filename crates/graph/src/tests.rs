@@ -268,6 +268,7 @@ async fn applying_proposal_can_create_immutable_child_version() {
             graph_path: "graphs/base.json",
             graph_hash: "sha256:base",
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create base version");
@@ -335,6 +336,7 @@ async fn store_backed_apply_rejects_stale_workspace_version() {
             graph_path: "graphs/base.json",
             graph_hash: "sha256:base",
             parent_id: None,
+            semantics_json: None,
         })
         .await
         .expect("create base version");
@@ -347,6 +349,7 @@ async fn store_backed_apply_rejects_stale_workspace_version() {
                 graph_path: "graphs/concurrent.json",
                 graph_hash: "sha256:concurrent",
                 parent_id: Some(&base_version.id),
+                semantics_json: None,
             },
             &base_version.id,
         )
