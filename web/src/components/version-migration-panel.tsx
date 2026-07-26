@@ -24,15 +24,29 @@ export function VersionMigrationPanel({
   const report = useVersionMigrationStore((state) => state.report);
   const error = useVersionMigrationStore((state) => state.error);
   const successVersionId = useVersionMigrationStore((state) => state.successVersionId);
+  const completedApply = useVersionMigrationStore((state) => state.completedApply);
   const setContext = useVersionMigrationStore((state) => state.setContext);
   const inspect = useVersionMigrationStore((state) => state.inspect);
   const apply = useVersionMigrationStore((state) => state.apply);
+  const hydrateCompleted = useVersionMigrationStore((state) => state.hydrateCompleted);
   const [confirming, setConfirming] = useState(false);
 
   useEffect(() => {
     setContext(open ? { workspaceId, versionId, connectorId } : null);
     setConfirming(false);
   }, [connectorId, open, setContext, versionId, workspaceId]);
+
+  useEffect(() => {
+    if (completedApply) hydrateCompleted(onApplied);
+  }, [
+    completedApply,
+    connectorId,
+    hydrateCompleted,
+    onApplied,
+    open,
+    versionId,
+    workspaceId,
+  ]);
 
   const migratable = report?.status === 'migratable';
   const retryUnknown = phase === 'unknown';

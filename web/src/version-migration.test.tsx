@@ -22,6 +22,7 @@ afterEach(() => {
     error: null,
     successVersionId: null,
     pendingApply: null,
+    completedApply: null,
   });
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -84,6 +85,35 @@ describe('version migration store', () => {
     expect(useVersionMigrationStore.getState().phase).toBe('unknown');
   });
 
+  it('hydrates a late successful apply when the original workspace becomes visible', async () => {
+    let resolveApply!: (response: Response) => void;
+    const onApplied = vi.fn();
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      if (String(input).endsWith('/dry-run')) return Promise.resolve(jsonResponse(report()));
+      return new Promise<Response>((resolve) => {
+        resolveApply = resolve;
+      });
+    }));
+    const store = useVersionMigrationStore.getState();
+    store.setContext(context);
+    await store.inspect();
+    const applying = useVersionMigrationStore.getState().apply(onApplied);
+    useVersionMigrationStore.getState().setContext({
+      workspaceId: 'ws_2',
+      versionId: 'ver_2',
+      connectorId: 'fal',
+    });
+    resolveApply(jsonResponse(applyResponse()));
+    await applying;
+
+    expect(onApplied).not.toHaveBeenCalled();
+    expect(useVersionMigrationStore.getState().completedApply?.context).toEqual(context);
+    useVersionMigrationStore.getState().setContext(context);
+    useVersionMigrationStore.getState().hydrateCompleted(onApplied);
+    expect(onApplied).toHaveBeenCalledWith(emptyWorkbenchState());
+    expect(useVersionMigrationStore.getState().completedApply).toBeNull();
+  });
+
   it('aborts and discards a stale dry-run when connector context changes', async () => {
     let requestSignal: AbortSignal | undefined;
     vi.stubGlobal('fetch', vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
@@ -120,6 +150,24 @@ describe('version migration store', () => {
       pendingApply: null,
       report: null,
       error: '迁移前提已变化，请重新检查',
+    });
+  });
+
+  it('treats an explicit apply-disabled response as a definite failure', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/dry-run')) return jsonResponse(report());
+      return new Response(JSON.stringify({ error: 'disabled' }), { status: 503 });
+    }));
+    const store = useVersionMigrationStore.getState();
+    store.setContext(context);
+    await store.inspect();
+    await useVersionMigrationStore.getState().apply(() => undefined);
+
+    expect(useVersionMigrationStore.getState()).toMatchObject({
+      phase: 'failed',
+      pendingApply: null,
+      report: null,
+      error: 'version migration apply failed: 503',
     });
   });
 });

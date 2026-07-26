@@ -20,6 +20,12 @@ type PendingApply = {
   status: 'applying' | 'unknown';
 };
 
+type CompletedApply = {
+  context: VersionMigrationContext;
+  targetVersionId: string;
+  workspaceState: WorkbenchState;
+};
+
 export type VersionMigrationPhase =
   | 'idle'
   | 'checking'
@@ -38,9 +44,11 @@ type VersionMigrationStore = {
   error: string | null;
   successVersionId: string | null;
   pendingApply: PendingApply | null;
+  completedApply: CompletedApply | null;
   setContext: (context: VersionMigrationContext | null) => void;
   inspect: () => Promise<void>;
   apply: (onApplied: (state: WorkbenchState) => void) => Promise<void>;
+  hydrateCompleted: (onApplied: (state: WorkbenchState) => void) => void;
 };
 
 let checkController: AbortController | null = null;
@@ -52,11 +60,12 @@ export const useVersionMigrationStore = create<VersionMigrationStore>((set, get)
   error: null,
   successVersionId: null,
   pendingApply: null,
+  completedApply: null,
 
   setContext: (context) => {
     checkController?.abort();
     checkController = null;
-    const { pendingApply, successVersionId } = get();
+    const { pendingApply, completedApply, successVersionId } = get();
     if (!context) {
       set({ context, phase: 'idle', report: null, error: null });
       return;
@@ -70,6 +79,16 @@ export const useVersionMigrationStore = create<VersionMigrationStore>((set, get)
         error: matching && pendingApply.status === 'unknown'
           ? '上次迁移结果未知；请使用同一 operation ID 重试确认。'
           : null,
+      });
+      return;
+    }
+    if (completedApply && sameContext(context, completedApply.context)) {
+      set({
+        context,
+        phase: 'success',
+        report: null,
+        error: null,
+        successVersionId: completedApply.targetVersionId,
       });
       return;
     }
@@ -139,6 +158,9 @@ export const useVersionMigrationStore = create<VersionMigrationStore>((set, get)
         report: null,
         error: null,
         successVersionId: result.targetVersionId,
+        completedApply: visible
+          ? null
+          : { context, targetVersionId: result.targetVersionId, workspaceState: result.workspaceState },
       });
       if (visible) onApplied(result.workspaceState);
     } catch (error) {
@@ -147,6 +169,18 @@ export const useVersionMigrationStore = create<VersionMigrationStore>((set, get)
         set({
           pendingApply: null,
           phase: visible ? 'conflict' : 'idle',
+          report: null,
+          error: visible ? error.message : null,
+        });
+        return;
+      }
+      if (
+        error instanceof VersionMigrationApiError
+        && (error.status < 500 || error.status === 503)
+      ) {
+        set({
+          pendingApply: null,
+          phase: visible ? 'failed' : 'idle',
           report: null,
           error: visible ? error.message : null,
         });
@@ -161,6 +195,13 @@ export const useVersionMigrationStore = create<VersionMigrationStore>((set, get)
           : get().error,
       });
     }
+  },
+
+  hydrateCompleted: (onApplied) => {
+    const { completedApply, context } = get();
+    if (!completedApply || !context || !sameContext(context, completedApply.context)) return;
+    set({ completedApply: null });
+    onApplied(completedApply.workspaceState);
   },
 }));
 
