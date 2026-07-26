@@ -480,8 +480,18 @@ fn sidecar_only_semantics_are_propagated_or_fail_closed() {
 
     let mut deleted = before.clone();
     deleted.nodes.remove("image");
+    let encoded = derive_semantics_json(&source, &before, &deleted)
+        .expect("delete")
+        .expect("semantics");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&encoded).expect("json"),
+        serde_json::json!({})
+    );
+
+    let mut retyped = before.clone();
+    retyped.nodes.get_mut("image").expect("image").node_type = "video.text_to_video".to_owned();
     let error =
-        derive_semantics_json(&source, &before, &deleted).expect_err("delete must fail closed");
+        derive_semantics_json(&source, &before, &retyped).expect_err("retype must fail closed");
     assert_eq!(error.status, axum::http::StatusCode::CONFLICT);
 }
 

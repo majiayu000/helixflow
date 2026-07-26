@@ -176,7 +176,10 @@ export const useVersionMigrationStore = create<VersionMigrationStore>((set, get)
       }
       if (
         error instanceof VersionMigrationApiError
-        && (error.status < 500 || error.status === 503)
+        && (
+          error.status < 500
+          || (error.status === 503 && error.code === 'MIGRATION_APPLY_DISABLED')
+        )
       ) {
         set({
           pendingApply: null,

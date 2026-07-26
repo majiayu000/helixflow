@@ -18,6 +18,7 @@ export class VersionMigrationApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    readonly code?: string,
   ) {
     super(message);
   }
@@ -55,11 +56,15 @@ export async function applyVersionMigration(
     },
   );
   if (!response.ok) {
+    const body: unknown = await response.json().catch(() => null);
+    const record = (body ?? {}) as { code?: unknown };
+    const code = typeof record.code === 'string' ? record.code : undefined;
     throw new VersionMigrationApiError(
       response.status,
       response.status === 409
         ? '迁移前提已变化，请重新检查'
         : `version migration apply failed: ${response.status}`,
+      code,
     );
   }
   return ApplyVersionMigrationResponseSchema.parse(await response.json());

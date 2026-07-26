@@ -56,6 +56,13 @@ pub(crate) fn canonical_semantics_graph(
     };
     let semantics: BTreeMap<String, NodeSemanticsEntry> =
         serde_json::from_str(encoded).map_err(|error| error.to_string())?;
+    layer_sidecar_semantics(graph, semantics).map(Some)
+}
+
+fn layer_sidecar_semantics(
+    graph: &WorkflowGraph,
+    semantics: BTreeMap<String, NodeSemanticsEntry>,
+) -> Result<WorkflowGraph, String> {
     let mut layered = graph.clone();
     layered.catalog_revision = Some(shared_catalog().catalog_revision.clone());
     for (node_id, entry) in semantics {
@@ -65,7 +72,7 @@ pub(crate) fn canonical_semantics_graph(
             .ok_or_else(|| format!("semantics references unknown node `{node_id}`"))?;
         node.semantics = Some(entry);
     }
-    Ok(Some(layered))
+    Ok(layered)
 }
 
 pub(crate) fn derive_semantics_json(
@@ -78,9 +85,12 @@ pub(crate) fn derive_semantics_json(
     let canonical = if embedded {
         after.clone()
     } else if let Some(sidecar_json) = source.semantics_json.as_deref() {
-        canonical_semantics_graph(after, Some(sidecar_json))
-            .map_err(derived_semantics_error)?
-            .ok_or_else(|| derived_semantics_error("missing sidecar semantics".to_owned()))?
+        let mut semantics: BTreeMap<String, NodeSemanticsEntry> =
+            serde_json::from_str(sidecar_json).map_err(|error| {
+                derived_semantics_error(format!("decode source semantics: {error}"))
+            })?;
+        semantics.retain(|node_id, _| after.nodes.contains_key(node_id));
+        layer_sidecar_semantics(after, semantics).map_err(derived_semantics_error)?
     } else {
         return Ok(None);
     };

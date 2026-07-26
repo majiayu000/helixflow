@@ -178,7 +178,10 @@ describe('version migration store', () => {
   it('treats an explicit apply-disabled response as a definite failure', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       if (String(input).endsWith('/dry-run')) return jsonResponse(report());
-      return new Response(JSON.stringify({ error: 'disabled' }), { status: 503 });
+      return new Response(
+        JSON.stringify({ error: 'disabled', code: 'MIGRATION_APPLY_DISABLED' }),
+        { status: 503 },
+      );
     }));
     const store = useVersionMigrationStore.getState();
     store.setContext(context);
@@ -191,6 +194,30 @@ describe('version migration store', () => {
       report: null,
       error: 'version migration apply failed: 503',
     });
+  });
+
+  it('replays a transient 503 with the same operation ID', async () => {
+    const applyBodies: Array<Record<string, unknown>> = [];
+    let applyAttempt = 0;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/dry-run')) return jsonResponse(report());
+      applyBodies.push(JSON.parse(String(init?.body)));
+      applyAttempt += 1;
+      if (applyAttempt === 1) {
+        return new Response(JSON.stringify({ error: 'upstream unavailable' }), { status: 503 });
+      }
+      return jsonResponse(applyResponse());
+    }));
+    const store = useVersionMigrationStore.getState();
+    store.setContext(context);
+    await store.inspect();
+    await useVersionMigrationStore.getState().apply(() => undefined);
+    expect(useVersionMigrationStore.getState().phase).toBe('unknown');
+
+    await useVersionMigrationStore.getState().apply(() => undefined);
+    expect(applyBodies).toHaveLength(2);
+    expect(applyBodies[1]?.operationId).toBe(applyBodies[0]?.operationId);
+    expect(useVersionMigrationStore.getState().phase).toBe('success');
   });
 });
 
