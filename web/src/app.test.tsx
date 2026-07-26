@@ -1284,8 +1284,8 @@ describe('App', () => {
     useWorkbenchStore.getState().setInitialState({
       ...state,
       history: [
-        { id: 'ver_base', kind: 'version', label: 'Base graph', time: '09:01', summary: 'manual graph' },
-        { id: 'ver_test_1', kind: 'version', label: 'Shorter clip', time: '09:05', summary: 'proposal graph' },
+        { id: 'ver_base', kind: 'version', label: 'Base graph', time: '09:01', summary: 'manual graph', source: 'manual' },
+        { id: 'ver_test_1', kind: 'version', label: 'Shorter clip', time: '09:05', summary: 'proposal graph', source: 'proposal' },
       ],
     });
 
@@ -1362,8 +1362,8 @@ describe('App', () => {
         currentVersionId="ver_current"
         currentWorkspaceId="ws_test"
         history={[
-          { id: 'ver_base', kind: 'version', label: 'Base graph', time: '09:01', summary: 'manual graph' },
-          { id: 'ver_current', kind: 'version', label: 'Current graph', time: '09:05', summary: 'proposal graph' },
+          { id: 'ver_base', kind: 'version', label: 'Base graph', time: '09:01', summary: 'manual graph', source: 'manual' },
+          { id: 'ver_current', kind: 'version', label: 'Current graph', time: '09:05', summary: 'proposal graph', source: 'proposal' },
         ]}
         onClose={() => undefined}
         onOpenWorkspace={() => undefined}
@@ -2461,6 +2461,7 @@ function restoredState(versionId: string, durationSec: number): WorkbenchState {
         label: 'Restore Base graph',
         time: '09:06',
         summary: 'restore graph',
+        source: 'restore',
       },
     ],
   };

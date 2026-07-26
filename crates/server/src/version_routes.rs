@@ -315,7 +315,7 @@ mod tests {
                 .as_array()
                 .expect("history")
                 .iter()
-                .any(|item| item["summary"] == "restore graph")
+                .any(|item| item["summary"] == "restore graph" && item["source"] == "restore")
         );
     }
 
