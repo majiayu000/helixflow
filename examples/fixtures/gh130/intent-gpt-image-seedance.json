@@ -1,0 +1,35 @@
+{
+  "description": "首阶段替换为 GPT Image，仅换 binding 数据、不加代码分支（验收场景 20.2）",
+  "utterance": "用 GPT Image 生成一张产品图，再用 Seedance 2 做成视频",
+  "intent": {
+    "intentVersion": "1",
+    "topology": "linear",
+    "stages": [
+      {
+        "stageId": "s1",
+        "capabilityId": "text_to_image",
+        "requestedModel": "GPT Image",
+        "inputFrom": [],
+        "params": { "prompt": "一张干净的产品图" }
+      },
+      {
+        "stageId": "s2",
+        "capabilityId": "image_to_video",
+        "requestedModel": "Seedance 2",
+        "inputFrom": [{ "stageId": "s1", "output": "image" }],
+        "params": {}
+      }
+    ],
+    "outputStageIds": ["s2"],
+    "assumptions": []
+  },
+  "expected": {
+    "outcome": "compiled",
+    "resolvedModels": {
+      "s1": "openai/gpt-image-2",
+      "s2": "bytedance/seedance-v1.5-pro"
+    },
+    "topologyShape": "single_main_chain",
+    "notes": "与 intent-nano-banana-seedance.json 相比只有 s1 的 binding/model 不同，edge topology 必须完全一致"
+  }
+}

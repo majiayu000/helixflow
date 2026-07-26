@@ -1,0 +1,25 @@
+{
+  "description": "image_to_video 缺少 image 输入：无用户素材、无上游 image output，必须澄清（不变量 P7）",
+  "utterance": "用 Seedance 2 把图片做成视频",
+  "intent": {
+    "intentVersion": "1",
+    "topology": "linear",
+    "stages": [
+      {
+        "stageId": "s1",
+        "capabilityId": "image_to_video",
+        "requestedModel": "Seedance 2",
+        "inputFrom": [],
+        "params": {}
+      }
+    ],
+    "outputStageIds": ["s1"],
+    "assumptions": []
+  },
+  "expected": {
+    "outcome": "clarify_first",
+    "reasonCode": "REQUIRED_INPUT_MISSING",
+    "missingFields": ["s1.image"],
+    "notes": "不得生成残缺节点、不得自动降级为 text_to_video、不得伪装成成功 proposal"
+  }
+}

@@ -404,6 +404,36 @@ fn rejects_unknown_fields_nested_in_proposal_ops() {
     assert!(err.to_string().contains("unknown field"));
 }
 
+#[test]
+fn gh130_baseline_proposal_cannot_pin_model_via_params() {
+    // GH130 T0 baseline: the agent contract has no way to pin an execution
+    // model — `params.model` is rejected as an unknown param, while providers
+    // silently fall back to internal defaults. SP130-T3 introduces IntentPlan
+    // with an explicit requested_model instead.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let session = create_session_contract(&request(&dir)).expect("session");
+    write_proposal(
+        &session,
+        json!({
+            "base_version_id": "ver_1",
+            "kind": "modify",
+            "title": "Pin video model",
+            "summary": "Attempt to pin the execution model through params",
+            "ops": [{
+                "op": "set_param",
+                "id": "video",
+                "key": "model",
+                "value": "bytedance/seedance-v1.5-pro"
+            }]
+        }),
+    );
+
+    let err = read_validated_proposal(&session, &sample_graph(), "ver_1")
+        .expect_err("params.model must be rejected");
+
+    assert!(err.to_string().contains("unknown param `model`"));
+}
+
 #[cfg(unix)]
 #[test]
 fn rejects_symlinked_proposal_output() {

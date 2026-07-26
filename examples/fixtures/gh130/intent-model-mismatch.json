@@ -1,0 +1,24 @@
+{
+  "description": "pinned 模型与 capability 不匹配：点名模型存在但没有目标 capability 的 binding，必须显式失败（不变量 P4/P8）",
+  "utterance": "用 Seedance 2 生成一张图片",
+  "intent": {
+    "intentVersion": "1",
+    "topology": "linear",
+    "stages": [
+      {
+        "stageId": "s1",
+        "capabilityId": "text_to_image",
+        "requestedModel": "Seedance 2",
+        "inputFrom": [],
+        "params": { "prompt": "一张干净的产品图" }
+      }
+    ],
+    "outputStageIds": ["s1"],
+    "assumptions": []
+  },
+  "expected": {
+    "outcome": "error",
+    "reasonCode": "BINDING_NOT_FOUND",
+    "notes": "Seedance 解析为 bytedance/seedance-v1.5-pro（视频模型），无 (text_to_image, seedance) binding；不得静默换成任何图像模型，也不得由 provider 默认值兜底。对照基线：T0 时 provider 会静默使用内部默认模型（见 gh130_baseline_* 测试），T4 后此路径必须 fail-closed"
+  }
+}

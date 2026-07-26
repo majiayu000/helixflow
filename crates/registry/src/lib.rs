@@ -574,6 +574,43 @@ mod tests {
     }
 
     #[test]
+    fn gh130_baseline_params_model_is_rejected_as_unknown() {
+        // GH130 T0 baseline: the graph layer rejects `params.model` while the
+        // provider layer silently falls back to an internal default model, so a
+        // user-selected model cannot survive the graph contract. SP130-T2/T4
+        // replace this with an explicit model binding.
+        let registry = NodeRegistry::builtin();
+
+        for (node_type, params) in [
+            (
+                "image.generate",
+                json!({
+                    "prompt": "a product image",
+                    "aspect_ratio": "1:1",
+                    "model": "google/nano-banana-2"
+                }),
+            ),
+            (
+                "video.text_to_video",
+                json!({
+                    "prompt": "a product video",
+                    "duration_sec": 5,
+                    "aspect_ratio": "9:16",
+                    "model": "bytedance/seedance-v1.5-pro"
+                }),
+            ),
+        ] {
+            let err = registry
+                .validate_node_params(node_type, &params)
+                .expect_err("params.model must be rejected");
+            assert!(matches!(
+                err,
+                RegistryError::UnknownParam { ref param, .. } if param == "model"
+            ));
+        }
+    }
+
+    #[test]
     fn executable_nodes_are_provider_neutral() {
         let registry = NodeRegistry::builtin();
 

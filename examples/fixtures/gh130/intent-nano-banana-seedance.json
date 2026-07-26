@@ -1,0 +1,35 @@
+{
+  "description": "用户点名 Nano Banana 生图后接 Seedance 图生视频（验收场景 20.1）",
+  "utterance": "用 Nano Banana 生成一张产品图，再用 Seedance 2 做成视频",
+  "intent": {
+    "intentVersion": "1",
+    "topology": "linear",
+    "stages": [
+      {
+        "stageId": "s1",
+        "capabilityId": "text_to_image",
+        "requestedModel": "Nano Banana",
+        "inputFrom": [],
+        "params": { "prompt": "一张干净的产品图" }
+      },
+      {
+        "stageId": "s2",
+        "capabilityId": "image_to_video",
+        "requestedModel": "Seedance 2",
+        "inputFrom": [{ "stageId": "s1", "output": "image" }],
+        "params": {}
+      }
+    ],
+    "outputStageIds": ["s2"],
+    "assumptions": []
+  },
+  "expected": {
+    "outcome": "compiled",
+    "resolvedModels": {
+      "s1": "google/nano-banana-2",
+      "s2": "bytedance/seedance-v1.5-pro"
+    },
+    "topologyShape": "single_main_chain",
+    "notes": "若 catalog 中 Seedance 只有 text_to_video 而无 image_to_video binding，必须转为 clarify_first 或 BINDING_NOT_FOUND，不得改成并行 text_to_video"
+  }
+}
