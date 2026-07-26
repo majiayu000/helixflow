@@ -60,13 +60,27 @@ pub(crate) async fn require_auth(request: Request, next: Next) -> Response {
     let Some(expected) = auth.token else {
         return next.run(request).await;
     };
-    let presented = bearer_token(request.headers()).or_else(|| query_token(request.uri()));
+    let presented = presented_token(request.headers(), request.uri());
     match presented {
         Some(token) if constant_time_eq(token.as_bytes(), expected.as_bytes()) => {
             next.run(request).await
         }
         _ => unauthorized("missing or invalid auth token"),
     }
+}
+
+/// Query-string tokens leak through access logs, browser history, and
+/// Referer headers, so they are accepted only on the WebSocket route, where
+/// browsers cannot attach an Authorization header. Every other route must
+/// present the bearer header.
+fn presented_token(headers: &HeaderMap, uri: &axum::http::Uri) -> Option<String> {
+    bearer_token(headers).or_else(|| {
+        if uri.path() == "/ws" {
+            query_token(uri)
+        } else {
+            None
+        }
+    })
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<String> {
@@ -97,6 +111,40 @@ fn unauthorized(message: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn header_map(bearer: Option<&str>) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        if let Some(token) = bearer {
+            headers.insert(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse().expect("header value"),
+            );
+        }
+        headers
+    }
+
+    #[test]
+    fn query_token_is_accepted_only_on_the_websocket_route() {
+        let ws: axum::http::Uri = "/ws?workspace_id=ws_1&token=secret".parse().expect("uri");
+        assert_eq!(
+            presented_token(&header_map(None), &ws).as_deref(),
+            Some("secret")
+        );
+
+        let rest: axum::http::Uri = "/api/workspaces/ws_1/state?token=secret"
+            .parse()
+            .expect("uri");
+        assert_eq!(presented_token(&header_map(None), &rest), None);
+    }
+
+    #[test]
+    fn bearer_header_is_accepted_on_every_route() {
+        let rest: axum::http::Uri = "/api/health".parse().expect("uri");
+        assert_eq!(
+            presented_token(&header_map(Some("secret")), &rest).as_deref(),
+            Some("secret")
+        );
+    }
 
     #[test]
     fn non_loopback_bind_without_token_is_rejected() {

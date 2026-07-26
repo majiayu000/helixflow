@@ -425,12 +425,14 @@ mod tests {
             .expect("request with token");
         assert_eq!(allowed.status(), 200);
 
-        let query_allowed = client
+        // Query-string tokens are reserved for the WebSocket route; REST
+        // endpoints must use the Authorization header (GH-127).
+        let query_denied = client
             .get(format!("http://{addr}/api/health?token=secret-token"))
             .send()
             .await
             .expect("request with query token");
-        assert_eq!(query_allowed.status(), 200);
+        assert_eq!(query_denied.status(), 401);
 
         let ws_denied =
             tokio_tungstenite::connect_async(format!("ws://{addr}/ws?workspace_id=ws_1")).await;
