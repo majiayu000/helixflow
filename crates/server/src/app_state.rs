@@ -38,6 +38,7 @@ pub(crate) struct AppState {
     /// (default on); test states default to the legacy path so proposal
     /// mechanics stay deterministically covered, and intent tests opt in.
     pub(crate) use_intent_contract: bool,
+    pub(crate) migration_apply_enabled: bool,
 }
 
 impl AppState {
@@ -108,6 +109,7 @@ impl AppState {
             run_queue_locks,
             reconciliation_report,
             use_intent_contract: crate::workbench_message_intent::intent_contract_enabled(),
+            migration_apply_enabled: version_migration_apply_enabled(),
         }
     }
 
@@ -140,6 +142,7 @@ impl AppState {
             run_queue_locks,
             reconciliation_report,
             use_intent_contract: false,
+            migration_apply_enabled: false,
         }
     }
 
@@ -173,6 +176,7 @@ impl AppState {
             run_queue_locks,
             reconciliation_report,
             use_intent_contract: false,
+            migration_apply_enabled: false,
         }
     }
 
@@ -189,6 +193,12 @@ impl AppState {
         self.provider_registry
             .catalog_snapshot_for_selected(Some(&selected_provider))
     }
+}
+
+fn version_migration_apply_enabled() -> bool {
+    std::env::var("HELIXFLOW_V1_MIGRATION_APPLY")
+        .ok()
+        .is_some_and(|value| matches!(value.trim(), "1" | "true" | "TRUE"))
 }
 
 async fn interrupt_stale_active_runs(

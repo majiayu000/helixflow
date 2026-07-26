@@ -147,7 +147,7 @@ async fn save_workspace_layout_inner(
                 graph_path: &graph_path,
                 graph_hash: &graph_hash,
                 parent_id: Some(current_version_id),
-                semantics_json: None,
+                semantics_json: current.semantics_json.as_deref(),
             },
             current_version_id,
         )

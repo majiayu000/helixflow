@@ -134,7 +134,7 @@ async fn create_restore_version(
                 graph_path: &target.graph_path,
                 graph_hash: &target.graph_hash,
                 parent_id: Some(&current.id),
-                semantics_json: None,
+                semantics_json: target.semantics_json.as_deref(),
             },
             &current.id,
         )

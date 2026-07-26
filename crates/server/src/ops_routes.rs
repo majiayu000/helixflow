@@ -17,6 +17,7 @@ use crate::app_state::AppState;
 use crate::version_file_consistency::{
     CandidateKind, VersionFileCandidate, VersionFileConsistencyError, read_version_graph,
 };
+use crate::version_migration_routes::derive_semantics_json;
 use crate::workspace_state::workspace_state_value;
 
 #[derive(Debug, Deserialize)]
@@ -132,6 +133,7 @@ pub(crate) async fn apply_workspace_ops(
         .map_err(candidate_error)?
         .to_owned();
     let graph_hash = candidate.graph_hash().to_owned();
+    let semantics_json = derive_semantics_json(&base, &current_graph, &edited_graph)?;
     if let Err(error) = candidate.publish(&state.data_dir) {
         if opaque_digest.is_some() && is_publish_collision(&error) {
             if accepted_idempotent_version(
@@ -161,7 +163,7 @@ pub(crate) async fn apply_workspace_ops(
                 graph_path: &graph_path,
                 graph_hash: &graph_hash,
                 parent_id: Some(&input.base_version_id),
-                semantics_json: None,
+                semantics_json: semantics_json.as_deref(),
             },
             &input.base_version_id,
         )

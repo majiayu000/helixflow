@@ -58,6 +58,7 @@ pub(crate) enum CandidateKind {
     ProposalApplied,
     ProposalOps,
     ProposalPreview,
+    Migration,
 }
 
 impl CandidateKind {
@@ -69,6 +70,7 @@ impl CandidateKind {
             Self::ProposalApplied => "proposal-applied",
             Self::ProposalOps => "proposal-ops",
             Self::ProposalPreview => "proposal-preview",
+            Self::Migration => "migration",
         }
     }
 }

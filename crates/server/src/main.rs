@@ -40,6 +40,9 @@ mod version_file_consistency_tests;
 mod version_file_reconciliation;
 #[cfg(test)]
 mod version_file_reconciliation_tests;
+mod version_migration_routes;
+#[cfg(test)]
+mod version_migration_routes_tests;
 mod version_routes;
 mod workbench_message;
 mod workbench_message_canvas;
@@ -78,6 +81,7 @@ use registry_routes::node_registry_catalog;
 use run_routes::{confirm_run, hold_run, interrupt_active_run, queue_workspace_run};
 use upload_routes::upload_workspace_image;
 use version_file_reconciliation::ReconciliationReport;
+use version_migration_routes::{apply_version_migration, dry_run_version_migration};
 use version_routes::{export_workflow_version, restore_workspace_version, undo_workspace_version};
 use workbench_message::post_workspace_message;
 use workspace_canvas::workspace_canvas;
@@ -246,6 +250,14 @@ fn app(state: AppState) -> Router {
         .route(
             "/api/workspaces/{workspace_id}/versions/{version_id}/restore",
             post(restore_workspace_version),
+        )
+        .route(
+            "/api/workspaces/{workspace_id}/versions/{version_id}/migration/dry-run",
+            post(dry_run_version_migration),
+        )
+        .route(
+            "/api/workspaces/{workspace_id}/versions/{version_id}/migration/apply",
+            post(apply_version_migration),
         )
         .route("/ws", get(ws_handler))
         .with_state(state)
