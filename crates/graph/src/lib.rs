@@ -561,7 +561,7 @@ fn edge_type_matches(from: PortType, to: PortType, edge_type: &str) -> bool {
     from == to && edge_type == port_type_label(from)
 }
 
-fn port_type_label(port_type: PortType) -> &'static str {
+pub fn port_type_label(port_type: PortType) -> &'static str {
     match port_type {
         PortType::Text => "text",
         PortType::Image => "image",

@@ -430,6 +430,26 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
             ),
         ),
         node(
+            "video.image_to_video",
+            "Image To Video",
+            "video",
+            None,
+            Some("image_to_video"),
+            "Animates an input image into a video artifact.",
+            vec![
+                port("image", PortType::Image, true),
+                port("prompt", PortType::Text, false),
+            ],
+            vec![port("video", PortType::Video, true)],
+            schema(
+                &["duration_sec"],
+                [
+                    ("prompt", ParamSpec::string()),
+                    ("duration_sec", ParamSpec::integer_range(1, 10)),
+                ],
+            ),
+        ),
+        node(
             "output.save",
             "Save Output",
             "output",

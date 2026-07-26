@@ -8,13 +8,16 @@ use std::sync::OnceLock;
 
 use axum::Json;
 use axum::extract::{Path, State};
+use helixflow_compiler::{CompileOutcome, CompiledProposal, IntentPlan, compile};
 use helixflow_gateway::ProviderCatalogSnapshot;
+use helixflow_graph::{GraphService, WorkflowGraph};
+use helixflow_registry::NodeRegistry;
 use helixflow_registry::catalog::{CapabilityDefinition, CatalogSnapshot, ModelDefinition};
 use helixflow_registry::catalog_seed::builtin_catalog;
 use helixflow_registry::resolver::{
     CapabilityResolver, ConnectorAvailability, ResolveError, ResolveRequest, ResolvedImplementation,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::api_error::ApiError;
@@ -94,6 +97,46 @@ pub(crate) async fn resolve_implementation(
         .resolve(&request, &availability)
         .map_err(|err| catalog_error(&err))?;
     Ok(Json(resolved))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CompileIntentRequest {
+    intent: IntentPlan,
+    #[serde(default)]
+    base_graph: Option<WorkflowGraph>,
+}
+
+/// Compiles an IntentPlan against an optional base graph (GH130 T3). A
+/// clarify outcome is an explicit 409 with the shared handoff fields — it is
+/// never presented as a successful proposal.
+pub(crate) async fn compile_intent(
+    State(state): State<AppState>,
+    Json(request): Json<CompileIntentRequest>,
+) -> Result<Json<CompiledProposal>, ApiError> {
+    let catalog = shared_catalog();
+    let availability = connector_availability(&state.provider_registry.catalog_snapshot());
+    let service = GraphService::new(NodeRegistry::builtin());
+    let base = request.base_graph.unwrap_or(WorkflowGraph {
+        schema_version: 1,
+        nodes: Default::default(),
+        edges: Vec::new(),
+    });
+
+    match compile(&request.intent, &base, &service, catalog, &availability) {
+        Ok(CompileOutcome::Compiled(proposal)) => Ok(Json(proposal)),
+        Ok(CompileOutcome::Clarify(clarify)) => Err(ApiError::conflict_with_details(
+            format!("clarification required: {}", clarify.reason_code),
+            serde_json::to_value(&clarify).unwrap_or_default(),
+        )),
+        Err(err) => {
+            let details = json!({
+                "code": err.code(),
+                "catalogRevision": catalog.catalog_revision,
+            });
+            Err(ApiError::not_found_with_details(err.to_string(), details))
+        }
+    }
 }
 
 /// A connector is available when its provider is enabled and reports healthy.

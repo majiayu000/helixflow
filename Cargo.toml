@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/agent",
+  "crates/compiler",
   "crates/gateway",
   "crates/graph",
   "crates/registry",
@@ -23,6 +24,7 @@ base64 = "0.22"
 futures-util = "0.3"
 helixflow-gateway = { path = "crates/gateway" }
 helixflow-graph = { path = "crates/graph" }
+helixflow-compiler = { path = "crates/compiler" }
 helixflow-registry = { path = "crates/registry" }
 helixflow-run = { path = "crates/run" }
 helixflow-store = { path = "crates/store" }

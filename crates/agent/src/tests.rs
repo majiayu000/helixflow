@@ -694,3 +694,90 @@ fn prompt_stack_without_history_says_no_prior_turns() {
     let ctx = std::fs::read_to_string(session.ctx_dir.join("instructions.md")).expect("ctx");
     assert!(ctx.contains("No prior turns"));
 }
+
+#[test]
+fn gh130_intent_contract_accepts_valid_intent() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let session = create_session_contract(&request(&dir)).expect("session");
+    fs::write(
+        session.out_dir.join("intent.json"),
+        serde_json::to_vec(&json!({
+            "intentVersion": "1",
+            "topology": "linear",
+            "stages": [
+                {
+                    "stageId": "s1",
+                    "capabilityId": "text_to_image",
+                    "requestedModel": "Nano Banana",
+                    "inputFrom": [],
+                    "params": { "prompt": "a product image" }
+                }
+            ],
+            "outputStageIds": ["s1"]
+        }))
+        .expect("serialize"),
+    )
+    .expect("write intent");
+
+    let intent = read_validated_intent(&session).expect("intent");
+
+    assert_eq!(intent.stages.len(), 1);
+    assert_eq!(
+        intent.stages[0].requested_model.as_deref(),
+        Some("Nano Banana")
+    );
+}
+
+#[test]
+fn gh130_intent_contract_rejects_unknown_fields() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let session = create_session_contract(&request(&dir)).expect("session");
+    fs::write(
+        session.out_dir.join("intent.json"),
+        serde_json::to_vec(&json!({
+            "intentVersion": "1",
+            "topology": "linear",
+            "stages": [],
+            "outputStageIds": [],
+            "apiKey": "should-not-be-here"
+        }))
+        .expect("serialize"),
+    )
+    .expect("write intent");
+
+    let err = read_validated_intent(&session).expect_err("unknown field");
+    assert!(err.to_string().contains("unknown field"));
+}
+
+#[test]
+fn gh130_intent_contract_rejects_forward_references() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let session = create_session_contract(&request(&dir)).expect("session");
+    fs::write(
+        session.out_dir.join("intent.json"),
+        serde_json::to_vec(&json!({
+            "intentVersion": "1",
+            "topology": "linear",
+            "stages": [
+                {
+                    "stageId": "s1",
+                    "capabilityId": "image_to_video",
+                    "inputFrom": [{ "stageId": "s2", "output": "image" }],
+                    "params": {}
+                },
+                {
+                    "stageId": "s2",
+                    "capabilityId": "text_to_image",
+                    "inputFrom": [],
+                    "params": {}
+                }
+            ],
+            "outputStageIds": ["s1"]
+        }))
+        .expect("serialize"),
+    )
+    .expect("write intent");
+
+    let err = read_validated_intent(&session).expect_err("forward reference");
+    assert!(err.to_string().contains("not an earlier stage"));
+}

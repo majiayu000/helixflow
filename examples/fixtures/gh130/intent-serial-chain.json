@@ -10,29 +10,45 @@
         "capabilityId": "prompt_writer",
         "requestedModel": null,
         "inputFrom": [],
-        "params": { "prompt": "为一支简约产品广告写视觉描述" }
+        "params": {
+          "text": "为一支简约产品广告写视觉描述"
+        }
       },
       {
         "stageId": "s2",
         "capabilityId": "text_to_image",
         "requestedModel": null,
-        "inputFrom": [{ "stageId": "s1", "output": "prompt" }],
+        "inputFrom": [
+          {
+            "stageId": "s1",
+            "output": "prompt"
+          }
+        ],
         "params": {}
       },
       {
         "stageId": "s3",
         "capabilityId": "image_to_video",
         "requestedModel": null,
-        "inputFrom": [{ "stageId": "s2", "output": "image" }],
+        "inputFrom": [
+          {
+            "stageId": "s2",
+            "output": "image"
+          }
+        ],
         "params": {}
       }
     ],
-    "outputStageIds": ["s3"],
-    "assumptions": ["未点名模型的阶段使用 workspace 唯一默认 binding（P5）"]
+    "outputStageIds": [
+      "s3"
+    ],
+    "assumptions": [
+      "未点名模型的阶段使用 workspace 唯一默认 binding（P5）"
+    ]
   },
   "expected": {
     "outcome": "compiled",
     "topologyShape": "single_main_chain",
-    "notes": "linear intent 编译结果必须是一条主链；任何阶段存在多个模型候选也不得自动并行"
+    "notes": "linear intent 编译结果必须是一条主链；任何阶段存在多个模型候选也不得自动并行；s1 的 text 输入由编译器合成的 input.text 节点提供（T3 修正：params 键从 prompt 改为 text，对齐 prompt_writer 的输入契约）"
   }
 }

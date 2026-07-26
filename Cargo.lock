@@ -546,6 +546,7 @@ name = "helixflow-agent"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "helixflow-compiler",
  "helixflow-gateway",
  "helixflow-graph",
  "helixflow-registry",
@@ -555,6 +556,16 @@ dependencies = [
  "tempfile",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "helixflow-compiler"
+version = "0.1.0"
+dependencies = [
+ "helixflow-graph",
+ "helixflow-registry",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -620,6 +631,7 @@ dependencies = [
  "axum",
  "futures-util",
  "helixflow-agent",
+ "helixflow-compiler",
  "helixflow-gateway",
  "helixflow-graph",
  "helixflow-registry",
