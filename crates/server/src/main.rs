@@ -15,6 +15,7 @@ mod auth;
 mod canvas_collaboration;
 mod canvas_ticket;
 mod capability_preflight;
+mod catalog_routes;
 mod graph_files;
 mod layout_routes;
 mod ops_routes;
@@ -66,6 +67,9 @@ use artifact_routes::{
 use auth::{AuthConfig, require_auth, validate_bind_auth};
 use canvas_collaboration::{apply_canvas_comment_op, update_canvas_presence};
 use canvas_ticket::create_canvas_ticket;
+use catalog_routes::{
+    capability_models, catalog_snapshot, model_capabilities, resolve_implementation,
+};
 use layout_routes::save_workspace_layout;
 use ops_routes::apply_workspace_ops;
 use proposal_routes::{apply_workspace_proposal, dismiss_workspace_proposal};
@@ -147,6 +151,16 @@ fn app(state: AppState) -> Router {
         .route("/api/ready", get(ready))
         .route("/api/system", get(system))
         .route("/api/registry/catalog", get(node_registry_catalog))
+        .route("/api/catalog", get(catalog_snapshot))
+        .route(
+            "/api/catalog/capabilities/{capability_id}/models",
+            get(capability_models),
+        )
+        .route(
+            "/api/catalog/models/{model_id}/capabilities",
+            get(model_capabilities),
+        )
+        .route("/api/catalog/resolve", post(resolve_implementation))
         .route(
             "/api/workspaces",
             get(list_workspaces).post(create_workspace),
