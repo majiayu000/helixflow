@@ -40,6 +40,27 @@ impl Store {
         self.upload(&id).await
     }
 
+    /// Look up an upload only within the given workspace. Fails closed
+    /// (RowNotFound) when the id belongs to another workspace, so runs can
+    /// never pull uploaded bytes across the workspace boundary.
+    pub async fn workspace_upload(
+        &self,
+        workspace_id: &str,
+        upload_id: &str,
+    ) -> StoreResult<UploadRecord> {
+        Ok(sqlx::query_as::<_, UploadRecord>(
+            r#"
+            SELECT id, workspace_id, filename, file_path, sha256, mime, created_at
+            FROM uploads
+            WHERE id = ? AND workspace_id = ?
+            "#,
+        )
+        .bind(upload_id)
+        .bind(workspace_id)
+        .fetch_one(self.pool())
+        .await?)
+    }
+
     pub async fn upload(&self, upload_id: &str) -> StoreResult<UploadRecord> {
         Ok(sqlx::query_as::<_, UploadRecord>(
             r#"
