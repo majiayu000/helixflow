@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use helixflow_graph::semantics::{NodeSemanticsEntry, canonical_capability};
+use helixflow_graph::semantics::NodeSemanticsEntry;
 use helixflow_graph::{GraphEdge, GraphNode, GraphService, WorkflowGraph, port_type_label};
 use helixflow_registry::PortType;
 use helixflow_registry::catalog::{CatalogSnapshot, ImplementationSelection};
@@ -89,7 +89,7 @@ pub(crate) fn build(
                     message: err.to_string(),
                 })?;
         debug_assert_eq!(
-            canonical_capability(definition.capability.as_deref().unwrap_or_default()),
+            definition.capability.as_deref().unwrap_or_default(),
             resolved.capability_id
         );
 

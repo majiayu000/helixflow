@@ -9,7 +9,6 @@ import {
   type WheelEvent,
 } from 'react';
 import { fetchModelCatalog, fetchNodeCatalog, resolveImplementation } from '../api';
-import { canonicalCapability } from './model-catalog-tray';
 import { portColor } from '../icons';
 import type { ImplementationResolution, ModelCatalog, NodeCatalog } from '../types';
 import { connectionPath } from './graph-canvas-connections';
@@ -150,7 +149,7 @@ export function GraphCanvas({
     }
     let cancelled = false;
     setResolution(null);
-    resolveImplementation(canonicalCapability(selectedCapability))
+    resolveImplementation(selectedCapability)
       .then((outcome) => {
         if (!cancelled) setResolution(outcome);
       })

@@ -8,7 +8,7 @@
 
 use std::sync::OnceLock;
 
-use helixflow_graph::semantics::{NodeSemanticsEntry, canonical_capability};
+use helixflow_graph::semantics::NodeSemanticsEntry;
 use helixflow_graph::{ExecutionPlan, ResolvedStepBinding};
 use helixflow_registry::catalog::{CatalogSnapshot, ImplementationSelection, ImplementationTarget};
 use helixflow_registry::catalog_seed::builtin_catalog;
@@ -32,7 +32,7 @@ pub fn resolve_step_binding(
     connector_id: &str,
     semantics: Option<&NodeSemanticsEntry>,
 ) -> Result<ResolvedStepBinding, (String, String)> {
-    let capability_id = canonical_capability(legacy_capability).to_owned();
+    let capability_id = legacy_capability.to_owned();
     let availability: ConnectorAvailability = BTreeMap::from([(connector_id.to_owned(), true)]);
     let resolver = CapabilityResolver::new(catalog);
 
