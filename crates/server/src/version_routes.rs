@@ -9,6 +9,7 @@ use serde_json::Value;
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
 use crate::version_file_consistency::read_version_graph;
+use crate::version_semantics::derive_semantics_json;
 use crate::workspace_state::workspace_state_value;
 
 pub(crate) async fn export_workflow_version(
@@ -117,9 +118,10 @@ async fn create_restore_version(
     target: &VersionRecord,
     action: RestoreAction,
 ) -> Result<VersionRecord, ApiError> {
-    read_version_graph(&state.data_dir, target)
+    let target_graph = read_version_graph(&state.data_dir, target)
         .await
         .map_err(|error| ApiError::server_error(error.to_string()))?;
+    let semantics_json = derive_semantics_json(target, &target_graph, &target_graph)?;
     let label = match action {
         RestoreAction::Undo => format!("Undo to {}", target.label),
         RestoreAction::Restore => format!("Restore {}", target.label),
@@ -134,7 +136,7 @@ async fn create_restore_version(
                 graph_path: &target.graph_path,
                 graph_hash: &target.graph_hash,
                 parent_id: Some(&current.id),
-                semantics_json: target.semantics_json.as_deref(),
+                semantics_json: semantics_json.as_deref(),
             },
             &current.id,
         )

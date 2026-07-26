@@ -1,3 +1,6 @@
+use std::collections::BTreeMap;
+
+use helixflow_graph::semantics::NodeSemanticsEntry;
 use helixflow_graph::{GraphService, WorkflowGraph};
 use helixflow_registry::NodeRegistry;
 use helixflow_store::VersionRecord;
@@ -39,12 +42,40 @@ pub(crate) fn validate_migration_candidate(graph: &WorkflowGraph) -> Result<(), 
         .map_err(|error| error.to_string())
 }
 
+pub(crate) fn canonical_semantics_graph(
+    graph: &WorkflowGraph,
+    sidecar_json: Option<&str>,
+) -> Result<Option<WorkflowGraph>, String> {
+    let embedded = graph.catalog_revision.is_some()
+        || graph.nodes.values().any(|node| node.semantics.is_some());
+    if embedded {
+        return Ok(Some(graph.clone()));
+    }
+    let Some(encoded) = sidecar_json else {
+        return Ok(None);
+    };
+    let semantics: BTreeMap<String, NodeSemanticsEntry> =
+        serde_json::from_str(encoded).map_err(|error| error.to_string())?;
+    let mut layered = graph.clone();
+    layered.catalog_revision = Some(shared_catalog().catalog_revision.clone());
+    for (node_id, entry) in semantics {
+        let node = layered
+            .nodes
+            .get_mut(&node_id)
+            .ok_or_else(|| format!("semantics references unknown node `{node_id}`"))?;
+        node.semantics = Some(entry);
+    }
+    Ok(Some(layered))
+}
+
 pub(crate) fn derive_semantics_json(
-    source: &VersionRecord,
+    _source: &VersionRecord,
     _before: &WorkflowGraph,
     after: &WorkflowGraph,
 ) -> Result<Option<String>, ApiError> {
-    if source.semantics_json.is_none() {
+    let embedded = after.catalog_revision.is_some()
+        || after.nodes.values().any(|node| node.semantics.is_some());
+    if !embedded {
         return Ok(None);
     }
     validate_migration_candidate(after).map_err(|error| {

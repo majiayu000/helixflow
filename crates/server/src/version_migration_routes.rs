@@ -5,8 +5,7 @@ use axum::{
     extract::{Path, State},
 };
 use helixflow_graph::semantics::{
-    MIGRATION_VERSION, MigrationAction, MigrationReasonCode, NodeSemanticsEntry,
-    migrate_v1_for_connector,
+    MIGRATION_VERSION, MigrationAction, MigrationReasonCode, migrate_v1_for_connector,
 };
 use helixflow_graph::{GraphService, WorkflowGraph};
 use helixflow_registry::NodeRegistry;
@@ -24,7 +23,9 @@ use crate::catalog_routes::shared_catalog;
 use crate::version_file_consistency::{
     CandidateKind, VersionFileCandidate, VersionFileConsistencyError, read_version_graph,
 };
-use crate::version_semantics::{validate_legacy_migration_source, validate_migration_candidate};
+use crate::version_semantics::{
+    canonical_semantics_graph, validate_legacy_migration_source, validate_migration_candidate,
+};
 use crate::workspace_state::workspace_state_value;
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -334,35 +335,10 @@ async fn assess_current_version(
         }
     };
 
-    if let Some(semantics_json) = version.semantics_json.as_deref() {
-        let semantics: BTreeMap<String, NodeSemanticsEntry> =
-            match serde_json::from_str(semantics_json) {
-                Ok(semantics) => semantics,
-                Err(_) => {
-                    let report = semantics_failure_report(
-                        state,
-                        workspace_id,
-                        version_id,
-                        &version,
-                        graph.schema_version,
-                        workspace_connector_id,
-                        VersionMigrationReasonCode::SemanticsInvalid,
-                    )?;
-                    if persist {
-                        persist_assessment(state, &report).await?;
-                    }
-                    return Ok(Assessment {
-                        report,
-                        migrated: None,
-                    });
-                }
-            };
-        if semantics != graph.collected_semantics()
-            || graph
-                .validate_semantics(&GraphService::new(NodeRegistry::builtin()), catalog)
-                .is_err()
-        {
-            let report = semantics_failure_report(
+    let canonical = match canonical_semantics_graph(&graph, version.semantics_json.as_deref()) {
+        Ok(canonical) => canonical,
+        Err(_) => {
+            return validation_failure_assessment(
                 state,
                 workspace_id,
                 version_id,
@@ -370,14 +346,24 @@ async fn assess_current_version(
                 graph.schema_version,
                 workspace_connector_id,
                 VersionMigrationReasonCode::SemanticsInvalid,
-            )?;
-            if persist {
-                persist_assessment(state, &report).await?;
-            }
-            return Ok(Assessment {
-                report,
-                migrated: None,
-            });
+                persist,
+            )
+            .await;
+        }
+    };
+    if let Some(canonical) = canonical {
+        if validate_migration_candidate(&canonical).is_err() {
+            return validation_failure_assessment(
+                state,
+                workspace_id,
+                version_id,
+                &version,
+                graph.schema_version,
+                workspace_connector_id,
+                VersionMigrationReasonCode::SemanticsInvalid,
+                persist,
+            )
+            .await;
         }
         let report = finalize_report(VersionMigrationReport {
             status: VersionMigrationStatus::AlreadyMigrated,

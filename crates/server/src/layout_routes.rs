@@ -15,6 +15,7 @@ use crate::app_state::AppState;
 use crate::version_file_consistency::{
     CandidateKind, VersionFileCandidate, VersionFileConsistencyError, read_version_graph,
 };
+use crate::version_semantics::derive_semantics_json;
 use crate::workspace_state::workspace_state_value;
 
 #[derive(Debug, Deserialize)]
@@ -122,6 +123,7 @@ async fn save_workspace_layout_inner(
     graph_service
         .validate_graph(&moved_graph)
         .map_err(graph_layout_error)?;
+    let semantics_json = derive_semantics_json(&current, &current_graph, &moved_graph)?;
     let mut candidate =
         VersionFileCandidate::from_graph(&workspace_id, CandidateKind::Layout, &moved_graph)
             .map_err(candidate_error)?;
@@ -147,7 +149,7 @@ async fn save_workspace_layout_inner(
                 graph_path: &graph_path,
                 graph_hash: &graph_hash,
                 parent_id: Some(current_version_id),
-                semantics_json: current.semantics_json.as_deref(),
+                semantics_json: semantics_json.as_deref(),
             },
             current_version_id,
         )

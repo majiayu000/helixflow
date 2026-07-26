@@ -74,7 +74,7 @@ async fn dry_run_apply_and_lost_response_replay_use_server_truth() {
             GraphNode {
                 node_type: "image.generate".to_owned(),
                 title: "Image".to_owned(),
-                params: json!({"prompt":"test","aspect_ratio":"1:1"}),
+                params: json!({"prompt":"test","aspect_ratio":"1:1","model":"nano banana"}),
                 pos: [0.0, 0.0],
                 size: None,
                 semantics: None,
@@ -225,14 +225,19 @@ async fn dry_run_apply_and_lost_response_replay_use_server_truth() {
         .as_str()
         .expect("target id")
         .to_owned();
-    assert!(
-        store
-            .version(&target_id)
-            .await
-            .expect("target")
-            .semantics_json
-            .is_some()
-    );
+    let target = store.version(&target_id).await.expect("target");
+    let target_semantics = target.semantics_json.clone().expect("target semantics");
+    let target_graph = crate::version_file_consistency::read_version_graph(&data_dir, &target)
+        .await
+        .expect("target graph");
+    assert!(matches!(
+        target_graph.nodes["image"]
+            .semantics
+            .as_ref()
+            .expect("embedded semantics")
+            .implementation,
+        helixflow_registry::catalog::ImplementationSelection::Pinned { .. }
+    ));
     assert!(
         store
             .version(&source.id)
@@ -241,6 +246,32 @@ async fn dry_run_apply_and_lost_response_replay_use_server_truth() {
             .semantics_json
             .is_none()
     );
+
+    sqlx::query("UPDATE versions SET semantics_json = NULL WHERE id = ?")
+        .bind(&target_id)
+        .execute(store.pool())
+        .await
+        .expect("clear derived sidecar");
+    let embedded_only: Value = client
+        .post(format!(
+            "http://{address}/api/workspaces/{}/versions/{target_id}/migration/dry-run",
+            workspace.id
+        ))
+        .send()
+        .await
+        .expect("embedded-only dry-run")
+        .error_for_status()
+        .expect("embedded-only status")
+        .json()
+        .await
+        .expect("embedded-only json");
+    assert_eq!(embedded_only["status"], "already_migrated");
+    sqlx::query("UPDATE versions SET semantics_json = ? WHERE id = ?")
+        .bind(&target_semantics)
+        .bind(&target_id)
+        .execute(store.pool())
+        .await
+        .expect("restore derived sidecar");
 
     let layout: Value = client
         .post(format!(

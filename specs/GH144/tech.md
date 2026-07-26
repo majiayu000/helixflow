@@ -10,45 +10,101 @@ GH-144
 
 ## Codebase Context
 
-| Area | Files | Why relevant |
+| Area | Files | Contract |
 | --- | --- | --- |
-| Migrator | `crates/graph/src/graph_v2.rs::migrate_v1_to_v2` | 已有确定性迁移 + `MigrationReport`（SP130-T2） |
-| 版本文件 | `crates/server/src/version_file_consistency.rs` | `VersionFileCandidate::from_graph` + `publish_all` 原子发布，新增 `CandidateKind::MigratedGraph` |
-| 版本创建 | `crates/store/src/version_records.rs::create_version_after` | expected-current 并发守卫；`NewVersion.semantics_json`（T6） |
-| 语义层 | `versions.semantics_json`（migration 0006） | apply 持久化落点；非 NULL 即"已迁移" |
-| 路由 | `crates/server/src/main.rs` | `POST /api/workspaces/{id}/graph-migration/{dry-run,apply}` |
-| UI | `web/src/components/top-bar.tsx` + 新 `migration-panel.tsx` | 入口与面板 |
+| Canonical graph | `crates/graph/src/semantics.rs` | GH145 node-embedded semantics；`migrate_v1_for_connector` 输出 typed、connector-bound report |
+| Persistence | `crates/store/migrations/0007_version_migration.sql`, `version_migration_records.rs` | assessment、operation audit、`source=migration` 与 current/connector CAS |
+| API | `crates/server/src/version_migration_routes.rs` | version-bound dry-run/apply、canonical report hash、replay-first |
+| Derived writers | `version_semantics.rs`, layout/ops/proposal/version routes | embedded truth 校验与 sidecar 派生索引 |
+| UI data | `web/src/version-migration-types.ts`, `api-version-migration.ts`, `store-version-migration.ts` | 独立 Zod DTO/API/Zustand 状态机 |
+| UI entry | `web/src/components/version-migration-panel.tsx`, `run-panels.tsx` | version history 邻近入口与显式确认 |
 
-## 设计方案
+## API Contract
 
-- `crates/server/src/migration_routes.rs`：
-  - `dry-run`：取 workspace 当前版本；`semantics_json` 非 NULL → alreadyMigrated；
-    否则读图 → `migrate_v1_to_v2(graph, builtin registry, run shared_catalog)` →
-    报告（camelCase，含逐节点 action 与计数）。纯读。
-  - `apply`：同判定；resolvable → `VersionFileCandidate::from_graph(MigratedGraph)`
-    发布 → `create_version_after`（label `v1→v2 migration`、source manual、
-    semantics_json=Some、expected_current=当前版本）→ 返回新版本 id + 报告。
-    needs_resolution → 409 `MIGRATION_NEEDS_RESOLUTION` + 报告。
-- 幂等由"当前版本已带语义层"判定承担；并发由 store 的 expected-current 承担。
-- UI：TopBar 在当前版本无语义层时显示"迁移"入口；`MigrationPanel` 拉 dry-run，
-  展示计数 + 节点/原因列表，确认后 apply 并刷新 workspace state。
+### Dry-run
+
+`POST /api/workspaces/{workspace_id}/versions/{version_id}/migration/dry-run`
+
+server 验证 path version 是 workspace current，读取并校验 graph file，再按以下顺序：
+
+1. 若 graph 包含 embedded semantics 或 catalog revision，使用
+   `WorkflowGraph::validate_semantics`；合法即 `already_migrated`。
+2. 若仅有 legacy sidecar，构造只用于验证的 embedded view；它是兼容输入，不覆盖
+   embedded truth。
+3. 否则验证 legacy structural graph（校验视图只移除合法 string `params.model`），再用
+   current workspace connector 调用 `migrate_v1_for_connector`。
+4. 验证 candidate embedded semantics，映射 typed node results，计算不含
+   `applyEnabled` 的 canonical `reportHash`。
+5. 追加只含 stable identity、status/code/count 的 assessment。
+
+响应字段使用 camelCase；reason code 使用 SCREAMING_SNAKE_CASE。
+
+### Apply
+
+`POST /api/workspaces/{workspace_id}/versions/{version_id}/migration/apply`
+
+请求包含 `operationId`、`reportHash`、`sourceGraphHash`、`catalogRevision`、
+`workspaceConnectorId`、`migrationVersion`。
+
+执行顺序：
+
+1. 计算 fingerprint，并先查询 `(workspace_id, operation_id)`；同输入直接返回原 target，
+   不读取 current、不重算报告、不发布 candidate。
+2. replay miss 后检查 `HELIXFLOW_V1_MIGRATION_APPLY`。
+3. 重算 dry-run；先检查 connector identity，再检查全部 report precondition。
+4. 发布 `CandidateKind::Migration` 的 canonical embedded graph。
+5. `Store::apply_version_migration` 在单 transaction 中：
+   - 二次 operation lookup；
+   - 插入 `source=migration` target；
+   - `WHERE cur_version_id = ? AND runtime_provider_id IS ?` 推进 current；
+   - 插入成功 migration audit；
+   - commit。
+6. commit 后 mark candidate；任何 store error 执行引用感知 cleanup。cleanup 失败不可吞掉。
+
+## Persistence
+
+0007 通过 table rebuild 扩展 `versions.source` CHECK，保留旧 rows、FK、index 和
+`semantics_json`。新增：
+
+- `version_migration_assessments`：append-only、secret-free 的 dry-run/conflict 聚合。
+- `version_migrations`：唯一 `(workspace_id, operation_id)`，记录 fingerprint、
+  source/target graph identity、migration/catalog/connector/report identity 与时间。
+
+`semantics_json` 是从 embedded nodes 收集的派生索引。migration status 不以该列是否
+为 NULL 判断；runtime 也优先读取 embedded semantics。
+
+## Derived Version Writers
+
+- layout：从 moved embedded graph 重建 sidecar。
+- restore/undo：验证 target embedded graph并重建 sidecar。
+- ops/manual proposal/agent proposal：验证 edited graph；删除 node 同步删除 semantics，
+  新增或重类型 executable 没有 embedded semantics 时返回 conflict。
+- legacy graph 没有 embedded semantics 时 sidecar 保持 NULL，不制造假的 v2。
+
+## Frontend State Machine
+
+- dry-run 携带 AbortSignal，workspace/version/connector 改变后丢弃 stale response。
+- apply 不使用 AbortSignal；网络/不确定 5xx 保留原 context、report 与 operation ID，
+  retry 必须复用同一 ID。
+- 409、确定 4xx 与 apply-disabled 503 清除 pending 并显示 conflict/failed。
+- apply 在其他 context 可见时晚到成功，缓存 target 与 `workspaceState`；返回原 context
+  后 hydrate，禁止覆盖当前其他 workspace。
+- panel 直接使用 server `applyEnabled`，二次点击确认，状态区域使用 `aria-live`。
 
 ## Product-to-Test Mapping
 
 | Invariant | Verification |
 | --- | --- |
-| 1 dry-run 确定性/零写入 | route 测试：两次调用报告相等；版本数不变 |
-| 2 needs_resolution 拒绝 | 带无法解析模型的图 → 409 + reason，无新版本 |
-| 3 幂等 | apply 两次 → 第二次 alreadyMigrated，版本数不变 |
-| 4 原子/并发 | expected-current 冲突路径（store 已有测试覆盖守卫） |
-| 5 topology 不变 | 迁移前后 nodes/edges 对比 |
+| connector-bound typed migration | graph semantics tests + server HTTP integration |
+| embedded canonical detection | embedded-only dry-run returns already_migrated |
+| atomic audit/replay/CAS | store version migration tests |
+| source immutability/candidate cleanup | server/store integration tests |
+| derived writer semantics | layout/ops/restore/agent proposal integration |
+| UI unknown/context recovery | `web/src/version-migration.test.tsx` |
 
-## 风险
+## 风险与回滚
 
-- Security：只读报告不含敏感字段；apply 走既有鉴权层。
-- Compatibility：新版本追加，不改写历史；回滚 = restore。
-- Maintenance：复用 migrator 与候选文件机制，无新持久化面（除 CandidateKind 枚举值）。
-
-## 回滚方案
-
-apply 产物是普通版本：restore 原版本即回滚；无 flag。
+- Security：不持久化 graph payload/raw params/secret；错误摘要稳定。
+- Concurrency：current 与 connector 由同一 SQL CAS 封闭 assessment 后的竞态。
+- Compatibility：保留 sidecar-only runtime fallback，但新写入以 embedded graph 为真相。
+- Rollback：关闭 `HELIXFLOW_V1_MIGRATION_APPLY`；不删除已提交 migration version。
