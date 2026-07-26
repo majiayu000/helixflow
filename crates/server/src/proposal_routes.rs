@@ -727,6 +727,7 @@ mod tests {
                         params: json!({ "text": "make a product clip" }),
                         pos: [0.0, 0.0],
                         size: None,
+                        semantics: None,
                     },
                 ),
                 (
@@ -737,6 +738,7 @@ mod tests {
                         params: json!({ "style": "product" }),
                         pos: [220.0, 0.0],
                         size: None,
+                        semantics: None,
                     },
                 ),
                 (
@@ -751,6 +753,7 @@ mod tests {
                         }),
                         pos: [440.0, 0.0],
                         size: None,
+                        semantics: None,
                     },
                 ),
             ]),
@@ -766,6 +769,7 @@ mod tests {
                     edge_type: "text".to_owned(),
                 },
             ],
+            catalog_revision: None,
         }
     }
 

@@ -2,7 +2,7 @@
 
 **Describe what you want. Get a working AI workflow.**
 
-Helixflow is a local-first AI workflow orchestrator: tell the Agent what to generate in plain language, and it builds and wires the node graph for you — then runs it through real model providers, watches the result, and fixes its own failures. You never have to hand-wire nodes; you don't even have to review the Agent's edits unless you want to.
+Helixflow is a local-first AI workflow orchestrator: tell the Agent what to generate in plain language, and it builds and wires the node graph for you — then runs it through real model providers, retries failures within budget, and repairs the graph when you ask it to debug. You never have to hand-wire nodes; you don't even have to review the Agent's edits unless you want to.
 
 ![Helixflow workbench](docs/media/workbench.png)
 
@@ -11,9 +11,9 @@ Helixflow is a local-first AI workflow orchestrator: tell the Agent what to gene
 Most AI workflow tools make *you* wire the nodes. In Helixflow the Agent does the wiring:
 
 - **From prompt to pipeline** — "make me a GPT Image 2 + Seedance 2 workflow" produces a wired, runnable graph in one turn. The Agent's edits are auto-applied as validated transactions; manual node editing stays available and the Agent builds on top of your changes instead of fighting them.
-- **Self-healing runs** — failed runs get bounded automatic retries (`HELIXFLOW_RUN_MAX_RETRIES`); the Agent reads the error and repairs the graph, closing the edit → run → error → fix loop on its own.
+- **Self-healing runs** — failed runs get bounded automatic retries (`HELIXFLOW_RUN_MAX_RETRIES`), cost-gated like any other run: a retry without a cost estimate or above your budget waits for confirmation instead of spending. When a retry isn't enough, ask the Agent why the run failed and it reads the error and repairs the graph.
 - **Autonomy with a seatbelt, not a leash** — every Agent edit is an immutable version, so full rollback is always one click away; and runs are cost-estimated first, so anything above your USD threshold pauses for confirmation while everything below it just runs. Trust the Agent by default, audit it when you care.
-- **Local-first & fail-closed** — SQLite + local storage, binds to loopback by default, refuses to start with an unconfigured provider, and mock mode requires an explicit double opt-in.
+- **Local-first & fail-closed** — SQLite + local storage, binds to loopback by default, refuses to execute runs while the provider is unconfigured, and mock mode requires an explicit double opt-in.
 
 The name combines "helix" and "flow": each Agent edit → run → error → fix loop spirals the result tighter.
 
@@ -47,7 +47,7 @@ Health check: `GET /api/ready` verifies database, storage, and provider.
 ```
 chat → Agent builds/edits the graph (atomic version commit) → cost-gated run → outputs
                      ↑                                                    |
-                     └—— self-repair on failure / one-click rollback ←————┘
+                     └— bounded retry / Agent debug / one-click rollback ←┘
 ```
 
 - **Frontend**: React 19 + TypeScript + Vite — chat pane, node canvas, version history, run dock.

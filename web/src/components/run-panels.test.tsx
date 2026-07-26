@@ -88,3 +88,37 @@ describe('HistoryPanel navigation lock', () => {
     expect(markup.match(/class="workspace-history-row[^"]*" disabled=""/g)).toHaveLength(2);
   });
 });
+
+describe('HistoryPanel version source badge', () => {
+  it('labels version entries by structured source and skips entries without one', () => {
+    const markup = renderToStaticMarkup(
+      <HistoryPanel
+        busy={false}
+        currentConnectorId="atlas"
+        currentVersionId="ver_a"
+        currentWorkspaceId="ws_a"
+        history={[
+          { id: 'ver_a', kind: 'version', label: 'Base', time: 'unix:1', summary: 'manual graph', source: 'manual' },
+          { id: 'ver_b', kind: 'version', label: 'Agent edit', time: 'unix:2', summary: 'proposal graph', source: 'proposal' },
+          { id: 'ver_c', kind: 'version', label: 'Rollback', time: 'unix:3', summary: 'restore graph', source: 'restore' },
+          { id: 'run_a', kind: 'run', label: 'Run', time: 'unix:4', summary: 'succeeded' },
+        ]}
+        onClose={noop}
+        onOpenWorkspace={noop}
+        onMigrationApplied={noop}
+        onRestoreVersion={noop}
+        open
+        workspaceListError={null}
+        workspaces={[]}
+      />,
+    );
+
+    expect(markup).toContain('data-source="manual"');
+    expect(markup).toContain('data-source="proposal"');
+    expect(markup).toContain('data-source="restore"');
+    expect(markup).toContain('>手动<');
+    expect(markup).toContain('>Agent<');
+    expect(markup).toContain('>回滚<');
+    expect(markup.match(/history-source/g)).toHaveLength(3);
+  });
+});

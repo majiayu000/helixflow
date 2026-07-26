@@ -67,6 +67,15 @@ pub(crate) fn diff(current: &WorkflowGraph, target: &WorkflowGraph) -> Vec<Propo
                         pos: node.pos,
                     });
                 }
+                // Embedded semantics converge explicitly (GH145): a kept node
+                // whose capability binding changed must not retain the stale
+                // entry after apply.
+                if existing.semantics != node.semantics {
+                    ops.push(ProposalOp::SetSemantics {
+                        id: node_id.clone(),
+                        semantics: node.semantics.clone(),
+                    });
+                }
             }
         }
     }

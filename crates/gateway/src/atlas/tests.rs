@@ -29,7 +29,7 @@ async fn atlas_estimates_supported_capabilities() {
         "test-key".to_owned(),
         DEFAULT_ATLAS_API_BASE.to_owned(),
     ));
-    for capability in ["prompt_writer", "image_generate", "text_to_video"] {
+    for capability in ["prompt_writer", "text_to_image", "text_to_video"] {
         let req = request(capability, json!({ "prompt": "hello" }));
         let estimate = provider.estimate(req).await.expect("estimate");
         assert_eq!(estimate.currency, "USD");
@@ -49,7 +49,7 @@ async fn atlas_request_failures_redact_auth_material() -> Result<(), Box<dyn std
 
     let result = provider
         .invoke(request(
-            "image_generate",
+            "text_to_image",
             json!({ "prompt": "hello", "aspect_ratio": "1:1" }),
         ))
         .await;
@@ -71,7 +71,7 @@ async fn gh130_failclosed_invokes_require_resolved_operation() {
         "test-key".to_owned(),
         DEFAULT_ATLAS_API_BASE.to_owned(),
     ));
-    for capability in ["prompt_writer", "image_generate", "text_to_video"] {
+    for capability in ["prompt_writer", "text_to_image", "text_to_video"] {
         let err = provider
             .invoke(unresolved_request(
                 capability,
@@ -101,7 +101,7 @@ async fn gh130_resolved_operation_drives_request_model() -> Result<(), Box<dyn s
     ));
     let result = provider
         .invoke(request(
-            "image_generate",
+            "text_to_image",
             json!({ "prompt": "hello", "aspect_ratio": "1:1" }),
         ))
         .await
@@ -117,7 +117,7 @@ async fn gh130_resolved_operation_drives_request_model() -> Result<(), Box<dyn s
 fn request(capability: &str, params: Value) -> ProviderRequest {
     let operation_id = match capability {
         "prompt_writer" => "deepseek-ai/DeepSeek-V3-0324",
-        "image_generate" => "google/nano-banana-2/text-to-image",
+        "text_to_image" => "google/nano-banana-2/text-to-image",
         _ => "bytedance/seedance-v1.5-pro/text-to-video-fast",
     };
     ProviderRequest {
@@ -196,4 +196,27 @@ async fn read_full_request(stream: &mut tokio::net::TcpStream) -> std::io::Resul
         }
     }
     Ok(String::from_utf8_lossy(&buf).to_string())
+}
+
+#[tokio::test]
+async fn atlas_rejects_legacy_capability_id_from_pre_rename_runs() {
+    // Pre-GH145 plans carry `image_generate`; retries fail explicitly and
+    // never silently swap to `text_to_image` (product invariant 2).
+    let provider = AtlasProvider::new(ApiProviderConfig::atlas(
+        "test-key".to_owned(),
+        DEFAULT_ATLAS_API_BASE.to_owned(),
+    ));
+
+    let err = provider
+        .invoke(request(
+            "image_generate",
+            json!({ "prompt": "hello", "aspect_ratio": "1:1" }),
+        ))
+        .await
+        .expect_err("legacy capability id");
+
+    assert_eq!(
+        err,
+        ProviderError::UnsupportedCapability("image_generate".to_owned())
+    );
 }

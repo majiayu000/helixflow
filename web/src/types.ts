@@ -46,6 +46,9 @@ export const ChatMessageKindSchema = z.union([
 
 export const WorkflowGraphSchema = z.object({
   schema_version: z.number(),
+  // GH145: graphs embed their semantic layer; keep both fields through
+  // parse so exports stay lossless.
+  catalog_revision: z.string().optional(),
   nodes: z.record(
     z.string(),
     z.object({
@@ -54,6 +57,7 @@ export const WorkflowGraphSchema = z.object({
       params: z.unknown(),
       pos: z.tuple([z.number(), z.number()]),
       size: z.tuple([z.number(), z.number()]).optional(),
+      semantics: z.unknown().optional(),
     }),
   ),
   edges: z.array(
@@ -492,6 +496,7 @@ export const WorkbenchStateSchema = z.object({
       label: z.string(),
       time: z.string(),
       summary: z.string(),
+      source: z.enum(['manual', 'proposal', 'restore', 'migration']).optional(),
     }),
   ),
   pendingConfirmation: PendingConfirmationSchema.nullable(),

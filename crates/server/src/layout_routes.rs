@@ -741,6 +741,7 @@ mod tests {
                         params: json!({ "text": "make a product clip" }),
                         pos: [0.0, 0.0],
                         size: None,
+                        semantics: None,
                     },
                 ),
                 (
@@ -755,6 +756,7 @@ mod tests {
                         }),
                         pos: [440.0, 0.0],
                         size: None,
+                        semantics: None,
                     },
                 ),
             ]),
@@ -763,6 +765,7 @@ mod tests {
                 to: ["video".to_owned(), "prompt".to_owned()],
                 edge_type: "text".to_owned(),
             }],
+            catalog_revision: None,
         }
     }
 

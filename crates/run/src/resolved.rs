@@ -8,7 +8,7 @@
 
 use std::sync::OnceLock;
 
-use helixflow_graph::graph_v2::{NodeSemanticsEntry, canonical_capability};
+use helixflow_graph::semantics::NodeSemanticsEntry;
 use helixflow_graph::{ExecutionPlan, ResolvedStepBinding};
 use helixflow_registry::catalog::{CatalogSnapshot, ImplementationSelection, ImplementationTarget};
 use helixflow_registry::catalog_seed::builtin_catalog;
@@ -32,7 +32,7 @@ pub fn resolve_step_binding(
     connector_id: &str,
     semantics: Option<&NodeSemanticsEntry>,
 ) -> Result<ResolvedStepBinding, (String, String)> {
-    let capability_id = canonical_capability(legacy_capability).to_owned();
+    let capability_id = legacy_capability.to_owned();
     let availability: ConnectorAvailability = BTreeMap::from([(connector_id.to_owned(), true)]);
     let resolver = CapabilityResolver::new(catalog);
 
@@ -104,12 +104,19 @@ pub fn resolve_step_binding_for(
     resolve_step_binding(shared_catalog(), legacy_capability, connector_id, semantics)
 }
 
-/// Loads the persisted semantic layer for a version, if any. Legacy v1
-/// versions return `None` and resolve through configured policy defaults.
-pub async fn load_version_semantics(
+/// Loads the semantic layer for a version. Node-embedded semantics are the
+/// canonical source (GH145); the `versions.semantics_json` column stays as a
+/// fallback for versions migrated before the schema merge. Legacy versions
+/// with neither return `None` and resolve through configured policy defaults.
+pub async fn version_semantics(
+    graph: &helixflow_graph::WorkflowGraph,
     store: &helixflow_store::Store,
     version_id: &str,
 ) -> Result<Option<BTreeMap<String, NodeSemanticsEntry>>, RunError> {
+    let embedded = graph.collected_semantics();
+    if !embedded.is_empty() {
+        return Ok(Some(embedded));
+    }
     let version = store.version(version_id).await?;
     let Some(raw) = version.semantics_json.as_deref() else {
         return Ok(None);

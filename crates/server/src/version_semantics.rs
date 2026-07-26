@@ -1,64 +1,60 @@
-use std::collections::BTreeMap;
-
-use helixflow_graph::graph_v2::{GRAPH_SCHEMA_V2, NodeSemanticsEntry, WorkflowGraphV2};
 use helixflow_graph::{GraphService, WorkflowGraph};
 use helixflow_registry::NodeRegistry;
 use helixflow_store::VersionRecord;
-use serde_json::json;
 
 use crate::api_error::ApiError;
 use crate::catalog_routes::shared_catalog;
 
-pub(crate) fn derive_semantics_json(
-    source: &VersionRecord,
-    before: &WorkflowGraph,
-    after: &WorkflowGraph,
-) -> Result<Option<String>, ApiError> {
-    let Some(encoded) = source.semantics_json.as_deref() else {
-        return Ok(None);
-    };
-    let mut semantics: BTreeMap<String, NodeSemanticsEntry> = serde_json::from_str(encoded)
-        .map_err(|_| ApiError::conflict("source version semantics are invalid"))?;
-    let registry = NodeRegistry::builtin();
-
-    semantics.retain(|node_id, _| after.nodes.contains_key(node_id));
-    for (node_id, node) in &after.nodes {
-        let executable = registry
+pub(crate) fn validate_legacy_migration_source(graph: &WorkflowGraph) -> Result<(), String> {
+    let service = GraphService::new(NodeRegistry::builtin());
+    let mut validation = graph.clone();
+    for node in validation.nodes.values_mut() {
+        let executable = service
+            .registry()
             .definition(&node.node_type)
-            .map_err(|_| ApiError::conflict("derived graph contains an unknown node type"))?
-            .capability
+            .ok()
+            .and_then(|definition| definition.capability.as_ref())
             .is_some();
-        if executable {
-            let unchanged_type = before
-                .nodes
-                .get(node_id)
-                .is_some_and(|old| old.node_type == node.node_type);
-            if !unchanged_type || !semantics.contains_key(node_id) {
-                return Err(ApiError::conflict_with_details(
-                    "derived executable node requires explicit graph v2 semantics",
-                    json!({"code": "EXPLICIT_SEMANTICS_REQUIRED", "nodeId": node_id}),
-                ));
-            }
-        } else {
-            semantics.remove(node_id);
+        if executable
+            && node
+                .params
+                .get("model")
+                .is_some_and(serde_json::Value::is_string)
+            && let Some(params) = node.params.as_object_mut()
+        {
+            params.remove("model");
         }
     }
+    service
+        .validate_graph(&validation)
+        .map_err(|error| error.to_string())
+}
 
-    WorkflowGraphV2 {
-        schema_version: GRAPH_SCHEMA_V2,
-        catalog_revision: shared_catalog().catalog_revision.clone(),
-        base: after.clone(),
-        semantics: semantics.clone(),
+pub(crate) fn validate_migration_candidate(graph: &WorkflowGraph) -> Result<(), String> {
+    graph
+        .validate_semantics(
+            &GraphService::new(NodeRegistry::builtin()),
+            shared_catalog(),
+        )
+        .map_err(|error| error.to_string())
+}
+
+pub(crate) fn derive_semantics_json(
+    source: &VersionRecord,
+    _before: &WorkflowGraph,
+    after: &WorkflowGraph,
+) -> Result<Option<String>, ApiError> {
+    if source.semantics_json.is_none() {
+        return Ok(None);
     }
-    .validate(&GraphService::new(registry), shared_catalog())
-    .map_err(|error| {
+    validate_migration_candidate(after).map_err(|error| {
         ApiError::conflict_with_details(
-            "derived graph v2 semantics are invalid",
-            json!({"code": error.code()}),
+            "derived executable graph requires valid embedded semantics",
+            serde_json::json!({"code": "SEMANTICS_INVALID", "reason": error}),
         )
     })?;
 
-    serde_json::to_string(&semantics)
+    serde_json::to_string(&after.collected_semantics())
         .map(Some)
         .map_err(|error| ApiError::server_error(format!("encode derived semantics: {error}")))
 }

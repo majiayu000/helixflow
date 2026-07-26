@@ -108,7 +108,7 @@ impl AtlasProvider {
                     },
                 ),
                 (
-                    "image_generate".to_owned(),
+                    "text_to_image".to_owned(),
                     ProviderCapability {
                         artifact_kind: ArtifactKind::Image,
                         output_name: "image".to_owned(),
@@ -447,7 +447,7 @@ impl Provider for AtlasProvider {
         self.ensure_provider(&req)?;
         match req.capability.as_str() {
             "prompt_writer" => self.invoke_chat(req).await,
-            "image_generate" => self.invoke_image(req).await,
+            "text_to_image" => self.invoke_image(req).await,
             "text_to_video" => self.invoke_video(req).await,
             capability => Err(ProviderError::UnsupportedCapability(capability.to_owned())),
         }

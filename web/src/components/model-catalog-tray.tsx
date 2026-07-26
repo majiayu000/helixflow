@@ -27,7 +27,7 @@ export function ModelCatalogTray({
     const map = new Map<string, NodeDefinition>();
     for (const definition of nodeCatalog?.nodes ?? []) {
       if (definition.capability) {
-        map.set(canonicalCapability(definition.capability), definition);
+        map.set(definition.capability, definition);
       }
     }
     return map;
@@ -150,11 +150,6 @@ export function modelGroups(catalog: ModelCatalog): CatalogGroup[] {
       return { key: model.modelId, title: `${model.displayName} (${model.vendor})`, entries };
     })
     .filter((group) => group.entries.length > 0);
-}
-
-/// Mirrors the backend legacy→canonical capability rename (graph_v2).
-export function canonicalCapability(legacy: string): string {
-  return legacy === 'image_generate' ? 'text_to_image' : legacy;
 }
 
 function connectorLabel(binding: ModelCatalog['bindings'][number]): string {

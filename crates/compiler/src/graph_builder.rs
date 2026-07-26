@@ -2,9 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use helixflow_graph::graph_v2::{
-    GRAPH_SCHEMA_V2, NodeSemanticsEntry, WorkflowGraphV2, canonical_capability,
-};
+use helixflow_graph::semantics::NodeSemanticsEntry;
 use helixflow_graph::{GraphEdge, GraphNode, GraphService, WorkflowGraph, port_type_label};
 use helixflow_registry::PortType;
 use helixflow_registry::catalog::{CatalogSnapshot, ImplementationSelection};
@@ -32,7 +30,7 @@ fn node_type_for(capability_id: &str) -> Option<&'static str> {
 }
 
 pub(crate) struct BuiltGraph {
-    pub target: WorkflowGraphV2,
+    pub target: WorkflowGraph,
     pub resolved_stages: Vec<ResolvedStage>,
     pub layout_hints: Vec<LayoutHint>,
     pub diagnostics: Vec<String>,
@@ -49,7 +47,6 @@ pub(crate) fn build(
 
     let mut nodes = BTreeMap::new();
     let mut edges = Vec::new();
-    let mut semantics = BTreeMap::new();
     let mut resolved_stages = Vec::new();
     let mut layout_hints = Vec::new();
     let mut diagnostics = Vec::new();
@@ -92,7 +89,7 @@ pub(crate) fn build(
                     message: err.to_string(),
                 })?;
         debug_assert_eq!(
-            canonical_capability(definition.capability.as_deref().unwrap_or_default()),
+            definition.capability.as_deref().unwrap_or_default(),
             resolved.capability_id
         );
 
@@ -188,6 +185,7 @@ pub(crate) fn build(
                     params: serde_json::json!({ "text": value }),
                     pos: [0.0, 0.0],
                     size: None,
+                    semantics: None,
                 },
             );
             edges.push(GraphEdge {
@@ -244,7 +242,8 @@ pub(crate) fn build(
             )));
         }
 
-        // Step 6-7: stable ids and the semantic layer. Node id == stage id.
+        // Step 6-7: stable ids and the embedded semantic layer (GH145).
+        // Node id == stage id.
         let pos = [index as f32 * COLUMN_WIDTH, 0.0];
         nodes.insert(
             stage.stage_id.clone(),
@@ -254,23 +253,20 @@ pub(crate) fn build(
                 params: Value::Object(params),
                 pos,
                 size: None,
-            },
-        );
-        semantics.insert(
-            stage.stage_id.clone(),
-            NodeSemanticsEntry {
-                capability_id: resolved.capability_id.clone(),
-                mode: binding.mode.clone(),
-                implementation: match &stage.requested_model {
-                    Some(_) => ImplementationSelection::Pinned {
-                        requested_model_id: resolved.resolved_model_id.clone(),
-                        binding_id: resolved.binding_id.clone(),
+                semantics: Some(NodeSemanticsEntry {
+                    capability_id: resolved.capability_id.clone(),
+                    mode: binding.mode.clone(),
+                    implementation: match &stage.requested_model {
+                        Some(_) => ImplementationSelection::Pinned {
+                            requested_model_id: resolved.resolved_model_id.clone(),
+                            binding_id: resolved.binding_id.clone(),
+                        },
+                        None => ImplementationSelection::Policy {
+                            policy_id: "capability_default".to_owned(),
+                            constraints: Value::Object(Map::new()),
+                        },
                     },
-                    None => ImplementationSelection::Policy {
-                        policy_id: "capability_default".to_owned(),
-                        constraints: Value::Object(Map::new()),
-                    },
-                },
+                }),
             },
         );
         resolved_stages.push(ResolvedStage {
@@ -300,20 +296,16 @@ pub(crate) fn build(
         });
     }
 
-    let target = WorkflowGraphV2 {
-        schema_version: GRAPH_SCHEMA_V2,
-        catalog_revision: catalog.catalog_revision.clone(),
-        base: WorkflowGraph {
-            schema_version: 1,
-            nodes,
-            edges,
-        },
-        semantics,
+    let target = WorkflowGraph {
+        schema_version: 1,
+        catalog_revision: Some(catalog.catalog_revision.clone()),
+        nodes,
+        edges,
     };
     // Step 8: the assembled graph must pass full structural + semantic
     // validation before any proposal is derived from it.
     target
-        .validate(service, catalog)
+        .validate_semantics(service, catalog)
         .map_err(|err| CompileError::GraphInvalid {
             code: err.code(),
             message: err.to_string(),

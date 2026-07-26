@@ -71,13 +71,13 @@ const state: WorkbenchState = {
         enabled: true,
         status: 'healthy',
         message: 'mock provider ready',
-        capabilities: ['prompt_writer', 'image_generate', 'text_to_video'],
+        capabilities: ['prompt_writer', 'text_to_image', 'text_to_video'],
       },
     ],
     workflowBackends: [{ id: 'helixflow_graph', label: 'Helixflow Graph', status: 'healthy' }],
     apiConnectors: [
       { id: 'mock.prompt_writer', provider: 'mock', capability: 'prompt_writer', status: 'healthy' },
-      { id: 'mock.image_generate', provider: 'mock', capability: 'image_generate', status: 'healthy' },
+      { id: 'mock.text_to_image', provider: 'mock', capability: 'text_to_image', status: 'healthy' },
       { id: 'mock.text_to_video', provider: 'mock', capability: 'text_to_video', status: 'healthy' },
     ],
   },
@@ -414,7 +414,7 @@ describe('App', () => {
                 enabled: false,
                 status: 'unavailable',
                 message: 'Atlas credentials are not configured',
-                capabilities: ['image_generate'],
+                capabilities: ['text_to_image'],
               },
             ],
           },
@@ -1027,7 +1027,7 @@ describe('App', () => {
                 enabled: true,
                 status: 'healthy',
                 message: null,
-                capabilities: ['prompt_writer', 'image_generate', 'text_to_video'],
+                capabilities: ['prompt_writer', 'text_to_image', 'text_to_video'],
               },
             ],
           },
@@ -1280,8 +1280,8 @@ describe('App', () => {
     useWorkbenchStore.getState().setInitialState({
       ...state,
       history: [
-        { id: 'ver_base', kind: 'version', label: 'Base graph', time: '09:01', summary: 'manual graph' },
-        { id: 'ver_test_1', kind: 'version', label: 'Shorter clip', time: '09:05', summary: 'proposal graph' },
+        { id: 'ver_base', kind: 'version', label: 'Base graph', time: '09:01', summary: 'manual graph', source: 'manual' },
+        { id: 'ver_test_1', kind: 'version', label: 'Shorter clip', time: '09:05', summary: 'proposal graph', source: 'proposal' },
       ],
     });
 
@@ -1359,8 +1359,8 @@ describe('App', () => {
         currentWorkspaceId="ws_test"
         currentConnectorId="atlas"
         history={[
-          { id: 'ver_base', kind: 'version', label: 'Base graph', time: '09:01', summary: 'manual graph' },
-          { id: 'ver_current', kind: 'version', label: 'Current graph', time: '09:05', summary: 'proposal graph' },
+          { id: 'ver_base', kind: 'version', label: 'Base graph', time: '09:01', summary: 'manual graph', source: 'manual' },
+          { id: 'ver_current', kind: 'version', label: 'Current graph', time: '09:05', summary: 'proposal graph', source: 'proposal' },
         ]}
         onClose={() => undefined}
         onOpenWorkspace={() => undefined}
@@ -2459,6 +2459,7 @@ function restoredState(versionId: string, durationSec: number): WorkbenchState {
         label: 'Restore Base graph',
         time: '09:06',
         summary: 'restore graph',
+        source: 'restore',
       },
     ],
   };

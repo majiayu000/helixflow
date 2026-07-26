@@ -424,6 +424,7 @@ mod tests {
                         params: json!({ "text": "hello" }),
                         pos: [10.0, 20.0],
                         size: Some([260.0, 180.0]),
+                        semantics: None,
                     },
                 ),
                 (
@@ -434,6 +435,7 @@ mod tests {
                         params: json!({ "prompt": "hello", "duration_sec": 4 }),
                         pos: [300.0, 20.0],
                         size: None,
+                        semantics: None,
                     },
                 ),
             ]),
@@ -442,6 +444,7 @@ mod tests {
                 to: ["video".to_owned(), "prompt".to_owned()],
                 edge_type: "text".to_owned(),
             }],
+            catalog_revision: None,
         }
     }
 }

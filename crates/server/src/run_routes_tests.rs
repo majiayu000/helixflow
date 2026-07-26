@@ -441,9 +441,11 @@ fn sample_graph() -> WorkflowGraph {
                 params: json!({ "text": "launch teaser" }),
                 pos: [0.0, 0.0],
                 size: None,
+                semantics: None,
             },
         )]),
         edges: Vec::new(),
+        catalog_revision: None,
     }
 }
 
@@ -452,6 +454,7 @@ fn empty_graph() -> WorkflowGraph {
         schema_version: 1,
         nodes: BTreeMap::new(),
         edges: Vec::new(),
+        catalog_revision: None,
     }
 }
 
@@ -475,6 +478,7 @@ fn executable_graph_with_duration(duration_sec: u64) -> WorkflowGraph {
                     }),
                     pos: [0.0, 0.0],
                     size: None,
+                    semantics: None,
                 },
             ),
             (
@@ -485,6 +489,7 @@ fn executable_graph_with_duration(duration_sec: u64) -> WorkflowGraph {
                     params: json!({}),
                     pos: [240.0, 0.0],
                     size: None,
+                    semantics: None,
                 },
             ),
         ]),
@@ -493,6 +498,7 @@ fn executable_graph_with_duration(duration_sec: u64) -> WorkflowGraph {
             to: ["save".to_owned(), "artifact".to_owned()],
             edge_type: "artifact".to_owned(),
         }],
+        catalog_revision: None,
     }
 }
 

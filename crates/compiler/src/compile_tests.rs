@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use helixflow_graph::graph_v2::WorkflowGraphV2;
 use helixflow_graph::{GraphService, ProposalOp, WorkflowGraph};
 use helixflow_registry::NodeRegistry;
 use helixflow_registry::catalog::{
@@ -43,6 +42,7 @@ fn empty_graph() -> WorkflowGraph {
         schema_version: 1,
         nodes: BTreeMap::new(),
         edges: Vec::new(),
+        catalog_revision: None,
     }
 }
 
@@ -142,10 +142,10 @@ fn golden_nano_banana_seedance_compiles_to_single_chain() {
         &catalog,
     ));
 
-    assert_eq!(proposal.graph_schema_version, 2);
-    assert_eq!(proposal.target.base.nodes.len(), 2);
-    assert_eq!(proposal.target.base.edges.len(), 1);
-    let edge = &proposal.target.base.edges[0];
+    assert_eq!(proposal.graph_schema_version, 1);
+    assert_eq!(proposal.target.nodes.len(), 2);
+    assert_eq!(proposal.target.edges.len(), 1);
+    let edge = &proposal.target.edges[0];
     assert_eq!(edge.from, ["s1".to_owned(), "image".to_owned()]);
     assert_eq!(edge.to, ["s2".to_owned(), "image".to_owned()]);
 
@@ -189,10 +189,10 @@ fn golden_gpt_image_swap_changes_binding_only() {
 
     // Same edges, same node types — only the first stage's model/binding
     // differs. No code branch was added for the swap.
-    assert_eq!(nano.target.base.edges, gpt.target.base.edges);
+    assert_eq!(nano.target.edges, gpt.target.edges);
     assert_eq!(
-        nano.target.base.nodes["s1"].node_type,
-        gpt.target.base.nodes["s1"].node_type
+        nano.target.nodes["s1"].node_type,
+        gpt.target.nodes["s1"].node_type
     );
     let gpt_s1 = gpt
         .resolved_stages
@@ -212,22 +212,20 @@ fn golden_serial_chain_compiles_without_fanout() {
     let proposal = expect_compiled(compile_fixture("intent-serial-chain.json", &catalog));
 
     // 3 capability stages + 1 synthesized input.text feeding the writer.
-    assert_eq!(proposal.target.base.nodes.len(), 4);
-    assert_eq!(proposal.target.base.edges.len(), 3);
-    assert!(proposal.target.base.nodes.contains_key("s1-text-input"));
-    assert_eq!(proposal.target.semantics.len(), 3);
+    assert_eq!(proposal.target.nodes.len(), 4);
+    assert_eq!(proposal.target.edges.len(), 3);
+    assert!(proposal.target.nodes.contains_key("s1-text-input"));
+    assert_eq!(proposal.target.collected_semantics().len(), 3);
     // A chain: each node has at most one inbound and one outbound edge.
-    for node_id in proposal.target.base.nodes.keys() {
+    for node_id in proposal.target.nodes.keys() {
         let inbound = proposal
             .target
-            .base
             .edges
             .iter()
             .filter(|edge| &edge.to[0] == node_id)
             .count();
         let outbound = proposal
             .target
-            .base
             .edges
             .iter()
             .filter(|edge| &edge.from[0] == node_id)
@@ -241,11 +239,11 @@ fn golden_explicit_parallel_compiles_two_branches() {
     let catalog = golden_catalog();
     let proposal = expect_compiled(compile_fixture("intent-explicit-parallel.json", &catalog));
 
-    assert_eq!(proposal.target.base.nodes.len(), 4);
-    assert_eq!(proposal.target.base.edges.len(), 2);
+    assert_eq!(proposal.target.nodes.len(), 4);
+    assert_eq!(proposal.target.edges.len(), 2);
     // Branches land on distinct rows.
-    let y_a = proposal.target.base.nodes["a1"].pos[1];
-    let y_b = proposal.target.base.nodes["b1"].pos[1];
+    let y_a = proposal.target.nodes["a1"].pos[1];
+    let y_b = proposal.target.nodes["b1"].pos[1];
     assert_ne!(y_a, y_b);
 }
 
@@ -299,7 +297,7 @@ fn diff_against_matching_graph_is_empty_and_param_change_is_minimal() {
     let intent = fixture_intent("intent-nano-banana-seedance.json");
     let converged = expect_compiled(compile(
         &intent,
-        &proposal.target.base,
+        &proposal.target,
         &service(),
         &catalog,
         &all_available(&catalog),
@@ -315,7 +313,7 @@ fn diff_against_matching_graph_is_empty_and_param_change_is_minimal() {
         .insert("prompt".to_owned(), json!("a different product"));
     let changed = expect_compiled(compile(
         &intent_changed,
-        &proposal.target.base,
+        &proposal.target,
         &service(),
         &catalog,
         &all_available(&catalog),
@@ -377,15 +375,15 @@ fn port_type_mismatch_is_rejected() {
 }
 
 #[test]
-fn compiled_target_validates_as_v2() {
+fn compiled_target_roundtrips_and_validates_semantics() {
     let catalog = golden_catalog();
     let proposal = expect_compiled(compile_fixture("intent-serial-chain.json", &catalog));
-    let roundtrip: WorkflowGraphV2 =
+    let roundtrip: WorkflowGraph =
         serde_json::from_value(serde_json::to_value(&proposal.target).expect("serialize"))
             .expect("roundtrip");
     roundtrip
-        .validate(&service(), &catalog)
-        .expect("compiled graph is v2-valid");
+        .validate_semantics(&service(), &catalog)
+        .expect("compiled graph passes semantic validation");
 }
 
 #[test]
@@ -400,4 +398,57 @@ fn ambiguous_connector_availability_routes_to_clarify() {
         }
         CompileOutcome::Compiled(_) => panic!("must clarify when nothing is available"),
     }
+}
+
+#[test]
+fn model_swap_on_kept_node_emits_set_semantics() {
+    let catalog = golden_catalog();
+    let nano = expect_compiled(compile_fixture(
+        "intent-nano-banana-seedance.json",
+        &catalog,
+    ));
+
+    // Recompile the GPT variant against the applied nano graph: s1 keeps its
+    // node type, so the binding change must arrive as an explicit
+    // SetSemantics op instead of leaving the stale entry behind (GH145).
+    let gpt_intent = fixture_intent("intent-gpt-image-seedance.json");
+    let gpt = expect_compiled(compile(
+        &gpt_intent,
+        &nano.target,
+        &service(),
+        &catalog,
+        &all_available(&catalog),
+    ));
+
+    let semantics_ops: Vec<_> = gpt
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            ProposalOp::SetSemantics { id, semantics } => Some((id.as_str(), semantics)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(semantics_ops.len(), 1, "ops: {:?}", gpt.ops);
+    let (id, semantics) = &semantics_ops[0];
+    assert_eq!(*id, "s1");
+    let entry = semantics.as_ref().expect("entry set, not cleared");
+    match &entry.implementation {
+        helixflow_registry::catalog::ImplementationSelection::Pinned {
+            requested_model_id,
+            binding_id,
+        } => {
+            assert_eq!(requested_model_id, "openai/gpt-image-2");
+            assert_eq!(binding_id, "openai.gpt-image-2.text-to-image.atlas.v1");
+        }
+        other => panic!("expected pinned selection, got {other:?}"),
+    }
+
+    // Applying the ops converges the embedded semantics to the new target.
+    let applied = service()
+        .apply_ops(&nano.target, &gpt.ops)
+        .expect("apply ops");
+    assert_eq!(
+        applied.collected_semantics(),
+        gpt.target.collected_semantics()
+    );
 }

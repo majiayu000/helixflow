@@ -121,6 +121,7 @@ pub(crate) async fn compile_intent(
         schema_version: 1,
         nodes: Default::default(),
         edges: Vec::new(),
+        catalog_revision: None,
     });
 
     match compile(&request.intent, &base, &service, catalog, &availability) {

@@ -234,6 +234,7 @@ fn manual_op_to_proposal_op(
                     params,
                     pos,
                     size: None,
+                    semantics: None,
                 },
             })
         }
@@ -389,6 +390,7 @@ fn manual_title(op: &ProposalOp) -> String {
         ),
         ProposalOp::MoveNode { id, .. } => format!("Move node {id}"),
         ProposalOp::ResizeNode { id, .. } => format!("Resize node {id}"),
+        ProposalOp::SetSemantics { id, .. } => format!("Rebind node {id}"),
     }
 }
 

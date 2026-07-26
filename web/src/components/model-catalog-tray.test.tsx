@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import {
-  ModelCatalogTray,
-  canonicalCapability,
-  capabilityGroups,
-  modelGroups,
-} from './model-catalog-tray';
+import { ModelCatalogTray, capabilityGroups, modelGroups } from './model-catalog-tray';
 import type { ModelCatalog, NodeCatalog } from '../types';
 
 function modelCatalog(): ModelCatalog {
@@ -72,7 +67,7 @@ function nodeCatalog(): NodeCatalog {
         title: 'Generate Image',
         category: 'image',
         provider: null,
-        capability: 'image_generate',
+        capability: 'text_to_image',
         description: '',
         inputs: [],
         outputs: [],
@@ -84,11 +79,6 @@ function nodeCatalog(): NodeCatalog {
 }
 
 describe('model catalog projections', () => {
-  it('maps the legacy capability rename', () => {
-    expect(canonicalCapability('image_generate')).toBe('text_to_image');
-    expect(canonicalCapability('text_to_video')).toBe('text_to_video');
-  });
-
   it('groups by capability with default markers and connectors', () => {
     const groups = capabilityGroups(modelCatalog());
     const image = groups.find((group) => group.key === 'text_to_image');

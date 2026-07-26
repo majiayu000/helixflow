@@ -6,7 +6,9 @@ use helixflow_store::{NewVersion, Store, VersionRecord, VersionSource};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub mod graph_v2;
+pub mod semantics;
+
+use semantics::NodeSemanticsEntry;
 
 pub fn module_name() -> &'static str {
     "graph"
@@ -16,6 +18,10 @@ pub fn module_name() -> &'static str {
 #[serde(deny_unknown_fields)]
 pub struct WorkflowGraph {
     pub schema_version: u32,
+    /// Catalog revision the embedded node semantics were resolved against.
+    /// `None` on legacy graphs that carry no semantic layer yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_revision: Option<String>,
     pub nodes: BTreeMap<String, GraphNode>,
     pub edges: Vec<GraphEdge>,
 }
@@ -29,6 +35,11 @@ pub struct GraphNode {
     pub pos: [f32; 2],
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<[f32; 2]>,
+    /// Catalog-pinned semantic layer (GH145). `None` on legacy graphs and on
+    /// non-executable nodes; executable nodes without an entry resolve through
+    /// configured policy defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantics: Option<NodeSemanticsEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -278,6 +289,13 @@ impl GraphService {
                         .ok_or_else(|| GraphError::MissingNode(id.clone()))?;
                     node.size = Some(*size);
                 }
+                ProposalOp::SetSemantics { id, semantics } => {
+                    let node = graph
+                        .nodes
+                        .get_mut(id)
+                        .ok_or_else(|| GraphError::MissingNode(id.clone()))?;
+                    node.semantics = semantics.clone();
+                }
             }
         }
 
@@ -420,6 +438,13 @@ pub enum ProposalOp {
     ResizeNode {
         id: String,
         size: [f32; 2],
+    },
+    /// Replaces the embedded semantic layer of an existing node (GH145).
+    /// `None` clears the entry; the compiler emits this when a recompile
+    /// changes a kept node's capability binding.
+    SetSemantics {
+        id: String,
+        semantics: Option<NodeSemanticsEntry>,
     },
 }
 

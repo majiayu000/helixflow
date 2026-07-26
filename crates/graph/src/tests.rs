@@ -19,6 +19,7 @@ fn sample_graph() -> WorkflowGraph {
                     params: json!({ "text": "make a product clip" }),
                     pos: [0.0, 0.0],
                     size: None,
+                    semantics: None,
                 },
             ),
             (
@@ -29,6 +30,7 @@ fn sample_graph() -> WorkflowGraph {
                     params: json!({ "style": "product" }),
                     pos: [220.0, 0.0],
                     size: None,
+                    semantics: None,
                 },
             ),
             (
@@ -43,6 +45,7 @@ fn sample_graph() -> WorkflowGraph {
                     }),
                     pos: [440.0, 0.0],
                     size: None,
+                    semantics: None,
                 },
             ),
             (
@@ -53,6 +56,7 @@ fn sample_graph() -> WorkflowGraph {
                     params: json!({}),
                     pos: [660.0, 0.0],
                     size: None,
+                    semantics: None,
                 },
             ),
         ]),
@@ -73,6 +77,7 @@ fn sample_graph() -> WorkflowGraph {
                 edge_type: "artifact".to_string(),
             },
         ],
+        catalog_revision: None,
     }
 }
 
@@ -393,4 +398,57 @@ async fn store_backed_apply_rejects_stale_workspace_version() {
     assert!(
         matches!(err, GraphError::Store(message) if message.contains("expected current version"))
     );
+}
+
+#[test]
+fn set_semantics_op_replaces_and_clears_embedded_entry() {
+    let graph = sample_graph();
+    let entry = semantics::NodeSemanticsEntry {
+        capability_id: "text_to_video".to_string(),
+        mode: "text_to_video".to_string(),
+        implementation: helixflow_registry::catalog::ImplementationSelection::Policy {
+            policy_id: "capability_default".to_string(),
+            constraints: json!({}),
+        },
+    };
+
+    let with_semantics = service()
+        .apply_ops(
+            &graph,
+            &[ProposalOp::SetSemantics {
+                id: "video".to_string(),
+                semantics: Some(entry.clone()),
+            }],
+        )
+        .expect("set semantics");
+    assert_eq!(
+        with_semantics.nodes["video"].semantics.as_ref(),
+        Some(&entry)
+    );
+    assert_eq!(
+        with_semantics.collected_semantics(),
+        BTreeMap::from([("video".to_string(), entry)])
+    );
+
+    let cleared = service()
+        .apply_ops(
+            &with_semantics,
+            &[ProposalOp::SetSemantics {
+                id: "video".to_string(),
+                semantics: None,
+            }],
+        )
+        .expect("clear semantics");
+    assert!(cleared.nodes["video"].semantics.is_none());
+
+    let err = service()
+        .apply_ops(
+            &graph,
+            &[ProposalOp::SetSemantics {
+                id: "ghost".to_string(),
+                semantics: None,
+            }],
+        )
+        .expect_err("unknown node");
+    assert!(matches!(err, GraphError::MissingNode(id) if id == "ghost"));
 }

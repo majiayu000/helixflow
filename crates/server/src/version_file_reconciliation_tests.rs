@@ -628,6 +628,7 @@ fn sample_graph() -> WorkflowGraph {
         schema_version: 1,
         nodes: BTreeMap::new(),
         edges: Vec::new(),
+        catalog_revision: None,
     }
 }
 

@@ -5,9 +5,6 @@
 //! node ids, edges, coordinates, binding ids, or backend payloads; those are
 //! all products of this crate (tech.md §6).
 
-use std::collections::BTreeMap;
-
-use helixflow_graph::graph_v2::{NodeSemanticsEntry, WorkflowGraphV2};
 use helixflow_graph::{GraphService, ProposalOp, WorkflowGraph};
 use helixflow_registry::catalog::CatalogSnapshot;
 use helixflow_registry::resolver::ConnectorAvailability;
@@ -28,8 +25,10 @@ pub struct CompiledProposal {
     pub catalog_revision: String,
     pub ops: Vec<ProposalOp>,
     pub resolved_stages: Vec<ResolvedStage>,
-    pub semantics: BTreeMap<String, NodeSemanticsEntry>,
-    pub target: WorkflowGraphV2,
+    /// Compiled graph with node-embedded semantics (GH145). The persisted
+    /// `versions.semantics_json` column is a derived index collected from
+    /// these nodes.
+    pub target: WorkflowGraph,
     pub layout_hints: Vec<LayoutHint>,
     pub diagnostics: Vec<String>,
 }
@@ -69,13 +68,16 @@ pub fn compile(
         Err(clarify) => return Ok(CompileOutcome::Clarify(clarify)),
     };
 
-    let ops = proposal_diff::diff(current, &built.target.base);
+    let ops = proposal_diff::diff(current, &built.target);
     Ok(CompileOutcome::Compiled(CompiledProposal {
         graph_schema_version: built.target.schema_version,
-        catalog_revision: built.target.catalog_revision.clone(),
+        catalog_revision: built
+            .target
+            .catalog_revision
+            .clone()
+            .expect("compiled target always carries a catalog revision"),
         ops,
         resolved_stages: built.resolved_stages,
-        semantics: built.target.semantics.clone(),
         target: built.target,
         layout_hints: built.layout_hints,
         diagnostics: built.diagnostics,

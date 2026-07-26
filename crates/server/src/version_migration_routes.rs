@@ -4,11 +4,11 @@ use axum::{
     Json,
     extract::{Path, State},
 };
-use helixflow_graph::GraphService;
-use helixflow_graph::graph_v2::{
-    GRAPH_SCHEMA_V2, MIGRATION_VERSION, MigrationAction, MigrationContext, MigrationReasonCode,
-    NodeSemanticsEntry, WorkflowGraphV2, migrate_v1_to_v2,
+use helixflow_graph::semantics::{
+    MIGRATION_VERSION, MigrationAction, MigrationReasonCode, NodeSemanticsEntry,
+    migrate_v1_for_connector,
 };
+use helixflow_graph::{GraphService, WorkflowGraph};
 use helixflow_registry::NodeRegistry;
 use helixflow_store::{
     ApplyVersionMigration, NewVersionMigrationAssessment, StoreError, VersionRecord,
@@ -24,6 +24,7 @@ use crate::catalog_routes::shared_catalog;
 use crate::version_file_consistency::{
     CandidateKind, VersionFileCandidate, VersionFileConsistencyError, read_version_graph,
 };
+use crate::version_semantics::{validate_legacy_migration_source, validate_migration_candidate};
 use crate::workspace_state::workspace_state_value;
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -57,8 +58,6 @@ impl From<MigrationReasonCode> for VersionMigrationReasonCode {
             MigrationReasonCode::BindingNotFound => Self::BindingNotFound,
             MigrationReasonCode::BindingAmbiguous => Self::BindingAmbiguous,
             MigrationReasonCode::DefaultBindingMissing => Self::DefaultBindingMissing,
-            MigrationReasonCode::SourceGraphStructuralInvalid => Self::SourceGraphStructuralInvalid,
-            MigrationReasonCode::MigratedGraphInvalid => Self::MigratedGraphInvalid,
             MigrationReasonCode::WorkspaceConnectorIncompatible => {
                 Self::WorkspaceConnectorIncompatible
             }
@@ -129,7 +128,7 @@ pub(crate) struct ApplyVersionMigrationResponse {
 
 struct Assessment {
     report: VersionMigrationReport,
-    migrated: Option<WorkflowGraphV2>,
+    migrated: Option<WorkflowGraph>,
 }
 
 pub(crate) async fn dry_run_version_migration(
@@ -214,12 +213,12 @@ pub(crate) async fn apply_version_migration(
     let migrated = assessment.migrated.ok_or_else(|| {
         ApiError::server_error("migratable report did not produce a migration candidate")
     })?;
-    let semantics_json = serde_json::to_string(&migrated.semantics)
+    let semantics_json = serde_json::to_string(&migrated.collected_semantics())
         .map_err(|error| ApiError::server_error(format!("encode migration semantics: {error}")))?;
     let report_json = serde_json::to_string(&assessment.report)
         .map_err(|error| ApiError::server_error(format!("encode migration report: {error}")))?;
     let mut candidate =
-        VersionFileCandidate::from_graph(&workspace_id, CandidateKind::Migration, &migrated.base)
+        VersionFileCandidate::from_graph(&workspace_id, CandidateKind::Migration, &migrated)
             .map_err(candidate_error)?;
     candidate
         .publish(&state.data_dir)
@@ -347,6 +346,7 @@ async fn assess_current_version(
                         &version,
                         graph.schema_version,
                         workspace_connector_id,
+                        VersionMigrationReasonCode::SemanticsInvalid,
                     )?;
                     if persist {
                         persist_assessment(state, &report).await?;
@@ -357,15 +357,10 @@ async fn assess_current_version(
                     });
                 }
             };
-        let v2 = WorkflowGraphV2 {
-            schema_version: GRAPH_SCHEMA_V2,
-            catalog_revision: catalog.catalog_revision.clone(),
-            base: graph.clone(),
-            semantics,
-        };
-        if v2
-            .validate(&GraphService::new(NodeRegistry::builtin()), catalog)
-            .is_err()
+        if semantics != graph.collected_semantics()
+            || graph
+                .validate_semantics(&GraphService::new(NodeRegistry::builtin()), catalog)
+                .is_err()
         {
             let report = semantics_failure_report(
                 state,
@@ -374,6 +369,7 @@ async fn assess_current_version(
                 &version,
                 graph.schema_version,
                 workspace_connector_id,
+                VersionMigrationReasonCode::SemanticsInvalid,
             )?;
             if persist {
                 persist_assessment(state, &report).await?;
@@ -407,31 +403,43 @@ async fn assess_current_version(
         });
     }
 
+    if validate_legacy_migration_source(&graph).is_err() {
+        return validation_failure_assessment(
+            state,
+            workspace_id,
+            version_id,
+            &version,
+            graph.schema_version,
+            workspace_connector_id,
+            VersionMigrationReasonCode::SourceGraphStructuralInvalid,
+            persist,
+        )
+        .await;
+    }
     let service = GraphService::new(NodeRegistry::builtin());
-    let (migrated, graph_report) = migrate_v1_to_v2(
-        &graph,
-        &service,
-        catalog,
-        MigrationContext {
-            workspace_connector_id: &workspace_connector_id,
-        },
-    );
-    let status = if graph_report.failure.is_some() {
-        VersionMigrationStatus::Failed
-    } else if graph_report.resolvable {
+    let (migrated, graph_report) =
+        migrate_v1_for_connector(&graph, service.registry(), catalog, &workspace_connector_id);
+    if migrated
+        .as_ref()
+        .is_some_and(|candidate| validate_migration_candidate(candidate).is_err())
+    {
+        return validation_failure_assessment(
+            state,
+            workspace_id,
+            version_id,
+            &version,
+            graph.schema_version,
+            workspace_connector_id,
+            VersionMigrationReasonCode::MigratedGraphInvalid,
+            persist,
+        )
+        .await;
+    }
+    let status = if graph_report.resolvable {
         VersionMigrationStatus::Migratable
     } else {
         VersionMigrationStatus::NeedsResolution
     };
-    let (code, message) = graph_report
-        .failure
-        .map(|failure| {
-            (
-                Some(failure.code.into()),
-                Some("graph migration validation failed".to_owned()),
-            )
-        })
-        .unwrap_or((None, None));
     let nodes = graph_report
         .nodes
         .into_iter()
@@ -439,8 +447,8 @@ async fn assess_current_version(
         .collect();
     let report = finalize_report(VersionMigrationReport {
         status,
-        code,
-        message,
+        code: None,
+        message: None,
         migration_version: graph_report.migration_version,
         workspace_id: workspace_id.to_owned(),
         source_version_id: version_id.to_owned(),
@@ -456,6 +464,34 @@ async fn assess_current_version(
         persist_assessment(state, &report).await?;
     }
     Ok(Assessment { report, migrated })
+}
+
+async fn validation_failure_assessment(
+    state: &AppState,
+    workspace_id: &str,
+    version_id: &str,
+    version: &VersionRecord,
+    source_schema_version: u32,
+    workspace_connector_id: String,
+    code: VersionMigrationReasonCode,
+    persist: bool,
+) -> Result<Assessment, ApiError> {
+    let report = semantics_failure_report(
+        state,
+        workspace_id,
+        version_id,
+        version,
+        source_schema_version,
+        workspace_connector_id,
+        code,
+    )?;
+    if persist {
+        persist_assessment(state, &report).await?;
+    }
+    Ok(Assessment {
+        report,
+        migrated: None,
+    })
 }
 
 async fn current_version(
@@ -492,22 +528,18 @@ fn map_node_result(node_id: String, action: MigrationAction) -> NodeMigrationRes
         MigrationAction::Structural => node_result(node_id, "structural"),
         MigrationAction::MappedPolicy { .. } => node_result(node_id, "mapped_policy"),
         MigrationAction::MappedPinned { .. } => node_result(node_id, "mapped_pinned"),
-        MigrationAction::NeedsResolution { code, message } => NodeMigrationResult {
+        MigrationAction::NeedsResolution { code, reason } => NodeMigrationResult {
             node_id,
             action: "needs_resolution".to_owned(),
             code: Some(code.into()),
-            message: Some(message),
+            message: Some(reason),
             candidates: Vec::new(),
         },
-        MigrationAction::NeedsUserChoice {
-            code,
-            message,
-            candidates,
-        } => NodeMigrationResult {
+        MigrationAction::NeedsUserChoice { code, candidates } => NodeMigrationResult {
             node_id,
             action: "needs_user_choice".to_owned(),
             code: Some(code.into()),
-            message: Some(message),
+            message: None,
             candidates,
         },
     }
@@ -615,11 +647,12 @@ fn semantics_failure_report(
     version: &VersionRecord,
     source_schema_version: u32,
     workspace_connector_id: String,
+    code: VersionMigrationReasonCode,
 ) -> Result<VersionMigrationReport, ApiError> {
     finalize_report(VersionMigrationReport {
         status: VersionMigrationStatus::Failed,
-        code: Some(VersionMigrationReasonCode::SemanticsInvalid),
-        message: Some("stored graph semantics are invalid".to_owned()),
+        code: Some(code),
+        message: Some("graph semantics or structure are invalid".to_owned()),
         migration_version: MIGRATION_VERSION.to_owned(),
         workspace_id: workspace_id.to_owned(),
         source_version_id: version_id.to_owned(),

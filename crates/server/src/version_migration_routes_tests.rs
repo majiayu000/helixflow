@@ -68,6 +68,7 @@ async fn dry_run_apply_and_lost_response_replay_use_server_truth() {
         .expect("provider");
     let graph = WorkflowGraph {
         schema_version: 1,
+        catalog_revision: None,
         nodes: BTreeMap::from([(
             "image".to_owned(),
             GraphNode {
@@ -76,6 +77,7 @@ async fn dry_run_apply_and_lost_response_replay_use_server_truth() {
                 params: json!({"prompt":"test","aspect_ratio":"1:1"}),
                 pos: [0.0, 0.0],
                 size: None,
+                semantics: None,
             },
         )]),
         edges: Vec::new(),
@@ -373,6 +375,7 @@ fn derived_semantics_reject_new_executable_nodes_without_explicit_meaning() {
     let mut after = before.clone();
     let mut duplicate = after.nodes["image"].clone();
     duplicate.title = "Second image".to_owned();
+    duplicate.semantics = None;
     after.nodes.insert("image-2".to_owned(), duplicate);
 
     let error = derive_semantics_json(&source, &before, &after)
@@ -380,7 +383,7 @@ fn derived_semantics_reject_new_executable_nodes_without_explicit_meaning() {
     assert_eq!(error.status, axum::http::StatusCode::CONFLICT);
     assert_eq!(
         error.message,
-        "derived executable node requires explicit graph v2 semantics"
+        "derived executable graph requires valid embedded semantics"
     );
 }
 
@@ -479,12 +482,13 @@ fn semantic_source() -> (
 ) {
     use std::collections::BTreeMap;
 
-    use helixflow_graph::graph_v2::{MigrationContext, migrate_v1_to_v2};
-    use helixflow_graph::{GraphNode, GraphService, WorkflowGraph};
+    use helixflow_graph::semantics::migrate_v1_for_connector;
+    use helixflow_graph::{GraphNode, WorkflowGraph};
     use helixflow_registry::NodeRegistry;
 
     let graph = WorkflowGraph {
         schema_version: 1,
+        catalog_revision: None,
         nodes: BTreeMap::from([(
             "image".to_owned(),
             GraphNode {
@@ -493,17 +497,16 @@ fn semantic_source() -> (
                 params: serde_json::json!({"prompt":"test","aspect_ratio":"1:1"}),
                 pos: [0.0, 0.0],
                 size: None,
+                semantics: None,
             },
         )]),
         edges: Vec::new(),
     };
-    let (migrated, report) = migrate_v1_to_v2(
+    let (migrated, report) = migrate_v1_for_connector(
         &graph,
-        &GraphService::new(NodeRegistry::builtin()),
+        &NodeRegistry::builtin(),
         super::catalog_routes::shared_catalog(),
-        MigrationContext {
-            workspace_connector_id: "atlas",
-        },
+        "atlas",
     );
     assert!(report.resolvable, "report: {report:?}");
     let migrated = migrated.expect("migrated");
@@ -516,8 +519,10 @@ fn semantic_source() -> (
         graph_path: "graph.json".to_owned(),
         graph_hash: "sha256:graph".to_owned(),
         parent_id: None,
-        semantics_json: Some(serde_json::to_string(&migrated.semantics).expect("semantics")),
+        semantics_json: Some(
+            serde_json::to_string(&migrated.collected_semantics()).expect("semantics"),
+        ),
         created_at: "2026-07-27T00:00:00Z".to_owned(),
     };
-    (source, migrated.base)
+    (source, migrated)
 }
