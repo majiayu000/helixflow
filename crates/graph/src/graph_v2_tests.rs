@@ -12,6 +12,20 @@ fn service() -> GraphService {
     GraphService::new(NodeRegistry::builtin())
 }
 
+fn migrate(
+    graph: &WorkflowGraph,
+    catalog: &CatalogSnapshot,
+) -> (Option<WorkflowGraphV2>, MigrationReport) {
+    migrate_v1_to_v2(
+        graph,
+        &service(),
+        catalog,
+        MigrationContext {
+            workspace_connector_id: "atlas",
+        },
+    )
+}
+
 fn image_node(params: serde_json::Value) -> GraphNode {
     GraphNode {
         node_type: "image.generate".to_owned(),
@@ -49,8 +63,7 @@ fn v1_graph() -> WorkflowGraph {
 #[test]
 fn migrates_nodes_without_model_to_explicit_policy() {
     let catalog = builtin_catalog();
-    let registry = NodeRegistry::builtin();
-    let (migrated, report) = migrate_v1_to_v2(&v1_graph(), &registry, &catalog);
+    let (migrated, report) = migrate(&v1_graph(), &catalog);
 
     assert!(report.resolvable);
     let migrated = migrated.expect("migrated graph");
@@ -89,16 +102,14 @@ fn migrates_nodes_without_model_to_explicit_policy() {
 #[test]
 fn migration_is_deterministic() {
     let catalog = builtin_catalog();
-    let registry = NodeRegistry::builtin();
-    let first = migrate_v1_to_v2(&v1_graph(), &registry, &catalog);
-    let second = migrate_v1_to_v2(&v1_graph(), &registry, &catalog);
+    let first = migrate(&v1_graph(), &catalog);
+    let second = migrate(&v1_graph(), &catalog);
     assert_eq!(first, second);
 }
 
 #[test]
 fn legacy_model_param_is_resolved_to_pinned_and_stripped() {
     let catalog = builtin_catalog();
-    let registry = NodeRegistry::builtin();
     let mut graph = v1_graph();
     graph
         .nodes
@@ -109,7 +120,7 @@ fn legacy_model_param_is_resolved_to_pinned_and_stripped() {
         .expect("params object")
         .insert("model".to_owned(), json!("nano banana"));
 
-    let (migrated, report) = migrate_v1_to_v2(&graph, &registry, &catalog);
+    let (migrated, report) = migrate(&graph, &catalog);
 
     let migrated = migrated.expect("migrated graph");
     assert!(
@@ -143,7 +154,6 @@ fn legacy_model_param_is_resolved_to_pinned_and_stripped() {
 #[test]
 fn model_capability_mismatch_needs_resolution_not_silent_swap() {
     let catalog = builtin_catalog();
-    let registry = NodeRegistry::builtin();
     let mut graph = v1_graph();
     graph
         .nodes
@@ -154,13 +164,14 @@ fn model_capability_mismatch_needs_resolution_not_silent_swap() {
         .expect("params object")
         .insert("model".to_owned(), json!("Seedance 2"));
 
-    let (migrated, report) = migrate_v1_to_v2(&graph, &registry, &catalog);
+    let (migrated, report) = migrate(&graph, &catalog);
 
     assert!(migrated.is_none());
     assert!(!report.resolvable);
     assert!(report.nodes.iter().any(|node| matches!(
         &node.action,
-        MigrationAction::NeedsResolution { reason } if reason.contains("no binding")
+        MigrationAction::NeedsResolution { code, .. }
+            if *code == MigrationReasonCode::ModelCapabilityMismatch
     )));
 }
 
@@ -177,16 +188,14 @@ fn missing_default_binding_needs_resolution() {
         seed.workflow_backends.clone(),
         defaults,
     );
-    let registry = NodeRegistry::builtin();
-
-    let (migrated, report) = migrate_v1_to_v2(&v1_graph(), &registry, &catalog);
+    let (migrated, report) = migrate(&v1_graph(), &catalog);
 
     assert!(migrated.is_none());
     assert!(!report.resolvable);
     assert!(report.nodes.iter().any(|node| matches!(
         &node.action,
-        MigrationAction::NeedsResolution { reason }
-            if reason.contains("no configured default binding")
+        MigrationAction::NeedsResolution { code, .. }
+            if *code == MigrationReasonCode::DefaultBindingMissing
     )));
 }
 
@@ -211,7 +220,6 @@ fn ambiguous_legacy_model_needs_user_choice() {
         seed.workflow_backends.clone(),
         seed.default_bindings.clone(),
     );
-    let registry = NodeRegistry::builtin();
     let mut graph = v1_graph();
     graph
         .nodes
@@ -222,20 +230,72 @@ fn ambiguous_legacy_model_needs_user_choice() {
         .expect("params object")
         .insert("model".to_owned(), json!("nano banana"));
 
-    let (migrated, report) = migrate_v1_to_v2(&graph, &registry, &catalog);
+    let (migrated, report) = migrate(&graph, &catalog);
 
     assert!(migrated.is_none());
     assert!(report.nodes.iter().any(|node| matches!(
         &node.action,
-        MigrationAction::NeedsUserChoice { candidates } if candidates.len() == 2
+        MigrationAction::NeedsUserChoice { code, candidates, .. }
+            if *code == MigrationReasonCode::ModelAmbiguous && candidates.len() == 2
     )));
+}
+
+#[test]
+fn migration_restricts_pinned_binding_to_workspace_connector() {
+    let catalog = builtin_catalog();
+    let mut graph = v1_graph();
+    graph.nodes.remove("video");
+    graph
+        .nodes
+        .get_mut("image")
+        .expect("image node")
+        .params
+        .as_object_mut()
+        .expect("params object")
+        .insert("model".to_owned(), json!("nano banana"));
+
+    let (migrated, report) = migrate_v1_to_v2(
+        &graph,
+        &service(),
+        &catalog,
+        MigrationContext {
+            workspace_connector_id: "fal",
+        },
+    );
+
+    assert!(report.resolvable, "report: {report:?}");
+    assert_eq!(report.workspace_connector_id, "fal");
+    let entry = migrated
+        .expect("migrated")
+        .semantics
+        .remove("image")
+        .expect("image semantics");
+    assert!(matches!(
+        entry.implementation,
+        ImplementationSelection::Pinned { binding_id, .. } if binding_id.ends_with(".fal.v1")
+    ));
+}
+
+#[test]
+fn structurally_invalid_source_uses_top_level_typed_failure() {
+    let catalog = builtin_catalog();
+    let mut graph = v1_graph();
+    graph.schema_version = 99;
+
+    let (migrated, report) = migrate(&graph, &catalog);
+
+    assert!(migrated.is_none());
+    assert!(report.nodes.is_empty());
+    assert_eq!(
+        report.failure.expect("top-level failure").code,
+        MigrationReasonCode::SourceGraphStructuralInvalid
+    );
 }
 
 #[test]
 fn title_and_position_never_affect_semantics() {
     let catalog = builtin_catalog();
-    let registry = NodeRegistry::builtin();
-    let (migrated, _) = migrate_v1_to_v2(&v1_graph(), &registry, &catalog);
+    let (migrated, _) = migrate(&v1_graph(), &catalog);
     let mut migrated = migrated.expect("migrated graph");
 
     let semantics_before = migrated.semantics.clone();
@@ -252,8 +312,7 @@ fn title_and_position_never_affect_semantics() {
 #[test]
 fn pinned_model_mismatch_is_rejected() {
     let catalog = builtin_catalog();
-    let registry = NodeRegistry::builtin();
-    let (migrated, _) = migrate_v1_to_v2(&v1_graph(), &registry, &catalog);
+    let (migrated, _) = migrate(&v1_graph(), &catalog);
     let mut migrated = migrated.expect("migrated graph");
 
     migrated.semantics.insert(
@@ -277,8 +336,7 @@ fn pinned_model_mismatch_is_rejected() {
 #[test]
 fn stale_catalog_revision_is_rejected() {
     let catalog = builtin_catalog();
-    let registry = NodeRegistry::builtin();
-    let (migrated, _) = migrate_v1_to_v2(&v1_graph(), &registry, &catalog);
+    let (migrated, _) = migrate(&v1_graph(), &catalog);
     let mut migrated = migrated.expect("migrated graph");
     migrated.catalog_revision = "sha256:stale".to_owned();
 
@@ -291,8 +349,7 @@ fn stale_catalog_revision_is_rejected() {
 #[test]
 fn executable_node_without_semantics_is_rejected() {
     let catalog = builtin_catalog();
-    let registry = NodeRegistry::builtin();
-    let (migrated, _) = migrate_v1_to_v2(&v1_graph(), &registry, &catalog);
+    let (migrated, _) = migrate(&v1_graph(), &catalog);
     let mut migrated = migrated.expect("migrated graph");
     migrated.semantics.remove("image");
 
@@ -305,8 +362,7 @@ fn executable_node_without_semantics_is_rejected() {
 #[test]
 fn semantics_for_unknown_node_is_rejected() {
     let catalog = builtin_catalog();
-    let registry = NodeRegistry::builtin();
-    let (migrated, _) = migrate_v1_to_v2(&v1_graph(), &registry, &catalog);
+    let (migrated, _) = migrate(&v1_graph(), &catalog);
     let mut migrated = migrated.expect("migrated graph");
     migrated.semantics.insert(
         "ghost".to_owned(),
@@ -322,7 +378,6 @@ fn semantics_for_unknown_node_is_rejected() {
 #[test]
 fn wired_required_input_satisfies_binding_schema() {
     let catalog = builtin_catalog();
-    let registry = NodeRegistry::builtin();
     let graph = WorkflowGraph {
         schema_version: 1,
         nodes: BTreeMap::from([
@@ -368,7 +423,7 @@ fn wired_required_input_satisfies_binding_schema() {
         ],
     };
 
-    let (migrated, report) = migrate_v1_to_v2(&graph, &registry, &catalog);
+    let (migrated, report) = migrate(&graph, &catalog);
     assert!(report.resolvable, "report: {report:?}");
     let mut migrated = migrated.expect("migrated graph");
 
@@ -394,8 +449,7 @@ fn wired_required_input_satisfies_binding_schema() {
 #[test]
 fn v2_serializes_camel_case_and_roundtrips() {
     let catalog = builtin_catalog();
-    let registry = NodeRegistry::builtin();
-    let (migrated, _) = migrate_v1_to_v2(&v1_graph(), &registry, &catalog);
+    let (migrated, _) = migrate(&v1_graph(), &catalog);
     let migrated = migrated.expect("migrated graph");
 
     let encoded = serde_json::to_value(&migrated).expect("serialize");

@@ -301,6 +301,7 @@ async fn applying_proposal_can_create_immutable_child_version() {
                 version_label: "Applied proposal",
                 graph_path: "graphs/applied.json",
                 graph_hash: "sha256:applied",
+                semantics_json: None,
             },
         )
         .await
@@ -383,6 +384,7 @@ async fn store_backed_apply_rejects_stale_workspace_version() {
                 version_label: "Stale proposal",
                 graph_path: "graphs/stale.json",
                 graph_hash: "sha256:stale",
+                semantics_json: None,
             },
         )
         .await

@@ -8,7 +8,6 @@
 
 use std::collections::BTreeMap;
 
-use helixflow_registry::NodeRegistry;
 use helixflow_registry::catalog::{CatalogSnapshot, ImplementationSelection};
 use helixflow_registry::resolver::{
     CapabilityResolver, ConnectorAvailability, ResolveError, ResolveRequest,
@@ -352,8 +351,39 @@ pub struct MigrationReport {
     pub migration_version: String,
     pub source_schema_version: u32,
     pub catalog_revision: String,
+    pub workspace_connector_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<MigrationFailure>,
     pub nodes: Vec<NodeMigration>,
     pub resolvable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MigrationFailure {
+    pub code: MigrationReasonCode,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum MigrationReasonCode {
+    UnknownNodeType,
+    CapabilityNotFound,
+    ModelNotFound,
+    ModelAmbiguous,
+    ModelCapabilityMismatch,
+    BindingNotFound,
+    BindingAmbiguous,
+    DefaultBindingMissing,
+    SourceGraphStructuralInvalid,
+    MigratedGraphInvalid,
+    WorkspaceConnectorIncompatible,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MigrationContext<'a> {
+    pub workspace_connector_id: &'a str,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -379,10 +409,13 @@ pub enum MigrationAction {
     },
     #[serde(rename_all = "camelCase")]
     NeedsResolution {
-        reason: String,
+        code: MigrationReasonCode,
+        message: String,
     },
     #[serde(rename_all = "camelCase")]
     NeedsUserChoice {
+        code: MigrationReasonCode,
+        message: String,
         candidates: Vec<String>,
     },
 }
@@ -395,16 +428,30 @@ pub enum MigrationAction {
 /// through the configured default binding (P5).
 pub fn migrate_v1_to_v2(
     graph: &WorkflowGraph,
-    registry: &NodeRegistry,
+    service: &GraphService,
     catalog: &CatalogSnapshot,
+    context: MigrationContext<'_>,
 ) -> (Option<WorkflowGraphV2>, MigrationReport) {
-    // Migration decides against catalog data, not runtime health, so every
-    // declared connector counts as reachable for binding selection.
-    let all_available: ConnectorAvailability = catalog
-        .connectors
-        .iter()
-        .map(|connector| (connector.connector_id.clone(), true))
-        .collect();
+    let validation_graph = legacy_validation_view(graph, service);
+    if let Err(error) = service.validate_graph(&validation_graph) {
+        return (
+            None,
+            failed_migration_report(
+                graph,
+                catalog,
+                context,
+                MigrationReasonCode::SourceGraphStructuralInvalid,
+                format!("source graph validation failed: {error}"),
+            ),
+        );
+    }
+
+    let registry = service.registry();
+    // The configured workspace connector is stable input. Runtime health is
+    // deliberately excluded, but bindings from every other connector remain
+    // unavailable so migration cannot pin an unusable implementation.
+    let selected_available: ConnectorAvailability =
+        BTreeMap::from([(context.workspace_connector_id.to_owned(), true)]);
     let resolver = CapabilityResolver::new(catalog);
 
     let mut base = graph.clone();
@@ -417,7 +464,8 @@ pub fn migrate_v1_to_v2(
             Err(err) => {
                 resolvable = false;
                 MigrationAction::NeedsResolution {
-                    reason: format!("unknown node type: {err}"),
+                    code: MigrationReasonCode::UnknownNodeType,
+                    message: format!("unknown node type: {err}"),
                 }
             }
             Ok(definition) => match &definition.capability {
@@ -433,8 +481,9 @@ pub fn migrate_v1_to_v2(
                         &capability_id,
                         legacy_model.as_deref(),
                         &resolver,
-                        &all_available,
+                        &selected_available,
                         catalog,
+                        context,
                     ) {
                         Ok((entry, action)) => {
                             if legacy_model.is_some()
@@ -466,6 +515,8 @@ pub fn migrate_v1_to_v2(
         migration_version: MIGRATION_VERSION.to_owned(),
         source_schema_version: graph.schema_version,
         catalog_revision: catalog.catalog_revision.clone(),
+        workspace_connector_id: context.workspace_connector_id.to_owned(),
+        failure: None,
         nodes,
         resolvable,
     };
@@ -475,19 +526,55 @@ pub fn migrate_v1_to_v2(
         base,
         semantics,
     });
-    (migrated, report)
+    match migrated {
+        Some(candidate) => match candidate.validate(service, catalog) {
+            Ok(()) => (Some(candidate), report),
+            Err(error) => (
+                None,
+                failed_migration_report(
+                    graph,
+                    catalog,
+                    context,
+                    MigrationReasonCode::MigratedGraphInvalid,
+                    format!("migrated graph validation failed: {error}"),
+                ),
+            ),
+        },
+        None => (None, report),
+    }
+}
+
+fn legacy_validation_view(graph: &WorkflowGraph, service: &GraphService) -> WorkflowGraph {
+    let mut validation_graph = graph.clone();
+    for node in validation_graph.nodes.values_mut() {
+        let is_executable = service
+            .registry()
+            .definition(&node.node_type)
+            .ok()
+            .and_then(|definition| definition.capability.as_ref())
+            .is_some();
+        if is_executable
+            && node.params.get("model").is_some_and(Value::is_string)
+            && let Some(params) = node.params.as_object_mut()
+        {
+            params.remove("model");
+        }
+    }
+    validation_graph
 }
 
 fn migrate_executable_node(
     capability_id: &str,
     legacy_model: Option<&str>,
     resolver: &CapabilityResolver<'_>,
-    all_available: &ConnectorAvailability,
+    selected_available: &ConnectorAvailability,
     catalog: &CatalogSnapshot,
+    context: MigrationContext<'_>,
 ) -> Result<(NodeSemanticsEntry, MigrationAction), MigrationAction> {
     if catalog.capability(capability_id).is_none() {
         return Err(MigrationAction::NeedsResolution {
-            reason: format!("capability `{capability_id}` is not in the catalog"),
+            code: MigrationReasonCode::CapabilityNotFound,
+            message: format!("capability `{capability_id}` is not in the catalog"),
         });
     }
 
@@ -496,9 +583,9 @@ fn migrate_executable_node(
             let request = ResolveRequest {
                 capability_id: capability_id.to_owned(),
                 requested_model: Some(model.to_owned()),
-                connector_preference: None,
+                connector_preference: Some(context.workspace_connector_id.to_owned()),
             };
-            match resolver.resolve(&request, all_available) {
+            match resolver.resolve(&request, selected_available) {
                 Ok(resolved) => Ok((
                     NodeSemanticsEntry {
                         capability_id: capability_id.to_owned(),
@@ -514,17 +601,27 @@ fn migrate_executable_node(
                         binding_id: resolved.binding_id,
                     },
                 )),
-                Err(ResolveError::ModelAmbiguous { candidates, .. }) => {
-                    Err(MigrationAction::NeedsUserChoice { candidates })
-                }
-                Err(err) => Err(MigrationAction::NeedsResolution {
-                    reason: err.to_string(),
-                }),
+                Err(error) => Err(resolve_error_action(
+                    error, &request, resolver, catalog, true,
+                )),
             }
         }
         None => {
-            if catalog.default_bindings.contains_key(capability_id) {
-                Ok((
+            if !catalog.default_bindings.contains_key(capability_id) {
+                return Err(MigrationAction::NeedsResolution {
+                    code: MigrationReasonCode::DefaultBindingMissing,
+                    message: format!(
+                        "capability `{capability_id}` has no configured default binding"
+                    ),
+                });
+            }
+            let request = ResolveRequest {
+                capability_id: capability_id.to_owned(),
+                requested_model: None,
+                connector_preference: Some(context.workspace_connector_id.to_owned()),
+            };
+            match resolver.resolve(&request, selected_available) {
+                Ok(_) => Ok((
                     NodeSemanticsEntry {
                         capability_id: capability_id.to_owned(),
                         mode: capability_id.to_owned(),
@@ -536,15 +633,93 @@ fn migrate_executable_node(
                     MigrationAction::MappedPolicy {
                         capability_id: capability_id.to_owned(),
                     },
-                ))
-            } else {
-                Err(MigrationAction::NeedsResolution {
-                    reason: format!(
-                        "no declared model and capability `{capability_id}` has no configured default binding"
-                    ),
-                })
+                )),
+                Err(error) => Err(resolve_error_action(
+                    error, &request, resolver, catalog, false,
+                )),
             }
         }
+    }
+}
+
+fn resolve_error_action(
+    error: ResolveError,
+    request: &ResolveRequest,
+    resolver: &CapabilityResolver<'_>,
+    catalog: &CatalogSnapshot,
+    pinned: bool,
+) -> MigrationAction {
+    if matches!(
+        error,
+        ResolveError::BindingNotFound { .. } | ResolveError::BindingUnavailable { .. }
+    ) {
+        let all_available: ConnectorAvailability = catalog
+            .connectors
+            .iter()
+            .map(|connector| (connector.connector_id.clone(), true))
+            .collect();
+        let unrestricted = ResolveRequest {
+            connector_preference: None,
+            ..request.clone()
+        };
+        if resolver.resolve(&unrestricted, &all_available).is_ok() {
+            return MigrationAction::NeedsResolution {
+                code: MigrationReasonCode::WorkspaceConnectorIncompatible,
+                message: "no compatible binding exists for the workspace connector".to_owned(),
+            };
+        }
+    }
+
+    match error {
+        ResolveError::ModelAmbiguous { mut candidates, .. } => {
+            candidates.sort();
+            candidates.dedup();
+            MigrationAction::NeedsUserChoice {
+                code: MigrationReasonCode::ModelAmbiguous,
+                message: "multiple catalog models match the declared model".to_owned(),
+                candidates,
+            }
+        }
+        ResolveError::CapabilityNotFound { .. } => MigrationAction::NeedsResolution {
+            code: MigrationReasonCode::CapabilityNotFound,
+            message: "node capability is not present in the catalog".to_owned(),
+        },
+        ResolveError::ModelNotFound { .. } => MigrationAction::NeedsResolution {
+            code: MigrationReasonCode::ModelNotFound,
+            message: "declared model is not present in the catalog".to_owned(),
+        },
+        ResolveError::BindingNotFound { .. } if pinned => MigrationAction::NeedsResolution {
+            code: MigrationReasonCode::ModelCapabilityMismatch,
+            message: "declared model does not implement the node capability".to_owned(),
+        },
+        ResolveError::BindingNotFound { .. } | ResolveError::BindingUnavailable { .. } => {
+            MigrationAction::NeedsResolution {
+                code: MigrationReasonCode::BindingNotFound,
+                message: "no usable catalog binding implements the node capability".to_owned(),
+            }
+        }
+        ResolveError::BindingAmbiguous { .. } => MigrationAction::NeedsResolution {
+            code: MigrationReasonCode::BindingAmbiguous,
+            message: "multiple catalog bindings match the node capability".to_owned(),
+        },
+    }
+}
+
+fn failed_migration_report(
+    graph: &WorkflowGraph,
+    catalog: &CatalogSnapshot,
+    context: MigrationContext<'_>,
+    code: MigrationReasonCode,
+    message: String,
+) -> MigrationReport {
+    MigrationReport {
+        migration_version: MIGRATION_VERSION.to_owned(),
+        source_schema_version: graph.schema_version,
+        catalog_revision: catalog.catalog_revision.clone(),
+        workspace_connector_id: context.workspace_connector_id.to_owned(),
+        failure: Some(MigrationFailure { code, message }),
+        nodes: Vec::new(),
+        resolvable: false,
     }
 }
 
