@@ -127,6 +127,7 @@ impl ApiError {
             RunError::InvalidRunStatus { .. }
             | RunError::RunNotActive(_)
             | RunError::WorkspaceBusy { .. }
+            | RunError::RunClaimContention(_)
             | RunError::Interrupted(_) => Self {
                 status: StatusCode::CONFLICT,
                 message: err.to_string(),
