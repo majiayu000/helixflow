@@ -114,6 +114,42 @@ impl Store {
         self.message(&id).await
     }
 
+    pub async fn create_message_once(&self, input: NewMessage<'_>) -> StoreResult<MessageRecord> {
+        let Some(ref_id) = input.ref_id else {
+            return self.create_message(input).await;
+        };
+        let id = new_id("msg");
+        sqlx::query(
+            r#"
+            INSERT OR IGNORE INTO messages (
+                id, workspace_id, role, text, kind, ref_id, attachment_ids_json, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, current_timestamp)
+            "#,
+        )
+        .bind(id)
+        .bind(input.workspace_id)
+        .bind(input.role)
+        .bind(input.text)
+        .bind(input.kind)
+        .bind(ref_id)
+        .bind(input.attachment_ids_json)
+        .execute(self.pool())
+        .await?;
+        Ok(sqlx::query_as::<_, MessageRecord>(
+            r#"
+            SELECT id, workspace_id, role, text, kind, ref_id, attachment_ids_json, created_at
+            FROM messages
+            WHERE workspace_id = ? AND kind = ? AND ref_id = ?
+            "#,
+        )
+        .bind(input.workspace_id)
+        .bind(input.kind)
+        .bind(ref_id)
+        .fetch_one(self.pool())
+        .await?)
+    }
+
     pub async fn message(&self, message_id: &str) -> StoreResult<MessageRecord> {
         Ok(sqlx::query_as::<_, MessageRecord>(
             r#"

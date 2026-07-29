@@ -23,6 +23,18 @@ fn invalid_extra_header_is_rejected_at_startup() {
     assert!(validate_header_config(&config).is_ok());
 }
 
+#[test]
+fn atlas_scope_fingerprint_includes_extra_header_value() {
+    let mut first = ApiProviderConfig::atlas("key".to_owned(), "https://api.test".to_owned());
+    first.extra_header = Some(("x-team".to_owned(), "alpha".to_owned()));
+    let mut second = first.clone();
+    second.extra_header = Some(("x-team".to_owned(), "beta".to_owned()));
+    assert_ne!(
+        AtlasProvider::new(first).config_fingerprint("atlas"),
+        AtlasProvider::new(second).config_fingerprint("atlas")
+    );
+}
+
 #[tokio::test]
 async fn atlas_estimates_supported_capabilities() {
     let provider = AtlasProvider::new(ApiProviderConfig::atlas(
@@ -218,5 +230,118 @@ async fn atlas_rejects_legacy_capability_id_from_pre_rename_runs() {
     assert_eq!(
         err,
         ProviderError::UnsupportedCapability("image_generate".to_owned())
+    );
+}
+
+#[tokio::test]
+async fn atlas_video_dispatch_returns_a_durable_handle_before_polling()
+-> Result<(), Box<dyn std::error::Error>> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let server = capture_request_and_respond(listener, 200, r#"{"data":{"id":"prediction_123"}}"#);
+    let provider = AtlasProvider::new(ApiProviderConfig::atlas(
+        "test-key".to_owned(),
+        format!("http://{addr}/v1"),
+    ));
+
+    let dispatch = provider
+        .dispatch(request(
+            "text_to_video",
+            json!({ "prompt": "hello", "duration_sec": 5 }),
+        ))
+        .await
+        .expect("dispatch");
+    server.await??;
+    let ProviderDispatch::Accepted(task) = dispatch else {
+        panic!("video dispatch must return a durable handle");
+    };
+    assert_eq!(task.provider_task_id, "prediction_123");
+    assert_eq!(task.dispatch_origin, format!("http://{addr}"));
+    assert_eq!(
+        task.status_url.as_deref(),
+        Some(format!("http://{addr}/api/v1/model/prediction/prediction_123").as_str())
+    );
+    assert!(task.result_url.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn atlas_resume_polls_a_persisted_handle_to_completion()
+-> Result<(), Box<dyn std::error::Error>> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let status_url = format!("http://{addr}/api/v1/model/prediction/prediction_123");
+    let server = capture_request_and_respond(
+        listener,
+        200,
+        r#"{"data":{"status":"completed","outputs":["https://cdn.example/video.mp4"]}}"#,
+    );
+    let provider = AtlasProvider::new(ApiProviderConfig::atlas(
+        "test-key".to_owned(),
+        format!("http://{addr}/v1"),
+    ));
+    let task = DurableProviderTask {
+        provider: "atlas".to_owned(),
+        provider_task_id: "prediction_123".to_owned(),
+        dispatch_origin: provider.dispatch_origin("atlas")?,
+        recovery_scope_fingerprint: provider.recovery_scope_fingerprint("atlas"),
+        status_url: Some(status_url),
+        result_url: None,
+    };
+
+    let resumed = provider
+        .resume(
+            &task,
+            &request(
+                "text_to_video",
+                json!({ "prompt": "hello", "duration_sec": 5 }),
+            ),
+        )
+        .await
+        .expect("resume");
+    server.await??;
+    let ProviderResume::Completed(result) = resumed else {
+        panic!("completed response must finish recovery");
+    };
+    let video = result.outputs.get("video").expect("video");
+    assert_eq!(video.duration_ms, Some(5_000));
+    assert!(video.meta.get("prediction_id").is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn atlas_resume_rejects_scope_drift_before_network_access() {
+    let first = AtlasProvider::new(ApiProviderConfig::atlas(
+        "key-a".to_owned(),
+        "https://api.atlascloud.ai/v1".to_owned(),
+    ));
+    let second = AtlasProvider::new(ApiProviderConfig::atlas(
+        "key-b".to_owned(),
+        "https://api.atlascloud.ai/v1".to_owned(),
+    ));
+    let task = DurableProviderTask {
+        provider: "atlas".to_owned(),
+        provider_task_id: "prediction_123".to_owned(),
+        dispatch_origin: first.dispatch_origin("atlas").expect("origin"),
+        recovery_scope_fingerprint: first.recovery_scope_fingerprint("atlas"),
+        status_url: Some(
+            "https://api.atlascloud.ai/api/v1/model/prediction/prediction_123".to_owned(),
+        ),
+        result_url: None,
+    };
+    let err = second
+        .resume(
+            &task,
+            &request("text_to_video", json!({ "prompt": "hello" })),
+        )
+        .await
+        .expect_err("scope drift must fail");
+    assert!(matches!(err, ProviderError::InvalidRequest(_)));
+    assert_eq!(
+        second.recovery_capabilities("atlas"),
+        ProviderRecoveryCapabilities {
+            resume: true,
+            cancel: false
+        }
     );
 }

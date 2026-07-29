@@ -3,16 +3,248 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use helixflow_gateway::{
-    CostEstimate, MockProvider, Provider, ProviderCatalog, ProviderError, ProviderHealth,
-    ProviderRequest, ProviderResult, ProviderResultValue, ProviderTaskHandle,
+    CostEstimate, DurableProviderTask, MockProvider, Provider, ProviderCatalog, ProviderError,
+    ProviderHealth, ProviderRequest, ProviderResult, ProviderResultValue, ProviderResume,
+    ProviderTaskHandle,
 };
-use helixflow_graph::{GraphEdge, GraphNode, WorkflowGraph};
-use helixflow_store::{NewRun, NewVersion, RunRecord, Store, VersionSource};
+use helixflow_graph::{ExecutionPlan, ExecutionStep, GraphEdge, GraphNode, WorkflowGraph};
+use helixflow_store::{
+    NewCostLedger, NewProviderTask, NewRun, NewRunStep, NewVersion, ProviderTaskHandleUpdate,
+    RunRecord, Store, VersionSource,
+};
 use serde_json::json;
 
 use super::{AgentRunRequest, RunService, SweepPlan, SweepVariant};
 
 const INVALID_RETRY_ENV_CHILD: &str = "HELIXFLOW_TEST_INVALID_RETRY_ENV_CHILD";
+
+#[tokio::test]
+async fn restart_resumes_active_provider_task_and_durable_dag() {
+    let (store, _dir) = open_self_heal_store().await;
+    let (workspace_id, version_id) = self_heal_workspace_version(&store).await;
+    let plan = ExecutionPlan {
+        schema_version: 1,
+        version_id: version_id.clone(),
+        catalog_revision: None,
+        steps: vec![ExecutionStep {
+            node_id: "writer-recovery".to_owned(),
+            node_type: "llm.prompt_writer".to_owned(),
+            provider: Some("mock".to_owned()),
+            capability: Some("prompt_writer".to_owned()),
+            inputs: BTreeMap::new(),
+            params: json!({ "style": "recovered" }),
+            resolved: None,
+        }],
+    };
+    let plan_json = serde_json::to_string(&plan).expect("serialize recovery plan");
+    let run = store
+        .create_run(NewRun {
+            workspace_id: &workspace_id,
+            version_id: &version_id,
+            group_id: None,
+            label: "Recovery",
+            trigger: "manual",
+            plan_json: Some(&plan_json),
+            estimate_json: None,
+            status: "running",
+        })
+        .await
+        .expect("create recovery run");
+    let step = store
+        .create_run_step(NewRunStep {
+            run_id: &run.id,
+            node_id: "writer-recovery",
+            node_type: "llm.prompt_writer",
+            provider: Some("mock"),
+            state: "running",
+        })
+        .await
+        .expect("create recovery step");
+    let operation_key = format!("dispatch:{}:{}:mock", run.id, step.id);
+    let task = store
+        .insert_or_read_provider_task(NewProviderTask {
+            run_id: &run.id,
+            run_step_id: &step.id,
+            provider: "mock",
+            dispatch_origin: "provider://mock",
+            recovery_scope_fingerprint: "",
+            operation_key: &operation_key,
+            dispatch_owner_id: "dead-process",
+            dispatch_lease_seconds: 30,
+            dispatch_deadline_seconds: 30,
+        })
+        .await
+        .expect("persist dispatch intent");
+    store
+        .activate_provider_task(ProviderTaskHandleUpdate {
+            task_id: &task.id,
+            dispatch_owner_id: "dead-process",
+            provider_task_id: "opaque-provider-task",
+            status_url: None,
+            result_url: None,
+            recovery_deadline_seconds: 300,
+        })
+        .await
+        .expect("activate provider task")
+        .expect("active provider task");
+
+    RunService::with_provider(store.clone(), RecoveringMockProvider)
+        .recover_after_restart()
+        .await
+        .expect("schedule recovery");
+    wait_for_self_heal_status(&store, &run.id, "succeeded").await;
+
+    assert_eq!(
+        store
+            .provider_task(&task.id)
+            .await
+            .expect("provider task")
+            .state,
+        "completed"
+    );
+    assert_eq!(
+        store
+            .run_step_outputs(&run.id)
+            .await
+            .expect("durable outputs")
+            .len(),
+        1
+    );
+    let actual = store
+        .cost_ledger_for_run(&run.id)
+        .await
+        .expect("actual ledger")
+        .into_iter()
+        .filter(|entry| !entry.estimated)
+        .count();
+    assert_eq!(actual, 1);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let events = store.run_events(&run.id).await.expect("recovery events");
+            if events
+                .iter()
+                .any(|event| event.ev == "run.recovery_started")
+                && events
+                    .iter()
+                    .any(|event| event.ev == "run.recovery_succeeded")
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("recovery events timeout");
+}
+
+#[tokio::test]
+async fn restart_queued_requires_complete_intent_estimate_and_atomic_claim() {
+    let (store, _dir) = open_self_heal_store().await;
+    let (workspace_id, version_id) = self_heal_workspace_version(&store).await;
+    let plan = ExecutionPlan {
+        schema_version: 1,
+        version_id: version_id.clone(),
+        catalog_revision: None,
+        steps: vec![ExecutionStep {
+            node_id: "writer-queued".to_owned(),
+            node_type: "llm.prompt_writer".to_owned(),
+            provider: Some("mock".to_owned()),
+            capability: Some("prompt_writer".to_owned()),
+            inputs: BTreeMap::new(),
+            params: json!({}),
+            resolved: None,
+        }],
+    };
+    let plan_json = serde_json::to_string(&plan).expect("serialize plan");
+    let run = store
+        .create_run(NewRun {
+            workspace_id: &workspace_id,
+            version_id: &version_id,
+            group_id: None,
+            label: "Queued recovery",
+            trigger: "manual",
+            plan_json: Some(&plan_json),
+            estimate_json: Some(r#"{"amount":0.1}"#),
+            status: "queued",
+        })
+        .await
+        .expect("create queued run");
+    let service = RunService::new(store.clone());
+    let steps = service
+        .ensure_run_steps(&run.id, &plan)
+        .await
+        .expect("persist run steps");
+    service
+        .ensure_execution_intent(&run.id, &plan, run.estimate_json.as_deref())
+        .await
+        .expect("persist intent");
+    assert!(
+        !service
+            .claim_restart_queued_run(&run)
+            .await
+            .expect("partial estimate rejects")
+    );
+    store
+        .create_cost_ledger(NewCostLedger {
+            workspace_id: &workspace_id,
+            run_id: Some(&run.id),
+            run_step_id: Some(&steps[0].id),
+            provider: "mock",
+            amount: 0.1,
+            currency: "USD",
+            estimated: true,
+        })
+        .await
+        .expect("create estimate");
+    assert!(
+        service
+            .claim_restart_queued_run(&run)
+            .await
+            .expect("complete intent claims")
+    );
+    assert_eq!(
+        store.run(&run.id).await.expect("claimed run").status,
+        "running"
+    );
+}
+
+#[derive(Clone, Copy)]
+struct RecoveringMockProvider;
+
+#[async_trait]
+impl Provider for RecoveringMockProvider {
+    fn id(&self) -> &str {
+        "mock"
+    }
+
+    async fn health(&self) -> ProviderHealth {
+        MockProvider::new().health().await
+    }
+
+    async fn catalog(&self) -> ProviderResultValue<ProviderCatalog> {
+        MockProvider::new().catalog().await
+    }
+
+    async fn estimate(&self, req: ProviderRequest) -> ProviderResultValue<CostEstimate> {
+        MockProvider::new().estimate(req).await
+    }
+
+    async fn invoke(&self, req: ProviderRequest) -> ProviderResultValue<ProviderResult> {
+        MockProvider::new().invoke(req).await
+    }
+
+    async fn resume(
+        &self,
+        _task: &DurableProviderTask,
+        req: &ProviderRequest,
+    ) -> ProviderResultValue<ProviderResume> {
+        Ok(ProviderResume::Completed(self.invoke(req.clone()).await?))
+    }
+
+    async fn cancel(&self, handle: ProviderTaskHandle) -> ProviderResultValue<()> {
+        MockProvider::new().cancel(handle).await
+    }
+}
 
 #[tokio::test]
 async fn failed_paid_run_derives_retry_waiting_for_confirmation() {

@@ -74,6 +74,66 @@ impl PendingArtifact {
         Err(path_error("artifact filename could not be allocated"))
     }
 
+    pub(crate) async fn create_at(root: &Path, relative: &Path) -> RunResult<Self> {
+        validate_relative_path(relative)?;
+        if relative.parent() != Some(Path::new(ARTIFACT_DIRECTORY))
+            || relative.file_name().is_none()
+        {
+            return Err(path_error("artifact destination is not allowed"));
+        }
+        tokio::fs::create_dir_all(root)
+            .await
+            .map_err(|_| path_error("artifact root could not be prepared"))?;
+        let canonical_root = tokio::fs::canonicalize(root)
+            .await
+            .map_err(|_| path_error("artifact root could not be verified"))?;
+        let logical_parent = root.join(ARTIFACT_DIRECTORY);
+        tokio::fs::create_dir_all(&logical_parent)
+            .await
+            .map_err(|_| path_error("artifact directory could not be prepared"))?;
+        let canonical_parent = tokio::fs::canonicalize(&logical_parent)
+            .await
+            .map_err(|_| path_error("artifact directory could not be verified"))?;
+        if !canonical_parent.starts_with(&canonical_root) {
+            return Err(path_error("artifact directory escapes the configured root"));
+        }
+        let final_path = canonical_parent.join(
+            relative
+                .file_name()
+                .ok_or_else(|| path_error("artifact destination is not allowed"))?,
+        );
+        if tokio::fs::try_exists(&final_path)
+            .await
+            .map_err(|_| path_error("artifact destination could not be checked"))?
+        {
+            return Err(path_error("artifact destination already exists"));
+        }
+        for _ in 0..CREATE_ATTEMPTS {
+            let partial_path = canonical_parent.join(format!(".{}.part", uuid::Uuid::now_v7()));
+            match tokio::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&partial_path)
+                .await
+            {
+                Ok(file) => {
+                    return Ok(Self {
+                        relative: relative.to_owned(),
+                        final_path,
+                        partial_path,
+                        file: Some(file),
+                        published: false,
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(_) => return Err(path_error("artifact partial file could not be created")),
+            }
+        }
+        Err(path_error(
+            "artifact partial filename could not be allocated",
+        ))
+    }
+
     #[cfg(test)]
     pub(crate) fn relative_path(&self) -> &Path {
         &self.relative
@@ -130,12 +190,26 @@ impl Drop for PendingArtifact {
     }
 }
 
+#[cfg(test)]
 pub(crate) async fn write_complete_artifact(
     root: &Path,
     extension: &str,
     bytes: &[u8],
 ) -> RunResult<PathBuf> {
     let mut pending = PendingArtifact::create(root, extension).await?;
+    if let Err(error) = pending.write_chunk(bytes).await {
+        pending.abort().await;
+        return Err(error);
+    }
+    pending.publish().await
+}
+
+pub(crate) async fn write_complete_artifact_at(
+    root: &Path,
+    relative: &Path,
+    bytes: &[u8],
+) -> RunResult<PathBuf> {
+    let mut pending = PendingArtifact::create_at(root, relative).await?;
     if let Err(error) = pending.write_chunk(bytes).await {
         pending.abort().await;
         return Err(error);

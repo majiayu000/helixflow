@@ -1,11 +1,246 @@
+use std::fmt;
+
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
 use crate::{
-    ApiConnectorSummary, AtlasProvider, CostEstimate, FalProvider, MockProvider, Provider,
-    ProviderCatalog, ProviderCatalogSnapshot, ProviderError, ProviderHealth, ProviderRequest,
-    ProviderResult, ProviderResultValue, ProviderTaskHandle, RuntimeProviderSummary,
-    WorkflowBackendSummary, is_safe_provider_message, safe_provider_message, sanitize_provider_id,
+    ApiConnectorSummary, AtlasProvider, CostEstimate, FalProvider, MockProvider, ProviderCatalog,
+    ProviderCatalogSnapshot, ProviderHealth, ProviderRequest, ProviderResult,
+    RuntimeProviderSummary, WorkflowBackendSummary, is_safe_provider_message,
+    safe_provider_message, sanitize_provider_id,
 };
+
+pub type ProviderResultValue<T> = Result<T, ProviderError>;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderTaskHandle {
+    pub provider: String,
+    pub provider_task_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DurableProviderTask {
+    pub provider: String,
+    pub provider_task_id: String,
+    pub dispatch_origin: String,
+    pub recovery_scope_fingerprint: String,
+    pub status_url: Option<String>,
+    pub result_url: Option<String>,
+}
+
+impl DurableProviderTask {
+    pub fn legacy_handle(&self) -> ProviderTaskHandle {
+        ProviderTaskHandle {
+            provider: self.provider.clone(),
+            provider_task_id: self.provider_task_id.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProviderDispatch {
+    Completed(ProviderResult),
+    Accepted(DurableProviderTask),
+}
+
+pub type ProviderDispatchResult = Result<ProviderDispatch, ProviderDispatchFailure>;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderDispatchFailureKind {
+    NotSubmitted,
+    Rejected,
+    OutcomeUnknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderDispatchFailure {
+    pub kind: ProviderDispatchFailureKind,
+    pub error: ProviderError,
+}
+
+impl ProviderDispatchFailure {
+    pub fn classify(error: ProviderError) -> Self {
+        let kind = match error {
+            ProviderError::RequestRejected(_) => ProviderDispatchFailureKind::Rejected,
+            ProviderError::InvalidResponse(_) | ProviderError::RequestFailed(_) => {
+                ProviderDispatchFailureKind::OutcomeUnknown
+            }
+            _ => ProviderDispatchFailureKind::NotSubmitted,
+        };
+        Self { kind, error }
+    }
+}
+
+impl fmt::Display for ProviderDispatchFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl std::error::Error for ProviderDispatchFailure {}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProviderResume {
+    Pending {
+        retry_after_ms: u64,
+    },
+    Completed(ProviderResult),
+    Failed {
+        reason_code: String,
+        cost: CostEstimate,
+    },
+}
+
+impl ProviderResume {
+    pub fn failed(reason_code: &str) -> Self {
+        Self::Failed {
+            reason_code: reason_code.to_owned(),
+            cost: CostEstimate {
+                amount: 0.0,
+                currency: "USD".to_owned(),
+                estimated: true,
+                unknown: true,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderRecoveryCapabilities {
+    pub resume: bool,
+    pub cancel: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderError {
+    WrongProvider { expected: String, actual: String },
+    UnsupportedCapability(String),
+    CancelUnsupported(String),
+    RecoveryUnsupported(String),
+    Unavailable { provider: String, reason: String },
+    InvalidRequest(String),
+    InvalidResponse(String),
+    RequestRejected(String),
+    RequestFailed(String),
+    ModelUnresolved { capability: String },
+}
+
+impl fmt::Display for ProviderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WrongProvider { expected, actual } => {
+                write!(f, "wrong provider: expected `{expected}`, got `{actual}`")
+            }
+            Self::UnsupportedCapability(capability) => {
+                write!(f, "unsupported provider capability: {capability}")
+            }
+            Self::CancelUnsupported(provider_task_id) => {
+                write!(
+                    f,
+                    "provider does not support cancelling remote task: {provider_task_id}"
+                )
+            }
+            Self::RecoveryUnsupported(provider) => {
+                write!(f, "provider `{provider}` does not support task recovery")
+            }
+            Self::Unavailable { provider, reason } => {
+                write!(f, "runtime provider `{provider}` is unavailable: {reason}")
+            }
+            Self::ModelUnresolved { capability } => {
+                write!(
+                    f,
+                    "no resolved model binding for capability `{capability}`; run preflight must resolve implementations before invoke"
+                )
+            }
+            Self::InvalidRequest(message) => {
+                write!(
+                    f,
+                    "invalid provider request: {}",
+                    safe_provider_message(message)
+                )
+            }
+            Self::InvalidResponse(message) => {
+                write!(
+                    f,
+                    "invalid provider response: {}",
+                    safe_provider_message(message)
+                )
+            }
+            Self::RequestRejected(message) => {
+                write!(
+                    f,
+                    "provider rejected request: {}",
+                    safe_provider_message(message)
+                )
+            }
+            Self::RequestFailed(message) => {
+                write!(
+                    f,
+                    "provider request failed: {}",
+                    safe_provider_message(message)
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ProviderError {}
+
+#[async_trait]
+pub trait Provider: Send + Sync {
+    fn id(&self) -> &str;
+
+    fn config_fingerprint(&self, _provider_id: &str) -> String {
+        String::new()
+    }
+
+    fn dispatch_origin(&self, _provider_id: &str) -> ProviderResultValue<String> {
+        Ok(format!("provider://{}", sanitize_provider_id(self.id())))
+    }
+
+    fn recovery_scope_fingerprint(&self, provider_id: &str) -> String {
+        self.config_fingerprint(provider_id)
+    }
+
+    fn recovery_capabilities(&self, _provider_id: &str) -> ProviderRecoveryCapabilities {
+        ProviderRecoveryCapabilities {
+            resume: false,
+            cancel: false,
+        }
+    }
+
+    async fn health(&self) -> ProviderHealth;
+
+    async fn active_handles(&self, _run_id: &str) -> Vec<ProviderTaskHandle> {
+        Vec::new()
+    }
+
+    async fn catalog(&self) -> ProviderResultValue<ProviderCatalog>;
+    async fn estimate(&self, req: ProviderRequest) -> ProviderResultValue<CostEstimate>;
+    async fn invoke(&self, req: ProviderRequest) -> ProviderResultValue<ProviderResult>;
+
+    async fn dispatch(&self, req: ProviderRequest) -> ProviderDispatchResult {
+        self.invoke(req)
+            .await
+            .map(ProviderDispatch::Completed)
+            .map_err(ProviderDispatchFailure::classify)
+    }
+
+    async fn resume(
+        &self,
+        task: &DurableProviderTask,
+        _req: &ProviderRequest,
+    ) -> ProviderResultValue<ProviderResume> {
+        Err(ProviderError::RecoveryUnsupported(task.provider.clone()))
+    }
+
+    async fn cancel(&self, handle: ProviderTaskHandle) -> ProviderResultValue<()>;
+
+    async fn cancel_durable(&self, task: &DurableProviderTask) -> ProviderResultValue<()> {
+        self.cancel(task.legacy_handle()).await
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum RuntimeProvider {
@@ -163,6 +398,33 @@ impl Provider for RuntimeProvider {
         }
     }
 
+    fn dispatch_origin(&self, provider_id: &str) -> ProviderResultValue<String> {
+        match self {
+            Self::Mock(provider) => provider.dispatch_origin(provider_id),
+            Self::Atlas(provider) => provider.dispatch_origin(provider_id),
+            Self::Fal(provider) => provider.dispatch_origin(provider_id),
+            Self::Unavailable(provider) => provider.dispatch_origin(provider_id),
+        }
+    }
+
+    fn recovery_scope_fingerprint(&self, provider_id: &str) -> String {
+        match self {
+            Self::Mock(provider) => provider.recovery_scope_fingerprint(provider_id),
+            Self::Atlas(provider) => provider.recovery_scope_fingerprint(provider_id),
+            Self::Fal(provider) => provider.recovery_scope_fingerprint(provider_id),
+            Self::Unavailable(provider) => provider.recovery_scope_fingerprint(provider_id),
+        }
+    }
+
+    fn recovery_capabilities(&self, provider_id: &str) -> ProviderRecoveryCapabilities {
+        match self {
+            Self::Mock(provider) => provider.recovery_capabilities(provider_id),
+            Self::Atlas(provider) => provider.recovery_capabilities(provider_id),
+            Self::Fal(provider) => provider.recovery_capabilities(provider_id),
+            Self::Unavailable(provider) => provider.recovery_capabilities(provider_id),
+        }
+    }
+
     async fn health(&self) -> ProviderHealth {
         match self {
             Self::Mock(provider) => provider.health().await,
@@ -208,12 +470,43 @@ impl Provider for RuntimeProvider {
         }
     }
 
+    async fn dispatch(&self, req: ProviderRequest) -> ProviderDispatchResult {
+        match self {
+            Self::Mock(provider) => provider.dispatch(req).await,
+            Self::Atlas(provider) => provider.dispatch(req).await,
+            Self::Fal(provider) => provider.dispatch(req).await,
+            Self::Unavailable(provider) => provider.dispatch(req).await,
+        }
+    }
+
+    async fn resume(
+        &self,
+        task: &DurableProviderTask,
+        req: &ProviderRequest,
+    ) -> ProviderResultValue<ProviderResume> {
+        match self {
+            Self::Mock(provider) => provider.resume(task, req).await,
+            Self::Atlas(provider) => provider.resume(task, req).await,
+            Self::Fal(provider) => provider.resume(task, req).await,
+            Self::Unavailable(provider) => provider.resume(task, req).await,
+        }
+    }
+
     async fn cancel(&self, handle: ProviderTaskHandle) -> ProviderResultValue<()> {
         match self {
             Self::Mock(provider) => provider.cancel(handle).await,
             Self::Atlas(provider) => provider.cancel(handle).await,
             Self::Fal(provider) => provider.cancel(handle).await,
             Self::Unavailable(provider) => provider.cancel(handle).await,
+        }
+    }
+
+    async fn cancel_durable(&self, task: &DurableProviderTask) -> ProviderResultValue<()> {
+        match self {
+            Self::Mock(provider) => provider.cancel_durable(task).await,
+            Self::Atlas(provider) => provider.cancel_durable(task).await,
+            Self::Fal(provider) => provider.cancel_durable(task).await,
+            Self::Unavailable(provider) => provider.cancel_durable(task).await,
         }
     }
 }

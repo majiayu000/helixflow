@@ -90,6 +90,19 @@ where
             "cached": true,
             "cacheKey": cache_key.cache_key,
         }))?;
+        let mappings = outputs
+            .iter()
+            .map(|output| (output.port.clone(), output.artifact.artifact_id.clone()))
+            .collect::<Vec<_>>();
+        if !self
+            .store
+            .finalize_run_step_success(&record.id, None, None, &mappings)
+            .await?
+        {
+            return Err(RunError::ArtifactPersistence(
+                "cache step finalizer lost its durable state".to_owned(),
+            ));
+        }
         self.store
             .mark_run_step_cached_succeeded(&record.id, &metadata)
             .await?;

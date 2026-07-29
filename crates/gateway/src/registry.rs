@@ -191,6 +191,27 @@ impl Provider for ProviderRegistry {
             .unwrap_or_default()
     }
 
+    fn dispatch_origin(&self, provider_id: &str) -> ProviderResultValue<String> {
+        self.provider_for(provider_id)?.dispatch_origin(provider_id)
+    }
+
+    fn recovery_scope_fingerprint(&self, provider_id: &str) -> String {
+        self.providers
+            .get(provider_id)
+            .map(|provider| provider.recovery_scope_fingerprint(provider_id))
+            .unwrap_or_default()
+    }
+
+    fn recovery_capabilities(&self, provider_id: &str) -> crate::ProviderRecoveryCapabilities {
+        self.providers
+            .get(provider_id)
+            .map(|provider| provider.recovery_capabilities(provider_id))
+            .unwrap_or(crate::ProviderRecoveryCapabilities {
+                resume: false,
+                cancel: false,
+            })
+    }
+
     async fn health(&self) -> ProviderHealth {
         ProviderHealth {
             ok: self.providers.values().any(RuntimeProvider::is_enabled),
@@ -218,8 +239,29 @@ impl Provider for ProviderRegistry {
         self.provider_for(&req.provider)?.invoke(req).await
     }
 
+    async fn dispatch(&self, req: ProviderRequest) -> crate::ProviderDispatchResult {
+        let provider = self
+            .provider_for(&req.provider)
+            .map_err(crate::ProviderDispatchFailure::classify)?;
+        provider.dispatch(req).await
+    }
+
+    async fn resume(
+        &self,
+        task: &crate::DurableProviderTask,
+        req: &ProviderRequest,
+    ) -> ProviderResultValue<crate::ProviderResume> {
+        self.provider_for(&task.provider)?.resume(task, req).await
+    }
+
     async fn cancel(&self, handle: ProviderTaskHandle) -> ProviderResultValue<()> {
         self.provider_for(&handle.provider)?.cancel(handle).await
+    }
+
+    async fn cancel_durable(&self, task: &crate::DurableProviderTask) -> ProviderResultValue<()> {
+        self.provider_for(&task.provider)?
+            .cancel_durable(task)
+            .await
     }
 }
 

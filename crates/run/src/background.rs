@@ -67,7 +67,8 @@ where
             Ok(estimate) => estimate,
             Err(err) => {
                 self.interrupts.lock().await.remove(&run.id);
-                let error_json = serde_json::to_string(&json!({ "error": err.to_string() }))?;
+                let public_error = err.public_message();
+                let error_json = serde_json::to_string(&json!({ "error": public_error }))?;
                 self.store
                     .update_run_status(&run.id, RunStatus::Failed.as_str(), Some(&error_json))
                     .await?;
@@ -75,7 +76,7 @@ where
                     &request.workspace_id,
                     &run.id,
                     "run.failed",
-                    json!({ "error": err.to_string(), "phase": "estimate" }),
+                    json!({ "error": public_error, "phase": "estimate" }),
                 )
                 .await?;
                 return Err(err);
@@ -134,7 +135,7 @@ where
                 .execute_created_run(&run, &workspace_id, &plan, interrupt, force_rerun)
                 .await
             {
-                eprintln!("background run `{run_id}` failed: {err}");
+                eprintln!("background run failed: {}", err.public_message());
             }
             runner.interrupts.lock().await.remove(&run_id);
         });

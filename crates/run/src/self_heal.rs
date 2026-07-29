@@ -33,7 +33,7 @@ where
                 .execute_created_run(&run, &workspace_id, &plan, interrupt, run.force_rerun)
                 .await;
             if let Err(err) = result {
-                eprintln!("background run `{run_id}` failed: {err}");
+                eprintln!("background run failed: {}", err.public_message());
             }
             self.interrupts.lock().await.remove(&run_id);
 
@@ -46,7 +46,7 @@ where
                 Ok(None) => break,
                 Err(err) => {
                     self.emit_retry_failure(&workspace_id, &run_id, &err).await;
-                    eprintln!("background run `{run_id}` self-heal failed: {err}");
+                    eprintln!("background self-heal failed: {}", err.public_message());
                     break;
                 }
             }
@@ -146,7 +146,7 @@ where
                 workspace_id,
                 run_id,
                 "run.retry_failed",
-                json!({ "error": err.to_string() }),
+                json!({ "error": err.public_message() }),
             )
             .await
         {
@@ -169,16 +169,22 @@ where
             return Ok(None);
         }
         if attempt < 0 || attempt as u32 >= max_run_retries()? {
+            self.store
+                .complete_failure_continuation(run_id, true)
+                .await?;
             return Ok(None);
         }
         // Without an estimate we cannot budget-check the retry; leave failed.
         let Some(estimate_json) = run.estimate_json.as_deref() else {
+            self.store
+                .complete_failure_continuation(run_id, true)
+                .await?;
             return Ok(None);
         };
         let estimate: CostSummary = serde_json::from_str(estimate_json)?;
 
         let requires_confirmation = run_requires_confirmation(&estimate)?;
-        let child = self.store.create_retry_run(run_id, false).await?;
+        let child = self.store.create_retry_run_once(run_id, false).await?;
         self.emit(
             workspace_id,
             run_id,
@@ -201,6 +207,9 @@ where
                 json!({ "parent_run_id": run_id, "estimate": estimate }),
             )
             .await?;
+            self.store
+                .complete_failure_continuation(run_id, false)
+                .await?;
             return Ok(None);
         }
 
@@ -210,6 +219,9 @@ where
         let (child_run, child_plan, child_interrupt) =
             self.claim_run_for_background(&child.id).await?;
         self.ensure_run_steps(&child_run.id, &child_plan).await?;
+        self.store
+            .complete_failure_continuation(run_id, false)
+            .await?;
         Ok(Some((child_run, child_plan, child_interrupt)))
     }
 }

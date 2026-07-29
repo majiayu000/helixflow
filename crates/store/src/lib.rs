@@ -1,12 +1,15 @@
 use std::fmt;
 use std::str::FromStr;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Executor, Row, SqlitePool};
 use uuid::Uuid;
 
+mod artifact_journal_records;
 mod canvas_comment_records;
+mod cost_ledger_idempotency;
 mod failed_run_records;
 #[cfg(test)]
 mod migration_tests;
@@ -16,6 +19,10 @@ mod proposal_records;
 mod proposal_records_apply_tests;
 #[cfg(test)]
 mod proposal_records_auto_apply_tests;
+mod provider_task_records;
+#[cfg(test)]
+mod provider_task_records_tests;
+mod recovery_lease_records;
 mod retry_records;
 mod run_claim;
 #[cfg(test)]
@@ -24,6 +31,8 @@ mod run_cleanup;
 mod run_records;
 #[cfg(test)]
 mod run_records_tests;
+mod run_recovery_records;
+mod step_finalizer_records;
 mod sweep_records;
 mod upload_records;
 mod version_file_reference_records;
@@ -41,10 +50,14 @@ mod workspace_initialization_records;
 mod workspace_initialization_records_tests;
 mod workspace_records;
 
+pub use artifact_journal_records::*;
 pub use canvas_comment_records::*;
 pub use node_cache_records::*;
 pub use proposal_records::*;
+pub use provider_task_records::*;
 pub use run_records::*;
+pub use run_recovery_records::*;
+pub use step_finalizer_records::*;
 pub use upload_records::*;
 pub use version_file_reference_records::*;
 pub use version_migration_records::*;
@@ -117,6 +130,10 @@ pub enum StoreError {
     SchemaMigrationCleanup {
         migration_error: String,
         cleanup_error: String,
+    },
+    RecoveryInvariant {
+        operation: &'static str,
+        message: String,
     },
 }
 
@@ -218,6 +235,12 @@ impl fmt::Display for StoreError {
                 f,
                 "version schema migration failed: {migration_error}; restoring foreign keys also failed: {cleanup_error}"
             ),
+            Self::RecoveryInvariant { operation, message } => {
+                write!(
+                    f,
+                    "recovery operation `{operation}` violated an invariant: {message}"
+                )
+            }
         }
     }
 }
@@ -330,7 +353,8 @@ impl Store {
 async fn connect_pool(database_url: &str) -> StoreResult<SqlitePool> {
     let options = SqliteConnectOptions::from_str(database_url)?
         .create_if_missing(true)
-        .foreign_keys(true);
+        .foreign_keys(true)
+        .busy_timeout(Duration::from_secs(5));
 
     let pool = SqlitePoolOptions::new()
         .max_connections(5)

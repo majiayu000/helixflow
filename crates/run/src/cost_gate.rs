@@ -89,7 +89,8 @@ where
             Ok(steps) => steps,
             Err(err) => {
                 self.interrupts.lock().await.remove(&run.id);
-                let error_json = serde_json::to_string(&json!({ "error": err.to_string() }))?;
+                let public_error = err.public_message();
+                let error_json = serde_json::to_string(&json!({ "error": public_error }))?;
                 self.store
                     .update_run_status(&run.id, RunStatus::Failed.as_str(), Some(&error_json))
                     .await?;
@@ -97,7 +98,7 @@ where
                     &run.workspace_id,
                     &run.id,
                     "run.failed",
-                    json!({ "error": err.to_string() }),
+                    json!({ "error": public_error }),
                 )
                 .await?;
                 return Err(err);
@@ -165,6 +166,8 @@ where
             .as_deref()
             .ok_or_else(|| RunError::InvalidSweepPlan("run has no execution plan".to_owned()))?;
         let plan = serde_json::from_str(plan_json)?;
+        self.ensure_execution_intent(&run.id, &plan, run.estimate_json.as_deref())
+            .await?;
         // The busy check and the status transition happen in one atomic
         // UPDATE: a separate check-then-act pair lets two concurrent claims
         // for the same workspace both pass the check (HF-018).
@@ -230,6 +233,8 @@ where
             .as_deref()
             .ok_or_else(|| RunError::InvalidSweepPlan("run has no execution plan".to_owned()))?;
         let plan = serde_json::from_str(plan_json)?;
+        self.ensure_execution_intent(&run.id, &plan, run.estimate_json.as_deref())
+            .await?;
         let interrupt = RunInterrupt::default();
         self.interrupts
             .lock()
@@ -563,7 +568,8 @@ where
                 return Err(RunError::Interrupted(run.id));
             }
             Err(err) => {
-                let error_json = serde_json::to_string(&json!({ "error": err.to_string() }))?;
+                let public_error = err.public_message();
+                let error_json = serde_json::to_string(&json!({ "error": public_error }))?;
                 self.store
                     .update_run_status(&run.id, RunStatus::Failed.as_str(), Some(&error_json))
                     .await?;
@@ -571,7 +577,7 @@ where
                     &request.workspace_id,
                     &run.id,
                     "run.failed",
-                    json!({ "error": err.to_string(), "phase": "estimate" }),
+                    json!({ "error": public_error, "phase": "estimate" }),
                 )
                 .await?;
                 self.interrupts.lock().await.remove(&run.id);
@@ -662,42 +668,22 @@ where
                 .update_run_step_cost_estimate(&record.id, Some(&estimate_json))
                 .await?;
             self.store
-                .create_cost_ledger(NewCostLedger {
-                    workspace_id,
-                    run_id: Some(run_id),
-                    run_step_id: Some(&record.id),
-                    provider,
-                    amount: estimate.amount,
-                    currency: &estimate.currency,
-                    estimated: true,
-                })
+                .create_cost_ledger_once(
+                    &format!("estimate:{}", record.id),
+                    NewCostLedger {
+                        workspace_id,
+                        run_id: Some(run_id),
+                        run_step_id: Some(&record.id),
+                        provider,
+                        amount: estimate.amount,
+                        currency: &estimate.currency,
+                        estimated: true,
+                    },
+                )
                 .await?;
             total.add(&CostSummary::from_estimate(&estimate))?;
         }
         Ok(total)
-    }
-
-    pub(crate) async fn record_actual_costs(&self, outcome: &RunOutcome) -> RunResult<()> {
-        for step in &outcome.steps {
-            let (Some(provider), Some(cost_json)) = (&step.provider, &step.cost_actual_json) else {
-                continue;
-            };
-            let cost: CostEstimate = serde_json::from_str(cost_json)?;
-            self.store
-                .create_cost_ledger(NewCostLedger {
-                    workspace_id: &outcome.run.workspace_id,
-                    run_id: Some(&outcome.run.id),
-                    run_step_id: Some(&step.id),
-                    provider,
-                    amount: cost.amount,
-                    currency: &cost.currency,
-                    // Providers that cannot report actual cost keep the
-                    // estimated flag so the ledger never fakes a confirmed $0.
-                    estimated: cost.estimated,
-                })
-                .await?;
-        }
-        Ok(())
     }
 
     async fn revert_claimed_runs(&self, run_ids: &[String]) -> RunResult<()> {
