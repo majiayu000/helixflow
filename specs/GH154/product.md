@@ -173,6 +173,10 @@ run 已中断。
 - [ ] provider terminal 后、artifact 下载/发布前 crash 或重复失败时，task 保持
       `result_ready`、actual ledger exactly-once，恢复只重试 materialization，不 cancel/
       abandon 已完成的远端 task。
+- [ ] materialization attempts/next-retry/绝对 deadline 跨连续重启持久化且窗口不延长；
+      到期后 task 以 provider-completed 语义终态、step/run failed，不 cancel/abandon。
+- [ ] 已 succeeded 的零输出 sink 与仍 active 的 provider sibling 同时存在时，重启仍按
+      declared output set（空集合合法）恢复，不误判为 invariant interruption。
 - [ ] Web 在实时事件和断线补拉后都显示恢复、补取消和计费风险，不伪装为成功；刷新
       后 durable 风险仍可见。
 - [ ] 正常执行、在线 interrupt、cost confirmation、sweep 与同图 self-heal 回归通过；

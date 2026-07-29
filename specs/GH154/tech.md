@@ -50,6 +50,9 @@ CREATE TABLE run_provider_tasks (
   terminal_outcome TEXT,
   result_spool_path TEXT,
   result_fingerprint TEXT,
+  materialization_deadline_at TEXT,
+  materialization_attempts INTEGER NOT NULL DEFAULT 0,
+  materialization_next_retry_at TEXT,
   last_error_code TEXT,
   recovery_deadline_at TEXT,
   created_at TEXT NOT NULL,
@@ -66,7 +69,9 @@ CREATE TABLE run_provider_tasks (
   非空 `provider_task_id`，provider 可按能力要求 status/result URL。
 - successful `result_ready` 表示 provider terminal 与 actual cost 已持久化，必须有
   `terminal_outcome/result_fingerprint`，inline output 还需安全 spool；它不可被 cancel/
-  abandon。artifact materialization 完成后才推进 `completed`。
+  abandon。进入该状态时一次性写绝对 `materialization_deadline_at`，重启不得重置；
+  每次失败以 CAS 递增 attempts 并写 next-retry。artifact materialization 完成，或绝对
+  deadline 到期并记录 `ARTIFACT_MATERIALIZATION_FAILED` 后，才推进 `completed`。
 - `completed/cancelled/abandoned` 是 task 终态，不可退回 active；`completed` 表示已知
   结果（同步成功、远端 terminal、确定未提交或明确拒绝），失败由 `last_error_code`
   区分并将 run/step 送入共同 failed finalizer。
@@ -199,9 +204,10 @@ signed URL 暴露到 event/API，能从 durable handle 重新获取时仅保存�
 随后 transaction CAS `dispatching|active → result_ready`、insert-or-read
 `actual:{run_step_id}` ledger，并记录 spool/fingerprint；从 `dispatching` 推进时还必须
 匹配当前 `dispatch_owner_id`。artifact materializer 只消费 result_ready；下载/发布失败
-保持 result_ready 并按独立、有界 materialization policy 重试。
-到期将 step/run 送入 failed terminalization，但 task 仍作为 provider-completed，不调用
-cancel/abandon。
+保持 result_ready，以 CAS 持久化 attempts/next-retry，并只按首次写入的绝对
+`materialization_deadline_at` 计算 remaining；连续重启不得重置窗口。到期将 task
+`result_ready → completed`、记录 `ARTIFACT_MATERIALIZATION_FAILED`，并把 step/run 送入
+failed terminalization；task 仍表示 provider 已完成，不调用 cancel/abandon。
 
 ## 2. Gateway 生命周期契约
 
@@ -311,7 +317,8 @@ provider-backed step 执行顺序：
    active/result_ready/terminal record，进入 resume/materialize/replay，不重新 submit。
 3. 调用 `provider.dispatch`。
 4. `Completed`：先 spool/fingerprint 安全 outputs，再原子写 task `result_ready` + actual
-   ledger，之后才进入 artifact materializer；`NotSubmitted`/`Rejected` 原子写 task
+   ledger + absolute materialization deadline，之后才进入 artifact materializer；
+   `NotSubmitted`/`Rejected` 原子写 task
    `completed`、step failed 与 terminalization work item；`OutcomeUnknown` 原子写 task
    `abandoned`、`desired=interrupted` work item 与计费风险，不直接 terminal run。
 5. `Accepted`：严格校验 handle 和 scope，然后以
@@ -346,6 +353,7 @@ provider `Completed` 后先按 durable spool 契约把 task/cost 推进为 `resu
 | asynchronous `resume Completed` | `active → result_ready`，先写 spool/cost |
 | asynchronous `resume Failed` | `active → completed`，同事务写 actual cost，无成功 output |
 | artifact materialized | `result_ready → completed` |
+| materialization deadline exhausted | `result_ready → completed`，保留 cost/result 审计并使 step failed |
 | dispatch `NotSubmitted/Rejected` | `dispatching → completed`，无 output |
 | local preflight failure | 无 task row，step `queued → failed` |
 | builtin / cache hit | 无 task row，不执行 task CAS |
@@ -416,8 +424,9 @@ run → failed、写 `run.failed` event，并调用共同 failure finalizer。�
    - 有 `run_terminalization_work_items(settling)`：优先 claim settler，停止 DAG
      continuation；
    - `running` 且每个 running provider step 都有对应 active/result_ready/terminal task
-     row、其余
-     succeeded step 有 durable outputs、剩余 queued DAG 可由 plan 重建：lease claim；
+     row、每个 succeeded step 对其 declared output ports 都有完整 durable mapping（允许
+     `output.save` 等 declared output set 为空）、剩余 queued DAG 可由 plan 重建：
+     lease claim；
    - `running` 且所有 step queued、execution intent 完整、无 provider task/output：
      lease claim 并从 ready queue 恢复；
    - `running` builtin step 仅当 capability 明确声明并测试 `restart_safe=true` 时可重放；
