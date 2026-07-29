@@ -331,6 +331,8 @@ where
         let (group_id, runs) = self
             .validate_sweep_confirmation(run_ids, recommended_run_id)
             .await?;
+        self.prepare_recommended_sweep_fix_chain(&group_id, recommended_run_id)
+            .await?;
         let mut claimed: Vec<String> = Vec::new();
         for run in runs {
             let Some(claimed_run) = self
@@ -517,8 +519,7 @@ where
         let plan = plan;
         let plan_json = serde_json::to_string(&plan)?;
         let run = self
-            .store
-            .create_run(NewRun {
+            .create_run_with_optional_fix_chain(NewRun {
                 workspace_id: &request.workspace_id,
                 version_id: &request.version_id,
                 group_id: request.group_id.as_deref(),

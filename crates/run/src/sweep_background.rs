@@ -16,6 +16,8 @@ where
         let (group_id, runs) = self
             .validate_sweep_confirmation(run_ids, recommended_run_id)
             .await?;
+        self.prepare_recommended_sweep_fix_chain(&group_id, recommended_run_id)
+            .await?;
         let mut claimed = Vec::new();
         for run in runs {
             let interrupt = RunInterrupt::default();

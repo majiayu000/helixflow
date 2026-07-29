@@ -28,6 +28,9 @@ mod run_claim;
 #[cfg(test)]
 mod run_claim_tests;
 mod run_cleanup;
+mod run_fix_records;
+#[cfg(test)]
+mod run_fix_records_tests;
 mod run_records;
 #[cfg(test)]
 mod run_records_tests;
@@ -55,6 +58,7 @@ pub use canvas_comment_records::*;
 pub use node_cache_records::*;
 pub use proposal_records::*;
 pub use provider_task_records::*;
+pub use run_fix_records::*;
 pub use run_records::*;
 pub use run_recovery_records::*;
 pub use step_finalizer_records::*;

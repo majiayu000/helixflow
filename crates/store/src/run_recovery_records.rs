@@ -9,6 +9,8 @@ pub struct RunFailureContinuationRecord {
     pub state: String,
     pub retry_key: Option<String>,
     pub child_run_id: Option<String>,
+    pub chain_id: Option<String>,
+    pub reason_code: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -163,13 +165,18 @@ impl Store {
             sqlx::query(
                 r#"
                 INSERT OR IGNORE INTO run_failure_continuations (
-                    run_id, state, retry_key, created_at, updated_at
+                    run_id, state, retry_key, chain_id, created_at, updated_at
                 )
-                VALUES (?, 'pending', ?, current_timestamp, current_timestamp)
+                VALUES (
+                    ?, 'pending', ?,
+                    (SELECT chain_id FROM run_repair_chain_runs WHERE run_id = ?),
+                    current_timestamp, current_timestamp
+                )
                 "#,
             )
             .bind(run_id)
             .bind(format!("retry:{run_id}"))
+            .bind(run_id)
             .execute(&mut *tx)
             .await?;
         }
@@ -225,7 +232,8 @@ impl Store {
     ) -> StoreResult<Option<RunFailureContinuationRecord>> {
         Ok(sqlx::query_as::<_, RunFailureContinuationRecord>(
             r#"
-            SELECT run_id, state, retry_key, child_run_id, created_at, updated_at
+            SELECT run_id, state, retry_key, child_run_id, chain_id, reason_code,
+                   created_at, updated_at
             FROM run_failure_continuations
             WHERE run_id = ?
             "#,
@@ -240,7 +248,8 @@ impl Store {
     ) -> StoreResult<Vec<RunFailureContinuationRecord>> {
         Ok(sqlx::query_as::<_, RunFailureContinuationRecord>(
             r#"
-            SELECT run_id, state, retry_key, child_run_id, created_at, updated_at
+            SELECT run_id, state, retry_key, child_run_id, chain_id, reason_code,
+                   created_at, updated_at
             FROM run_failure_continuations
             WHERE state IN ('pending', 'retry_created')
             ORDER BY created_at, run_id
@@ -306,7 +315,8 @@ impl Store {
         let mut tx = self.pool().begin().await?;
         let continuation = sqlx::query_as::<_, RunFailureContinuationRecord>(
             r#"
-            SELECT run_id, state, retry_key, child_run_id, created_at, updated_at
+            SELECT run_id, state, retry_key, child_run_id, chain_id, reason_code,
+                   created_at, updated_at
             FROM run_failure_continuations
             WHERE run_id = ?
             "#,
@@ -413,6 +423,20 @@ impl Store {
                 operation: "create_retry_run_once",
                 message: format!("run `{parent_run_id}` retry linkage lost"),
             });
+        }
+        if let Some(chain_id) = continuation.chain_id.as_deref() {
+            sqlx::query(
+                r#"
+                INSERT OR IGNORE INTO run_repair_chain_runs (
+                    run_id, chain_id, relation, created_at
+                )
+                VALUES (?, ?, 'retry', current_timestamp)
+                "#,
+            )
+            .bind(&child_id)
+            .bind(chain_id)
+            .execute(&mut *tx)
+            .await?;
         }
         let child = run_in_transaction(&mut tx, &child_id).await?;
         tx.commit().await?;

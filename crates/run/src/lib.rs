@@ -15,6 +15,7 @@ mod artifact_path;
 mod resolved;
 mod restart_policy;
 pub use resolved::{resolve_step_binding_for, shared_catalog};
+mod agent_fix;
 #[cfg(test)]
 mod artifact_path_tests;
 mod artifact_remote;
@@ -50,7 +51,8 @@ pub use cost_types::{
 };
 pub use error::{RunError, RunResult};
 pub use run_policy::{
-    max_run_retries, parse_max_run_retries, parse_run_confirmation_threshold_usd,
+    AgentFixPolicy, agent_fix_policy, max_run_retries, parse_agent_fix_enabled,
+    parse_max_fix_attempts, parse_max_run_retries, parse_run_confirmation_threshold_usd,
     run_confirmation_threshold_usd, run_requires_confirmation,
 };
 
