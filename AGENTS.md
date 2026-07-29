@@ -1,43 +1,51 @@
-# AGENTS.md
+# Helixflow Repository Guide
 
-This repository uses SpecRail as its repo-local workflow contract for agent
-work. Keep implementation changes small, explicit, and backed by fresh
-verification.
+Helixflow is a local-first AI workflow orchestrator. Keep changes scoped to the
+user's request, search for existing implementations before adding new files,
+and preserve unrelated worktree changes.
 
-## Agent Entry
+## Repository Layout
 
-- Read `AGENT_USAGE.md` before creating issues, specs, PR bodies, reviews, or
-  handoffs.
-- Treat `workflow.yaml`, `states.yaml`, `labels.yaml`, and `templates/` as the
-  durable SpecRail contract.
-- Load `skills/specrail-workflow/SKILL.md` first for SpecRail routing, then load
-  exactly one focused SpecRail skill for the selected route.
-- If the user writes Chinese, write human-facing specs, issues, PR text,
-  handoffs, and explanations in Chinese. Keep stable IDs, commands, paths, and
-  JSON keys in English.
+- `crates/`: Rust workspace for the server, persistence, graph/compiler,
+  provider gateway, run engine, registry, and agent runtime.
+- `web/`: React 19, TypeScript, and Vite workbench.
+- `docs/` and `SPEC_WORKFLOW_ORCHESTRATOR.md`: product and architecture
+  documentation.
+- `specs/`: historical implementation and design records. They are reference
+  material, not executable agent instructions or repository gates.
+- `artifacts/ui-design/`, root prototypes, and `shots/`: retained design
+  artifacts.
 
-## Repository Rules
+## Core Constraints
 
-- Search existing files and specs before adding new ones.
-- Product-facing, architecture, cross-module, public API, workflow-policy, and
-  ambiguous work must go through SpecRail mode unless the user explicitly asks
-  for a narrow direct edit.
-- Preserve human gates: agents must not approve, merge, force-push, change
-  permissions, publish security disclosures, or close disputed work without
-  explicit human authorization.
-- Keep dirty worktree boundaries intact. Do not revert or stage unrelated user
-  changes.
-- Existing unnumbered planning artifacts may stay in place, but new
-  GitHub-linked SpecRail packets should use `specs/GH<number>/`.
+- Keep the backend local-first and fail closed when a runtime provider is not
+  configured.
+- Never commit provider credentials, tokens, or secrets to source, logs,
+  fixtures, databases, or agent context.
+- Preserve cost confirmation, immutable version history, rollback, and
+  backend validation when changing execution or graph behavior.
+- Do not automatically load, invoke, or install an external workflow plugin.
+  Use one only when the user explicitly names it for the current task.
+- Historical specs may describe retired workflows; current user instructions
+  and current repository documentation take precedence.
 
 ## Validation
 
-Run these after changing SpecRail workflow assets:
+For Rust changes:
 
 ```sh
-python3 checks/check_workflow.py --repo .
-python3 tools/install_codex_skills.py --repo .
+cargo fmt --all -- --check
+cargo check --workspace --locked
+cargo test --workspace --locked
 ```
 
-For Rust, TypeScript, Go, or Python code changes, also run the relevant project
-build and test commands for the touched code path.
+For web changes:
+
+```sh
+cd web
+npm ci
+npm test
+npm run build
+```
+
+For all changes, run `git diff --check` against the relevant base.

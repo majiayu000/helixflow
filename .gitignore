@@ -10,6 +10,7 @@ target/
 .idea/
 .vscode/
 .helixflow/
+.specrail/
 .design-canvas.state.json
 .thumbnail
 web/bun.lock

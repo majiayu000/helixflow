@@ -1,26 +1,22 @@
-# Specification Index
+# Helixflow Specification Index
 
-This repository's product and architecture specifications live in the existing
-project documents. SpecRail is the workflow contract used to route and verify
-agent-assisted changes.
+Helixflow is a local-first AI workflow orchestrator. Its product contract is
+implemented by the Rust workspace and React workbench and documented in the
+following sources:
 
-## Helixflow Specs
-
-- `SPEC_WORKFLOW_ORCHESTRATOR.md`: active workflow orchestrator direction.
-- `specs/canvas-agent-full/`: current canvas-agent product, technical, task,
-  and issue packet drafted from the canvas-agent research.
+- `SPEC_WORKFLOW_ORCHESTRATOR.md`: primary workflow-orchestrator direction.
+- `docs/AGENT_RUNTIME_PROVIDER_SPEC.md`: agent/runtime-provider boundaries.
 - `docs/CANVAS_BACKEND_FORMAT.zh.md`: backend canvas format proposal.
+- `docs/`: product research, roadmaps, validation notes, and design material.
+- `specs/`: historical issue-linked product, technical, and task records.
 
-## SpecRail Contract
+## Historical Workflow Records
 
-- `workflow.yaml`: route policy, artifacts, human gates, and automation policy.
-- `states.yaml`: issue/spec/PR state machine.
-- `labels.yaml`: label taxonomy expected by route gates.
-- `templates/`: English and Chinese templates for issues, specs, tasks, PRs,
-  and runtime checkpoints.
-- `checks/`: deterministic validators and offline gates.
-- `skills/`: repo-distributed Codex-compatible SpecRail skills pinned by
-  `skills-lock.json`.
+Files under `specs/` are retained for product history and implementation
+traceability. They may mention superseded repository workflows, checks, or
+gates; those references are historical context, not executable instructions.
 
-New GitHub-linked SpecRail packets should use `specs/GH<number>/` so
-`python3 checks/check_workflow.py --repo . --all-specs` can validate them.
+The former repo-local SpecRail execution pack and its CI gate are retired.
+Nothing in this repository should automatically load, invoke, or install that
+workflow. The original adoption snapshot remains available in Git commit
+`af577c00993499b45ab6ae962e89b14be729ebd6`.

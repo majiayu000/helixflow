@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check whitespace
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -n "$BASE_SHA" ] &&
+             [ "$BASE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            git diff --check "$BASE_SHA"...HEAD
+          else
+            git diff --check HEAD^
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check Rust workspace
+        run: cargo check --workspace --locked
+
+      - name: Test Rust workspace
+        run: cargo test --workspace --locked
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Test web
+        working-directory: web
+        run: npm test
+
+      - name: Build web
+        working-directory: web
+        run: npm run build
