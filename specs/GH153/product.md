@@ -114,9 +114,12 @@ GH-153
     attempt 视为已消耗，恢复逻辑不得假装成功或无痕重放。feature 已关闭时所有未派发
     attempt/child 状态保持不动；这类 quiescent child 在无 nonterminal provider task 时不占 workspace
     active-run slot，但自身的 execute/confirm 入口仍被 disabled guard 拒绝。用户显式
-    hold/interrupt 是 zero-write 的授权例外：必须与 child interrupted 同事务把 attempt
-    标为 `cancelled`、continuation 标为 `fix_completed/FIX_USER_CANCELLED`，永不恢复或
-    触发下一 fix。
+    hold/interrupt 是 disabled 状态下唯一允许的写入：必须在同一 transaction 把 attempt
+    标为 `cancelled`、continuation 标为 `fix_completed/FIX_USER_CANCELLED`。无
+    dispatching/active/result_ready provider task 时同时把 child 标为 interrupted；存在
+    任一上述 task 时创建/升级 GH-154 `desired=interrupted` terminalization work item、
+    撤销 DAG，child 暂留 running，最终由 settler 收敛为 interrupted。两条路径都永不恢复
+    fix 或触发下一 fix。
 19. attempt/decision 状态转换必须与唯一 event outbox 同事务提交；event 使用确定性
     dedupe key 写 `run_events` 后再发布。max=0、非法配置、重复 finalizer、重启和广播
     重试都只能产生一个 `run.fix_exhausted`。事件只包含稳定 ID、attempt/max、状态、
@@ -160,6 +163,9 @@ GH-153
 - [ ] `child_preparing/estimating` 与 `child_ready/waiting_confirmation` 分别覆盖
       disabled → user interrupt/hold → reopen → reenable；attempt/continuation 均保持
       user-cancelled terminal，不补估价、不 dispatch、不 claim 下一 fix。
+- [ ] disabled child 存在 `result_ready` 时，user interrupt 同事务终止 fix continuation
+      并创建 GH-154 terminalization；reopen 只 materialize/settle 已付费 task，最终 child
+      interrupted，不恢复 fix、不触发下一 attempt，workspace slot 在收敛前后均正确。
 - [ ] 恶意 error 与 graph params 的 prompt-injection 测试证明 system policy 不被覆盖，
       scope/diff gate 拒绝无关节点删除、全图改写与 provider/workspace 设置修改。
 - [ ] `max=2` 覆盖首次 Agent runtime failure/clarify/invalid 后的第二次 claim，以及达到

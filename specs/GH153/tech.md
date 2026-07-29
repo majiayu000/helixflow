@@ -108,10 +108,13 @@ store API 使用 `BEGIN IMMEDIATE` 和条件 UPDATE 实现：
    commit 后、broadcast 前退出，或广播成功后、标记前退出，启动扫描都可安全重播，客户端
    按 event id 去重。max=0/非法配置也在 chain 上有唯一 decision/dedupe key，不需要伪造
    1-based attempt。
-9. 用户对 fix-linked child 执行 hold/interrupt 时，child terminal transition、attempt
-   `→ cancelled` 与 continuation `→ fix_completed/FIX_USER_CANCELLED` 在同一
-   transaction 提交；该显式用户动作是 feature-off 零写入的唯一授权例外，不创建下一
-   attempt，也不发送 fix-exhausted。
+9. 用户对 fix-linked child 执行 hold/interrupt 时，attempt `→ cancelled` 与 continuation
+   `→ fix_completed/FIX_USER_CANCELLED` 必须在同一 transaction 提交；无
+   dispatching/active/result_ready provider task 时同事务把 child `→ interrupted`。存在
+   任一上述 task 时同事务创建/升级 GH-154 `desired=interrupted` terminalization work
+   item 并撤销 DAG，child 保持 running，待 settler 把 task materialize/settle 后再
+   `→ interrupted`。该显式用户动作是 feature-off 唯一允许的写入，不创建下一 attempt，
+   也不发送 fix-exhausted。
 
 continuation fix claim 不使用 recovery lease：短 transaction 条件 CAS
 `exhausted/fix_pending → fix_claimed`，并依靠
@@ -256,8 +259,10 @@ GH-154 分类其他 estimating run；随后恢复：
   新 run 或重复 ledger。
 - `child_ready` / `failed` / `exhausted`：只消费 durable outbox 或继续观察 child，
   不创建副本；failed 且仍有额度时按正常 coordinator 语义推进下一 attempt。
-- `cancelled` 或 child 已因显式 hold/interrupt 进入 interrupted：只验证 continuation 已
-  `fix_completed/FIX_USER_CANCELLED`，绝不补 estimate、dispatch 或 claim 下一 attempt。
+- `cancelled`：只验证 continuation 已 `fix_completed/FIX_USER_CANCELLED`；无 nonterminal
+  provider task 的 child 已 interrupted，有 dispatching/active/result_ready task 的 child
+  只允许 GH-154 terminalization/materialization 继续并最终 interrupted，绝不补 estimate、
+  dispatch、恢复 fix 或 claim 下一 attempt。
 - 未完成 `run_failure_continuations`：按 durable chain/provenance 恢复 retry/fix decision；
   不从 trigger、group 或最新 run 猜测来源。
 
