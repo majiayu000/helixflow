@@ -393,7 +393,9 @@ impl Provider for BlockingProvider {
 
     async fn invoke(&self, req: ProviderRequest) -> ProviderResultValue<ProviderResult> {
         if req.capability == "prompt_writer" {
-            self.blocked.notify_waiters();
+            // Retain a permit when the provider reaches this point before the
+            // test starts waiting, so the synchronization cannot lose a wakeup.
+            self.blocked.notify_one();
             self.release.notified().await;
         }
         self.inner.invoke(req).await

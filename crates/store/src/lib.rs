@@ -57,6 +57,7 @@ pub use proposal_records::*;
 pub use provider_task_records::*;
 pub use run_records::*;
 pub use run_recovery_records::*;
+pub use step_finalizer_records::*;
 pub use upload_records::*;
 pub use version_file_reference_records::*;
 pub use version_migration_records::*;

@@ -9,7 +9,8 @@ use helixflow_gateway::{
 use helixflow_graph::ExecutionStep;
 use helixflow_store::{
     NewProviderTask, PROVIDER_TASK_ACTIVE, PROVIDER_TASK_DISPATCHING, PROVIDER_TASK_RESULT_READY,
-    ProviderTaskHandleUpdate, ProviderTaskRecord, ProviderTaskResult, RunStepRecord,
+    ProviderTaskFailureFinalization, ProviderTaskHandleUpdate, ProviderTaskRecord,
+    ProviderTaskResult, RunStepRecord,
 };
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -245,7 +246,10 @@ where
                     "input.text" | "input.image" | "output.save"
                 )
         });
-        if run.plan_json.is_none() || missing_handle || unsafe_builtin {
+        let all_steps_queued = !steps.is_empty() && steps.iter().all(|step| step.state == "queued");
+        let incomplete_queued_intent =
+            all_steps_queued && !self.restart_intent_is_complete(&run).await?;
+        if run.plan_json.is_none() || missing_handle || unsafe_builtin || incomplete_queued_intent {
             if missing_handle {
                 self.emit_billing_risk(&run.workspace_id, &run.id, "unknown", "missing_handle")
                     .await?;
@@ -368,7 +372,7 @@ where
         let scope = self.provider.recovery_scope_fingerprint(&provider);
         let owner_id = format!("dispatch-{}", Uuid::now_v7());
         let operation_key = format!("dispatch:{run_id}:{}:{provider}", record.id);
-        let task = self
+        let mut task = self
             .store
             .insert_or_read_provider_task(NewProviderTask {
                 run_id,
@@ -382,6 +386,48 @@ where
                 dispatch_deadline_seconds: DISPATCH_DEADLINE_SECONDS,
             })
             .await?;
+        loop {
+            while task.state == PROVIDER_TASK_DISPATCHING
+                && task.dispatch_owner_id.as_deref() != Some(owner_id.as_str())
+                && self
+                    .store
+                    .provider_task_timing(&task.id)
+                    .await?
+                    .dispatch_owner_live
+            {
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                        task = self.store.provider_task(&task.id).await?;
+                    }
+                    _ = interrupt.cancelled() => return Ok(None),
+                }
+            }
+            if task.state != PROVIDER_TASK_DISPATCHING
+                || task.dispatch_owner_id.as_deref() == Some(owner_id.as_str())
+            {
+                break;
+            }
+            let abandoned = self
+                .store
+                .finalize_provider_task_failure(ProviderTaskFailureFinalization {
+                    provider_task_id: &task.id,
+                    expected_task_state: PROVIDER_TASK_DISPATCHING,
+                    terminal_task_state: "abandoned",
+                    error_code: "DISPATCH_OWNER_LOST",
+                    desired_run_status: "interrupted",
+                    error_json: None,
+                    required_expired_foreign_owner: Some(&owner_id),
+                })
+                .await?;
+            if abandoned {
+                self.emit_billing_risk(workspace_id, run_id, &provider, "dispatch_unknown")
+                    .await?;
+                self.request_and_settle_terminal(workspace_id, run_id, "interrupted", None)
+                    .await?;
+                return Ok(None);
+            }
+            task = self.store.provider_task(&task.id).await?;
+        }
 
         let result = match task.state.as_str() {
             PROVIDER_TASK_DISPATCHING => {
@@ -443,10 +489,16 @@ where
                             ProviderDispatchFailureKind::Rejected => "PROVIDER_REJECTED",
                             ProviderDispatchFailureKind::OutcomeUnknown => {
                                 self.store
-                                    .abandon_provider_task(
-                                        &task.id,
-                                        PROVIDER_TASK_DISPATCHING,
-                                        "DISPATCH_OUTCOME_UNKNOWN",
+                                    .finalize_provider_task_failure(
+                                        ProviderTaskFailureFinalization {
+                                            provider_task_id: &task.id,
+                                            expected_task_state: PROVIDER_TASK_DISPATCHING,
+                                            terminal_task_state: "abandoned",
+                                            error_code: "DISPATCH_OUTCOME_UNKNOWN",
+                                            desired_run_status: "interrupted",
+                                            error_json: None,
+                                            required_expired_foreign_owner: None,
+                                        },
                                     )
                                     .await?;
                                 self.emit_billing_risk(
@@ -467,7 +519,15 @@ where
                             }
                         };
                         self.store
-                            .complete_provider_task(&task.id, PROVIDER_TASK_DISPATCHING, Some(code))
+                            .finalize_provider_task_failure(ProviderTaskFailureFinalization {
+                                provider_task_id: &task.id,
+                                expected_task_state: PROVIDER_TASK_DISPATCHING,
+                                terminal_task_state: "completed",
+                                error_code: code,
+                                desired_run_status: "failed",
+                                error_json: Some(r#"{"error":"provider execution failed"}"#),
+                                required_expired_foreign_owner: None,
+                            })
                             .await?;
                         return Err(RunError::Provider(failure.error));
                     }
@@ -558,11 +618,15 @@ where
                         .spool_provider_result(workspace_id, task, &result, "failed")
                         .await?;
                     self.store
-                        .complete_provider_task(
-                            &ready.id,
-                            PROVIDER_TASK_RESULT_READY,
-                            Some(&reason_code),
-                        )
+                        .finalize_provider_task_failure(ProviderTaskFailureFinalization {
+                            provider_task_id: &ready.id,
+                            expected_task_state: PROVIDER_TASK_RESULT_READY,
+                            terminal_task_state: "completed",
+                            error_code: &reason_code,
+                            desired_run_status: "failed",
+                            error_json: Some(r#"{"error":"provider execution failed"}"#),
+                            required_expired_foreign_owner: None,
+                        })
                         .await?;
                     return Err(RunError::Provider(
                         helixflow_gateway::ProviderError::RequestRejected(reason_code),

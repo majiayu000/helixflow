@@ -534,7 +534,11 @@ impl Store {
             INSERT INTO run_recovery_leases (
                 run_id, owner_id, lease_expires_at, updated_at
             )
-            VALUES (?, ?, datetime('now', ?), current_timestamp)
+            SELECT ?, ?, datetime('now', ?), current_timestamp
+            WHERE EXISTS (
+                SELECT 1 FROM runs
+                WHERE id = ? AND status IN ('queued', 'estimating', 'running')
+            )
             ON CONFLICT(run_id) DO UPDATE SET
                 owner_id = excluded.owner_id,
                 lease_expires_at = excluded.lease_expires_at,
@@ -546,6 +550,7 @@ impl Store {
         .bind(run_id)
         .bind(owner_id)
         .bind(lease)
+        .bind(run_id)
         .execute(self.pool())
         .await?;
         Ok(sqlx::query_as::<_, RunRecoveryLeaseRecord>(

@@ -166,6 +166,8 @@ where
             .as_deref()
             .ok_or_else(|| RunError::InvalidSweepPlan("run has no execution plan".to_owned()))?;
         let plan = serde_json::from_str(plan_json)?;
+        self.ensure_execution_intent(&run.id, &plan, run.estimate_json.as_deref())
+            .await?;
         // The busy check and the status transition happen in one atomic
         // UPDATE: a separate check-then-act pair lets two concurrent claims
         // for the same workspace both pass the check (HF-018).
@@ -231,6 +233,8 @@ where
             .as_deref()
             .ok_or_else(|| RunError::InvalidSweepPlan("run has no execution plan".to_owned()))?;
         let plan = serde_json::from_str(plan_json)?;
+        self.ensure_execution_intent(&run.id, &plan, run.estimate_json.as_deref())
+            .await?;
         let interrupt = RunInterrupt::default();
         self.interrupts
             .lock()

@@ -2,8 +2,8 @@ use tempfile::TempDir;
 
 use super::{
     NewProviderTask, PROVIDER_TASK_ACTIVE, PROVIDER_TASK_CANCELLED, PROVIDER_TASK_COMPLETED,
-    PROVIDER_TASK_DISPATCHING, PROVIDER_TASK_RESULT_READY, ProviderTaskHandleUpdate,
-    ProviderTaskResult, Store,
+    PROVIDER_TASK_DISPATCHING, PROVIDER_TASK_RESULT_READY, ProviderTaskFailureFinalization,
+    ProviderTaskHandleUpdate, ProviderTaskResult, Store,
 };
 use crate::NewArtifactPublishJournal;
 use crate::{
@@ -161,6 +161,87 @@ async fn provider_task_identity_is_step_unique_and_immutable() {
             ..
         }
     ));
+}
+
+#[tokio::test]
+async fn provider_failure_atomically_settles_task_step_and_terminal_work() {
+    let fixture = RecoveryFixture::create().await;
+    let task = fixture.dispatching().await;
+    let mut failure = ProviderTaskFailureFinalization {
+        provider_task_id: &task.id,
+        expected_task_state: PROVIDER_TASK_DISPATCHING,
+        terminal_task_state: PROVIDER_TASK_COMPLETED,
+        error_code: "PROVIDER_REJECTED",
+        desired_run_status: "failed",
+        error_json: None,
+        required_expired_foreign_owner: Some("owner-b"),
+    };
+    assert!(
+        !fixture
+            .store
+            .finalize_provider_task_failure(failure.clone())
+            .await
+            .expect("guard live dispatch owner")
+    );
+    failure.error_json = Some(r#"{"error":"provider execution failed"}"#);
+    failure.required_expired_foreign_owner = None;
+    assert!(
+        fixture
+            .store
+            .finalize_provider_task_failure(failure.clone())
+            .await
+            .expect("finalize provider failure")
+    );
+    assert_eq!(
+        fixture
+            .store
+            .provider_task(&task.id)
+            .await
+            .expect("read task")
+            .state,
+        PROVIDER_TASK_COMPLETED
+    );
+    assert_eq!(
+        fixture
+            .store
+            .run_step(&fixture.step_id)
+            .await
+            .expect("read step")
+            .state,
+        "failed"
+    );
+    let work = fixture
+        .store
+        .pending_run_terminalizations()
+        .await
+        .expect("read terminal work");
+    assert_eq!(work.len(), 1);
+    assert_eq!(work[0].desired_status, "failed");
+    assert_eq!(
+        fixture
+            .store
+            .run(&fixture.run_id)
+            .await
+            .expect("read active run")
+            .status,
+        "running"
+    );
+    assert!(
+        fixture
+            .store
+            .finalize_provider_task_failure(failure.clone())
+            .await
+            .expect("replay provider failure")
+    );
+    failure.error_code = "DIFFERENT_FAILURE";
+    failure.error_json = None;
+    assert!(
+        !fixture
+            .store
+            .finalize_provider_task_failure(failure)
+            .await
+            .expect("reject mismatched replay")
+    );
 }
 
 #[tokio::test]
@@ -422,6 +503,24 @@ async fn recovery_lease_and_terminal_desire_are_monotonic() {
             .renew_run_terminalization_lease(&fixture.run_id, "settler-a", 30)
             .await
             .expect("renew terminalization")
+    );
+    fixture
+        .store
+        .release_run_recovery_lease(&fixture.run_id, "owner-b")
+        .await
+        .expect("release recovery lease");
+    fixture
+        .store
+        .update_run_status(&fixture.run_id, "interrupted", None)
+        .await
+        .expect("terminalize run");
+    assert!(
+        fixture
+            .store
+            .claim_run_recovery_lease(&fixture.run_id, "owner-c", 30)
+            .await
+            .expect("terminal claim")
+            .is_none()
     );
 }
 

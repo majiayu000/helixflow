@@ -5,7 +5,7 @@ use helixflow_gateway::{ArtifactPayload, ArtifactRef, Provider, ProviderResult};
 use helixflow_graph::ExecutionStep;
 use helixflow_store::{
     ArtifactRecord, NewArtifact, NewArtifactPublishJournal, PROVIDER_TASK_RESULT_READY,
-    ProviderTaskRecord, RunStepRecord,
+    ProviderTaskFailureFinalization, ProviderTaskRecord, RunStepRecord,
 };
 use sha2::{Digest, Sha256};
 
@@ -49,11 +49,15 @@ where
             let timing = self.store.provider_task_timing(&task.id).await?;
             if timing.materialization_expired {
                 self.store
-                    .complete_provider_task(
-                        &task.id,
-                        PROVIDER_TASK_RESULT_READY,
-                        Some("ARTIFACT_MATERIALIZATION_DEADLINE"),
-                    )
+                    .finalize_provider_task_failure(ProviderTaskFailureFinalization {
+                        provider_task_id: &task.id,
+                        expected_task_state: PROVIDER_TASK_RESULT_READY,
+                        terminal_task_state: "completed",
+                        error_code: "ARTIFACT_MATERIALIZATION_DEADLINE",
+                        desired_run_status: "failed",
+                        error_json: Some(r#"{"error":"artifact materialization failed"}"#),
+                        required_expired_foreign_owner: None,
+                    })
                     .await?;
                 return Err(RunError::ArtifactPersistence(
                     "provider artifact materialization deadline expired".to_owned(),
@@ -71,11 +75,15 @@ where
                 Ok(execution) => return Ok(Some(execution)),
                 Err(err) if materialization_error_is_permanent(&err) => {
                     self.store
-                        .complete_provider_task(
-                            &task.id,
-                            PROVIDER_TASK_RESULT_READY,
-                            Some("ARTIFACT_MATERIALIZATION_INVALID"),
-                        )
+                        .finalize_provider_task_failure(ProviderTaskFailureFinalization {
+                            provider_task_id: &task.id,
+                            expected_task_state: PROVIDER_TASK_RESULT_READY,
+                            terminal_task_state: "completed",
+                            error_code: "ARTIFACT_MATERIALIZATION_INVALID",
+                            desired_run_status: "failed",
+                            error_json: Some(r#"{"error":"artifact materialization failed"}"#),
+                            required_expired_foreign_owner: None,
+                        })
                         .await?;
                     return Err(err);
                 }

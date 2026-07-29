@@ -10,6 +10,23 @@ where
     P: Provider + Clone + Send + Sync + 'static,
 {
     pub(crate) async fn claim_restart_queued_run(&self, run: &RunRecord) -> RunResult<bool> {
+        if !self.restart_intent_is_complete(run).await? {
+            return Ok(false);
+        }
+        Ok(self
+            .store
+            .claim_run_if_workspace_idle(
+                &run.id,
+                "queued",
+                "running",
+                &run.workspace_id,
+                run.group_id.as_deref(),
+            )
+            .await?
+            .is_some())
+    }
+
+    pub(crate) async fn restart_intent_is_complete(&self, run: &RunRecord) -> RunResult<bool> {
         let Some(intent) = self.store.run_execution_intent(&run.id).await? else {
             return Ok(false);
         };
@@ -52,17 +69,7 @@ where
         if !estimates_are_complete || provider_steps.len() != estimate_step_ids.len() {
             return Ok(false);
         }
-        Ok(self
-            .store
-            .claim_run_if_workspace_idle(
-                &run.id,
-                "queued",
-                "running",
-                &run.workspace_id,
-                run.group_id.as_deref(),
-            )
-            .await?
-            .is_some())
+        Ok(true)
     }
 
     pub(crate) async fn resume_retry_created(
