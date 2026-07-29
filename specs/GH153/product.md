@@ -48,8 +48,8 @@ GH-153
 1. `HELIXFLOW_RUN_AGENT_FIX_ENABLED` 缺失时为关闭；关闭时不得创建
    `run_fix_attempts`、Agent session、proposal、version、派生 run 或 fix 事件，也不得
    推进崩溃前遗留的 fix attempt/child preparation/outbox。既有未派发记录保持 quiescent，
-   重新开启后才恢复；已经存在 remote handle 的 child 仅由 GH-154 做计费安全收敛，不得
-   由此触发新 fix/下游 run。
+   重新开启后才恢复；已经存在 dispatching/active/result_ready provider task 的 child
+   仅由 GH-154 做计费安全收敛/materialization，不得由此触发新 fix/下游 run。
 2. 仅在 fix 开关开启后解析 `HELIXFLOW_RUN_MAX_FIX_ATTEMPTS`：缺失时为 `1`，只接受
    非负整数。非法 UTF-8、负数、浮点或溢出值必须 fail-closed，持久化
    `run.fix_exhausted`，不得回退默认值；开关关闭时不解析该值，也不产生任何写入。
@@ -112,7 +112,7 @@ GH-153
 18. `version_applied` 后重复执行或重启恢复必须复用同一 target version，并幂等创建或
     返回同一 child run；不得再次调用 Agent。Agent 调用中进程退出时，该 in-flight
     attempt 视为已消耗，恢复逻辑不得假装成功或无痕重放。feature 已关闭时所有未派发
-    attempt/child 状态保持不动；这类 quiescent child 在无 provider task 时不占 workspace
+    attempt/child 状态保持不动；这类 quiescent child 在无 nonterminal provider task 时不占 workspace
     active-run slot，但自身的 execute/confirm 入口仍被 disabled guard 拒绝。用户显式
     hold/interrupt 是 zero-write 的授权例外：必须与 child interrupted 同事务把 attempt
     标为 `cancelled`、continuation 标为 `fix_completed/FIX_USER_CANCELLED`，永不恢复或

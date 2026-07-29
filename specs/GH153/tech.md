@@ -233,12 +233,12 @@ fix attempt。
 严格解析 fix policy，再做 GH-154 startup classification。feature 关闭时，fix-linked
 attempt/child/outbox 不 claim、不改状态、不发 event；`child_preparing/estimating` 也必须
 从 GH-154 通用 stale-estimating interrupt 中排除并保持 quiescent。只有已存在
-dispatching/active provider task 的 child 交给 GH-154 terminalization 做计费安全收敛，
-不得继续 DAG 或产生下一 fix。
+dispatching/active/result_ready provider task 的 child 交给 GH-154 terminalization/
+materialization 做计费安全收敛，不得继续 DAG 或产生下一 fix。
 
 为避免 rollback 冻结 workspace，所有 busy/atomic workspace-claim 查询在 feature 关闭时
 动态忽略“有 fix-attempt linkage、处于 child_preparing/estimating/waiting_confirmation、
-且没有 dispatching/active provider task”的 quiescent child；该排除不写 DB。它只释放
+且没有 dispatching/active/result_ready provider task”的 quiescent child；该排除不写 DB。它只释放
 其他普通 run 的 slot，不授权 quiescent child 执行。重新开启时 coordinator 先做 target/
 selector/provider guard，再按正常 workspace claim：若已有新 active run则保持等待；若
 current/selector 已变则 fail closed，不并行恢复。
