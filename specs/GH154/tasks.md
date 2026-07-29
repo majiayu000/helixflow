@@ -13,10 +13,10 @@ GH-154
 
 | ID | Owner | Dependencies | Task | Done When | Verify |
 | --- | --- | --- | --- | --- | --- |
-| `SP154-T0` | test/contracts | none | 固化 restart recovery 状态矩阵和五个 crash-point fixtures；覆盖 queued/estimating/waiting/running、dispatching/active/terminal、Atlas/fal/mock。 | 当前实现可稳定复现 handle 丢失；fixture 不触发真实付费调用且无 secret。 | `cargo test -p helixflow-run --locked recovery_baseline` |
-| `SP154-T1` | store | `T0` | 增加 `run_provider_tasks`、`run_step_outputs`、cost operation key、`run_recovery_leases` migration 和 typed Store API。 | 重开 DB 可查询 handle；状态 CAS、lease、output/cost replay、terminal transaction 与 FK/cascade 测试通过。 | `cargo test -p helixflow-store --locked run_recovery` |
-| `SP154-T2` | gateway | `T1` | 将 Provider 生命周期拆为 dispatch/resume/cancel；Atlas 返回/恢复 prediction handle 且 cancel 仍 unsupported；fal 返回/恢复/取消经双重 URL 校验的 handle；mock 提供确定性测试恢复。 | correctness path 无 `in_flight` truth；恶意 URL 在发请求前拒绝；日志/event fixture 无 key、header、完整 URL。 | `cargo test -p helixflow-gateway --locked recovery` |
-| `SP154-T3` | run | `T1`,`T2` | executor 在 submit 前写 dispatching，handle CAS active；实现幂等 step finalizer、durable output reconstruction、剩余 DAG continuation 和 DB-based online interrupt。 | 五个 crash window 不重提；重复 resume 不复制 artifact/cost/event；正常 interrupt 语义回归。 | `cargo test -p helixflow-run --locked recovery` |
+| `SP154-T0` | test/contracts | none | 固化 restart recovery 状态矩阵、三类 dispatch failure 和五个 crash-point fixtures；覆盖 queued/estimating/waiting/running、dispatching/active/terminal、Atlas/fal/mock。 | 当前实现可稳定复现 handle 丢失；not-submitted/rejected/unknown 可区分；fixture 不触发真实付费调用且无 secret。 | `cargo test -p helixflow-run --locked recovery_baseline` |
+| `SP154-T1` | store | `T0` | 增加带 recovery scope 的 `run_provider_tasks`、`run_step_outputs`、cost operation key、`run_recovery_leases` migration 和 typed Store API。 | 重开 DB 可查询 handle/scope；状态 CAS、lease、output/cost replay、terminal transaction 与 FK/cascade 测试通过。 | `cargo test -p helixflow-store --locked run_recovery` |
+| `SP154-T2` | gateway | `T1` | 将 Provider 生命周期拆为 typed dispatch/resume/cancel；Atlas 返回/恢复 prediction handle 且 cancel 仍 unsupported；fal 返回/恢复/取消经 scope + URL 双重校验的 handle；mock 提供确定性测试恢复。 | correctness path 无 `in_flight` truth；三类 dispatch 结果正确；scope/恶意 URL 在发请求前拒绝；日志/event/artifact/API fixture 无 task id、key、header、完整 URL。 | `cargo test -p helixflow-gateway --locked recovery` |
+| `SP154-T3` | run | `T1`,`T2` | executor 在 submit 前写 dispatching，handle CAS active；让 provider/builtin/cache hit 共用幂等 step finalizer，实现 durable output reconstruction、剩余 DAG continuation和 DB-based online interrupt。 | 五个 crash window不重提；cache hit 可恢复；重复 resume 不复制 artifact/cost/event；poll-complete/interrupt/cancel 三方竞态单一终态。 | `cargo test -p helixflow-run --locked recovery` |
 | `SP154-T4` | server/run | `T3` | AppState 严格解析 queued requeue flag；startup 分类/lease claim 后后台恢复，续租、退避、补取消、abandoned 风险；normal/recovered 共用 failure finalizer。 | 启动不等待远端；queued 默认 interrupted、true 才 requeue、invalid 阻止启动；recovered failed 进入现有 self-heal 一次。 | `cargo test -p helixflow-server --locked restart_recovery && cargo test -p helixflow-run --locked self_heal` |
 | `SP154-T5` | frontend | `T4` | Web 处理 recovery/requeue/risk events，保留 durable notice 并在 terminal/recovery 事件后 refetch。 | WebSocket、seq gap、刷新、workspace switch 下状态一致；abandoned/cancel failure 显示计费风险且不展示 secret。 | `cd web && npx tsc --noEmit && npm test -- --run store-events store-background && npm run build` |
 | `SP154-T6` | coordinator | `T0`–`T5` | 全量 crash matrix、并发 lease、正常执行/cost/sweep/interrupt/self-heal 回归，核对 #153 handoff 与 PR evidence。 | 所有 invariant 有 fresh evidence；无真实 billable call；exact-head review 无 actionable finding。 | `cargo fmt --all -- --check && cargo check --workspace --locked && cargo test --workspace --locked` |
@@ -75,8 +75,13 @@ implementation PR 仍须以 exact-head review、fresh GitHub Actions 和上述�
 - artifact file 写完、DB finalizer 前退出；
 - terminal transaction commit 后、EventBus publish 前退出；
 - 两个 recovery owner 同时 claim/renew；
+- dispatch local not-submitted、上游明确 rejected、timeout/断线 outcome-unknown；
 - fal callback URL origin、userinfo、fragment、secret query tampering；
+- Atlas/fal provider account、API origin 和 credential scope 漂移；
 - Atlas recovery timeout 且 cancel unsupported；
+- cache hit 后、下游启动前退出；
+- poll-complete、online interrupt、cancel 三方竞态；
+- artifact hydration/API 序列化不含 task id 或远端 URL；
 - queued flag missing/false/true/invalid。
 
 ## Handoff Notes

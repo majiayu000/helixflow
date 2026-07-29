@@ -41,18 +41,22 @@ run 已中断。
 
 1. `run_provider_tasks` 是远端 task handle 的唯一 durable truth；`active_handles`
    内存 map 不再决定恢复或取消结果。
-2. 每次 provider 提交前必须先写入唯一 `dispatching` intent；提交完成后只能通过
-   compare-and-swap 将同一记录推进为 `active`。
+2. 每次 provider 提交前必须先完成不会发网络请求的本地 preflight，再写入唯一
+   `dispatching` intent；提交完成后只能通过 compare-and-swap 将同一记录推进为
+   `active`。dispatch 失败必须区分 `not_submitted`、`rejected` 和 `outcome_unknown`：
+   前两者进入共同 failed finalizer，只有结果不确定时进入 `abandoned` 计费风险。
 3. 进程若在远端接受请求后、handle CAS 前崩溃，数据库只会留下 `dispatching`。
    Atlas/fal 当前没有可依赖的 submit idempotency 保证，因此启动恢复不得自动重发；
    该记录进入 `abandoned` 并产生计费风险。
-4. 持久化 handle 只能包含 provider identity、task identity 和经过校验的轮询/结果
-   定位信息；不得包含 API key、Authorization header、cookie、userinfo、fragment
-   或 secret-bearing query。
+4. 持久化 handle 只能包含 provider identity、task identity、dispatch 时的非秘密
+   `recovery_scope_fingerprint` 和经过校验的轮询/结果定位信息；不得包含 API key、
+   Authorization header、cookie、userinfo、fragment 或 secret-bearing query。恢复或
+   取消前，当前 provider scope 必须与指纹完全一致，配置/account 漂移时 fail closed。
 5. 持久化 URL 在首次写入和每次恢复请求前都必须按当前 provider 配置重新校验
    scheme、origin 与允许路径；URL 不通过时 fail closed，不发网络请求。
-6. 日志、事件、API 和前端不得暴露完整远端 URL、credential、auth header 或原始
-   provider 响应；用户可见数据只包含 provider、稳定 reason code 与脱敏说明。
+6. 日志、事件、artifact metadata、API 和前端不得暴露 task identity、完整远端 URL、
+   credential、auth header 或原始 provider 响应；用户可见数据只包含 provider、稳定
+   reason code 与脱敏说明。
 7. 启动扫描只做分类、CAS/lease claim 和 durable 终态写入；实际 poll、artifact
    下载、补取消和 DAG continuation 必须在 `AppState` 使用的同一个 `Store`/pool
    上由后台任务执行。
@@ -61,7 +65,8 @@ run 已中断。
    重新认领。
 9. `running` run 的 `active` handle 可恢复轮询；远端成功时产物、输出端口、费用与
    step 终态完整持久化，并从 durable step outputs 继续剩余 DAG。
-10. 已 `succeeded` step 不重新执行；恢复重建输入只读取
+10. 已 `succeeded` step 不重新执行；正常执行、builtin 和 cache hit 都必须通过同一个
+    output/step finalizer 写 `run_step_outputs`。恢复重建输入只读取
     `run_step_outputs` → `artifacts`，不得根据文件名、最新 artifact 或内存 map 猜测。
 11. 同一 step/port 至多有一个 durable output，同一费用 operation key 至多有一条
     ledger 记录；恢复重放返回既有记录，不复制 artifact row 或费用。
@@ -89,8 +94,12 @@ run 已中断。
     active。
 20. workspace 单 active-run 规则和 sweep `group_id` 例外保持不变；恢复不能让同一
     workspace 的互斥 run 同时继续执行。
-21. 在线 interrupt 改为从数据库读取 active handles，但用户可见成功、失败、
-    unsupported 和计费风险语义保持 #124 既有契约。
+21. 在线 interrupt 改为从数据库读取 active handles，并在一个事务中以
+    `running → interrupted` CAS 撤销 recovery lease。recovery finalizer 必须同时校验
+    run 仍为 running 且 lease/owner 有效；interrupt 与 poll-complete 竞争时只有一个
+    CAS 胜者，败者不得落 artifact、cost 或 terminal event。进程内 cancellation token
+    只负责加速停止，不作为正确性真相；用户可见成功、失败、unsupported 和计费风险
+    语义保持 #124 既有契约。
 22. #154 必须先于 #153 实现；恢复得到的 `failed` run 调用共同 failure finalizer，
     以便 #153 后续在同一入口接 Agent 修图，且不会产生第二套重试/修图循环。
 
@@ -100,6 +109,8 @@ run 已中断。
       运行期取消不依赖 gateway 内存 map。
 - [ ] 模拟 dispatch 前、远端接受后/handle CAS 前、handle active 后、结果写入中和
       terminal commit 后五个 crash point；每个点的恢复结果确定且无重复提交。
+- [ ] dispatch 的本地未提交、上游明确拒绝与结果未知三类错误有确定性测试；只有结果
+      未知产生 abandoned/计费风险，前两类进入 failed finalizer 且不自动重提。
 - [ ] `running + active handle` 可在重启后恢复到 succeeded/failed；成功路径产物、
       `run_step_outputs`、cost ledger 和剩余 DAG 完整。
 - [ ] fal 无法继续恢复时执行补取消；Atlas 不支持 cancel 时进入 abandoned 并产生
@@ -109,7 +120,11 @@ run 已中断。
 - [ ] lease 竞争、续租、过期认领和 lease loss 均有 store/run 集成测试；两个 worker
       不能同时 finalize 同一 run。
 - [ ] mock、fal、Atlas 覆盖恢复、补取消和不可恢复路径；provider URL origin 变化、
-      userinfo/query secret、恶意 URL 均在网络请求前拒绝。
+      account/scope 变化、userinfo/query secret、恶意 URL 均在网络请求前拒绝。
+- [ ] cache hit 后、下游启动前崩溃可从 durable output 继续；poll-complete、在线
+      interrupt、cancel 三方竞态只能提交一个终态。
+- [ ] artifact hydration/API 序列化测试证明 task id、poll/result URL 与 provider 原始
+      payload 不会离开 store/gateway 边界。
 - [ ] Web 在实时事件和断线补拉后都显示恢复、补取消和计费风险，不伪装为成功；刷新
       后 durable 风险仍可见。
 - [ ] 正常执行、在线 interrupt、cost confirmation、sweep 与同图 self-heal 回归通过；

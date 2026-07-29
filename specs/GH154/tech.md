@@ -35,6 +35,7 @@ CREATE TABLE run_provider_tasks (
   run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
   run_step_id TEXT NOT NULL REFERENCES run_steps(id) ON DELETE CASCADE,
   provider TEXT NOT NULL,
+  recovery_scope_fingerprint TEXT NOT NULL,
   operation_key TEXT NOT NULL,
   state TEXT NOT NULL CHECK (
     state IN ('dispatching', 'active', 'completed', 'cancelled', 'abandoned')
@@ -54,10 +55,14 @@ CREATE TABLE run_provider_tasks (
 
 - `dispatching` 的 handle 字段必须为空；`active` 必须有非空
   `provider_task_id`，provider 可按能力要求 status/result URL。
-- `completed/cancelled/abandoned` 是 task 终态，不可退回 active；`completed` 表示已
-  观察到远端 terminal，远端失败可由 `last_error_code` 区分并将 run/step 标为 failed。
+- `completed/cancelled/abandoned` 是 task 终态，不可退回 active；`completed` 表示已知
+  结果（同步成功、远端 terminal、确定未提交或明确拒绝），失败由 `last_error_code`
+  区分并将 run/step 送入共同 failed finalizer。
 - `operation_key` 由 run/step/provider/dispatch attempt 的稳定 identity 生成，不包含
   prompt、URL 或 secret。
+- `recovery_scope_fingerprint` 由 provider id、canonical API origin、可用的非秘密
+  account/tenant identity 以及 credential identity 的单向摘要组成；不得保存 raw key。
+  当前配置无法生成相同指纹时禁止 resume/cancel，即使 provider id 与 URL 仍相同。
 - task id 和 URL 只在 store/gateway 内部使用，不序列化进普通 API/event。需要诊断时
   只返回 record id、provider 和 stable code。
 
@@ -121,9 +126,16 @@ pub enum ProviderDispatch {
 
 pub struct DurableProviderTaskHandle {
     pub provider: String,
+    pub recovery_scope_fingerprint: String,
     pub provider_task_id: String,
     pub status_url: Option<String>,
     pub result_url: Option<String>,
+}
+
+pub enum ProviderDispatchFailure {
+    NotSubmitted(ProviderTerminalError),
+    Rejected(ProviderTerminalError),
+    OutcomeUnknown(ProviderUnknownError),
 }
 
 pub enum ProviderResume {
@@ -138,7 +150,7 @@ pub trait Provider {
         &self,
         request: ProviderRequest,
         operation_key: &str,
-    ) -> ProviderResultValue<ProviderDispatch>;
+    ) -> Result<ProviderDispatch, ProviderDispatchFailure>;
     async fn resume(
         &self,
         request: ProviderRequest,
@@ -155,6 +167,13 @@ pub trait Provider {
 重建。`operation_key` 只在 provider 明确支持幂等键时传给上游；Atlas/fal 当前不能
 因为本地有 key 就假定 submit 可安全重试。
 
+`NotSubmitted` 只允许用于 gateway 能证明没有发出请求的本地 validation/materialization
+错误；收到明确的上游拒绝响应使用 `Rejected`；请求可能已被接收的 timeout、断线或无法
+解析的成功响应一律是 `OutcomeUnknown`。前两类把 task 收敛为 `completed` +
+`last_error_code`，并把 step/run 送入共同 failed finalizer；`OutcomeUnknown` 才把 task
+收敛为 `abandoned`、run 标为 interrupted 并写计费风险。三类均不得在 Atlas/fal 自动
+重提。
+
 `active_handles` 和 Atlas/fal `in_flight` map 从 correctness path 删除。为兼容
 同步 chat/image，可由 dispatch 返回 `Completed`；若进程在远端可能已接受请求但
 dispatch 尚未返回时崩溃，DB 仍是 `dispatching`，按 unknown/abandoned 处理。
@@ -162,7 +181,8 @@ dispatch 尚未返回时崩溃，DB 仍是 `dispatching`，按 unknown/abandoned
 ### 2.1 Atlas
 
 - async video submit 返回 prediction id 后构造 `Accepted`，不在 gateway 内循环 poll。
-- `resume` 使用当前配置构造/验证 prediction endpoint，或验证 persisted status URL；
+- dispatch 时保存 Atlas API origin/account/credential identity 的非秘密 scope 指纹；
+  `resume` 先要求当前 scope 完全匹配，再用当前配置构造/验证 prediction endpoint。
   completed/succeeded → `Completed`，failed → typed terminal failure，其余 → Pending。
 - image/chat 当前同步 API 返回 `Completed`；dispatching crash window 不自动重发。
 - `cancel` 继续返回 `CancelUnsupported`；测试必须断言没有生成或调用 cancel URL。
@@ -171,6 +191,8 @@ dispatch 尚未返回时崩溃，DB 仍是 `dispatching`，按 unknown/abandoned
 
 - submit response 的 request id、status URL、response URL 均先通过
   `validate_callback_url`，然后返回 `Accepted`。
+- dispatch 时保存 fal API origin/account/credential identity 的非秘密 scope 指纹；
+  scope 不匹配时不得 poll、下载或 cancel。
 - 持久化前删除 userinfo/fragment，拒绝 credential-like query；恢复每次请求前再次
   对当前 `FAL_API_BASE` 做 same-origin 与 path 校验，防止配置漂移或 DB tampering
   造成 SSRF。
@@ -187,12 +209,16 @@ dispatch 尚未返回时崩溃，DB 仍是 `dispatching`，按 unknown/abandoned
 
 provider-backed step 执行顺序：
 
-1. 将 step CAS 为 running。
-2. 以稳定 operation key insert-or-read `run_provider_tasks(dispatching)`；若已有
+1. 完成 request materialization、provider scope 与静态 URL/schema preflight；失败时
+   尚无网络请求，走普通 failed finalizer。
+2. 将 step CAS 为 running，并以稳定 operation key insert-or-read
+   `run_provider_tasks(dispatching)`；若已有
    active/terminal record，进入 resume/replay，不重新 submit。
 3. 调用 `provider.dispatch`。
-4. `Completed`：进入幂等 step finalizer。
-5. `Accepted`：严格校验 handle，然后以
+4. `Completed`：进入幂等 step finalizer；`NotSubmitted`/`Rejected` 原子写 task
+   `completed` 与 step/run failed；`OutcomeUnknown` 原子写 task `abandoned`、
+   run interrupted 与计费风险。
+5. `Accepted`：严格校验 handle 和 scope，然后以
    `WHERE id=? AND state='dispatching' AND operation_key=?` CAS 为 active。
 6. CAS 成功后 poll/resume；CAS 未命中则停止并读取 durable truth，不让失去 lease 或
    被中断的 worker覆盖新状态。
@@ -204,6 +230,8 @@ provider-backed step 执行顺序：
 - crash 在步骤 3 成功后、步骤 5 commit 前：同样只留下 dispatching。
 - 对两者统一 fail closed：不自动再次 dispatch，task → abandoned，run →
   interrupted，并写 `DISPATCH_OUTCOME_UNKNOWN` billing-risk event。
+- gateway 返回的 typed `NotSubmitted`/`Rejected` 不是 crash window，不得误报
+  abandoned；无法证明请求未提交时必须分类为 `OutcomeUnknown`。
 - 只有未来某 provider 明确实现并测试 server-side idempotency lookup，才能在该
   provider 独立扩展 recovery；不得把本地 operation key 当作上游保证。
 
@@ -222,6 +250,10 @@ store transaction：
 transaction rollback 不删除已完成的 content-addressed file；后续 replay 使用同
 hash/path，孤儿文件沿用现有 artifact reconciliation/清理策略，不能先删可能被其他
 记录引用的文件。
+
+现有 `try_cache_hit`、builtin step 与 provider completed 都必须调用该 finalizer；cache
+hit 不得继续只复制 artifact 并直接标记 succeeded。必须覆盖“cache hit 已提交 output，
+下游尚未启动即崩溃”的真实 reopen 测试。
 
 恢复 run 从 `runs.plan_json` 载入同一 `ExecutionPlan`：
 
@@ -255,6 +287,14 @@ hash/path，孤儿文件沿用现有 artifact reconciliation/清理策略，不�
 recovery future 周期续租。暂时网络错误采用有界指数退避，且总时长不超过 provider
 recovery deadline；到期后尝试补取消。有效 lease 被其他 owner 取代时，future 立即
 停止，不写 terminal state。
+
+在线 interrupt 用单个 store transaction CAS `running → interrupted`、撤销/夺取 recovery
+lease 并生成 interrupt token。recovery/normal step finalizer 的 transaction 必须同时
+要求 run 仍为 running 且 owner token 有效：若 poll-complete 先提交，interrupt 返回已有
+terminal；若 interrupt 先提交，poll/cancel 回调只能读取 interrupted，不得再写 artifact、
+cost 或成功事件。进程内 cancellation token 只减少停机延迟。对 active handle 的 cancel
+结果再以 task state CAS 提交；无法确认 cancel 时追加 durable billing-risk，而不能把 run
+改回 active。
 
 workspace active-run 检查排除当前 recovery run；同 group sweep 保留既有例外。若 DB
 存在互相冲突的多个 active run，按 `created_at,id` 确定顺序认领，不能同时恢复；
@@ -290,6 +330,11 @@ workspace active-run 检查排除当前 recovery run；同 group sweep 保留既
 insert-or-read 同一 message，不能追加第二条。EventBus publish 发生在 commit 后；
 publish 失败不影响 durable event/message。
 
+Atlas/fal `ProviderResult.metadata` 在进入 artifact finalizer 前必须移除 prediction id、
+request id、status/result URL 和 provider 原始 payload；workspace hydration、artifact
+API、event 与 Web 序列化测试对这些值做负向断言。内部排障只能用 task record id 和稳定
+reason code。
+
 `web/src/store-events.ts` 将 recovery cancel/abandoned 映射为 system
 `run_failed` notice，并优先复用 event 的 `message_id`；`workspace_state.rs` 通过既有
 workspace messages 在全量 hydration 中返回同一 durable notice，因此刷新、断线后
@@ -315,15 +360,16 @@ workspace messages 在全量 hydration 中返回同一 durable notice，因此�
 
 | Invariant | Verification |
 | --- | --- |
-| dispatch-first + crash windows | store/run crash-point tests |
+| dispatch-first + typed outcome + crash windows | store/run crash-point 与三类 dispatch failure 测试 |
 | DB handle truth | reopened SQLite + interrupt/recovery integration |
 | lease exclusivity | concurrent claim/renew/expiry tests |
 | output/cost/terminal idempotency | repeated finalizer + restart tests |
-| Atlas resume/no cancel | Atlas mock HTTP contract tests |
-| fal resume/cancel/URL safety | fal mock HTTP + malicious callback tests |
+| Atlas resume/no cancel | Atlas mock HTTP、account/scope 漂移 contract tests |
+| fal resume/cancel/URL safety | fal mock HTTP + scope 漂移/malicious callback tests |
 | mock deterministic recovery | run recovery tests |
 | queued default/strict env | app_state config/startup tests |
 | durable risk UI | workspace events + Web store event tests |
+| cache/interrupt race/API secrecy | cache reopen、poll/interrupt/cancel race、artifact hydration 负向测试 |
 | #153 handoff | recovered failure invokes existing self-heal finalizer once |
 
 ## 9. 风险与回滚
