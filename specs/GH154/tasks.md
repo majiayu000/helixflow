@@ -60,9 +60,12 @@ npx tsc --noEmit
 npm test -- --run
 npm run build
 cd ..
-python3 checks/check_workflow.py --repo . --spec-dir specs/GH154
 git diff --check
 ```
+
+当前 main 已在 `a1ee3eb` / `#157` 退役 repo-local SpecRail automation，
+`checks/check_workflow.py` 不存在，因此它不是本规格的可执行 gate。规格文件是设计记录；
+implementation PR 仍须以 exact-head review、fresh GitHub Actions 和上述构建/测试为准。
 
 此外必须执行非真实付费的 fault injection：
 

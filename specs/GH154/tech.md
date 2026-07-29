@@ -347,6 +347,11 @@ cargo test -p helixflow-run --locked recovery
 cargo test -p helixflow-server --locked restart_recovery
 cargo test --workspace --locked
 cd web && npm ci && npx tsc --noEmit && npm test -- --run && npm run build
-cd .. && python3 checks/check_workflow.py --repo . --spec-dir specs/GH154
+cd ..
 git diff --check
 ```
+
+当前 main 已在 `a1ee3eb` / `#157` 退役 repo-local SpecRail automation，
+`checks/check_workflow.py` 不存在，因此它不是本规格的可执行 gate。规格 packet 结构
+由人工审查，implementation PR 以 exact-head review、fresh GitHub Actions 和上述
+构建/测试为准。
