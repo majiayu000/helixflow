@@ -200,3 +200,197 @@ async fn artifact(
         .await
         .expect("create artifact")
 }
+
+#[tokio::test]
+async fn terminalization_waits_for_every_provider_task() {
+    let (store, _dir) = open_temp_store().await;
+    let (_workspace_id, _version_id, run) = seed_run(&store, "running").await;
+    let step = store
+        .create_run_step(NewRunStep {
+            run_id: &run.id,
+            node_id: "video",
+            node_type: "video.generate",
+            provider: Some("atlas"),
+            state: "running",
+        })
+        .await
+        .expect("create step");
+    let dispatching = store
+        .insert_or_read_provider_task(NewProviderTask {
+            run_id: &run.id,
+            run_step_id: &step.id,
+            provider: "atlas",
+            dispatch_origin: "https://api.atlascloud.ai",
+            recovery_scope_fingerprint: "sha256:scope",
+            operation_key: "dispatch:step",
+            dispatch_owner_id: "dispatch-owner",
+            dispatch_lease_seconds: 30,
+            dispatch_deadline_seconds: 60,
+        })
+        .await
+        .expect("dispatch task");
+    let task = store
+        .activate_provider_task(ProviderTaskHandleUpdate {
+            task_id: &dispatching.id,
+            dispatch_owner_id: "dispatch-owner",
+            provider_task_id: "remote-task",
+            status_url: None,
+            result_url: None,
+            recovery_deadline_seconds: 600,
+        })
+        .await
+        .expect("activate")
+        .expect("active task");
+
+    store
+        .request_run_terminalization(&run.id, "failed", Some(r#"{"code":"PROVIDER_FAILED"}"#))
+        .await
+        .expect("request terminalization");
+    assert!(
+        store
+            .claim_run_terminalization(&run.id, "settler", 30)
+            .await
+            .expect("claim settler")
+    );
+    assert!(
+        store
+            .complete_run_terminalization(&run.id, "settler")
+            .await
+            .expect("try complete")
+            .is_none()
+    );
+    assert_eq!(store.run(&run.id).await.expect("run").status, "running");
+
+    store
+        .abandon_provider_task(&task.id, "active", "CANCEL_UNSUPPORTED")
+        .await
+        .expect("abandon")
+        .expect("task terminal");
+    let failed = store
+        .complete_run_terminalization(&run.id, "settler")
+        .await
+        .expect("complete")
+        .expect("failed run");
+    assert_eq!(failed.status, "failed");
+    assert_eq!(
+        store.run_steps(&run.id).await.expect("steps")[0].state,
+        "skipped"
+    );
+    assert_eq!(
+        store
+            .failure_continuation(&run.id)
+            .await
+            .expect("continuation")
+            .expect("durable continuation")
+            .state,
+        "pending"
+    );
+}
+
+#[tokio::test]
+async fn interrupted_terminalization_has_no_failure_continuation() {
+    let (store, _dir) = open_temp_store().await;
+    let (_workspace_id, _version_id, run) = seed_run(&store, "running").await;
+    store
+        .request_run_terminalization(&run.id, "interrupted", None)
+        .await
+        .expect("request terminalization");
+    assert!(
+        store
+            .claim_run_terminalization(&run.id, "settler", 30)
+            .await
+            .expect("claim settler")
+    );
+    let interrupted = store
+        .complete_run_terminalization(&run.id, "settler")
+        .await
+        .expect("complete")
+        .expect("interrupted run");
+    assert_eq!(interrupted.status, "interrupted");
+    assert!(
+        store
+            .failure_continuation(&run.id)
+            .await
+            .expect("continuation query")
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn retry_child_creation_is_durable_and_idempotent() {
+    let (store, _dir) = open_temp_store().await;
+    let (workspace_id, _version_id, run) = seed_run(&store, "running").await;
+    store
+        .create_cost_ledger(NewCostLedger {
+            workspace_id: &workspace_id,
+            run_id: Some(&run.id),
+            run_step_id: None,
+            provider: "atlas",
+            amount: 2.0,
+            currency: "USD",
+            estimated: true,
+        })
+        .await
+        .expect("create estimate");
+    store
+        .request_run_terminalization(&run.id, "failed", Some(r#"{"code":"PROVIDER_FAILED"}"#))
+        .await
+        .expect("request terminalization");
+    assert!(
+        store
+            .claim_run_terminalization(&run.id, "settler", 30)
+            .await
+            .expect("claim")
+    );
+    store
+        .complete_run_terminalization(&run.id, "settler")
+        .await
+        .expect("complete")
+        .expect("failed run");
+
+    let first = store
+        .create_retry_run_once(&run.id, true)
+        .await
+        .expect("create retry");
+    let replay = store
+        .create_retry_run_once(&run.id, true)
+        .await
+        .expect("replay retry");
+    assert_eq!(first.id, replay.id);
+    assert_eq!(first.parent_run_id.as_deref(), Some(run.id.as_str()));
+    assert_eq!(
+        store
+            .cost_ledger_for_run(&first.id)
+            .await
+            .expect("copied estimates")
+            .len(),
+        1
+    );
+    let continuation = store
+        .failure_continuation(&run.id)
+        .await
+        .expect("continuation")
+        .expect("record");
+    assert_eq!(continuation.state, "retry_created");
+    assert_eq!(
+        continuation.child_run_id.as_deref(),
+        Some(first.id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn retry_creation_requires_a_durable_failure_handoff() {
+    let (store, _dir) = open_temp_store().await;
+    let (_workspace_id, _version_id, run) = seed_run(&store, "failed").await;
+    let err = store
+        .create_retry_run_once(&run.id, true)
+        .await
+        .expect_err("missing continuation must fail");
+    assert!(matches!(
+        err,
+        StoreError::RecoveryInvariant {
+            operation: "create_retry_run_once",
+            ..
+        }
+    ));
+}
