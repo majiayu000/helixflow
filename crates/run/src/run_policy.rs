@@ -1,6 +1,61 @@
 use super::cost_types::CostSummary;
 use super::{RunError, RunResult};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentFixPolicy {
+    pub enabled: bool,
+    pub max_attempts: u32,
+}
+
+pub fn agent_fix_policy() -> RunResult<AgentFixPolicy> {
+    let enabled = match std::env::var("HELIXFLOW_RUN_AGENT_FIX_ENABLED") {
+        Ok(value) => parse_agent_fix_enabled(Some(&value))?,
+        Err(std::env::VarError::NotPresent) => false,
+        Err(std::env::VarError::NotUnicode(_)) => return Err(fix_enabled_error()),
+    };
+    if !enabled {
+        return Ok(AgentFixPolicy {
+            enabled: false,
+            max_attempts: 0,
+        });
+    }
+    let max_attempts = match std::env::var("HELIXFLOW_RUN_MAX_FIX_ATTEMPTS") {
+        Ok(value) => parse_max_fix_attempts(Some(&value))?,
+        Err(std::env::VarError::NotPresent) => parse_max_fix_attempts(None)?,
+        Err(std::env::VarError::NotUnicode(_)) => return Err(fix_limit_error()),
+    };
+    Ok(AgentFixPolicy {
+        enabled,
+        max_attempts,
+    })
+}
+
+pub fn parse_agent_fix_enabled(raw: Option<&str>) -> RunResult<bool> {
+    match raw.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        None | Some("0" | "false" | "off") => Ok(false),
+        Some("1" | "true" | "on") => Ok(true),
+        Some(_) => Err(fix_enabled_error()),
+    }
+}
+
+pub fn parse_max_fix_attempts(raw: Option<&str>) -> RunResult<u32> {
+    raw.unwrap_or("1")
+        .parse::<u32>()
+        .map_err(|_| fix_limit_error())
+}
+
+fn fix_enabled_error() -> RunError {
+    RunError::InvalidConfiguration(
+        "HELIXFLOW_RUN_AGENT_FIX_ENABLED must be true, false, on, off, 1, or 0".to_owned(),
+    )
+}
+
+fn fix_limit_error() -> RunError {
+    RunError::InvalidConfiguration(
+        "HELIXFLOW_RUN_MAX_FIX_ATTEMPTS must be a non-negative integer".to_owned(),
+    )
+}
+
 /// Reads `HELIXFLOW_AGENT_RUN_CONFIRMATION_THRESHOLD_USD` (default 0.0).
 pub fn run_confirmation_threshold_usd() -> RunResult<f64> {
     match std::env::var("HELIXFLOW_AGENT_RUN_CONFIRMATION_THRESHOLD_USD") {
@@ -103,6 +158,26 @@ mod tests {
                 parse_max_run_retries(Some(invalid)).is_err(),
                 "invalid retry limit `{invalid}` must fail closed"
             );
+        }
+    }
+
+    #[test]
+    fn agent_fix_policy_parsers_are_strict_and_default_off() {
+        assert!(!parse_agent_fix_enabled(None).expect("default off"));
+        for enabled in ["1", "true", "on", " TRUE "] {
+            assert!(parse_agent_fix_enabled(Some(enabled)).expect("enabled value"));
+        }
+        for disabled in ["0", "false", "off", " OFF "] {
+            assert!(!parse_agent_fix_enabled(Some(disabled)).expect("disabled value"));
+        }
+        for invalid in ["", "yes", "-1", "enabled"] {
+            assert!(parse_agent_fix_enabled(Some(invalid)).is_err());
+        }
+        assert_eq!(parse_max_fix_attempts(None).expect("default limit"), 1);
+        assert_eq!(parse_max_fix_attempts(Some("0")).expect("zero limit"), 0);
+        assert_eq!(parse_max_fix_attempts(Some("7")).expect("limit"), 7);
+        for invalid in ["", "-1", "1.5", "4294967296"] {
+            assert!(parse_max_fix_attempts(Some(invalid)).is_err());
         }
     }
 }

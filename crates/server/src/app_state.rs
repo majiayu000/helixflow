@@ -61,6 +61,7 @@ impl AppState {
             Self::with_store_provider(events, store, data_dir, registry, reconciliation_report);
         state.runner.validate_restart_config()?;
         let recovery_runner = state.runner.clone();
+        let fix_state = state.clone();
         tokio::spawn(async move {
             if let Err(err) = recovery_runner.recover_after_restart().await {
                 eprintln!(
@@ -68,6 +69,7 @@ impl AppState {
                     err.public_message()
                 );
             }
+            crate::workbench_message_proposals::run_agent_fix_worker(fix_state).await;
         });
         Ok(state)
     }

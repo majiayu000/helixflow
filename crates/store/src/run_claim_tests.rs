@@ -62,6 +62,7 @@ async fn second_claim_for_same_workspace_is_rejected() {
             "running",
             &workspace_id,
             None,
+            false,
         )
         .await
         .expect("first claim");
@@ -74,6 +75,7 @@ async fn second_claim_for_same_workspace_is_rejected() {
             "running",
             &workspace_id,
             None,
+            false,
         )
         .await
         .expect("second claim");
@@ -108,6 +110,7 @@ async fn claims_sharing_a_sweep_group_do_not_block_each_other() {
                 "running",
                 &workspace_id,
                 Some("sweep_1"),
+                false,
             )
             .await
             .expect("claim");
@@ -127,6 +130,7 @@ async fn claim_requires_expected_status() {
             "running",
             &workspace_id,
             None,
+            false,
         )
         .await
         .expect("claim");

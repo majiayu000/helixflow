@@ -21,6 +21,7 @@ where
                 "running",
                 &run.workspace_id,
                 run.group_id.as_deref(),
+                self.ignore_quiescent_fix_children()?,
             )
             .await?
             .is_some())

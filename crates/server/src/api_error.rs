@@ -156,6 +156,11 @@ impl ApiError {
                 message: err.to_string(),
                 details: None,
             },
+            RunError::RunFixGuard { code } => Self {
+                status: StatusCode::CONFLICT,
+                message: format!("run fix rejected: {code}"),
+                details: Some(serde_json::json!({ "code": code })),
+            },
             RunError::Store(err) => Self::store(err),
             RunError::Json(err) => Self::server_error(err.to_string()),
             RunError::InvalidConfiguration(message) => Self::server_error(message),

@@ -361,6 +361,7 @@ where
         interrupt: &RunInterrupt,
         force_rerun: bool,
     ) -> RunResult<StepExecution> {
+        self.validate_run_fix_child_guard(run_id).await?;
         let cache_key = self.step_cache_key(step, &inputs).await?;
         if !force_rerun
             && let Some(outputs) = self

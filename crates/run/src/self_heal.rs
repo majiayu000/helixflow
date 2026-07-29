@@ -7,6 +7,13 @@ use super::cost_types::CostSummary;
 use super::run_policy::{max_run_retries, run_requires_confirmation};
 use super::{RunError, RunInterrupt, RunResult, RunService, RunStatus};
 
+enum RetryDecision {
+    Continue(RunRecord, ExecutionPlan, RunInterrupt),
+    Pending,
+    Exhausted,
+    Stop,
+}
+
 impl<P> RunService<P>
 where
     P: Provider + Clone + Send + Sync + 'static,
@@ -38,12 +45,14 @@ where
             self.interrupts.lock().await.remove(&run_id);
 
             match self.prepare_retry(&workspace_id, &run_id, attempt).await {
-                Ok(Some((next_run, next_plan, next_interrupt))) => {
+                Ok(RetryDecision::Continue(next_run, next_plan, next_interrupt)) => {
                     run = next_run;
                     plan = next_plan;
                     interrupt = next_interrupt;
                 }
-                Ok(None) => break,
+                Ok(RetryDecision::Pending | RetryDecision::Exhausted | RetryDecision::Stop) => {
+                    break;
+                }
                 Err(err) => {
                     self.emit_retry_failure(&workspace_id, &run_id, &err).await;
                     eprintln!("background self-heal failed: {}", err.public_message());
@@ -126,12 +135,12 @@ where
             .prepare_retry(&run.workspace_id, &run.id, run.attempt)
             .await
         {
-            Ok(Some((next_run, next_plan, next_interrupt))) => {
+            Ok(RetryDecision::Continue(next_run, next_plan, next_interrupt)) => {
                 self.run_with_self_heal(next_run, next_plan, next_interrupt)
                     .await;
                 Ok(())
             }
-            Ok(None) => Ok(()),
+            Ok(RetryDecision::Pending | RetryDecision::Exhausted | RetryDecision::Stop) => Ok(()),
             Err(err) => {
                 self.emit_retry_failure(&run.workspace_id, &run.id, &err)
                     .await;
@@ -155,31 +164,31 @@ where
     }
 
     /// Decide whether the just-finished run should be retried. Returns the
-    /// prepared (claimed, steps-ensured) retry run when it should auto-start,
-    /// or `None` to stop the loop (success, cap reached, no estimate, or over
-    /// budget — over-budget retries wait in `waiting_confirmation`).
+    /// prepared (claimed, steps-ensured) retry run when it should auto-start.
+    /// Pending confirmation, explicit exhaustion, and non-retryable stops stay
+    /// distinct so only true retry exhaustion can enter Agent fix.
     async fn prepare_retry(
         &self,
         workspace_id: &str,
         run_id: &str,
         attempt: i64,
-    ) -> RunResult<Option<(RunRecord, ExecutionPlan, RunInterrupt)>> {
+    ) -> RunResult<RetryDecision> {
         let run = self.store.run(run_id).await?;
         if run.status != RunStatus::Failed.as_str() {
-            return Ok(None);
+            return Ok(RetryDecision::Stop);
         }
         if attempt < 0 || attempt as u32 >= max_run_retries()? {
             self.store
                 .complete_failure_continuation(run_id, true)
                 .await?;
-            return Ok(None);
+            return Ok(RetryDecision::Exhausted);
         }
         // Without an estimate we cannot budget-check the retry; leave failed.
         let Some(estimate_json) = run.estimate_json.as_deref() else {
             self.store
-                .complete_failure_continuation(run_id, true)
+                .complete_failure_continuation(run_id, false)
                 .await?;
-            return Ok(None);
+            return Ok(RetryDecision::Stop);
         };
         let estimate: CostSummary = serde_json::from_str(estimate_json)?;
 
@@ -210,7 +219,7 @@ where
             self.store
                 .complete_failure_continuation(run_id, false)
                 .await?;
-            return Ok(None);
+            return Ok(RetryDecision::Pending);
         }
 
         // Within budget: claim (waiting_confirmation -> running) and ensure
@@ -222,6 +231,10 @@ where
         self.store
             .complete_failure_continuation(run_id, false)
             .await?;
-        Ok(Some((child_run, child_plan, child_interrupt)))
+        Ok(RetryDecision::Continue(
+            child_run,
+            child_plan,
+            child_interrupt,
+        ))
     }
 }
