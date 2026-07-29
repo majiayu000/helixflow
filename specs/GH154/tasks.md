@@ -14,9 +14,9 @@ GH-154
 | ID | Owner | Dependencies | Task | Done When | Verify |
 | --- | --- | --- | --- | --- | --- |
 | `SP154-T0` | test/contracts | none | 固化 restart recovery 状态矩阵、三类 dispatch failure 和五个 crash-point fixtures；覆盖 queued/estimating/waiting/running、dispatching/active/terminal、Atlas/fal/mock。 | 当前实现可稳定复现 handle 丢失；not-submitted/rejected/unknown 可区分；fixture 不触发真实付费调用且无 secret。 | `cargo test -p helixflow-run --locked recovery_baseline` |
-| `SP154-T1` | store | `T0` | 增加带 dispatch origin/scope/deadline 且 step 唯一的 provider tasks、outputs、cost key、lease、execution intent、terminalization、带 unique retry_key/child 的 failure continuation、artifact journal migration/API。 | terminal desired status 单调合并；旧重复 parent/attempt DB 可升级；新 retry 单例；terminal/continuation/journal CAS、FK/cascade 通过。 | `cargo test -p helixflow-store --locked run_recovery` |
+| `SP154-T1` | store | `T0` | 增加带 dispatch owner/origin/scope/deadline、result_ready/spool 且 step 唯一的 provider tasks，以及 outputs/cost/lease/execution/terminalization/continuation/artifact journal API。 | live dispatch 不被 abandon；result_ready+actual cost 先于 artifact；旧 DB 可升级；terminal/continuation/journal CAS、FK/cascade 通过。 | `cargo test -p helixflow-store --locked run_recovery` |
 | `SP154-T2` | gateway | `T1` | 将 Provider 生命周期拆为 typed dispatch/resume/cancel；Atlas/fal 按 origin+scope 恢复；mock 确定恢复；逐个清洗 `outputs[*].ArtifactPayload.meta`。 | correctness path 无 `in_flight` truth；三类 dispatch 正确；scope/恶意 URL 在请求前拒绝；artifact/API 无 task id、key、header、完整 URL。 | `cargo test -p helixflow-gateway --locked recovery` |
-| `SP154-T3` | run | `T1`,`T2` | executor 写唯一 dispatch intent/handle；sync/async/preflight queued→failed/builtin/cache 共用 typed step finalizer；实现 execution intent、output/DAG、failure/interrupt settler、durable self-heal continuation 与 artifact journal。 | 不重复 dispatch；preflight 可终态；queued 不绕 cost gate；siblings 收敛后才 failed；retry child 单例；published orphan 可重放/GC。 | `cargo test -p helixflow-run --locked recovery` |
+| `SP154-T3` | run | `T1`,`T2` | executor 写唯一 dispatch intent/owner/handle；provider terminal 先持久化 result_ready/spool/cost，再 materialize；其余 typed step finalizer、DAG、settler、continuation 与 artifact journal。 | interrupt 等 live dispatch；result download failure 不误判 active/abandoned且 cost 不丢；preflight/queued/sibling/retry/orphan 幂等。 | `cargo test -p helixflow-run --locked recovery` |
 | `SP154-T4` | server/run | `T3` | startup 穷尽 queued/running/所有 terminalization/continuation/journal 并 lease claim；按绝对 deadline 恢复/补取消；保留 queued/estimating/running online interrupt。 | deadline 不因重启延长；interrupt settler 可跨 crash；all-queued/builtin/无 handle 显式收敛；recovered failed self-heal exactly once。 | `cargo test -p helixflow-server --locked restart_recovery && cargo test -p helixflow-run --locked self_heal` |
 | `SP154-T5` | frontend | `T4` | Web 处理 recovery/requeue/risk events，保留 durable notice 并在 terminal/recovery 事件后 refetch。 | WebSocket、seq gap、刷新、workspace switch 下状态一致；abandoned/cancel failure 显示计费风险且不展示 secret。 | `cd web && npx tsc --noEmit && npm test -- --run store-events store-background && npm run build` |
 | `SP154-T6` | coordinator | `T0`–`T5` | 全量 crash matrix、并发 lease、正常执行/cost/sweep/interrupt/self-heal 回归，核对 #153 handoff 与 PR evidence。 | 所有 invariant 有 fresh evidence；无真实 billable call；exact-head review 无 actionable finding。 | `cargo fmt --all -- --check && cargo check --workspace --locked && cargo test --workspace --locked` |
@@ -71,6 +71,8 @@ implementation PR 仍须以 exact-head review、fresh GitHub Actions 和上述�
 
 - dispatch intent commit 后退出；
 - provider 已接受、handle CAS 前退出；
+- live dispatch owner 与 interrupt settler 并发，Accepted 后 handle 落库；
+- provider result_ready/cost commit 后、artifact download/publish 前退出与重复失败；
 - online interrupt 后、dispatch handle 返回/CAS 前退出；
 - active handle commit 后退出；
 - artifact file 写完、DB finalizer 前退出；
@@ -88,7 +90,7 @@ implementation PR 仍须以 exact-head review、fresh GitHub Actions 和上述�
 - queued complete intent/estimate、partial estimate、fingerprint mismatch；
 - running all-queued、builtin restart-safe/unsafe、provider running 无 handle、未知组合；
 - parallel sibling completed/cancelled/abandoned 与 terminalization work-item restart；
-- queued/estimating/running interrupt 与 dispatching/active settler restart；
+- queued/estimating/running interrupt 与 dispatching/active/result_ready settler restart；
 - failed-settling 与 user interrupt 并发，interrupt 胜出且不 self-heal；
 - failed-ready 与 user interrupt 并发，interrupt 胜出且不 self-heal；
 - outcome-unknown、missing/invalid handle、deadline abandon 的 parallel sibling settlement；

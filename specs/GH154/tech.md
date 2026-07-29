@@ -39,11 +39,17 @@ CREATE TABLE run_provider_tasks (
   recovery_scope_fingerprint TEXT NOT NULL,
   operation_key TEXT NOT NULL,
   state TEXT NOT NULL CHECK (
-    state IN ('dispatching', 'active', 'completed', 'cancelled', 'abandoned')
+    state IN ('dispatching', 'active', 'result_ready', 'completed', 'cancelled', 'abandoned')
   ),
+  dispatch_owner_id TEXT,
+  dispatch_lease_expires_at TEXT,
+  dispatch_deadline_at TEXT,
   provider_task_id TEXT,
   status_url TEXT,
   result_url TEXT,
+  terminal_outcome TEXT,
+  result_spool_path TEXT,
+  result_fingerprint TEXT,
   last_error_code TEXT,
   recovery_deadline_at TEXT,
   created_at TEXT NOT NULL,
@@ -56,8 +62,11 @@ CREATE TABLE run_provider_tasks (
 
 约束：
 
-- `dispatching` 的 handle 字段必须为空；`active` 必须有非空
-  `provider_task_id`，provider 可按能力要求 status/result URL。
+- `dispatching` 的 handle/result 字段为空，必须有 dispatch owner/lease；`active` 必须有
+  非空 `provider_task_id`，provider 可按能力要求 status/result URL。
+- successful `result_ready` 表示 provider terminal 与 actual cost 已持久化，必须有
+  `terminal_outcome/result_fingerprint`，inline output 还需安全 spool；它不可被 cancel/
+  abandon。artifact materialization 完成后才推进 `completed`。
 - `completed/cancelled/abandoned` 是 task 终态，不可退回 active；`completed` 表示已知
   结果（同步成功、远端 terminal、确定未提交或明确拒绝），失败由 `last_error_code`
   区分并将 run/step 送入共同 failed finalizer。
@@ -74,6 +83,12 @@ CREATE TABLE run_provider_tasks (
   只返回 record id、provider 和 stable code。
 - `active` CAS 同时写 provider policy 计算的绝对 `recovery_deadline_at`；后续进程只计算
   remaining duration，不得在 restart 时重置 deadline。
+- dispatch owner 在绝对 `dispatch_deadline_at` 前周期续租；interrupt/failure settler
+  看到有效 owner 只能请求停止并等待，不能直接 drop 正在提交的 future。
+  owner 返回 Accepted/Completed 时仍有权完成 handle/result CAS，然后必须检测
+  terminalization work item 并交 settler；只有 owner 丢失或 lease 过期时，startup 才能
+  CAS dispatching → abandoned/outcome_unknown。owner 不得越过 absolute deadline 无限续租；
+  到期仍无确定响应按 outcome unknown 收敛。
 
 SQLite CHECK 无法完整表达状态字段组合时，Store 写 API 必须在 transaction 中校验并
 返回 typed invariant error；禁止调用方直接拼 SQL 跨状态写入。
@@ -143,7 +158,7 @@ owner 并禁止调度新 step；run 暂时保持 running，直到所有 sibling 
 
 同一表也承载 online interrupt：`desired_status=interrupted` 时，queued/estimating 且无
 provider task 可在创建 work item 的同一 transaction 直接完成；running 若存在
-dispatching/active task，则写 `settling` work item、撤销 DAG 调度 owner，但 run 保持
+dispatching/active/result_ready task，则写 `settling` work item、撤销 DAG 调度 owner，但 run 保持
 running，使现有 active-run lease 可以恢复 settler；tasks 全部终态后才原子 interrupted。
 
 同一 run 的 failure 与 interrupt 用单调 desired-status CAS 合并：
@@ -177,6 +192,16 @@ file publish 前先 durable journal；artifact/output transaction 同时 mark co
 启动 reconciliation 先重放仍可完成的 step finalizer；只有 intent 已过期、无 artifact row
 引用、无 active task/terminalization 可继续引用时，才引用感知删除 orphan file 并完成
 intent。删除失败显式 error 并保留 intent 重试，不得假设仓库已有 artifact GC。
+
+provider terminal result 使用 durable spool 契约：每个 output 先清洗
+`ArtifactPayload.meta`；inline text/bytes 写入 fsync 的 spool + journal。RemoteUrl 不把
+signed URL 暴露到 event/API，能从 durable handle 重新获取时仅保存安全 fingerprint。
+随后 transaction CAS `dispatching|active → result_ready`、insert-or-read
+`actual:{run_step_id}` ledger，并记录 spool/fingerprint；从 `dispatching` 推进时还必须
+匹配当前 `dispatch_owner_id`。artifact materializer 只消费 result_ready；下载/发布失败
+保持 result_ready 并按独立、有界 materialization policy 重试。
+到期将 step/run 送入 failed terminalization，但 task 仍作为 provider-completed，不调用
+cancel/abandon。
 
 ## 2. Gateway 生命周期契约
 
@@ -282,21 +307,24 @@ provider-backed step 执行顺序：
 1. 完成 request materialization、provider scope 与静态 URL/schema preflight；失败时
    尚无网络请求，走普通 failed finalizer。
 2. 将 step CAS 为 running，并以稳定 operation key insert-or-read
-   `run_provider_tasks(dispatching)`；若已有
-   active/terminal record，进入 resume/replay，不重新 submit。
+   `run_provider_tasks(dispatching)`，写 dispatch owner + expiry 并周期续租；若已有
+   active/result_ready/terminal record，进入 resume/materialize/replay，不重新 submit。
 3. 调用 `provider.dispatch`。
-4. `Completed`：进入幂等 step finalizer；`NotSubmitted`/`Rejected` 原子写 task
+4. `Completed`：先 spool/fingerprint 安全 outputs，再原子写 task `result_ready` + actual
+   ledger，之后才进入 artifact materializer；`NotSubmitted`/`Rejected` 原子写 task
    `completed`、step failed 与 terminalization work item；`OutcomeUnknown` 原子写 task
    `abandoned`、`desired=interrupted` work item 与计费风险，不直接 terminal run。
 5. `Accepted`：严格校验 handle 和 scope，然后以
-   `WHERE id=? AND state='dispatching' AND operation_key=?` CAS 为 active。
+   `WHERE id=? AND state='dispatching' AND operation_key=? AND dispatch_owner_id=?` CAS 为
+   active；即使已有 terminalization work item，live owner 也先保存 handle，再立即交
+   settler。
 6. CAS 成功后 poll/resume；CAS 未命中则停止并读取 durable truth，不让失去 lease 或
    被中断的 worker覆盖新状态。
 
 关键窗口：
 
 - crash 在步骤 2 后、provider 调用前：无法证明是否 submit，与步骤 3 已远端接受但
-  本地未收到响应不可区分。
+  本地未收到响应不可区分；只在 dispatch owner lease 过期后才能判 outcome unknown。
 - crash 在步骤 3 成功后、步骤 5 commit 前：同样只留下 dispatching。
 - 对两者统一 fail closed：不自动再次 dispatch，task → abandoned，创建/合并
   `desired=interrupted` work item，并写 `DISPATCH_OUTCOME_UNKNOWN` billing-risk；
@@ -308,13 +336,16 @@ provider-backed step 执行顺序：
 
 ## 4. 幂等 step finalizer 与 DAG continuation
 
-provider `Completed` 后先把远端/inline payload 写为 content-addressed file；随后调用
-按来源携带 typed expected state 的共享 step finalizer：
+provider `Completed` 后先按 durable spool 契约把 task/cost 推进为 `result_ready`，再
+下载或把 spool 发布为 content-addressed file；随后调用按来源携带 typed expected state
+的共享 step finalizer：
 
 | Source | Task row transition |
 | --- | --- |
-| synchronous dispatch `Completed` | `dispatching → completed` |
-| asynchronous `resume Completed/Failed` | `active → completed` |
+| synchronous dispatch `Completed` | `dispatching → result_ready`，先写 spool/cost |
+| asynchronous `resume Completed` | `active → result_ready`，先写 spool/cost |
+| asynchronous `resume Failed` | `active → completed`，同事务写 actual cost，无成功 output |
+| artifact materialized | `result_ready → completed` |
 | dispatch `NotSubmitted/Rejected` | `dispatching → completed`，无 output |
 | local preflight failure | 无 task row，step `queued → failed` |
 | builtin / cache hit | 无 task row，不执行 task CAS |
@@ -324,7 +355,8 @@ provider `Completed` 后先把远端/inline payload 写为 content-addressed fil
 1. 校验 recovery lease（normal execution 用显式 execution owner token）。
 2. insert-or-read artifacts 与 `(step, port)` outputs；同 key 不同 payload/hash
    返回 invariant error。
-3. insert-or-read actual cost ledger。
+3. result_ready replay 读取既有 actual ledger，不重复写；builtin/cache 按自身
+   operation key insert-or-read cost。
 4. 按上表 CAS 可选 task row；正常执行把 step `running → succeeded/failed`，preflight
    failure 明确使用 `queued → failed`。
 5. append exactly-once `node.state`/recovery event。
@@ -344,6 +376,9 @@ hit 不得继续只复制 artifact 并直接标记 succeeded。必须覆盖“ca
 `run_terminalization_work_items(settling)` 并停止新调度；settler 对每个 sibling：
 
 - 已 completed 的 task/step 保留合法 artifact/output/cost；
+- `result_ready` 已是 provider terminal，不得 cancel/abandon；settler 可完成
+  materialization，或在 desired terminal 下把 task completed + step skipped 并保留
+  actual cost/spool 供审计；
 - active 且支持 cancel 的 task 执行补取消并 CAS cancelled；
 - active 且不支持或无法确认 cancel 的 task CAS abandoned，写各自 exactly-once 计费风险；
 - 同时完成与 cancel 只由 task-state CAS 决定，完成胜者仍可持久化合法结果；
@@ -380,14 +415,16 @@ run → failed、写 `run.failed` event，并调用共同 failure finalizer。�
      lease claim 并走正常 claim/execute；任何部分状态显式 interrupted；
    - 有 `run_terminalization_work_items(settling)`：优先 claim settler，停止 DAG
      continuation；
-   - `running` 且每个 running provider step 都有对应 active/terminal task row、其余
+   - `running` 且每个 running provider step 都有对应 active/result_ready/terminal task
+     row、其余
      succeeded step 有 durable outputs、剩余 queued DAG 可由 plan 重建：lease claim；
    - `running` 且所有 step queued、execution intent 完整、无 provider task/output：
      lease claim 并从 ready queue 恢复；
    - `running` builtin step 仅当 capability 明确声明并测试 `restart_safe=true` 时可重放；
      否则创建/合并 `desired=interrupted` work item、撤销 DAG 并收敛全部 siblings 后
      terminal；
-   - `dispatching`、provider-backed running 无 handle、非法 handle：把已知 task
+   - `dispatching` + valid dispatch owner：保持 row，claim/wait owner 返回，不得 abandon；
+     owner lost/expired、provider-backed running 无 handle、非法 handle：把已知 task
      abandoned，创建/合并 `desired=interrupted` work item + durable risk event，再收敛
      siblings；
    - 其他未匹配 running 组合：创建/合并 interrupted work item + invariant event，禁止
@@ -405,16 +442,17 @@ durable terminalization：
 
 - queued/estimating 且无 provider task：transaction CAS 当前状态 → interrupted、终止
   本地 estimate/queue owner、skip 未完成 steps，并把 interrupt work item 直接 completed。
-- running 且没有 dispatching/active task：同样可在 transaction 直接 interrupted。
-- running 存在 dispatching/active task：transaction 只创建
+- running 且没有 dispatching/active/result_ready task：同样可在 transaction 直接 interrupted。
+- running 存在 dispatching/active/result_ready task：transaction 只创建
   `run_terminalization_work_items(desired=interrupted, settling)`、撤销 DAG 调度 owner
   并发出 durable `run.interrupt_requested`；run 保持 running，API 表示请求已接受。
 - dispatch 正在调用上游时若随后返回 Accepted，允许它仅为可追踪性完成
   `dispatching → active` CAS，但检测到 interrupt work item 后不得 poll/推进 DAG，立即
   交给 settler cancel。若进程在 handle CAS 前退出，startup 把 dispatching 标为
-  abandoned + billing risk。
+  abandoned + billing risk；valid owner 尚存时 settler 不允许抢先 abandon。
 - active task 的 remote completion 与 cancel 竞争同一 task CAS；completion 胜者仍记录
-  实际 cost 和安全 artifact，但不得推进 DAG 或把 run 改成功。所有 task
+  实际 cost 和脱敏后的 durable result，artifact 仅在 materialization 成功时发布，但两者
+  都不得推进 DAG 或把 run 改成功。所有 task
   completed/cancelled/abandoned 后，settler 在同一 transaction 把 run → interrupted、
   写 terminal event 并把 work item completed。
 

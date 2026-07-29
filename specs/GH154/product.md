@@ -42,8 +42,10 @@ run 已中断。
 1. `run_provider_tasks` 是远端 task handle 的唯一 durable truth；`active_handles`
    内存 map 不再决定恢复或取消结果。
 2. 每次 provider 提交前必须先完成不会发网络请求的本地 preflight，再写入唯一
-   `dispatching` intent；提交完成后只能通过 compare-and-swap 将同一记录推进为
-   `active`。dispatch 失败必须区分 `not_submitted`、`rejected` 和 `outcome_unknown`：
+   `dispatching` intent 与有期限、可续租的 dispatch owner；提交完成后只能通过
+   compare-and-swap 将同一记录推进为 `active`/`result_ready`。settler 在 owner lease
+   有效时必须等待，只有 owner 丢失/过期才可把 dispatching 视为 outcome unknown。
+   dispatch 失败必须区分 `not_submitted`、`rejected` 和 `outcome_unknown`：
    前两者进入共同 failed finalizer，只有结果不确定时进入 `abandoned` 计费风险。
 3. 进程若在远端接受请求后、handle CAS 前崩溃，数据库只会留下 `dispatching`。
    Atlas/fal 当前没有可依赖的 submit idempotency 保证，因此启动恢复不得自动重发；
@@ -65,7 +67,9 @@ run 已中断。
    该 run 的恢复状态。lease 丢失后 worker 必须停止写入，过期 lease 可被后续进程
    重新认领。
 9. `running` run 的 `active` handle 可恢复轮询；远端成功时产物、输出端口、费用与
-   step 终态完整持久化，并从 durable step outputs 继续剩余 DAG。
+   step 终态完整持久化，并从 durable step outputs 继续剩余 DAG。provider 报告 terminal
+   后必须先原子写 `result_ready`、安全 result spool/descriptor 与 actual cost，再下载/
+   发布 artifact；artifact 失败不得把已完成的 provider task 伪装回 active。
 10. 已 `succeeded` step 不重新执行；正常执行、builtin 和 cache hit 都必须通过同一个
     output/step finalizer 写 `run_step_outputs`。恢复重建输入只读取
     `run_step_outputs` → `artifacts`，不得根据文件名、最新 artifact 或内存 map 猜测。
@@ -112,7 +116,7 @@ run 已中断。
 20. workspace 单 active-run 规则和 sweep `group_id` 例外保持不变；恢复不能让同一
     workspace 的互斥 run 同时继续执行。
 21. 在线 interrupt 保留 queued、estimating、running 三种既有可中断状态。无远端 task
-    时可原子 interrupted；存在 dispatching/active task 时先持久化 interrupt
+    时可原子 interrupted；存在 dispatching/active/result_ready task 时先持久化 interrupt
     terminalization work item 并停止 DAG，run 保持 running/active 以便 lease 恢复，
     tasks 全部收敛后才原子 interrupted。dispatch 返回 handle 的竞态也必须先落库再交
     settler，任何 crash 都不能留下无 work item 的 paid task。进程内 cancellation token
@@ -131,6 +135,8 @@ run 已中断。
       运行期取消不依赖 gateway 内存 map。
 - [ ] 模拟 dispatch 前、远端接受后/handle CAS 前、handle active 后、结果写入中和
       terminal commit 后五个 crash point；每个点的恢复结果确定且无重复提交。
+- [ ] interrupt/settler 遇到 live dispatch owner 时等待；Accepted 返回后 handle 必须可
+      落库并立即交 settler，owner crash/lease expiry 才 abandoned。
 - [ ] dispatch 的本地未提交、上游明确拒绝与结果未知三类错误有确定性测试；只有结果
       未知产生 abandoned/计费风险，前两类进入 failed finalizer 且不自动重提。
 - [ ] `running + active handle` 可在重启后恢复到 succeeded/failed；成功路径产物、
@@ -164,6 +170,9 @@ run 已中断。
       child；同一 `(parent, attempt)` 不重复。
 - [ ] artifact publish 后、DB commit 前 crash 由 journal 重放或安全 GC；引用中的
       content-addressed file 永不误删，清理失败可重试。
+- [ ] provider terminal 后、artifact 下载/发布前 crash 或重复失败时，task 保持
+      `result_ready`、actual ledger exactly-once，恢复只重试 materialization，不 cancel/
+      abandon 已完成的远端 task。
 - [ ] Web 在实时事件和断线补拉后都显示恢复、补取消和计费风险，不伪装为成功；刷新
       后 durable 风险仍可见。
 - [ ] 正常执行、在线 interrupt、cost confirmation、sweep 与同图 self-heal 回归通过；
