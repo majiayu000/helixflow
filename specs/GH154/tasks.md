@@ -14,7 +14,7 @@ GH-154
 | ID | Owner | Dependencies | Task | Done When | Verify |
 | --- | --- | --- | --- | --- | --- |
 | `SP154-T0` | test/contracts | none | 固化 restart recovery 状态矩阵、三类 dispatch failure 和五个 crash-point fixtures；覆盖 queued/estimating/waiting/running、dispatching/active/terminal、Atlas/fal/mock。 | 当前实现可稳定复现 handle 丢失；not-submitted/rejected/unknown 可区分；fixture 不触发真实付费调用且无 secret。 | `cargo test -p helixflow-run --locked recovery_baseline` |
-| `SP154-T1` | store | `T0` | 增加带 dispatch origin/scope/deadline 且 step 唯一的 `run_provider_tasks`、outputs、cost key、lease、execution intent、terminalization、failure continuation、artifact publish journal migration/API。 | 重开 DB 可查询所有 durable state；`UNIQUE(run_step_id)`/`UNIQUE(parent,attempt)` 生效；terminal/continuation/journal CAS、FK/cascade 测试通过。 | `cargo test -p helixflow-store --locked run_recovery` |
+| `SP154-T1` | store | `T0` | 增加带 dispatch origin/scope/deadline 且 step 唯一的 provider tasks、outputs、cost key、lease、execution intent、terminalization、带 unique retry_key/child 的 failure continuation、artifact journal migration/API。 | terminal desired status 单调合并；旧重复 parent/attempt DB 可升级；新 retry 单例；terminal/continuation/journal CAS、FK/cascade 通过。 | `cargo test -p helixflow-store --locked run_recovery` |
 | `SP154-T2` | gateway | `T1` | 将 Provider 生命周期拆为 typed dispatch/resume/cancel；Atlas/fal 按 origin+scope 恢复；mock 确定恢复；逐个清洗 `outputs[*].ArtifactPayload.meta`。 | correctness path 无 `in_flight` truth；三类 dispatch 正确；scope/恶意 URL 在请求前拒绝；artifact/API 无 task id、key、header、完整 URL。 | `cargo test -p helixflow-gateway --locked recovery` |
 | `SP154-T3` | run | `T1`,`T2` | executor 写唯一 dispatch intent/handle；sync/async/preflight queued→failed/builtin/cache 共用 typed step finalizer；实现 execution intent、output/DAG、failure/interrupt settler、durable self-heal continuation 与 artifact journal。 | 不重复 dispatch；preflight 可终态；queued 不绕 cost gate；siblings 收敛后才 failed；retry child 单例；published orphan 可重放/GC。 | `cargo test -p helixflow-run --locked recovery` |
 | `SP154-T4` | server/run | `T3` | startup 穷尽 queued/running/所有 terminalization/continuation/journal 并 lease claim；按绝对 deadline 恢复/补取消；保留 queued/estimating/running online interrupt。 | deadline 不因重启延长；interrupt settler 可跨 crash；all-queued/builtin/无 handle 显式收敛；recovered failed self-heal exactly once。 | `cargo test -p helixflow-server --locked restart_recovery && cargo test -p helixflow-run --locked self_heal` |
@@ -89,7 +89,9 @@ implementation PR 仍须以 exact-head review、fresh GitHub Actions 和上述�
 - running all-queued、builtin restart-safe/unsafe、provider running 无 handle、未知组合；
 - parallel sibling completed/cancelled/abandoned 与 terminalization work-item restart；
 - queued/estimating/running interrupt 与 dispatching/active settler restart；
+- failed-settling 与 user interrupt 并发，interrupt 胜出且不 self-heal；
 - failed commit→continuation claim、retry child insert→linkage commit；
+- 含历史重复 `(parent_run_id,attempt)` rows 的 migration；
 - recovery deadline 跨连续多次 restart；
 - queued flag missing/false/true/invalid。
 

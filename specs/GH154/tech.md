@@ -143,17 +143,32 @@ owner 并禁止调度新 step；run 暂时保持 running，直到所有 sibling 
 
 同一表也承载 online interrupt：`desired_status=interrupted` 时，queued/estimating 且无
 provider task 可在创建 work item 的同一 transaction 直接完成；running 若存在
-dispatching/active task，则必须先写 `settling` work item，并在同一 transaction 把 run
-标为 interrupted。durable settler 继续收敛 tasks；startup 必须先扫描所有未完成 work
-item，不论关联 run 当前是否已 terminal。
+dispatching/active task，则写 `settling` work item、撤销 DAG 调度 owner，但 run 保持
+running，使现有 active-run lease 可以恢复 settler；tasks 全部终态后才原子 interrupted。
 
-新增 `run_failure_continuations`（`source_run_id` UNIQUE），保存
-`pending | retry_created | exhausted | completed`、next attempt 与可空 child run。
-失败 terminal transaction 与 continuation 同事务提交；retry child 创建/linkage 与
-continuation 推进同事务完成，并新增 partial unique
-`UNIQUE(parent_run_id, attempt) WHERE parent_run_id IS NOT NULL`。这样 crash 在
-run.failed 后、self-heal 前或 child insert 后都只会恢复/返回同一 retry。GH-153 后续在
-同一 continuation exhausted 分支接 Agent fix，不新建第二套 handoff。
+同一 run 的 failure 与 interrupt 用单调 desired-status CAS 合并：
+
+- 无 work item 时 insert；
+- `failed/settling + user interrupt` 原子升级为 `interrupted/settling`，保留 source
+  failure audit，但最终不创建 self-heal continuation；
+- 已 `interrupted` 后到达的 step failure 只补 task diagnostic，不降级为 failed；
+- work item completed 或 run 已 succeeded/failed/interrupted 后不再改写。
+
+显式用户 interrupt 优先于尚未提交的 automatic failed terminal，避免用户停止后继续
+self-heal。startup 先扫描所有未完成 work item；有 remote task 的 work item 关联 run
+仍为 active，因此可按现有 lease 契约 claim。
+
+新增 `run_failure_continuations`（`source_run_id` UNIQUE），保存 UNIQUE
+`retry_key = retry:{source_run_id}:{next_attempt}`、
+`pending | retry_created | exhausted | completed`、next attempt 与 UNIQUE 可空
+`child_run_id`。失败 terminal transaction 与 continuation 同事务提交；retry child
+insert/linkage 与 continuation 推进在同一 `BEGIN IMMEDIATE` transaction 完成，rollback
+不会留下未关联 child。
+
+不直接给历史 `runs(parent_run_id, attempt)` 建唯一索引，因为旧版本可能已存在重复数据，
+会阻断 migration。新代码只通过 continuation `retry_key` 单赢家创建 child；migration
+保留全部历史 runs，并有 fixture 证明包含旧重复 parent/attempt 的数据库仍可升级。
+GH-153 后续在同一 continuation exhausted 分支接 Agent fix，不新建第二套 handoff。
 
 新增 `artifact_publish_intents`，以 stable output operation key UNIQUE 保存 staging path、
 canonical content-addressed path/hash、`staged | published | committed` 状态与 owner/时间。
@@ -384,16 +399,16 @@ durable terminalization：
   本地 estimate/queue owner、skip 未完成 steps，并把 interrupt work item 直接 completed。
 - running 且没有 dispatching/active task：同样可在 transaction 直接 interrupted。
 - running 存在 dispatching/active task：transaction 只创建
-  `run_terminalization_work_items(desired=interrupted, settling)`、撤销 DAG 调度 owner，
-  并在同一 commit 提交 run interrupted/event；这保留现有在线 interrupt 可见语义。
+  `run_terminalization_work_items(desired=interrupted, settling)`、撤销 DAG 调度 owner
+  并发出 durable `run.interrupt_requested`；run 保持 running，API 表示请求已接受。
 - dispatch 正在调用上游时若随后返回 Accepted，允许它仅为可追踪性完成
   `dispatching → active` CAS，但检测到 interrupt work item 后不得 poll/推进 DAG，立即
   交给 settler cancel。若进程在 handle CAS 前退出，startup 把 dispatching 标为
   abandoned + billing risk。
 - active task 的 remote completion 与 cancel 竞争同一 task CAS；completion 胜者仍记录
   实际 cost 和安全 artifact，但不得推进 DAG 或把 run 改成功。所有 task
-  completed/cancelled/abandoned 后，settler 只把 work item completed；run 已保持
-  interrupted。
+  completed/cancelled/abandoned 后，settler 在同一 transaction 把 run → interrupted、
+  写 terminal event 并把 work item completed。
 
 因此进程在 interrupt 请求、handle 返回、cancel 调用或 terminal CAS 任一窗口退出，startup
 都能从 work item 继续。进程内 cancellation token 只减少停机延迟，不是 durable truth。

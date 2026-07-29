@@ -102,19 +102,21 @@ run 已中断。
     确认。requeue 不得创建新 run、改变 estimate 或重复写 estimate ledger。
 19. 每个 task/step 终态由独立 CAS 幂等收敛；当且仅当 terminalization work item 证明
     所有相关 task 已终态时，最后一个 transaction 才同时提交 run terminal、对应 run
-    event 和 work-item completed。重复恢复不会重复终态事件，也不会把 terminal run
-    改回 active。
+    event 和 work-item completed。failure 与用户 interrupt 竞争时，显式 interrupt 单调
+    覆盖 pending failed desired status，最终为 interrupted 且不得触发 self-heal；已经
+    completed 的 terminal 不可覆盖。重复恢复不会重复事件或把 terminal run 改回 active。
 20. workspace 单 active-run 规则和 sweep `group_id` 例外保持不变；恢复不能让同一
     workspace 的互斥 run 同时继续执行。
 21. 在线 interrupt 保留 queued、estimating、running 三种既有可中断状态。无远端 task
-    时可原子 interrupted；存在 dispatching/active task 时必须在提交 interrupted 的同一
-    transaction 先持久化 interrupt terminalization work item 并停止 DAG，随后
-    cancel/abandon/完成收敛。startup 扫描 work item 不以 run active 为前提；dispatch
-    返回 handle 的竞态也必须先落库再交 settler，任何 crash 都不能留下无 work item 的
-    paid task。进程内 cancellation token 只负责加速停止。
-22. failed terminal transaction 必须同时写唯一 durable continuation；同图 retry child
-    通过 `(parent_run_id, attempt)` 唯一约束和 continuation linkage 幂等创建。#153 在
-    同一 exhausted continuation 上接 Agent fix，不产生第二套 handoff。
+    时可原子 interrupted；存在 dispatching/active task 时先持久化 interrupt
+    terminalization work item 并停止 DAG，run 保持 running/active 以便 lease 恢复，
+    tasks 全部收敛后才原子 interrupted。dispatch 返回 handle 的竞态也必须先落库再交
+    settler，任何 crash 都不能留下无 work item 的 paid task。进程内 cancellation token
+    只负责加速停止。
+22. failed terminal transaction 必须同时写唯一 durable continuation；新 continuation
+    自身的 `retry_key` 与 `child_run_id` 唯一约束保证同图 retry child 幂等创建，不直接
+    给历史 `runs(parent_run_id, attempt)` 加可能迁移失败的唯一索引。#153 在同一
+    exhausted continuation 上接 Agent fix，不产生第二套 handoff。
 23. artifact file publish 必须有 durable journal。DB finalizer 回滚后，启动时先重放仍可
     完成的 operation；只有文件无 DB 引用、无活跃 owner/work item 且 intent 已过期时才
     引用感知 GC。清理失败显式重试，不得声称复用不存在的 artifact reconciliation。
