@@ -23,6 +23,18 @@ fn invalid_extra_header_is_rejected_at_startup() {
     assert!(validate_header_config(&config).is_ok());
 }
 
+#[test]
+fn atlas_scope_fingerprint_includes_extra_header_value() {
+    let mut first = ApiProviderConfig::atlas("key".to_owned(), "https://api.test".to_owned());
+    first.extra_header = Some(("x-team".to_owned(), "alpha".to_owned()));
+    let mut second = first.clone();
+    second.extra_header = Some(("x-team".to_owned(), "beta".to_owned()));
+    assert_ne!(
+        AtlasProvider::new(first).config_fingerprint("atlas"),
+        AtlasProvider::new(second).config_fingerprint("atlas")
+    );
+}
+
 #[tokio::test]
 async fn atlas_estimates_supported_capabilities() {
     let provider = AtlasProvider::new(ApiProviderConfig::atlas(

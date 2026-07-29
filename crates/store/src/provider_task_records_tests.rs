@@ -6,7 +6,9 @@ use super::{
     ProviderTaskResult, Store,
 };
 use crate::NewArtifactPublishJournal;
-use crate::{NewArtifact, NewRun, NewRunStep, NewVersion, StoreError, VersionSource};
+use crate::{
+    NewArtifact, NewCostLedger, NewRun, NewRunStep, NewVersion, StoreError, VersionSource,
+};
 
 struct RecoveryFixture {
     store: Store,
@@ -361,6 +363,13 @@ async fn recovery_lease_and_terminal_desire_are_monotonic() {
     assert!(
         fixture
             .store
+            .renew_run_recovery_lease(&fixture.run_id, "owner-a", 30)
+            .await
+            .expect("renew recovery lease")
+    );
+    assert!(
+        fixture
+            .store
             .claim_run_recovery_lease(&fixture.run_id, "owner-b", 30)
             .await
             .expect("competing claim")
@@ -400,6 +409,20 @@ async fn recovery_lease_and_terminal_desire_are_monotonic() {
         .expect("late failed");
     assert_eq!(cannot_downgrade.desired_status, "interrupted");
     assert!(cannot_downgrade.error_json.is_none());
+    assert!(
+        fixture
+            .store
+            .claim_run_terminalization(&fixture.run_id, "settler-a", 30)
+            .await
+            .expect("claim terminalization")
+    );
+    assert!(
+        fixture
+            .store
+            .renew_run_terminalization_lease(&fixture.run_id, "settler-a", 30)
+            .await
+            .expect("renew terminalization")
+    );
 }
 
 #[tokio::test]
@@ -507,13 +530,49 @@ async fn artifact_publish_journal_replays_each_state_exactly_once() {
             .expect("wrong owner")
             .is_none()
     );
+    let artifact_input = || NewArtifact {
+        workspace_id: &fixture.workspace_id,
+        run_id: Some(&fixture.run_id),
+        run_step_id: Some(&fixture.step_id),
+        node_id: Some("video"),
+        kind: "video",
+        storage_uri: "artifacts/video.mp4",
+        sha256: Some("sha256:video"),
+        mime: Some("video/mp4"),
+        width: Some(720),
+        height: Some(1280),
+        duration_ms: Some(4000),
+        selected: false,
+        meta_json: Some("{}"),
+    };
+    let artifact = fixture
+        .store
+        .publish_artifact_from_journal(
+            "artifact:step:video",
+            "owner-a",
+            "artifacts/video.mp4",
+            artifact_input(),
+        )
+        .await
+        .expect("publish artifact");
+    let replay = fixture
+        .store
+        .publish_artifact_from_journal(
+            "artifact:step:video",
+            "owner-a",
+            "artifacts/video.mp4",
+            artifact_input(),
+        )
+        .await
+        .expect("replay artifact");
+    assert_eq!(artifact.id, replay.id);
     let published = fixture
         .store
-        .mark_artifact_published("artifact:step:video", "owner-a", "artifacts/video.mp4")
+        .artifact_publish_journal("artifact:step:video")
         .await
-        .expect("publish journal")
-        .expect("publish transition");
+        .expect("read published journal");
     assert_eq!(published.state, "published");
+    assert_eq!(published.artifact_id.as_deref(), Some(artifact.id.as_str()));
     assert_eq!(
         published.published_path.as_deref(),
         Some("artifacts/video.mp4")
@@ -577,6 +636,49 @@ async fn artifact_operation_key_rejects_different_content() {
         err,
         StoreError::RecoveryInvariant {
             operation: "create_or_read_artifact_publish_journal",
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn cost_operation_key_is_idempotent_and_rejects_changed_amount() {
+    let fixture = RecoveryFixture::create().await;
+    let input = || NewCostLedger {
+        workspace_id: &fixture.workspace_id,
+        run_id: Some(&fixture.run_id),
+        run_step_id: Some(&fixture.step_id),
+        provider: "mock",
+        amount: 0.25,
+        currency: "USD",
+        estimated: true,
+    };
+    let first = fixture
+        .store
+        .create_cost_ledger_once("estimate:step", input())
+        .await
+        .expect("create estimate");
+    let replay = fixture
+        .store
+        .create_cost_ledger_once("estimate:step", input())
+        .await
+        .expect("replay estimate");
+    assert_eq!(first.id, replay.id);
+    let err = fixture
+        .store
+        .create_cost_ledger_once(
+            "estimate:step",
+            NewCostLedger {
+                amount: 0.5,
+                ..input()
+            },
+        )
+        .await
+        .expect_err("changed amount must fail");
+    assert!(matches!(
+        err,
+        StoreError::RecoveryInvariant {
+            operation: "create_cost_ledger_once",
             ..
         }
     ));

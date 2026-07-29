@@ -82,8 +82,28 @@ impl std::error::Error for ProviderDispatchFailure {}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProviderResume {
-    Pending { retry_after_ms: u64 },
+    Pending {
+        retry_after_ms: u64,
+    },
     Completed(ProviderResult),
+    Failed {
+        reason_code: String,
+        cost: CostEstimate,
+    },
+}
+
+impl ProviderResume {
+    pub fn failed(reason_code: &str) -> Self {
+        Self::Failed {
+            reason_code: reason_code.to_owned(),
+            cost: CostEstimate {
+                amount: 0.0,
+                currency: "USD".to_owned(),
+                estimated: true,
+                unknown: true,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
-use super::{Store, StoreError, StoreResult};
+use super::{
+    ArtifactRecord, NewArtifact, Store, StoreError, StoreResult, new_id,
+    run_records::artifact_from_row,
+};
 
 #[derive(Debug, Clone)]
 pub struct NewArtifactPublishJournal<'a> {
@@ -21,6 +24,7 @@ pub struct ArtifactPublishJournalRecord {
     pub run_step_id: String,
     pub staged_path: String,
     pub published_path: Option<String>,
+    pub artifact_id: Option<String>,
     pub content_sha256: String,
     pub state: String,
     pub owner_id: String,
@@ -83,7 +87,7 @@ impl Store {
     ) -> StoreResult<ArtifactPublishJournalRecord> {
         Ok(sqlx::query_as::<_, ArtifactPublishJournalRecord>(
             r#"
-            SELECT operation_key, run_id, run_step_id, staged_path, published_path,
+            SELECT operation_key, run_id, run_step_id, staged_path, published_path, artifact_id,
                    content_sha256, state, owner_id, expires_at, created_at, updated_at
             FROM artifact_publish_journal
             WHERE operation_key = ?
@@ -120,6 +124,99 @@ impl Store {
         self.artifact_publish_journal(operation_key).await.map(Some)
     }
 
+    pub async fn publish_artifact_from_journal(
+        &self,
+        operation_key: &str,
+        owner_id: &str,
+        published_path: &str,
+        input: NewArtifact<'_>,
+    ) -> StoreResult<ArtifactRecord> {
+        let mut tx = self.pool().begin().await?;
+        let journal = sqlx::query_as::<_, ArtifactPublishJournalRecord>(
+            r#"
+            SELECT operation_key, run_id, run_step_id, staged_path, published_path, artifact_id,
+                   content_sha256, state, owner_id, expires_at, created_at, updated_at
+            FROM artifact_publish_journal
+            WHERE operation_key = ?
+            "#,
+        )
+        .bind(operation_key)
+        .fetch_one(&mut *tx)
+        .await?;
+        if journal.owner_id != owner_id {
+            return Err(StoreError::RecoveryInvariant {
+                operation: "publish_artifact_from_journal",
+                message: "artifact journal owner changed".to_owned(),
+            });
+        }
+        if let Some(artifact_id) = journal.artifact_id {
+            let artifact = artifact_in_transaction(&mut tx, &artifact_id).await?;
+            tx.commit().await?;
+            return Ok(artifact);
+        }
+        if journal.state != "staged"
+            || journal.run_id != input.run_id.unwrap_or_default()
+            || journal.run_step_id != input.run_step_id.unwrap_or_default()
+        {
+            return Err(StoreError::RecoveryInvariant {
+                operation: "publish_artifact_from_journal",
+                message: "artifact journal does not match artifact identity".to_owned(),
+            });
+        }
+        let artifact_id = new_id("art");
+        sqlx::query(
+            r#"
+            INSERT INTO artifacts (
+                id, workspace_id, run_id, run_step_id, node_id, kind, storage_uri,
+                sha256, mime, width, height, duration_ms, selected, meta_json, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)
+            "#,
+        )
+        .bind(&artifact_id)
+        .bind(input.workspace_id)
+        .bind(input.run_id)
+        .bind(input.run_step_id)
+        .bind(input.node_id)
+        .bind(input.kind)
+        .bind(published_path)
+        .bind(input.sha256)
+        .bind(input.mime)
+        .bind(input.width)
+        .bind(input.height)
+        .bind(input.duration_ms)
+        .bind(if input.selected { 1_i64 } else { 0_i64 })
+        .bind(input.meta_json)
+        .execute(&mut *tx)
+        .await?;
+        let updated = sqlx::query(
+            r#"
+            UPDATE artifact_publish_journal
+            SET state = 'published',
+                published_path = ?,
+                artifact_id = ?,
+                updated_at = current_timestamp
+            WHERE operation_key = ? AND owner_id = ? AND state = 'staged'
+              AND artifact_id IS NULL
+            "#,
+        )
+        .bind(published_path)
+        .bind(&artifact_id)
+        .bind(operation_key)
+        .bind(owner_id)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() != 1 {
+            return Err(StoreError::RecoveryInvariant {
+                operation: "publish_artifact_from_journal",
+                message: "artifact journal publish CAS was lost".to_owned(),
+            });
+        }
+        let artifact = artifact_in_transaction(&mut tx, &artifact_id).await?;
+        tx.commit().await?;
+        Ok(artifact)
+    }
+
     pub async fn mark_artifact_journal_committed(
         &self,
         operation_key: &str,
@@ -148,7 +245,7 @@ impl Store {
     ) -> StoreResult<Vec<ArtifactPublishJournalRecord>> {
         Ok(sqlx::query_as::<_, ArtifactPublishJournalRecord>(
             r#"
-            SELECT operation_key, run_id, run_step_id, staged_path, published_path,
+            SELECT operation_key, run_id, run_step_id, staged_path, published_path, artifact_id,
                    content_sha256, state, owner_id, expires_at, created_at, updated_at
             FROM artifact_publish_journal
             WHERE state IN ('staged', 'published')
@@ -158,4 +255,23 @@ impl Store {
         .fetch_all(self.pool())
         .await?)
     }
+}
+
+async fn artifact_in_transaction(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    artifact_id: &str,
+) -> StoreResult<ArtifactRecord> {
+    let row = sqlx::query(
+        r#"
+        SELECT id, workspace_id, run_id, run_step_id, node_id, kind, storage_uri,
+               sha256, mime, width, height, duration_ms, selected, meta_json, created_at,
+               review_state
+        FROM artifacts
+        WHERE id = ?
+        "#,
+    )
+    .bind(artifact_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    artifact_from_row(row)
 }

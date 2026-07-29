@@ -334,6 +334,9 @@ impl AtlasProvider {
         let completed = loop {
             match self.resume(&task, &req).await {
                 Ok(ProviderResume::Completed(result)) => break Ok(result),
+                Ok(ProviderResume::Failed { reason_code, .. }) => {
+                    break Err(ProviderError::RequestRejected(reason_code));
+                }
                 Ok(ProviderResume::Pending { retry_after_ms })
                     if tokio::time::Instant::now() < deadline =>
                 {
@@ -431,8 +434,10 @@ impl Provider for AtlasProvider {
         hasher.update([0]);
         hasher.update(self.config.account_id.as_deref().unwrap_or("").as_bytes());
         hasher.update([0]);
-        if let Some((name, _)) = &self.config.extra_header {
+        if let Some((name, value)) = &self.config.extra_header {
             hasher.update(name.as_bytes());
+            hasher.update([0]);
+            hasher.update(value.as_bytes());
         }
         hasher.update([0]);
         hasher.update(self.config.api_key.as_bytes());
@@ -568,12 +573,7 @@ impl Provider for AtlasProvider {
             "completed" | "succeeded" => self
                 .completed_video_result(req, data)
                 .map(ProviderResume::Completed),
-            "failed" => Err(ProviderError::RequestFailed(
-                data.get("error")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Atlas prediction failed")
-                    .to_owned(),
-            )),
+            "failed" => Ok(ProviderResume::failed("PROVIDER_REMOTE_FAILED")),
             _ => Ok(ProviderResume::Pending {
                 retry_after_ms: self.config.poll_interval.as_millis().min(u64::MAX as u128) as u64,
             }),

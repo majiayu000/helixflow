@@ -133,6 +133,14 @@ pub struct RunTerminalizationRecord {
     pub completed_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromRow)]
+pub struct ProviderTaskTiming {
+    pub dispatch_owner_live: bool,
+    pub recovery_expired: bool,
+    pub materialization_expired: bool,
+    pub materialization_due: bool,
+}
+
 impl Store {
     pub async fn insert_or_read_provider_task(
         &self,
@@ -233,6 +241,27 @@ impl Store {
             "WHERE state IN ('dispatching', 'active', 'result_ready') ORDER BY created_at, id"
         ))
         .fetch_all(self.pool())
+        .await?)
+    }
+
+    pub async fn provider_task_timing(&self, task_id: &str) -> StoreResult<ProviderTaskTiming> {
+        Ok(sqlx::query_as::<_, ProviderTaskTiming>(
+            r#"
+            SELECT
+              state = 'dispatching'
+                AND dispatch_lease_expires_at > current_timestamp AS dispatch_owner_live,
+              state = 'active'
+                AND recovery_deadline_at <= current_timestamp AS recovery_expired,
+              state = 'result_ready'
+                AND materialization_deadline_at <= current_timestamp AS materialization_expired,
+              state = 'result_ready'
+                AND materialization_next_retry_at <= current_timestamp AS materialization_due
+            FROM run_provider_tasks
+            WHERE id = ?
+            "#,
+        )
+        .bind(task_id)
+        .fetch_one(self.pool())
         .await?)
     }
 

@@ -115,6 +115,19 @@ impl fmt::Display for RunError {
 
 impl std::error::Error for RunError {}
 
+impl RunError {
+    pub fn public_message(&self) -> String {
+        match self {
+            Self::Provider(_) => "provider execution failed".to_owned(),
+            Self::Store(_) => "run persistence failed".to_owned(),
+            Self::Json(_) => "run data could not be decoded".to_owned(),
+            Self::ArtifactPersistence(_) => "artifact materialization failed".to_owned(),
+            Self::TaskJoin(_) => "run step worker stopped unexpectedly".to_owned(),
+            _ => self.to_string(),
+        }
+    }
+}
+
 impl From<GraphError> for RunError {
     fn from(err: GraphError) -> Self {
         Self::Graph(err)

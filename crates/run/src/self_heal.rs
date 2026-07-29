@@ -33,7 +33,7 @@ where
                 .execute_created_run(&run, &workspace_id, &plan, interrupt, run.force_rerun)
                 .await;
             if let Err(err) = result {
-                eprintln!("background run `{run_id}` failed: {err}");
+                eprintln!("background run failed: {}", err.public_message());
             }
             self.interrupts.lock().await.remove(&run_id);
 
@@ -46,7 +46,7 @@ where
                 Ok(None) => break,
                 Err(err) => {
                     self.emit_retry_failure(&workspace_id, &run_id, &err).await;
-                    eprintln!("background run `{run_id}` self-heal failed: {err}");
+                    eprintln!("background self-heal failed: {}", err.public_message());
                     break;
                 }
             }
@@ -146,7 +146,7 @@ where
                 workspace_id,
                 run_id,
                 "run.retry_failed",
-                json!({ "error": err.to_string() }),
+                json!({ "error": err.public_message() }),
             )
             .await
         {

@@ -9,8 +9,8 @@ use helixflow_gateway::{
 };
 use helixflow_graph::{ExecutionPlan, ExecutionStep, GraphEdge, GraphNode, WorkflowGraph};
 use helixflow_store::{
-    NewProviderTask, NewRun, NewRunStep, NewVersion, ProviderTaskHandleUpdate, RunRecord, Store,
-    VersionSource,
+    NewCostLedger, NewProviderTask, NewRun, NewRunStep, NewVersion, ProviderTaskHandleUpdate,
+    RunRecord, Store, VersionSource,
 };
 use serde_json::json;
 
@@ -118,16 +118,93 @@ async fn restart_resumes_active_provider_task_and_durable_dag() {
         .filter(|entry| !entry.estimated)
         .count();
     assert_eq!(actual, 1);
-    let events = store.run_events(&run.id).await.expect("recovery events");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let events = store.run_events(&run.id).await.expect("recovery events");
+            if events
+                .iter()
+                .any(|event| event.ev == "run.recovery_started")
+                && events
+                    .iter()
+                    .any(|event| event.ev == "run.recovery_succeeded")
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("recovery events timeout");
+}
+
+#[tokio::test]
+async fn restart_queued_requires_complete_intent_estimate_and_atomic_claim() {
+    let (store, _dir) = open_self_heal_store().await;
+    let (workspace_id, version_id) = self_heal_workspace_version(&store).await;
+    let plan = ExecutionPlan {
+        schema_version: 1,
+        version_id: version_id.clone(),
+        catalog_revision: None,
+        steps: vec![ExecutionStep {
+            node_id: "writer-queued".to_owned(),
+            node_type: "llm.prompt_writer".to_owned(),
+            provider: Some("mock".to_owned()),
+            capability: Some("prompt_writer".to_owned()),
+            inputs: BTreeMap::new(),
+            params: json!({}),
+            resolved: None,
+        }],
+    };
+    let plan_json = serde_json::to_string(&plan).expect("serialize plan");
+    let run = store
+        .create_run(NewRun {
+            workspace_id: &workspace_id,
+            version_id: &version_id,
+            group_id: None,
+            label: "Queued recovery",
+            trigger: "manual",
+            plan_json: Some(&plan_json),
+            estimate_json: Some(r#"{"amount":0.1}"#),
+            status: "queued",
+        })
+        .await
+        .expect("create queued run");
+    let service = RunService::new(store.clone());
+    let steps = service
+        .ensure_run_steps(&run.id, &plan)
+        .await
+        .expect("persist run steps");
+    service
+        .ensure_execution_intent(&run.id, &plan, run.estimate_json.as_deref())
+        .await
+        .expect("persist intent");
     assert!(
-        events
-            .iter()
-            .any(|event| event.ev == "run.recovery_started")
+        !service
+            .claim_restart_queued_run(&run)
+            .await
+            .expect("partial estimate rejects")
     );
+    store
+        .create_cost_ledger(NewCostLedger {
+            workspace_id: &workspace_id,
+            run_id: Some(&run.id),
+            run_step_id: Some(&steps[0].id),
+            provider: "mock",
+            amount: 0.1,
+            currency: "USD",
+            estimated: true,
+        })
+        .await
+        .expect("create estimate");
     assert!(
-        events
-            .iter()
-            .any(|event| event.ev == "run.recovery_succeeded")
+        service
+            .claim_restart_queued_run(&run)
+            .await
+            .expect("complete intent claims")
+    );
+    assert_eq!(
+        store.run(&run.id).await.expect("claimed run").status,
+        "running"
     );
 }
 

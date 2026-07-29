@@ -59,7 +59,16 @@ impl AppState {
         persist_runtime_provider_status(&store, &registry).await?;
         let state =
             Self::with_store_provider(events, store, data_dir, registry, reconciliation_report);
-        state.runner.recover_after_restart().await?;
+        state.runner.validate_restart_config()?;
+        let recovery_runner = state.runner.clone();
+        tokio::spawn(async move {
+            if let Err(err) = recovery_runner.recover_after_restart().await {
+                eprintln!(
+                    "run recovery startup worker failed: {}",
+                    err.public_message()
+                );
+            }
+        });
         Ok(state)
     }
 

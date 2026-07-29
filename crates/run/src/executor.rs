@@ -2,12 +2,11 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use helixflow_gateway::{ArtifactKind, ArtifactRef, Provider, ProviderRequest};
 use helixflow_graph::{ExecutionPlan, ExecutionStep};
-use helixflow_store::{ArtifactRecord, NewArtifact, RunRecord, RunStepRecord};
+use helixflow_store::{NewArtifact, RunRecord, RunStepRecord};
 use serde_json::{Value, json};
 use tokio::task::JoinSet;
 
-use super::artifacts::persist_provider_artifact;
-use super::cache::{CachedArtifactLink, file_sha256_hex, is_local_artifact_path};
+use super::cache::CachedArtifactLink;
 use super::{
     RunError, RunEventEnvelope, RunInterrupt, RunOutcome, RunResult, RunService, RunStatus,
     RunStepState, StepOutput,
@@ -203,7 +202,7 @@ where
                     if first_error.is_none() {
                         let err = RunError::TaskJoin(err.to_string());
                         let error_json =
-                            serde_json::to_string(&json!({ "error": err.to_string() }))?;
+                            serde_json::to_string(&json!({ "error": err.public_message() }))?;
                         first_error = Some((err, error_json));
                         interrupt.request();
                         self.skip_unfinished_steps(
@@ -245,7 +244,7 @@ where
                 }
                 Err(err) => {
                     if first_error.is_none() {
-                        let error = err.to_string();
+                        let error = err.public_message();
                         let error_json = serde_json::to_string(&json!({ "error": error }))?;
                         self.store
                             .update_run_step_state(
@@ -278,7 +277,7 @@ where
         .await;
         if let Err(err) = actual_cost_result {
             let error_json = serde_json::to_string(&json!({
-                "error": err.to_string(),
+                "error": err.public_message(),
                 "phase": "actual_cost_ledger"
             }))?;
             self.request_and_settle_terminal(
@@ -383,68 +382,66 @@ where
         self.emit_node_state(workspace_id, run_id, step, RunStepState::Running, None)
             .await?;
 
-        let (cache_links, step_outputs, cost_json) = if let (Some(provider), Some(capability)) =
-            (&step.provider, &step.capability)
-        {
-            let input_texts = crate::input_materialize::materialize_text_inputs(
-                &self.store,
-                &self.artifact_root,
-                &inputs,
-            )
-            .await?;
-            let request = ProviderRequest {
-                provider: provider.clone(),
-                capability: capability.clone(),
-                node_id: step.node_id.clone(),
-                run_id: run_id.to_owned(),
-                inputs: inputs.clone(),
-                input_texts,
-                params: step.params.clone(),
-                resolved_model_id: step
-                    .resolved
-                    .as_ref()
-                    .map(|resolved| resolved.resolved_model_id.clone()),
-                operation_id: step
-                    .resolved
-                    .as_ref()
-                    .map(|resolved| resolved.operation_id.clone()),
-            };
-            let Some(execution) = self
-                .execute_provider_step(workspace_id, run_id, step, record, request, interrupt)
-                .await?
-            else {
-                return Ok(StepExecution::Interrupted);
-            };
-            (
-                execution.cache_links,
-                execution.outputs,
-                Some(execution.cost_json),
-            )
-        } else {
-            let builtin = self
-                .execute_builtin(workspace_id, run_id, step, record, &inputs)
+        let (cache_links, step_outputs, cost_json) =
+            if let (Some(provider), Some(capability)) = (&step.provider, &step.capability) {
+                let input_texts = crate::input_materialize::materialize_text_inputs(
+                    &self.store,
+                    &self.artifact_root,
+                    &inputs,
+                )
                 .await?;
-            for output in &builtin.outputs {
-                self.store
-                    .link_run_step_output(&record.id, &output.port, &output.artifact.artifact_id)
+                let request = ProviderRequest {
+                    provider: provider.clone(),
+                    capability: capability.clone(),
+                    node_id: step.node_id.clone(),
+                    run_id: run_id.to_owned(),
+                    inputs: inputs.clone(),
+                    input_texts,
+                    params: step.params.clone(),
+                    resolved_model_id: step
+                        .resolved
+                        .as_ref()
+                        .map(|resolved| resolved.resolved_model_id.clone()),
+                    operation_id: step
+                        .resolved
+                        .as_ref()
+                        .map(|resolved| resolved.operation_id.clone()),
+                };
+                let Some(execution) = self
+                    .execute_provider_step(workspace_id, run_id, step, record, request, interrupt)
+                    .await?
+                else {
+                    return Ok(StepExecution::Interrupted);
+                };
+                (
+                    execution.cache_links,
+                    execution.outputs,
+                    Some(execution.cost_json),
+                )
+            } else {
+                let builtin = self
+                    .execute_builtin(workspace_id, run_id, step, record, &inputs)
                     .await?;
-            }
-            (builtin.cache_links, builtin.outputs, None)
-        };
+                (builtin.cache_links, builtin.outputs, None)
+            };
 
         if interrupt.is_requested() {
             return Ok(StepExecution::Interrupted);
         }
 
-        self.store
-            .update_run_step_state(
-                &record.id,
-                RunStepState::Succeeded.as_str(),
-                Some(1.0),
-                cost_json.as_deref(),
-                None,
-            )
-            .await?;
+        let output_mappings = step_outputs
+            .iter()
+            .map(|output| (output.port.clone(), output.artifact.artifact_id.clone()))
+            .collect::<Vec<_>>();
+        if !self
+            .store
+            .finalize_run_step_success(&record.id, None, cost_json.as_deref(), &output_mappings)
+            .await?
+        {
+            return Err(RunError::ArtifactPersistence(
+                "step finalizer lost its durable state".to_owned(),
+            ));
+        }
         self.refresh_step_cache(workspace_id, step, &cache_key, &cache_links)
             .await?;
         self.emit_node_state(workspace_id, run_id, step, RunStepState::Succeeded, None)
@@ -606,45 +603,6 @@ where
         })
     }
 
-    pub(crate) async fn persist_artifact(
-        &self,
-        workspace_id: &str,
-        run_id: &str,
-        step_id: &str,
-        node_id: &str,
-        payload: helixflow_gateway::ArtifactPayload,
-    ) -> RunResult<ArtifactRecord> {
-        let storage_uri =
-            persist_provider_artifact(&self.artifact_root, run_id, step_id, node_id, &payload)
-                .await?;
-        let sha256 = if is_local_artifact_path(&storage_uri) {
-            Some(format!(
-                "sha256:{}",
-                file_sha256_hex(&self.artifact_root.join(&storage_uri)).await?
-            ))
-        } else {
-            None
-        };
-        Ok(self
-            .store
-            .create_artifact(NewArtifact {
-                workspace_id,
-                run_id: Some(run_id),
-                run_step_id: Some(step_id),
-                node_id: Some(node_id),
-                kind: artifact_kind_label(payload.kind),
-                storage_uri: &storage_uri,
-                sha256: sha256.as_deref(),
-                mime: Some(&payload.mime),
-                width: payload.width.map(i64::from),
-                height: payload.height.map(i64::from),
-                duration_ms: payload.duration_ms.map(i64::from),
-                selected: false,
-                meta_json: Some(&serde_json::to_string(&payload.meta)?),
-            })
-            .await?)
-    }
-
     pub(crate) async fn skip_steps(
         &self,
         workspace_id: &str,
@@ -784,7 +742,7 @@ pub(crate) fn resolve_inputs(
     Ok(inputs)
 }
 
-fn artifact_kind_label(kind: ArtifactKind) -> &'static str {
+pub(crate) fn artifact_kind_label(kind: ArtifactKind) -> &'static str {
     match kind {
         ArtifactKind::Text => "text",
         ArtifactKind::Image => "image",

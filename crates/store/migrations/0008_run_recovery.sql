@@ -102,6 +102,7 @@ CREATE TABLE artifact_publish_journal (
   run_step_id TEXT NOT NULL REFERENCES run_steps(id) ON DELETE CASCADE,
   staged_path TEXT NOT NULL,
   published_path TEXT,
+  artifact_id TEXT UNIQUE REFERENCES artifacts(id) ON DELETE RESTRICT,
   content_sha256 TEXT NOT NULL,
   state TEXT NOT NULL CHECK (state IN ('staged', 'published', 'committed')),
   owner_id TEXT NOT NULL,
@@ -114,3 +115,7 @@ ALTER TABLE cost_ledger ADD COLUMN operation_key TEXT;
 CREATE UNIQUE INDEX idx_cost_ledger_operation_key
   ON cost_ledger(operation_key)
   WHERE operation_key IS NOT NULL;
+
+CREATE UNIQUE INDEX idx_messages_recovery_risk_ref
+  ON messages(ref_id)
+  WHERE kind = 'run_failed' AND ref_id LIKE 'recovery-risk:%';

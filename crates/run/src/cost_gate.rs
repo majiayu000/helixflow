@@ -89,7 +89,8 @@ where
             Ok(steps) => steps,
             Err(err) => {
                 self.interrupts.lock().await.remove(&run.id);
-                let error_json = serde_json::to_string(&json!({ "error": err.to_string() }))?;
+                let public_error = err.public_message();
+                let error_json = serde_json::to_string(&json!({ "error": public_error }))?;
                 self.store
                     .update_run_status(&run.id, RunStatus::Failed.as_str(), Some(&error_json))
                     .await?;
@@ -97,7 +98,7 @@ where
                     &run.workspace_id,
                     &run.id,
                     "run.failed",
-                    json!({ "error": err.to_string() }),
+                    json!({ "error": public_error }),
                 )
                 .await?;
                 return Err(err);
@@ -563,7 +564,8 @@ where
                 return Err(RunError::Interrupted(run.id));
             }
             Err(err) => {
-                let error_json = serde_json::to_string(&json!({ "error": err.to_string() }))?;
+                let public_error = err.public_message();
+                let error_json = serde_json::to_string(&json!({ "error": public_error }))?;
                 self.store
                     .update_run_status(&run.id, RunStatus::Failed.as_str(), Some(&error_json))
                     .await?;
@@ -571,7 +573,7 @@ where
                     &request.workspace_id,
                     &run.id,
                     "run.failed",
-                    json!({ "error": err.to_string(), "phase": "estimate" }),
+                    json!({ "error": public_error, "phase": "estimate" }),
                 )
                 .await?;
                 self.interrupts.lock().await.remove(&run.id);
@@ -662,15 +664,18 @@ where
                 .update_run_step_cost_estimate(&record.id, Some(&estimate_json))
                 .await?;
             self.store
-                .create_cost_ledger(NewCostLedger {
-                    workspace_id,
-                    run_id: Some(run_id),
-                    run_step_id: Some(&record.id),
-                    provider,
-                    amount: estimate.amount,
-                    currency: &estimate.currency,
-                    estimated: true,
-                })
+                .create_cost_ledger_once(
+                    &format!("estimate:{}", record.id),
+                    NewCostLedger {
+                        workspace_id,
+                        run_id: Some(run_id),
+                        run_step_id: Some(&record.id),
+                        provider,
+                        amount: estimate.amount,
+                        currency: &estimate.currency,
+                        estimated: true,
+                    },
+                )
                 .await?;
             total.add(&CostSummary::from_estimate(&estimate))?;
         }

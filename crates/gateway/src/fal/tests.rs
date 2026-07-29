@@ -190,7 +190,7 @@ async fn fal_status_errors_redact_api_key() -> Result<(), Box<dyn std::error::Er
     server.await??;
     let message = err.to_string().to_lowercase();
 
-    assert!(message.contains("provider message was redacted"));
+    assert!(message.contains("provider_remote_failed"));
     assert!(!message.contains("test-key"));
     assert!(!message.contains("bearer"));
     Ok(())

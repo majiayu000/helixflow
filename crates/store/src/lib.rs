@@ -1,5 +1,6 @@
 use std::fmt;
 use std::str::FromStr;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -8,6 +9,7 @@ use uuid::Uuid;
 
 mod artifact_journal_records;
 mod canvas_comment_records;
+mod cost_ledger_idempotency;
 mod failed_run_records;
 #[cfg(test)]
 mod migration_tests;
@@ -20,6 +22,7 @@ mod proposal_records_auto_apply_tests;
 mod provider_task_records;
 #[cfg(test)]
 mod provider_task_records_tests;
+mod recovery_lease_records;
 mod retry_records;
 mod run_claim;
 #[cfg(test)]
@@ -29,6 +32,7 @@ mod run_records;
 #[cfg(test)]
 mod run_records_tests;
 mod run_recovery_records;
+mod step_finalizer_records;
 mod sweep_records;
 mod upload_records;
 mod version_file_reference_records;
@@ -348,7 +352,8 @@ impl Store {
 async fn connect_pool(database_url: &str) -> StoreResult<SqlitePool> {
     let options = SqliteConnectOptions::from_str(database_url)?
         .create_if_missing(true)
-        .foreign_keys(true);
+        .foreign_keys(true)
+        .busy_timeout(Duration::from_secs(5));
 
     let pool = SqlitePoolOptions::new()
         .max_connections(5)

@@ -3,23 +3,22 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use helixflow_gateway::{
-    ArtifactRef, CostEstimate, DurableProviderTask, Provider, ProviderDispatch,
-    ProviderDispatchFailureKind, ProviderRequest, ProviderResult, ProviderResume,
+    DurableProviderTask, Provider, ProviderDispatch, ProviderDispatchFailureKind, ProviderRequest,
+    ProviderResult, ProviderResume,
 };
 use helixflow_graph::ExecutionStep;
 use helixflow_store::{
-    NewCostLedger, NewProviderTask, PROVIDER_TASK_ACTIVE, PROVIDER_TASK_DISPATCHING,
-    PROVIDER_TASK_RESULT_READY, ProviderTaskHandleUpdate, ProviderTaskRecord, ProviderTaskResult,
-    RunStepRecord,
+    NewProviderTask, PROVIDER_TASK_ACTIVE, PROVIDER_TASK_DISPATCHING, PROVIDER_TASK_RESULT_READY,
+    ProviderTaskHandleUpdate, ProviderTaskRecord, ProviderTaskResult, RunStepRecord,
 };
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::cache::CachedArtifactLink;
 use helixflow_graph::ExecutionPlan;
 
-use super::{RunError, RunInterrupt, RunOutcome, RunResult, RunService, RunStatus, StepOutput};
+use super::cache::CachedArtifactLink;
+use super::{RunError, RunInterrupt, RunResult, RunService, RunStatus, StepOutput};
 
 const DISPATCH_LEASE_SECONDS: i64 = 60;
 const DISPATCH_DEADLINE_SECONDS: i64 = 300;
@@ -36,9 +35,50 @@ impl<P> RunService<P>
 where
     P: Provider + Clone + Send + Sync + 'static,
 {
+    pub fn validate_restart_config(&self) -> RunResult<()> {
+        restart_requeue_enabled().map(|_| ())
+    }
+
     pub async fn recover_after_restart(&self) -> RunResult<()> {
         let requeue = restart_requeue_enabled()?;
+        self.reconcile_artifact_publish_journals().await?;
+        for work in self.store.pending_run_terminalizations().await? {
+            let run = self.store.run(&work.run_id).await?;
+            let runner = self.clone();
+            tokio::spawn(async move {
+                if let Err(err) = runner
+                    .request_and_settle_terminal(
+                        &run.workspace_id,
+                        &run.id,
+                        &work.desired_status,
+                        work.error_json.as_deref(),
+                    )
+                    .await
+                {
+                    eprintln!("run terminalization recovery failed: {err}");
+                }
+            });
+        }
+        let mut workspace_keepers = BTreeMap::<String, (String, Option<String>)>::new();
         for run in self.store.restart_active_runs().await? {
+            let restart_candidate = run.status == "running" || (run.status == "queued" && requeue);
+            if restart_candidate {
+                if let Some((_, keeper_group)) = workspace_keepers.get(&run.workspace_id)
+                    && (run.group_id.is_none() || run.group_id != *keeper_group)
+                {
+                    self.request_and_settle_terminal(
+                        &run.workspace_id,
+                        &run.id,
+                        RunStatus::Interrupted.as_str(),
+                        None,
+                    )
+                    .await?;
+                    continue;
+                }
+                workspace_keepers
+                    .entry(run.workspace_id.clone())
+                    .or_insert_with(|| (run.id.clone(), run.group_id.clone()));
+            }
             match run.status.as_str() {
                 "estimating" => {
                     self.request_and_settle_terminal(
@@ -59,7 +99,7 @@ where
                     .await?;
                 }
                 "queued" => {
-                    if self.store.run_execution_intent(&run.id).await?.is_none() {
+                    if !self.claim_restart_queued_run(&run).await? {
                         self.request_and_settle_terminal(
                             &run.workspace_id,
                             &run.id,
@@ -69,11 +109,31 @@ where
                         .await?;
                         continue;
                     }
-                    self.spawn_recovered_run(run);
+                    let running = self.store.run(&run.id).await?;
+                    self.classify_running_restart(running).await?;
                 }
                 "running" => self.classify_running_restart(run).await?,
                 _ => {}
             }
+        }
+        for continuation in self.store.pending_failure_continuations().await? {
+            if continuation.state == "retry_created" {
+                self.resume_retry_created(&continuation).await?;
+                continue;
+            }
+            let runner = self.clone();
+            tokio::spawn(async move {
+                match runner.store.run(&continuation.run_id).await {
+                    Ok(run) => {
+                        if let Err(err) = runner.continue_self_heal_from_failed(&run).await {
+                            eprintln!("failure continuation could not resume: {err}");
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("failure continuation parent could not be loaded: {err}");
+                    }
+                }
+            });
         }
         Ok(())
     }
@@ -111,6 +171,31 @@ where
         {
             return Ok(());
         }
+        loop {
+            let tasks = self.store.provider_tasks_for_run(&run.id).await?;
+            let mut dispatch_owner_live = false;
+            for task in tasks
+                .iter()
+                .filter(|task| task.state == PROVIDER_TASK_DISPATCHING)
+            {
+                dispatch_owner_live |= self
+                    .store
+                    .provider_task_timing(&task.id)
+                    .await?
+                    .dispatch_owner_live;
+            }
+            if !dispatch_owner_live {
+                break;
+            }
+            if !self
+                .store
+                .renew_run_recovery_lease(&run.id, &owner_id, 60)
+                .await?
+            {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
         let tasks = self.store.provider_tasks_for_run(&run.id).await?;
         if tasks
             .iter()
@@ -142,6 +227,9 @@ where
                 None,
             )
             .await?;
+            self.store
+                .release_run_recovery_lease(&run.id, &owner_id)
+                .await?;
             return Ok(());
         }
         let steps = self.store.run_steps(&run.id).await?;
@@ -170,22 +258,29 @@ where
                 None,
             )
             .await?;
+            self.store
+                .release_run_recovery_lease(&run.id, &owner_id)
+                .await?;
             return Ok(());
         }
-        self.spawn_recovered_run(run);
+        self.spawn_recovered_run(run, owner_id);
         Ok(())
     }
 
-    fn spawn_recovered_run(&self, run: helixflow_store::RunRecord) {
+    fn spawn_recovered_run(&self, run: helixflow_store::RunRecord, owner_id: String) {
         let runner = self.clone();
         tokio::spawn(async move {
-            if let Err(err) = runner.recover_running_run(run).await {
+            if let Err(err) = runner.recover_running_run(run, owner_id).await {
                 eprintln!("run recovery failed: {err}");
             }
         });
     }
 
-    async fn recover_running_run(&self, run: helixflow_store::RunRecord) -> RunResult<()> {
+    async fn recover_running_run(
+        &self,
+        run: helixflow_store::RunRecord,
+        owner_id: String,
+    ) -> RunResult<()> {
         let plan_json = run.plan_json.as_deref().ok_or_else(|| {
             RunError::InvalidConfiguration("running run is missing execution plan".to_owned())
         })?;
@@ -195,6 +290,39 @@ where
             .lock()
             .await
             .insert(run.id.clone(), interrupt.clone());
+        let heartbeat_runner = self.clone();
+        let heartbeat_run_id = run.id.clone();
+        let heartbeat_owner_id = owner_id.clone();
+        let heartbeat_interrupt = interrupt.clone();
+        let (stop_heartbeat, mut heartbeat_stopped) = tokio::sync::watch::channel(false);
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(20)) => {
+                        match heartbeat_runner
+                            .store
+                            .renew_run_recovery_lease(
+                                &heartbeat_run_id,
+                                &heartbeat_owner_id,
+                                60,
+                            )
+                            .await
+                        {
+                            Ok(true) => {}
+                            Ok(false) | Err(_) => {
+                                heartbeat_interrupt.request();
+                                return;
+                            }
+                        }
+                    }
+                    changed = heartbeat_stopped.changed() => {
+                        if changed.is_err() || *heartbeat_stopped.borrow() {
+                            return;
+                        }
+                    }
+                }
+            }
+        });
         self.emit(
             &run.workspace_id,
             &run.id,
@@ -205,6 +333,12 @@ where
         let result = self
             .execute_created_run(&run, &run.workspace_id, &plan, interrupt, run.force_rerun)
             .await;
+        if stop_heartbeat.send(true).is_err() {
+            eprintln!("run recovery heartbeat had already stopped");
+        }
+        self.store
+            .release_run_recovery_lease(&run.id, &owner_id)
+            .await?;
         self.interrupts.lock().await.remove(&run.id);
         if result
             .as_ref()
@@ -219,30 +353,6 @@ where
             .await?;
         }
         result.map(|_| ())
-    }
-
-    pub(crate) async fn record_actual_costs(&self, outcome: &RunOutcome) -> RunResult<()> {
-        for step in &outcome.steps {
-            let (Some(provider), Some(cost_json)) = (&step.provider, &step.cost_actual_json) else {
-                continue;
-            };
-            if self.store.provider_task_for_step(&step.id).await?.is_some() {
-                continue;
-            }
-            let cost: CostEstimate = serde_json::from_str(cost_json)?;
-            self.store
-                .create_cost_ledger(NewCostLedger {
-                    workspace_id: &outcome.run.workspace_id,
-                    run_id: Some(&outcome.run.id),
-                    run_step_id: Some(&step.id),
-                    provider,
-                    amount: cost.amount,
-                    currency: &cost.currency,
-                    estimated: cost.estimated,
-                })
-                .await?;
-        }
-        Ok(())
     }
 
     pub(crate) async fn execute_provider_step(
@@ -275,23 +385,11 @@ where
             .await?;
 
         let result = match task.state.as_str() {
-            PROVIDER_TASK_DISPATCHING => match tokio::select! {
-                result = self.provider.dispatch(request.clone()) => Some(result),
-                _ = interrupt.cancelled() => None,
-            } {
-                None => {
-                    self.store
-                        .abandon_provider_task(
-                            &task.id,
-                            PROVIDER_TASK_DISPATCHING,
-                            "DISPATCH_OUTCOME_UNKNOWN",
-                        )
-                        .await?;
-                    self.emit_billing_risk(workspace_id, run_id, &provider, "dispatch_unknown")
-                        .await?;
-                    return Ok(None);
-                }
-                Some(result) => match result {
+            PROVIDER_TASK_DISPATCHING => {
+                match self
+                    .dispatch_with_durable_owner(&task.id, &owner_id, request.clone(), interrupt)
+                    .await?
+                {
                     Ok(ProviderDispatch::Completed(result)) => result,
                     Ok(ProviderDispatch::Accepted(handle)) => {
                         let task = self
@@ -320,12 +418,27 @@ where
                             .await?;
                             return Ok(None);
                         }
-                        match self.resume_provider_task(&task, &request, interrupt).await {
+                        match self
+                            .resume_provider_task(workspace_id, &task, &request, interrupt)
+                            .await
+                        {
                             Err(RunError::Interrupted(_)) => return Ok(None),
                             result => result?,
                         }
                     }
                     Err(failure) => {
+                        if interrupt.is_requested()
+                            && failure.kind == ProviderDispatchFailureKind::NotSubmitted
+                        {
+                            self.store
+                                .complete_provider_task(
+                                    &task.id,
+                                    PROVIDER_TASK_DISPATCHING,
+                                    Some("LOCAL_DISPATCH_INTERRUPTED"),
+                                )
+                                .await?;
+                            return Ok(None);
+                        }
                         let code = match failure.kind {
                             ProviderDispatchFailureKind::NotSubmitted => "PROVIDER_NOT_SUBMITTED",
                             ProviderDispatchFailureKind::Rejected => "PROVIDER_REJECTED",
@@ -359,10 +472,13 @@ where
                             .await?;
                         return Err(RunError::Provider(failure.error));
                     }
-                },
-            },
+                }
+            }
             PROVIDER_TASK_ACTIVE => {
-                match self.resume_provider_task(&task, &request, interrupt).await {
+                match self
+                    .resume_provider_task(workspace_id, &task, &request, interrupt)
+                    .await
+                {
                     Err(RunError::Interrupted(_)) => return Ok(None),
                     result => result?,
                 }
@@ -381,7 +497,7 @@ where
         };
 
         let task = self
-            .spool_provider_result(workspace_id, &task, &result)
+            .spool_provider_result(workspace_id, &task, &result, "succeeded")
             .await?;
         self.materialize_provider_task(workspace_id, step, record, &task)
             .await
@@ -389,6 +505,7 @@ where
 
     async fn resume_provider_task(
         &self,
+        workspace_id: &str,
         task: &ProviderTaskRecord,
         request: &ProviderRequest,
         interrupt: &RunInterrupt,
@@ -398,8 +515,60 @@ where
             if interrupt.is_requested() {
                 return Err(RunError::Interrupted(task.run_id.clone()));
             }
+            if self
+                .store
+                .provider_task_timing(&task.id)
+                .await?
+                .recovery_expired
+            {
+                if self.provider.cancel_durable(&durable).await.is_ok() {
+                    self.store.cancel_provider_task(&task.id, None).await?;
+                    self.emit(
+                        workspace_id,
+                        &task.run_id,
+                        "run.recovery_cancelled",
+                        json!({ "provider": task.provider }),
+                    )
+                    .await?;
+                } else {
+                    self.store
+                        .abandon_provider_task(
+                            &task.id,
+                            PROVIDER_TASK_ACTIVE,
+                            "RECOVERY_DEADLINE_EXPIRED",
+                        )
+                        .await?;
+                    self.emit_billing_risk(
+                        workspace_id,
+                        &task.run_id,
+                        &task.provider,
+                        "recovery_deadline",
+                    )
+                    .await?;
+                }
+                return Err(RunError::Interrupted(task.run_id.clone()));
+            }
             match self.provider.resume(&durable, request).await? {
                 ProviderResume::Completed(result) => return Ok(result),
+                ProviderResume::Failed { reason_code, cost } => {
+                    let result = ProviderResult {
+                        outputs: BTreeMap::new(),
+                        cost,
+                    };
+                    let ready = self
+                        .spool_provider_result(workspace_id, task, &result, "failed")
+                        .await?;
+                    self.store
+                        .complete_provider_task(
+                            &ready.id,
+                            PROVIDER_TASK_RESULT_READY,
+                            Some(&reason_code),
+                        )
+                        .await?;
+                    return Err(RunError::Provider(
+                        helixflow_gateway::ProviderError::RequestRejected(reason_code),
+                    ));
+                }
                 ProviderResume::Pending { retry_after_ms } => {
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_millis(retry_after_ms.max(25))) => {}
@@ -417,6 +586,7 @@ where
         workspace_id: &str,
         task: &ProviderTaskRecord,
         result: &ProviderResult,
+        terminal_outcome: &str,
     ) -> RunResult<ProviderTaskRecord> {
         let mut safe_result = result.clone();
         for payload in safe_result.outputs.values_mut() {
@@ -445,7 +615,7 @@ where
             .mark_provider_task_result_ready(ProviderTaskResult {
                 task_id: &task.id,
                 dispatch_owner_id: task.dispatch_owner_id.as_deref(),
-                terminal_outcome: "succeeded",
+                terminal_outcome,
                 result_spool_path: &relative.to_string_lossy(),
                 result_fingerprint: &fingerprint,
                 materialization_deadline_seconds: MATERIALIZATION_DEADLINE_SECONDS,
@@ -463,176 +633,6 @@ where
             })
     }
 
-    async fn materialize_provider_task(
-        &self,
-        workspace_id: &str,
-        step: &ExecutionStep,
-        record: &RunStepRecord,
-        task: &ProviderTaskRecord,
-    ) -> RunResult<Option<ProviderStepExecution>> {
-        let relative = task.result_spool_path.as_deref().ok_or_else(|| {
-            RunError::ArtifactPersistence("result_ready task is missing spool path".to_owned())
-        })?;
-        let bytes = tokio::fs::read(self.artifact_root.join(relative))
-            .await
-            .map_err(|err| RunError::ArtifactPersistence(format!("read recovery spool: {err}")))?;
-        let fingerprint = format!("sha256:{:x}", Sha256::digest(&bytes));
-        if task.result_fingerprint.as_deref() != Some(fingerprint.as_str()) {
-            return Err(RunError::ArtifactPersistence(
-                "recovery spool fingerprint mismatch".to_owned(),
-            ));
-        }
-        let result: ProviderResult = serde_json::from_slice(&bytes)?;
-        let existing = self
-            .store
-            .run_step_outputs(&task.run_id)
-            .await?
-            .into_iter()
-            .filter(|item| item.run_step_id == record.id)
-            .map(|item| (item.port, item.artifact_id))
-            .collect::<BTreeMap<_, _>>();
-        let mut outputs = Vec::new();
-        let mut cache_links = Vec::new();
-        for (port, payload) in result.outputs {
-            let artifact = if let Some(artifact_id) = existing.get(&port) {
-                self.store.artifact(artifact_id).await?
-            } else {
-                let artifact = self
-                    .persist_artifact(
-                        workspace_id,
-                        &task.run_id,
-                        &record.id,
-                        &step.node_id,
-                        payload,
-                    )
-                    .await?;
-                self.store
-                    .link_run_step_output(&record.id, &port, &artifact.id)
-                    .await?;
-                artifact
-            };
-            cache_links.push(CachedArtifactLink {
-                port: Some(port.clone()),
-                artifact_id: artifact.id.clone(),
-            });
-            outputs.push(StepOutput {
-                port,
-                artifact: ArtifactRef {
-                    artifact_id: artifact.id,
-                    storage_uri: artifact.storage_uri,
-                },
-            });
-        }
-        self.store
-            .complete_provider_task(&task.id, PROVIDER_TASK_RESULT_READY, None)
-            .await?;
-        Ok(Some(ProviderStepExecution {
-            outputs,
-            cache_links,
-            cost_json: serde_json::to_string(&result.cost)?,
-        }))
-    }
-
-    pub(crate) async fn request_and_settle_terminal(
-        &self,
-        workspace_id: &str,
-        run_id: &str,
-        desired_status: &str,
-        error_json: Option<&str>,
-    ) -> RunResult<()> {
-        self.store
-            .request_run_terminalization(run_id, desired_status, error_json)
-            .await?;
-        let owner_id = format!("settler-{}", Uuid::now_v7());
-        if !self
-            .store
-            .claim_run_terminalization(run_id, &owner_id, 60)
-            .await?
-        {
-            return Ok(());
-        }
-        for task in self.store.provider_tasks_for_run(run_id).await? {
-            match task.state.as_str() {
-                PROVIDER_TASK_ACTIVE => {
-                    match self.provider.cancel_durable(&durable_task(&task)?).await {
-                        Ok(()) => {
-                            self.store.cancel_provider_task(&task.id, None).await?;
-                            self.emit(
-                                workspace_id,
-                                run_id,
-                                "run.recovery_cancelled",
-                                json!({ "provider": task.provider }),
-                            )
-                            .await?;
-                        }
-                        Err(_) => {
-                            self.store
-                                .abandon_provider_task(
-                                    &task.id,
-                                    PROVIDER_TASK_ACTIVE,
-                                    "REMOTE_CANCEL_UNCONFIRMED",
-                                )
-                                .await?;
-                            self.emit_billing_risk(
-                                workspace_id,
-                                run_id,
-                                &task.provider,
-                                "cancel_unconfirmed",
-                            )
-                            .await?;
-                        }
-                    }
-                }
-                PROVIDER_TASK_DISPATCHING => {
-                    self.store
-                        .abandon_provider_task(
-                            &task.id,
-                            PROVIDER_TASK_DISPATCHING,
-                            "DISPATCH_OWNER_STOPPED",
-                        )
-                        .await?;
-                    self.emit_billing_risk(
-                        workspace_id,
-                        run_id,
-                        &task.provider,
-                        "dispatch_unknown",
-                    )
-                    .await?;
-                }
-                PROVIDER_TASK_RESULT_READY => {
-                    self.store
-                        .complete_provider_task(
-                            &task.id,
-                            PROVIDER_TASK_RESULT_READY,
-                            Some("ARTIFACT_MATERIALIZATION_FAILED"),
-                        )
-                        .await?;
-                }
-                _ => {}
-            }
-        }
-        if let Some(run) = self
-            .store
-            .complete_run_terminalization(run_id, &owner_id)
-            .await?
-        {
-            self.emit(
-                workspace_id,
-                run_id,
-                if run.status == "failed" {
-                    "run.failed"
-                } else {
-                    "run.interrupted"
-                },
-                error_json
-                    .and_then(|value| serde_json::from_str(value).ok())
-                    .unwrap_or_else(|| json!({})),
-            )
-            .await?;
-        }
-        Ok(())
-    }
-
     async fn emit_billing_risk(
         &self,
         workspace_id: &str,
@@ -640,21 +640,12 @@ where
         provider: &str,
         reason_code: &str,
     ) -> RunResult<()> {
-        self.emit(
-            workspace_id,
-            run_id,
-            "run.recovery_abandoned",
-            json!({
-                "provider": provider,
-                "reason_code": reason_code,
-                "message": "远端任务终态无法确认，可能继续产生费用。"
-            }),
-        )
-        .await
+        self.persist_billing_risk(workspace_id, run_id, provider, reason_code)
+            .await
     }
 }
 
-fn durable_task(task: &ProviderTaskRecord) -> RunResult<DurableProviderTask> {
+pub(crate) fn durable_task(task: &ProviderTaskRecord) -> RunResult<DurableProviderTask> {
     Ok(DurableProviderTask {
         provider: task.provider.clone(),
         provider_task_id: task.provider_task_id.clone().ok_or_else(|| {

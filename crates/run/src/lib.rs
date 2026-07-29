@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use helixflow_gateway::{ArtifactRef, MockProvider, Provider, ProviderError};
+use helixflow_gateway::{ArtifactRef, MockProvider, Provider};
 use helixflow_graph::{ExecutionPlan, GraphService, WorkflowGraph};
 use helixflow_registry::NodeRegistry;
 use helixflow_store::{ArtifactRecord, NewRun, NewRunStep, RunRecord, RunStepRecord, Store};
@@ -13,6 +13,7 @@ use tokio::sync::{Mutex, Notify, broadcast};
 
 mod artifact_path;
 mod resolved;
+mod restart_policy;
 pub use resolved::{resolve_step_binding_for, shared_catalog};
 #[cfg(test)]
 mod artifact_path_tests;
@@ -23,18 +24,25 @@ mod artifacts;
 mod background;
 mod cache;
 mod cost_gate;
+mod cost_recording;
 mod cost_types;
+mod dispatch_wait;
 mod error;
 mod executor;
 mod input_materialize;
 #[cfg(test)]
 mod invalid_media_tests;
+mod provider_materialization;
 mod provider_recovery;
+#[cfg(test)]
+mod recovery_contract_tests;
+mod recovery_notice;
 mod run_policy;
 mod self_heal;
 #[cfg(test)]
 mod self_heal_tests;
 mod sweep_background;
+mod terminal_settlement;
 
 use artifacts::default_artifact_root;
 pub use cost_types::{
@@ -294,65 +302,13 @@ where
         if !matches!(run.status.as_str(), "queued" | "estimating" | "running") {
             return Err(RunError::RunNotActive(run_id.to_owned()));
         }
-        self.store
-            .request_run_terminalization(run_id, RunStatus::Interrupted.as_str(), None)
-            .await?;
-        // Also cancel remote paid work instead of only dropping the local
-        // future (HF-011). Failures are surfaced as run events so the UI
-        // never claims a remote task stopped when it did not.
-        for handle in self.provider.active_handles(run_id).await {
-            match self.provider.cancel(handle.clone()).await {
-                Ok(()) => {
-                    self.emit(
-                        &run.workspace_id,
-                        run_id,
-                        "run.remote_cancelled",
-                        serde_json::json!({ "provider": handle.provider }),
-                    )
-                    .await?;
-                }
-                // A provider without a remote cancel endpoint (e.g. Atlas) is
-                // not a transient failure: the remote task will keep running
-                // and billing, and the user must be told explicitly.
-                Err(ProviderError::CancelUnsupported(_)) => {
-                    eprintln!(
-                        "run `{run_id}`: provider `{}` does not support remote cancel; \
-                         remote work may keep running",
-                        handle.provider
-                    );
-                    self.emit(
-                        &run.workspace_id,
-                        run_id,
-                        "run.remote_cancel_unsupported",
-                        serde_json::json!({
-                            "provider": handle.provider,
-                            "message": format!(
-                                "Provider `{}` cannot cancel already-submitted remote tasks; \
-                                 the remote task may keep running and incur charges.",
-                                handle.provider
-                            ),
-                        }),
-                    )
-                    .await?;
-                }
-                Err(err) => {
-                    eprintln!(
-                        "run `{run_id}`: remote cancel failed for provider `{}`: {err}",
-                        handle.provider
-                    );
-                    self.emit(
-                        &run.workspace_id,
-                        run_id,
-                        "run.remote_cancel_failed",
-                        serde_json::json!({
-                            "provider": handle.provider,
-                            "error": err.to_string(),
-                        }),
-                    )
-                    .await?;
-                }
-            }
-        }
+        self.request_and_settle_terminal(
+            &run.workspace_id,
+            run_id,
+            RunStatus::Interrupted.as_str(),
+            None,
+        )
+        .await?;
         Ok(())
     }
 

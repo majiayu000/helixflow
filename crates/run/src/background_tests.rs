@@ -4,8 +4,9 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use helixflow_gateway::{
-    CostEstimate, MockProvider, Provider, ProviderCatalog, ProviderHealth, ProviderRequest,
-    ProviderResult, ProviderResultValue, ProviderTaskHandle,
+    CostEstimate, DurableProviderTask, MockProvider, Provider, ProviderCatalog, ProviderDispatch,
+    ProviderDispatchResult, ProviderHealth, ProviderRecoveryCapabilities, ProviderRequest,
+    ProviderResult, ProviderResultValue, ProviderResume, ProviderTaskHandle,
 };
 use helixflow_graph::{GraphEdge, GraphNode, WorkflowGraph};
 use helixflow_store::{NewVersion, Store, VersionSource};
@@ -536,11 +537,11 @@ impl Provider for RemoteHandleProvider {
         self.inner.health().await
     }
 
-    async fn active_handles(&self, run_id: &str) -> Vec<ProviderTaskHandle> {
-        vec![ProviderTaskHandle {
-            provider: "mock".to_owned(),
-            provider_task_id: format!("remote-{run_id}"),
-        }]
+    fn recovery_capabilities(&self, _provider_id: &str) -> ProviderRecoveryCapabilities {
+        ProviderRecoveryCapabilities {
+            resume: true,
+            cancel: true,
+        }
     }
 
     async fn catalog(&self) -> ProviderResultValue<ProviderCatalog> {
@@ -553,6 +554,28 @@ impl Provider for RemoteHandleProvider {
 
     async fn invoke(&self, req: ProviderRequest) -> ProviderResultValue<ProviderResult> {
         self.inner.invoke(req).await
+    }
+
+    async fn dispatch(&self, req: ProviderRequest) -> ProviderDispatchResult {
+        Ok(ProviderDispatch::Accepted(DurableProviderTask {
+            provider: req.provider,
+            provider_task_id: format!("remote-{}", req.run_id),
+            dispatch_origin: "provider://mock".to_owned(),
+            recovery_scope_fingerprint: String::new(),
+            status_url: None,
+            result_url: None,
+        }))
+    }
+
+    async fn resume(
+        &self,
+        _task: &DurableProviderTask,
+        req: &ProviderRequest,
+    ) -> ProviderResultValue<ProviderResume> {
+        self.inner
+            .invoke(req.clone())
+            .await
+            .map(ProviderResume::Completed)
     }
 
     async fn cancel(&self, handle: ProviderTaskHandle) -> ProviderResultValue<()> {
@@ -598,7 +621,7 @@ async fn interrupt_cancels_remote_provider_tasks() {
     );
     let mut saw_remote_cancel_event = false;
     while let Ok(event) = receiver.try_recv() {
-        if event.ev == "run.remote_cancelled" {
+        if event.ev == "run.recovery_cancelled" {
             saw_remote_cancel_event = true;
         }
     }
@@ -628,11 +651,11 @@ impl Provider for UncancellableRemoteProvider {
         self.inner.health().await
     }
 
-    async fn active_handles(&self, run_id: &str) -> Vec<ProviderTaskHandle> {
-        vec![ProviderTaskHandle {
-            provider: "mock".to_owned(),
-            provider_task_id: format!("remote-{run_id}"),
-        }]
+    fn recovery_capabilities(&self, _provider_id: &str) -> ProviderRecoveryCapabilities {
+        ProviderRecoveryCapabilities {
+            resume: true,
+            cancel: false,
+        }
     }
 
     async fn catalog(&self) -> ProviderResultValue<ProviderCatalog> {
@@ -645,6 +668,28 @@ impl Provider for UncancellableRemoteProvider {
 
     async fn invoke(&self, req: ProviderRequest) -> ProviderResultValue<ProviderResult> {
         self.inner.invoke(req).await
+    }
+
+    async fn dispatch(&self, req: ProviderRequest) -> ProviderDispatchResult {
+        Ok(ProviderDispatch::Accepted(DurableProviderTask {
+            provider: req.provider,
+            provider_task_id: format!("remote-{}", req.run_id),
+            dispatch_origin: "provider://mock".to_owned(),
+            recovery_scope_fingerprint: String::new(),
+            status_url: None,
+            result_url: None,
+        }))
+    }
+
+    async fn resume(
+        &self,
+        _task: &DurableProviderTask,
+        req: &ProviderRequest,
+    ) -> ProviderResultValue<ProviderResume> {
+        self.inner
+            .invoke(req.clone())
+            .await
+            .map(ProviderResume::Completed)
     }
 
     async fn cancel(&self, handle: ProviderTaskHandle) -> ProviderResultValue<()> {
@@ -686,13 +731,13 @@ async fn interrupt_surfaces_unsupported_remote_cancel() {
     let mut saw_cancelled_event = false;
     while let Ok(event) = receiver.try_recv() {
         match event.ev.as_str() {
-            "run.remote_cancel_unsupported" => unsupported_event = Some(event),
-            "run.remote_cancelled" => saw_cancelled_event = true,
+            "run.recovery_abandoned" => unsupported_event = Some(event),
+            "run.recovery_cancelled" => saw_cancelled_event = true,
             _ => {}
         }
     }
     let unsupported_event =
-        unsupported_event.expect("run.remote_cancel_unsupported event must be emitted");
+        unsupported_event.expect("run.recovery_abandoned event must be emitted");
     assert!(
         !saw_cancelled_event,
         "must not claim the remote task was cancelled"
@@ -702,7 +747,7 @@ async fn interrupt_surfaces_unsupported_remote_cancel() {
         .get("message")
         .and_then(serde_json::Value::as_str)
         .expect("unsupported event carries a user-facing message");
-    assert!(message.contains("incur charges"));
+    assert!(message.contains("可能继续产生费用"));
     assert!(
         unsupported_event.data.get("provider_task_id").is_none(),
         "remote task identity must not leave the gateway/store boundary"

@@ -14,6 +14,36 @@ pub struct RunFailureContinuationRecord {
 }
 
 impl Store {
+    pub async fn renew_run_terminalization_lease(
+        &self,
+        run_id: &str,
+        owner_id: &str,
+        lease_seconds: i64,
+    ) -> StoreResult<bool> {
+        if lease_seconds <= 0 {
+            return Err(StoreError::RecoveryInvariant {
+                operation: "renew_run_terminalization_lease",
+                message: "lease must be positive".to_owned(),
+            });
+        }
+        let lease = format!("+{lease_seconds} seconds");
+        let result = sqlx::query(
+            r#"
+            UPDATE run_terminalization_work_items
+            SET lease_expires_at = datetime('now', ?),
+                updated_at = current_timestamp
+            WHERE run_id = ? AND state = 'settling' AND owner_id = ?
+              AND lease_expires_at > current_timestamp
+            "#,
+        )
+        .bind(lease)
+        .bind(run_id)
+        .bind(owner_id)
+        .execute(self.pool())
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
     pub async fn claim_run_terminalization(
         &self,
         run_id: &str,
@@ -56,6 +86,18 @@ impl Store {
         owner_id: &str,
     ) -> StoreResult<Option<RunRecord>> {
         let mut tx = self.pool().begin().await?;
+        sqlx::query(
+            r#"
+            UPDATE run_terminalization_work_items
+            SET updated_at = updated_at
+            WHERE run_id = ? AND state = 'settling' AND owner_id = ?
+              AND lease_expires_at > current_timestamp
+            "#,
+        )
+        .bind(run_id)
+        .bind(owner_id)
+        .execute(&mut *tx)
+        .await?;
         let work = sqlx::query(
             r#"
             SELECT desired_status, error_json
@@ -131,6 +173,23 @@ impl Store {
             .execute(&mut *tx)
             .await?;
         }
+        let event_id = new_id("evt");
+        let event_name = format!("run.{desired_status}");
+        sqlx::query(
+            r#"
+            INSERT INTO run_events (id, run_id, seq, ev, data_json, created_at)
+            SELECT ?, ?, COALESCE(MAX(seq), 0) + 1, ?, ?, current_timestamp
+            FROM run_events
+            WHERE run_id = ?
+            "#,
+        )
+        .bind(event_id)
+        .bind(run_id)
+        .bind(event_name)
+        .bind(error_json.as_deref().unwrap_or("{}"))
+        .bind(run_id)
+        .execute(&mut *tx)
+        .await?;
         sqlx::query(
             r#"
             UPDATE run_terminalization_work_items

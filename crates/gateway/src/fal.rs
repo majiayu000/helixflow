@@ -200,6 +200,9 @@ impl FalProvider {
         let completed = loop {
             match self.resume(&task, &req).await {
                 Ok(ProviderResume::Completed(result)) => break Ok(result),
+                Ok(ProviderResume::Failed { reason_code, .. }) => {
+                    break Err(ProviderError::RequestRejected(reason_code));
+                }
                 Ok(ProviderResume::Pending { retry_after_ms })
                     if tokio::time::Instant::now() < deadline =>
                 {
@@ -424,11 +427,8 @@ impl Provider for FalProvider {
             ProviderError::InvalidRequest("fal recovery handle is missing status URL".to_owned())
         })?;
         let response = self.get_json(status_url).await?;
-        if let Some(error) = response.get("error").and_then(Value::as_str) {
-            return Err(ProviderError::RequestFailed(redact_sensitive(
-                error,
-                &self.config.api_key,
-            )));
+        if response.get("error").and_then(Value::as_str).is_some() {
+            return Ok(ProviderResume::failed("PROVIDER_REMOTE_FAILED"));
         }
         match response.get("status").and_then(Value::as_str).unwrap_or("") {
             "COMPLETED" => self
@@ -438,9 +438,7 @@ impl Provider for FalProvider {
             "IN_QUEUE" | "IN_PROGRESS" | "" => Ok(ProviderResume::Pending {
                 retry_after_ms: self.config.poll_interval.as_millis().min(u64::MAX as u128) as u64,
             }),
-            other => Err(ProviderError::RequestFailed(format!(
-                "fal request ended with status `{other}`"
-            ))),
+            _ => Ok(ProviderResume::failed("PROVIDER_REMOTE_FAILED")),
         }
     }
 
