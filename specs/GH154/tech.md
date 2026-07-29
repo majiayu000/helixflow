@@ -237,15 +237,26 @@ provider-backed step 执行顺序：
 
 ## 4. 幂等 step finalizer 与 DAG continuation
 
-provider `Completed` 后先把远端/inline payload 写为 content-addressed file；随后单个
-store transaction：
+provider `Completed` 后先把远端/inline payload 写为 content-addressed file；随后调用
+按来源携带 typed expected state 的共享 step finalizer：
+
+| Source | Task row transition |
+| --- | --- |
+| synchronous dispatch `Completed` | `dispatching → completed` |
+| asynchronous `resume Completed/Failed` | `active → completed` |
+| dispatch `NotSubmitted/Rejected` | `dispatching → completed`，无 output |
+| builtin / cache hit | 无 task row，不执行 task CAS |
+
+共享 store transaction：
 
 1. 校验 recovery lease（normal execution 用显式 execution owner token）。
 2. insert-or-read artifacts 与 `(step, port)` outputs；同 key 不同 payload/hash
    返回 invariant error。
 3. insert-or-read actual cost ledger。
-4. task active → completed，step running → succeeded。
+4. 按上表 CAS 可选 task row，并把 step `running → succeeded/failed`。
 5. append exactly-once `node.state`/recovery event。
+6. 仅当该 step 之后整个 DAG 已 terminal，才在同一 transaction CAS run terminal；
+   非最终 step 提交后 run 保持 running，由 coordinator 调度剩余 ready steps。
 
 transaction rollback 不删除已完成的 content-addressed file；后续 replay 使用同
 hash/path，孤儿文件沿用现有 artifact reconciliation/清理策略，不能先删可能被其他
@@ -288,13 +299,19 @@ recovery future 周期续租。暂时网络错误采用有界指数退避，且�
 recovery deadline；到期后尝试补取消。有效 lease 被其他 owner 取代时，future 立即
 停止，不写 terminal state。
 
-在线 interrupt 用单个 store transaction CAS `running → interrupted`、撤销/夺取 recovery
-lease 并生成 interrupt token。recovery/normal step finalizer 的 transaction 必须同时
-要求 run 仍为 running 且 owner token 有效：若 poll-complete 先提交，interrupt 返回已有
-terminal；若 interrupt 先提交，poll/cancel 回调只能读取 interrupted，不得再写 artifact、
-cost 或成功事件。进程内 cancellation token 只减少停机延迟。对 active handle 的 cancel
-结果再以 task state CAS 提交；无法确认 cancel 时追加 durable billing-risk，而不能把 run
-改回 active。
+在线 interrupt 用单个 store transaction CAS `run running → interrupted`、撤销/夺取
+recovery lease 并生成 interrupt token。step finalizer 与 run terminal 分层竞争：
+
+- 非最终 step 的 poll-complete 先提交时，保留其 artifact/output/cost，run 仍为 running；
+  interrupt 随后可以成功并阻止剩余 DAG 调度。
+- interrupt 先提交时，尚未提交的 step finalizer 因 run/owner CAS 失败，不得再写
+  artifact/output/cost 或成功事件。
+- 最后一个 step 的 finalizer 必须在同一 transaction 把 step 与 run 一起终态化；它与
+  interrupt 只有一个 run-terminal CAS 胜者，败者读取并返回既有终态。
+
+进程内 cancellation token 只减少停机延迟。对仍为 active 的 handle，cancel 结果再以
+task state CAS 提交；已经 completed 的 task 无需 cancel。无法确认 cancel 时追加 durable
+billing-risk，而不能把 run 改回 active。
 
 workspace active-run 检查排除当前 recovery run；同 group sweep 保留既有例外。若 DB
 存在互相冲突的多个 active run，按 `created_at,id` 确定顺序认领，不能同时恢复；

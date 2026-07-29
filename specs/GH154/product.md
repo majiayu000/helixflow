@@ -96,10 +96,12 @@ run 已中断。
     workspace 的互斥 run 同时继续执行。
 21. 在线 interrupt 改为从数据库读取 active handles，并在一个事务中以
     `running → interrupted` CAS 撤销 recovery lease。recovery finalizer 必须同时校验
-    run 仍为 running 且 lease/owner 有效；interrupt 与 poll-complete 竞争时只有一个
-    CAS 胜者，败者不得落 artifact、cost 或 terminal event。进程内 cancellation token
-    只负责加速停止，不作为正确性真相；用户可见成功、失败、unsupported 和计费风险
-    语义保持 #124 既有契约。
+    run 仍为 running 且 lease/owner 有效。非最终 step 的 poll-complete 若先提交，其
+    artifact/cost/output 保留，run 仍为 running，随后 interrupt 可中断剩余 DAG；若
+    interrupt 先提交，未提交的 step finalizer 必须停止。只有“最后一个 step + run
+    terminal”与 interrupt 竞争时才是单一 run-terminal CAS 胜者。进程内 cancellation
+    token 只负责加速停止，不作为正确性真相；用户可见成功、失败、unsupported 和计费
+    风险语义保持 #124 既有契约。
 22. #154 必须先于 #153 实现；恢复得到的 `failed` run 调用共同 failure finalizer，
     以便 #153 后续在同一入口接 Agent 修图，且不会产生第二套重试/修图循环。
 
