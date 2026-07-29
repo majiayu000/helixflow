@@ -45,10 +45,12 @@ CREATE TABLE run_provider_tasks (
   status_url TEXT,
   result_url TEXT,
   last_error_code TEXT,
+  recovery_deadline_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   ended_at TEXT,
-  UNIQUE (run_step_id, operation_key)
+  UNIQUE (run_step_id),
+  UNIQUE (operation_key)
 );
 ```
 
@@ -60,7 +62,8 @@ CREATE TABLE run_provider_tasks (
   结果（同步成功、远端 terminal、确定未提交或明确拒绝），失败由 `last_error_code`
   区分并将 run/step 送入共同 failed finalizer。
 - `operation_key` 由 run/step/provider/dispatch attempt 的稳定 identity 生成，不包含
-  prompt、URL 或 secret。
+  prompt、URL 或 secret。同一 `run_step_id` 终生至多一条 provider task；本 issue 的
+  rejected/unknown dispatch 不在同一 step 上重提，resume/replay 只能推进原 row。
 - `recovery_scope_fingerprint` 由 provider id、canonical API origin、可用的非秘密
   account/tenant identity 以及 credential identity 的单向摘要组成；不得保存 raw key。
   当前配置无法生成相同指纹时禁止 resume/cancel，即使 provider id 与 URL 仍相同。
@@ -69,6 +72,8 @@ CREATE TABLE run_provider_tasks (
   task id 后直接请求。
 - task id 和 URL 只在 store/gateway 内部使用，不序列化进普通 API/event。需要诊断时
   只返回 record id、provider 和 stable code。
+- `active` CAS 同时写 provider policy 计算的绝对 `recovery_deadline_at`；后续进程只计算
+  remaining duration，不得在 restart 时重置 deadline。
 
 SQLite CHECK 无法完整表达状态字段组合时，Store 写 API 必须在 transaction 中校验并
 返回 typed invariant error；禁止调用方直接拼 SQL 跨状态写入。
@@ -97,9 +102,10 @@ provider 与有输出的 builtin step 都写 port 映射。恢复 DAG 以 frozen
 `estimate:{run_step_id}`、`actual:{run_step_id}`；旧记录保持 NULL。Store 提供
 insert-or-read API，并核对同 key payload，不允许同 key 不同 amount/currency。
 
-terminal event 不通过“先更新 run、后 append event”两步完成。Store finalizer 在一个
-transaction 内以 run/step/task 当前状态 CAS，写 terminal state、必要的 event 和
-ended_at。CAS 未命中时读取既有终态并返回 replay，不追加第二个事件。
+terminal event 不通过“先更新 run、后 append event”两步完成。每个 task/step
+finalizer 在单 transaction 做自己的 CAS/event；terminalization work item 证明所有相关
+task 已终态后，最后一个 transaction 才写 run terminal、run event、ended_at 与 work-item
+completed。CAS 未命中时读取既有终态并返回 replay，不追加第二个事件。
 
 ### 1.4 `run_recovery_leases`
 
@@ -134,6 +140,27 @@ source failed step、stable reason 与 `settling | ready | completed` 状态。�
 失败时，在同一 transaction 标记 source step/task terminal、创建 work item、撤销执行
 owner 并禁止调度新 step；run 暂时保持 running，直到所有 sibling remote task 都持久化
 为 `completed/cancelled/abandoned`。
+
+同一表也承载 online interrupt：`desired_status=interrupted` 时，queued/estimating 且无
+provider task 可在创建 work item 的同一 transaction 直接完成；running 若存在
+dispatching/active task，则必须先写 `settling` work item，并在同一 transaction 把 run
+标为 interrupted。durable settler 继续收敛 tasks；startup 必须先扫描所有未完成 work
+item，不论关联 run 当前是否已 terminal。
+
+新增 `run_failure_continuations`（`source_run_id` UNIQUE），保存
+`pending | retry_created | exhausted | completed`、next attempt 与可空 child run。
+失败 terminal transaction 与 continuation 同事务提交；retry child 创建/linkage 与
+continuation 推进同事务完成，并新增 partial unique
+`UNIQUE(parent_run_id, attempt) WHERE parent_run_id IS NOT NULL`。这样 crash 在
+run.failed 后、self-heal 前或 child insert 后都只会恢复/返回同一 retry。GH-153 后续在
+同一 continuation exhausted 分支接 Agent fix，不新建第二套 handoff。
+
+新增 `artifact_publish_intents`，以 stable output operation key UNIQUE 保存 staging path、
+canonical content-addressed path/hash、`staged | published | committed` 状态与 owner/时间。
+file publish 前先 durable journal；artifact/output transaction 同时 mark committed。
+启动 reconciliation 先重放仍可完成的 step finalizer；只有 intent 已过期、无 artifact row
+引用、无 active task/terminalization 可继续引用时，才引用感知删除 orphan file 并完成
+intent。删除失败显式 error 并保留 intent 重试，不得假设仓库已有 artifact GC。
 
 ## 2. Gateway 生命周期契约
 
@@ -271,6 +298,7 @@ provider `Completed` 后先把远端/inline payload 写为 content-addressed fil
 | synchronous dispatch `Completed` | `dispatching → completed` |
 | asynchronous `resume Completed/Failed` | `active → completed` |
 | dispatch `NotSubmitted/Rejected` | `dispatching → completed`，无 output |
+| local preflight failure | 无 task row，step `queued → failed` |
 | builtin / cache hit | 无 task row，不执行 task CAS |
 
 共享 store transaction：
@@ -279,14 +307,16 @@ provider `Completed` 后先把远端/inline payload 写为 content-addressed fil
 2. insert-or-read artifacts 与 `(step, port)` outputs；同 key 不同 payload/hash
    返回 invariant error。
 3. insert-or-read actual cost ledger。
-4. 按上表 CAS 可选 task row，并把 step `running → succeeded/failed`。
+4. 按上表 CAS 可选 task row；正常执行把 step `running → succeeded/failed`，preflight
+   failure 明确使用 `queued → failed`。
 5. append exactly-once `node.state`/recovery event。
 6. 仅当该 step 之后整个 DAG 已 terminal，才在同一 transaction CAS run terminal；
    非最终 step 提交后 run 保持 running，由 coordinator 调度剩余 ready steps。
 
-transaction rollback 不删除已完成的 content-addressed file；后续 replay 使用同
-hash/path，孤儿文件沿用现有 artifact reconciliation/清理策略，不能先删可能被其他
-记录引用的文件。
+transaction rollback 不直接删除已完成的 content-addressed file；后续 replay 通过
+`artifact_publish_intents` 使用同 hash/path。启动 reconciliation 按 journal 先重放可完成
+finalizer，再按“无 DB 引用 + 无 active owner/work item + 已过期”三重条件清理 orphan；
+不能先删可能被其他记录引用的文件。
 
 现有 `try_cache_hit`、builtin step 与 provider completed 都必须调用该 finalizer；cache
 hit 不得继续只复制 artifact 并直接标记 succeeded。必须覆盖“cache hit 已提交 output，
@@ -343,23 +373,34 @@ run → failed、写 `run.failed` event，并调用共同 failure finalizer。�
    - 其他未匹配 running 组合：显式 interrupted/invariant event，禁止保留 stale running。
 6. 对 claim 结果 spawn recovery future；HTTP server 启动不等待远端 poll。
 
-recovery future 周期续租。暂时网络错误采用有界指数退避，且总时长不超过 provider
-recovery deadline；到期后尝试补取消。有效 lease 被其他 owner 取代时，future 立即
-停止，不写 terminal state。
+recovery future 周期续租。暂时网络错误采用有界指数退避，但绝对期限只认 task
+`recovery_deadline_at`；每次重启计算 `deadline - now`，到期立即尝试补取消/abandon，
+不得重新获得完整窗口。有效 lease 被其他 owner 取代时，future 立即停止写入。
 
-在线 interrupt 用单个 store transaction CAS `run running → interrupted`、撤销/夺取
-recovery lease 并生成 interrupt token。step finalizer 与 run terminal 分层竞争：
+online interrupt 保留现有 `queued`、`estimating`、`running` 三种可中断状态，并使用
+durable terminalization：
 
-- 非最终 step 的 poll-complete 先提交时，保留其 artifact/output/cost，run 仍为 running；
-  interrupt 随后可以成功并阻止剩余 DAG 调度。
-- interrupt 先提交时，尚未提交的 step finalizer 因 run/owner CAS 失败，不得再写
-  artifact/output/cost 或成功事件。
-- 最后一个 step 的 finalizer 必须在同一 transaction 把 step 与 run 一起终态化；它与
-  interrupt 只有一个 run-terminal CAS 胜者，败者读取并返回既有终态。
+- queued/estimating 且无 provider task：transaction CAS 当前状态 → interrupted、终止
+  本地 estimate/queue owner、skip 未完成 steps，并把 interrupt work item 直接 completed。
+- running 且没有 dispatching/active task：同样可在 transaction 直接 interrupted。
+- running 存在 dispatching/active task：transaction 只创建
+  `run_terminalization_work_items(desired=interrupted, settling)`、撤销 DAG 调度 owner，
+  并在同一 commit 提交 run interrupted/event；这保留现有在线 interrupt 可见语义。
+- dispatch 正在调用上游时若随后返回 Accepted，允许它仅为可追踪性完成
+  `dispatching → active` CAS，但检测到 interrupt work item 后不得 poll/推进 DAG，立即
+  交给 settler cancel。若进程在 handle CAS 前退出，startup 把 dispatching 标为
+  abandoned + billing risk。
+- active task 的 remote completion 与 cancel 竞争同一 task CAS；completion 胜者仍记录
+  实际 cost 和安全 artifact，但不得推进 DAG 或把 run 改成功。所有 task
+  completed/cancelled/abandoned 后，settler 只把 work item completed；run 已保持
+  interrupted。
 
-进程内 cancellation token 只减少停机延迟。对仍为 active 的 handle，cancel 结果再以
-task state CAS 提交；已经 completed 的 task 无需 cancel。无法确认 cancel 时追加 durable
-billing-risk，而不能把 run 改回 active。
+因此进程在 interrupt 请求、handle 返回、cancel 调用或 terminal CAS 任一窗口退出，startup
+都能从 work item 继续。进程内 cancellation token 只减少停机延迟，不是 durable truth。
+非最终 step 在 interrupt work item 创建前完成时仍保留其合法 artifact/output/cost；
+interrupt 后的 task finalizer 只有持有 matching work item 才可绕过 run-running guard，
+且只能收敛 task/cost/safe artifact。最后 step 成功终态与 interrupt work-item claim
+通过 run/work-item CAS 只允许一个路径生效。
 
 workspace active-run 检查排除当前 recovery run；同 group sweep 保留既有例外。若 DB
 存在互相冲突的多个 active run，按 `created_at,id` 确定顺序认领，不能同时恢复；
@@ -395,10 +436,10 @@ workspace active-run 检查排除当前 recovery run；同 group sweep 保留既
 insert-or-read 同一 message，不能追加第二条。EventBus publish 发生在 commit 后；
 publish 失败不影响 durable event/message。
 
-Atlas/fal `ProviderResult.metadata` 在进入 artifact finalizer 前必须移除 prediction id、
-request id、status/result URL 和 provider 原始 payload；workspace hydration、artifact
-API、event 与 Web 序列化测试对这些值做负向断言。内部排障只能用 task record id 和稳定
-reason code。
+Atlas/fal 的每一个 `ProviderResult.outputs[*].ArtifactPayload.meta` 在进入 artifact
+finalizer 前必须移除 prediction id、request id、status/result URL 和 provider 原始
+payload；workspace hydration、artifact API、event 与 Web 序列化测试对这些值做负向
+断言。内部排障只能用 task record id 和稳定 reason code。
 
 `web/src/store-events.ts` 将 recovery cancel/abandoned 映射为 system
 `run_failed` notice，并优先复用 event 的 `message_id`；`workspace_state.rs` 通过既有
@@ -409,10 +450,11 @@ workspace messages 在全量 hydration 中返回同一 durable notice，因此�
 
 ## 7. #153 关系
 
-#154 先实现统一 `finalize_run`/`continue_after_terminal_run` 边界：
+#154 先实现统一 `finalize_run`/durable continuation 边界：
 
-- normal executor 与 recovery coordinator 都在 run CAS 为 failed 后调用同一
-  `continue_self_heal_from_failed`/failure finalizer；
+- normal executor 与 recovery coordinator 都在 run CAS 为 failed 的同一 transaction
+  insert-or-read `run_failure_continuations`；coordinator 从该 durable intent 幂等创建或
+  返回同一 retry child，不在 commit 后裸调用 `continue_self_heal_from_failed`；
 - 本 issue 保留现有同图有界 retry 与 cost gate；
 - #153 后续只在共同 finalizer 的“同图 retry 已耗尽”分支接入 Agent DebugWorkflow，
   不直接从 recovery worker 再建修图循环；
@@ -437,6 +479,8 @@ workspace messages 在全量 hydration 中返回同一 durable notice，因此�
 | cache/interrupt race/API secrecy | cache reopen、poll/interrupt/cancel race、artifact hydration 负向测试 |
 | queued/running exhaustive classification | execution intent/partial estimate、all-queued、builtin safe/unsafe、无 handle |
 | parallel failure settlement | sibling completed/cancelled/abandoned 后才 run.failed，settler restart |
+| interrupt/continuation/deadline | 三种 interrupt status、dispatch race、retry 单例、deadline multi-restart |
+| artifact journal/GC | publish-before-DB crash、replay、过期无引用 GC、引用保护与清理重试 |
 | #153 handoff | recovered failure invokes existing self-heal finalizer once |
 
 ## 9. 风险与回滚
@@ -444,6 +488,8 @@ workspace messages 在全量 hydration 中返回同一 durable notice，因此�
 - **重复计费**：dispatching unknown 永不自动重发；所有 replay 先读 DB。
 - **SSRF/secret**：URL 两次校验且不进入日志/event；credential 只从当前 env 注入请求。
 - **长期 lease**：续租有上限；lease loss 终止写入，过期可重领。
+- **磁盘 orphan**：artifact publish journal 先重放、后按引用/owner/expiry 三重 gate GC；
+  删除失败保留 durable intent 并显式重试。
 - **兼容性**：migration 前遗留 running row 无 handle，显式 interrupted/abandoned；
   waiting confirmation 不变。
 - **回滚**：可关闭 recovery worker，但保留 schema、dispatch intent 与 DB-based online

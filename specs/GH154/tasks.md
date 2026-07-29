@@ -14,10 +14,10 @@ GH-154
 | ID | Owner | Dependencies | Task | Done When | Verify |
 | --- | --- | --- | --- | --- | --- |
 | `SP154-T0` | test/contracts | none | 固化 restart recovery 状态矩阵、三类 dispatch failure 和五个 crash-point fixtures；覆盖 queued/estimating/waiting/running、dispatching/active/terminal、Atlas/fal/mock。 | 当前实现可稳定复现 handle 丢失；not-submitted/rejected/unknown 可区分；fixture 不触发真实付费调用且无 secret。 | `cargo test -p helixflow-run --locked recovery_baseline` |
-| `SP154-T1` | store | `T0` | 增加带 dispatch origin/scope 的 `run_provider_tasks`、`run_step_outputs`、cost operation key、`run_recovery_leases`、`run_execution_intents`、`run_terminalization_work_items` migration 和 typed Store API。 | 重开 DB 可查询 handle/scope/intent/work item；状态 CAS、lease、output/cost replay、terminal transaction 与 FK/cascade 测试通过。 | `cargo test -p helixflow-store --locked run_recovery` |
-| `SP154-T2` | gateway | `T1` | 将 Provider 生命周期拆为 typed dispatch/resume/cancel；Atlas 返回/恢复 prediction handle 且 cancel 仍 unsupported；fal 返回/恢复/取消经 scope + URL 双重校验的 handle；mock 提供确定性测试恢复。 | correctness path 无 `in_flight` truth；三类 dispatch 结果正确；scope/恶意 URL 在发请求前拒绝；日志/event/artifact/API fixture 无 task id、key、header、完整 URL。 | `cargo test -p helixflow-gateway --locked recovery` |
-| `SP154-T3` | run | `T1`,`T2` | executor 在 submit 前写 dispatching，handle CAS active；让 sync dispatch、async resume、builtin、cache hit 通过 typed state matrix 共用幂等 step finalizer；实现 execution intent、durable output/DAG continuation、parallel failure settler 和 DB-based interrupt。 | cache hit/重复 resume 幂等；queued 不绕过 cost gate；sibling tasks 全部 terminal 后才 run.failed；非最终 step 完成后仍可 interrupt。 | `cargo test -p helixflow-run --locked recovery` |
-| `SP154-T4` | server/run | `T3` | AppState 严格解析 queued requeue flag；startup 穷尽 queued/running/terminalization 分类并 lease claim，后台恢复、续租、补取消/abandon；normal/recovered 共用 failure finalizer。 | queued 需完整 intent/estimate；all-queued 可恢复，builtin safe/unsafe 与无 handle 均显式收敛；settler 可重启；recovered failed 进入 self-heal 一次。 | `cargo test -p helixflow-server --locked restart_recovery && cargo test -p helixflow-run --locked self_heal` |
+| `SP154-T1` | store | `T0` | 增加带 dispatch origin/scope/deadline 且 step 唯一的 `run_provider_tasks`、outputs、cost key、lease、execution intent、terminalization、failure continuation、artifact publish journal migration/API。 | 重开 DB 可查询所有 durable state；`UNIQUE(run_step_id)`/`UNIQUE(parent,attempt)` 生效；terminal/continuation/journal CAS、FK/cascade 测试通过。 | `cargo test -p helixflow-store --locked run_recovery` |
+| `SP154-T2` | gateway | `T1` | 将 Provider 生命周期拆为 typed dispatch/resume/cancel；Atlas/fal 按 origin+scope 恢复；mock 确定恢复；逐个清洗 `outputs[*].ArtifactPayload.meta`。 | correctness path 无 `in_flight` truth；三类 dispatch 正确；scope/恶意 URL 在请求前拒绝；artifact/API 无 task id、key、header、完整 URL。 | `cargo test -p helixflow-gateway --locked recovery` |
+| `SP154-T3` | run | `T1`,`T2` | executor 写唯一 dispatch intent/handle；sync/async/preflight queued→failed/builtin/cache 共用 typed step finalizer；实现 execution intent、output/DAG、failure/interrupt settler、durable self-heal continuation 与 artifact journal。 | 不重复 dispatch；preflight 可终态；queued 不绕 cost gate；siblings 收敛后才 failed；retry child 单例；published orphan 可重放/GC。 | `cargo test -p helixflow-run --locked recovery` |
+| `SP154-T4` | server/run | `T3` | startup 穷尽 queued/running/所有 terminalization/continuation/journal 并 lease claim；按绝对 deadline 恢复/补取消；保留 queued/estimating/running online interrupt。 | deadline 不因重启延长；interrupt settler 可跨 crash；all-queued/builtin/无 handle 显式收敛；recovered failed self-heal exactly once。 | `cargo test -p helixflow-server --locked restart_recovery && cargo test -p helixflow-run --locked self_heal` |
 | `SP154-T5` | frontend | `T4` | Web 处理 recovery/requeue/risk events，保留 durable notice 并在 terminal/recovery 事件后 refetch。 | WebSocket、seq gap、刷新、workspace switch 下状态一致；abandoned/cancel failure 显示计费风险且不展示 secret。 | `cd web && npx tsc --noEmit && npm test -- --run store-events store-background && npm run build` |
 | `SP154-T6` | coordinator | `T0`–`T5` | 全量 crash matrix、并发 lease、正常执行/cost/sweep/interrupt/self-heal 回归，核对 #153 handoff 与 PR evidence。 | 所有 invariant 有 fresh evidence；无真实 billable call；exact-head review 无 actionable finding。 | `cargo fmt --all -- --check && cargo check --workspace --locked && cargo test --workspace --locked` |
 
@@ -71,8 +71,10 @@ implementation PR 仍须以 exact-head review、fresh GitHub Actions 和上述�
 
 - dispatch intent commit 后退出；
 - provider 已接受、handle CAS 前退出；
+- online interrupt 后、dispatch handle 返回/CAS 前退出；
 - active handle commit 后退出；
 - artifact file 写完、DB finalizer 前退出；
+- artifact journal publish 后、commit/GC 前退出；
 - terminal transaction commit 后、EventBus publish 前退出；
 - 两个 recovery owner 同时 claim/renew；
 - dispatch local not-submitted、上游明确 rejected、timeout/断线 outcome-unknown；
@@ -86,6 +88,9 @@ implementation PR 仍须以 exact-head review、fresh GitHub Actions 和上述�
 - queued complete intent/estimate、partial estimate、fingerprint mismatch；
 - running all-queued、builtin restart-safe/unsafe、provider running 无 handle、未知组合；
 - parallel sibling completed/cancelled/abandoned 与 terminalization work-item restart；
+- queued/estimating/running interrupt 与 dispatching/active settler restart；
+- failed commit→continuation claim、retry child insert→linkage commit；
+- recovery deadline 跨连续多次 restart；
 - queued flag missing/false/true/invalid。
 
 ## Handoff Notes

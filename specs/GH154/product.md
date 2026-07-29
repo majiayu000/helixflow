@@ -69,15 +69,17 @@ run 已中断。
 10. 已 `succeeded` step 不重新执行；正常执行、builtin 和 cache hit 都必须通过同一个
     output/step finalizer 写 `run_step_outputs`。恢复重建输入只读取
     `run_step_outputs` → `artifacts`，不得根据文件名、最新 artifact 或内存 map 猜测。
-11. 同一 step/port 至多有一个 durable output，同一费用 operation key 至多有一条
-    ledger 记录；恢复重放返回既有记录，不复制 artifact row 或费用。
+11. 同一 run step 至多有一条 provider task，同一 step/port 至多有一个 durable
+    output，同一费用 operation key 至多有一条 ledger 记录；恢复重放返回既有记录，
+    不得用新 operation key 重复 dispatch、复制 artifact row 或费用。
 12. provider 返回远端 failed 时，先原子创建 durable terminalization work item，停止
     调度新 step，并回收/收敛所有 sibling active remote tasks。只有 sibling task 均已
     `completed/cancelled/abandoned` 后，run 才进入 `failed`、保留脱敏错误和事件，再进入
     与正常执行相同的 failure finalizer；不得留下 terminal run + active paid task。
-13. provider 暂时不可轮询时按有界退避重试并续租；超过恢复期限后，若 provider 支持
-    cancel 则补取消。取消成功记录 `cancelled` 并中断 run；取消失败或不支持则记录
-    `abandoned` 与计费风险。
+13. provider 暂时不可轮询时按有界退避重试并续租；绝对 recovery deadline 在 handle
+    active 时落库，重启只能计算剩余时间，不能重置。超过期限后若 provider 支持 cancel
+    则补取消；取消成功记录 `cancelled` 并中断 run，失败或不支持则记录 `abandoned`
+    与计费风险。
 14. Atlas 支持从持久化 prediction identity 恢复 poll，但仍不支持 cancel；不得构造
     虚假的 Atlas cancel URL。fal 使用经 revalidation 的 status/result 定位恢复，并
     可按现有语义执行补取消。
@@ -98,21 +100,24 @@ run 已中断。
     fallback。
 18. `estimating` 默认中断；`waiting_confirmation` 不参与启动清理，不能绕过用户成本
     确认。requeue 不得创建新 run、改变 estimate 或重复写 estimate ledger。
-19. terminal transition、对应 run event 和 task/step final state 必须由一个 store
-    transaction/CAS 决定；重复恢复不会重复终态事件，也不会把 terminal run 改回
-    active。
+19. 每个 task/step 终态由独立 CAS 幂等收敛；当且仅当 terminalization work item 证明
+    所有相关 task 已终态时，最后一个 transaction 才同时提交 run terminal、对应 run
+    event 和 work-item completed。重复恢复不会重复终态事件，也不会把 terminal run
+    改回 active。
 20. workspace 单 active-run 规则和 sweep `group_id` 例外保持不变；恢复不能让同一
     workspace 的互斥 run 同时继续执行。
-21. 在线 interrupt 改为从数据库读取 active handles，并在一个事务中以
-    `running → interrupted` CAS 撤销 recovery lease。recovery finalizer 必须同时校验
-    run 仍为 running 且 lease/owner 有效。非最终 step 的 poll-complete 若先提交，其
-    artifact/cost/output 保留，run 仍为 running，随后 interrupt 可中断剩余 DAG；若
-    interrupt 先提交，未提交的 step finalizer 必须停止。只有“最后一个 step + run
-    terminal”与 interrupt 竞争时才是单一 run-terminal CAS 胜者。进程内 cancellation
-    token 只负责加速停止，不作为正确性真相；用户可见成功、失败、unsupported 和计费
-    风险语义保持 #124 既有契约。
-22. #154 必须先于 #153 实现；恢复得到的 `failed` run 调用共同 failure finalizer，
-    以便 #153 后续在同一入口接 Agent 修图，且不会产生第二套重试/修图循环。
+21. 在线 interrupt 保留 queued、estimating、running 三种既有可中断状态。无远端 task
+    时可原子 interrupted；存在 dispatching/active task 时必须在提交 interrupted 的同一
+    transaction 先持久化 interrupt terminalization work item 并停止 DAG，随后
+    cancel/abandon/完成收敛。startup 扫描 work item 不以 run active 为前提；dispatch
+    返回 handle 的竞态也必须先落库再交 settler，任何 crash 都不能留下无 work item 的
+    paid task。进程内 cancellation token 只负责加速停止。
+22. failed terminal transaction 必须同时写唯一 durable continuation；同图 retry child
+    通过 `(parent_run_id, attempt)` 唯一约束和 continuation linkage 幂等创建。#153 在
+    同一 exhausted continuation 上接 Agent fix，不产生第二套 handoff。
+23. artifact file publish 必须有 durable journal。DB finalizer 回滚后，启动时先重放仍可
+    完成的 operation；只有文件无 DB 引用、无活跃 owner/work item 且 intent 已过期时才
+    引用感知 GC。清理失败显式重试，不得声称复用不存在的 artifact reconciliation。
 
 ## 验收标准
 
@@ -130,10 +135,13 @@ run 已中断。
       `waiting_confirmation` 永不自动启动。
 - [ ] lease 竞争、续租、过期认领和 lease loss 均有 store/run 集成测试；两个 worker
       不能同时 finalize 同一 run。
+- [ ] recovery absolute deadline 在连续多次进程重启后不延长，到期只执行一次
+      cancel/abandon。
 - [ ] mock、fal、Atlas 覆盖恢复、补取消和不可恢复路径；provider URL origin 变化、
       account/scope 变化、userinfo/query secret、恶意 URL 均在网络请求前拒绝。
-- [ ] cache hit 后、下游启动前崩溃可从 durable output 继续；poll-complete、在线
-      interrupt、cancel 三方竞态只能提交一个终态。
+- [ ] cache hit 后、下游启动前崩溃可从 durable output 继续；poll-complete 与 cancel
+      对同一 task 只有一个 CAS 胜者，interrupt desired run terminal 不被晚到 completion
+      改写。
 - [ ] artifact hydration/API 序列化测试证明 task id、poll/result URL 与 provider 原始
       payload 不会离开 store/gateway 边界。
 - [ ] queued requeue 只有在 execution intent、plan/estimate fingerprint、完整 ledger 和
@@ -141,6 +149,12 @@ run 已中断。
       restart-safe、builtin unsafe、provider running 无 handle 均有确定终态测试。
 - [ ] 并行 provider step 一条失败时，其余 active handles 在 run.failed 前全部
       completed/cancelled/abandoned；重启可继续 terminalization，不遗留付费任务。
+- [ ] queued/estimating/running 在线 interrupt 均保持可用；dispatching/active 窗口中
+      crash 后由 durable interrupt settler 继续，不遗留 terminal run 下的未跟踪任务。
+- [ ] failed commit 后、continuation claim 前和 retry child insert 后 crash 均恢复同一
+      child；同一 `(parent, attempt)` 不重复。
+- [ ] artifact publish 后、DB commit 前 crash 由 journal 重放或安全 GC；引用中的
+      content-addressed file 永不误删，清理失败可重试。
 - [ ] Web 在实时事件和断线补拉后都显示恢复、补取消和计费风险，不伪装为成功；刷新
       后 durable 风险仍可见。
 - [ ] 正常执行、在线 interrupt、cost confirmation、sweep 与同图 self-heal 回归通过；
