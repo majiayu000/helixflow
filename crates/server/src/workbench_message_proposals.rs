@@ -23,7 +23,6 @@ use helixflow_store::{
     NewVersion, RunFixAttemptRecord, RunFixClaim, RunFixSnapshot, StoreError, VersionRecord,
     VersionSource,
 };
-use serde_json::json;
 
 #[cfg(test)]
 #[derive(Clone)]
@@ -698,7 +697,7 @@ async fn drain_run_fix_outbox(state: &AppState) -> Result<(), ApiError> {
             .await
             .map_err(ApiError::store)?;
         let data = serde_json::from_str(&event.data_json)
-            .unwrap_or_else(|_| json!({ "reason_code": "FIX_EVENT_INVALID" }));
+            .map_err(|error| ApiError::server_error(format!("invalid run fix event: {error}")))?;
         if state
             .events
             .publish(helixflow_run::RunEventEnvelope {
