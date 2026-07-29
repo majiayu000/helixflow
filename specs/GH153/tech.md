@@ -86,7 +86,7 @@ transaction 只引用这个已存在的 chain；不得等到推荐 run 已失败
 | `effective_provider_id` | 实际 compile/estimate/run provider，非空 |
 | `expected_recovery_scope_fingerprint` | 复用 GH-154 的 account/tenant/credential identity scope，非空且不含 raw secret |
 | `provider_catalog_fingerprint` | Agent 可见 provider/model catalog 的非秘密 revision/fingerprint |
-| `state` | `claimed`, `agent_running`, `version_applied`, `child_preparing`, `child_ready`, `failed`, `exhausted` |
+| `state` | `claimed`, `agent_running`, `version_applied`, `child_preparing`, `child_ready`, `failed`, `exhausted`, `cancelled` |
 | `proposal_id`, `target_version_id`, `child_run_id` | 可空 FK；阶段推进后填充 |
 | `reason_code`, `error_summary` | 稳定 code 与脱敏、截断摘要；禁止 raw payload |
 | timestamps | created/updated/finished，用于恢复审计 |
@@ -108,6 +108,10 @@ store API 使用 `BEGIN IMMEDIATE` 和条件 UPDATE 实现：
    commit 后、broadcast 前退出，或广播成功后、标记前退出，启动扫描都可安全重播，客户端
    按 event id 去重。max=0/非法配置也在 chain 上有唯一 decision/dedupe key，不需要伪造
    1-based attempt。
+9. 用户对 fix-linked child 执行 hold/interrupt 时，child terminal transition、attempt
+   `→ cancelled` 与 continuation `→ fix_completed/FIX_USER_CANCELLED` 在同一
+   transaction 提交；该显式用户动作是 feature-off 零写入的唯一授权例外，不创建下一
+   attempt，也不发送 fix-exhausted。
 
 continuation fix claim 不使用 recovery lease：短 transaction 条件 CAS
 `exhausted/fix_pending → fix_claimed`，并依靠
@@ -212,7 +216,7 @@ linkage 的 child 必须执行同一 guard，不能旁路。
 所有带 fix-attempt linkage 的 auto-start、manual confirmation、background claim 与
 provider dispatch 在上述 target/provider guard 前还要读取当前 fix policy；disabled
 返回稳定 `FIX_DISABLED` conflict，不改变 run/attempt/outbox。`hold`/`interrupt` 是用户
-显式终止动作，保持可用。
+显式终止动作，保持可用，并调用上述原子 user-cancel finalizer。
 
 child 估价完成后调用既有
 `start_confirmed_run_within_budget`：未知/超阈值保持 pending；阈值内按既有 workspace
@@ -252,6 +256,8 @@ GH-154 分类其他 estimating run；随后恢复：
   新 run 或重复 ledger。
 - `child_ready` / `failed` / `exhausted`：只消费 durable outbox 或继续观察 child，
   不创建副本；failed 且仍有额度时按正常 coordinator 语义推进下一 attempt。
+- `cancelled` 或 child 已因显式 hold/interrupt 进入 interrupted：只验证 continuation 已
+  `fix_completed/FIX_USER_CANCELLED`，绝不补 estimate、dispatch 或 claim 下一 attempt。
 - 未完成 `run_failure_continuations`：按 durable chain/provenance 恢复 retry/fix decision；
   不从 trigger、group 或最新 run 猜测来源。
 
@@ -293,6 +299,7 @@ provider endpoint。Web
 - `FIX_PROVIDER_CHANGED`
 - `FIX_PROVIDER_SCOPE_CHANGED`
 - `FIX_TARGET_DESELECTED`
+- `FIX_USER_CANCELLED`
 - `FIX_AGENT_FAILED`
 - `AGENT_CLARIFICATION_REQUIRED`
 - `FIX_PROPOSAL_INVALID`
