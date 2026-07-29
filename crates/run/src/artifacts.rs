@@ -2,14 +2,19 @@ use std::path::{Path, PathBuf};
 
 use helixflow_gateway::{ArtifactContent, ArtifactKind, ArtifactPayload};
 
+#[cfg(test)]
 use crate::artifact_path::write_complete_artifact;
+use crate::artifact_path::write_complete_artifact_at;
+#[cfg(test)]
 use crate::artifact_remote::download_remote_artifact;
+use crate::artifact_remote::download_remote_artifact_to;
 use crate::{RunError, RunResult};
 
 pub(crate) fn default_artifact_root() -> PathBuf {
     std::env::temp_dir().join("helixflow-run-artifacts")
 }
 
+#[cfg(test)]
 pub(crate) async fn persist_provider_artifact(
     root: &Path,
     _run_id: &str,
@@ -37,6 +42,59 @@ pub(crate) async fn persist_provider_artifact(
             ArtifactKind::Text | ArtifactKind::Json => Ok(payload.storage_uri.clone()),
         },
     }
+}
+
+pub(crate) async fn persist_provider_artifact_at(
+    root: &Path,
+    payload: &ArtifactPayload,
+    relative: &Path,
+) -> RunResult<String> {
+    if tokio::fs::try_exists(root.join(relative))
+        .await
+        .map_err(|_| {
+            RunError::ArtifactPersistence("artifact destination check failed".to_owned())
+        })?
+    {
+        let bytes = tokio::fs::read(root.join(relative)).await.map_err(|_| {
+            RunError::ArtifactPersistence("artifact destination read failed".to_owned())
+        })?;
+        validate_artifact_bytes(payload, &bytes)?;
+        return Ok(relative.to_string_lossy().into_owned());
+    }
+    match &payload.content {
+        ArtifactContent::InlineBytes { bytes, .. } => {
+            validate_artifact_bytes(payload, bytes)?;
+            let relative = write_complete_artifact_at(root, relative, bytes).await?;
+            Ok(relative.to_string_lossy().into_owned())
+        }
+        ArtifactContent::RemoteUrl { url } => {
+            let extension = extension_for_payload(payload, None);
+            let relative =
+                download_remote_artifact_to(root, url, payload, &extension, relative).await?;
+            Ok(relative.to_string_lossy().into_owned())
+        }
+        ArtifactContent::None => match payload.kind {
+            ArtifactKind::Image | ArtifactKind::Video => Err(invalid_media_error(
+                &payload.mime,
+                "media payload has no bytes to validate",
+            )),
+            ArtifactKind::Text | ArtifactKind::Json => Ok(payload.storage_uri.clone()),
+        },
+    }
+}
+
+pub(crate) fn recovery_artifact_relative_path(
+    content_sha256: &str,
+    payload: &ArtifactPayload,
+) -> RunResult<PathBuf> {
+    let digest = content_sha256
+        .strip_prefix("sha256:")
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| {
+            RunError::ArtifactPersistence("artifact content fingerprint is invalid".to_owned())
+        })?;
+    let extension = extension_for_payload(payload, None);
+    Ok(PathBuf::from("artifacts").join(format!("{}.{extension}", digest.to_ascii_lowercase())))
 }
 
 pub(crate) fn validate_artifact_bytes(payload: &ArtifactPayload, bytes: &[u8]) -> RunResult<()> {

@@ -8,10 +8,10 @@ use helixflow_gateway::{
     ProviderDispatchResult, ProviderHealth, ProviderRecoveryCapabilities, ProviderRequest,
     ProviderResult, ProviderResultValue, ProviderResume, ProviderTaskHandle,
 };
-use helixflow_store::{NewVersion, Store, VersionSource};
+use helixflow_store::{NewArtifact, NewArtifactPublishJournal, NewVersion, Store, VersionSource};
 use tokio::sync::Semaphore;
 
-use super::{ManualRunRequest, RunService};
+use super::{EventBus, ManualRunRequest, RunService};
 
 #[derive(Clone)]
 struct DelayedDispatchProvider {
@@ -168,4 +168,115 @@ async fn interrupt_waits_for_live_dispatch_then_persists_and_cancels_handle() {
     assert_eq!(tasks[0].state, "cancelled");
     assert!(tasks[0].provider_task_id.is_some());
     assert_eq!(provider.cancelled.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn expired_unreferenced_artifact_journal_is_garbage_collected() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let database_url = format!("sqlite://{}", dir.path().join("helixflow.sqlite").display());
+    let store = Store::open(&database_url).await.expect("open store");
+    let workspace = store
+        .create_workspace("Artifact journal GC")
+        .await
+        .expect("create workspace");
+    let version = store
+        .create_version(NewVersion {
+            workspace_id: &workspace.id,
+            label: "Artifact journal GC",
+            source: VersionSource::Manual,
+            graph_path: "graphs/artifact-journal-gc.json",
+            graph_hash: "sha256:artifact-journal-gc",
+            parent_id: None,
+            semantics_json: None,
+        })
+        .await
+        .expect("create version");
+    let artifact_root = dir.path().join("run-artifacts");
+    let service = RunService::with_provider_events_and_artifact_root(
+        store.clone(),
+        MockProvider::new(),
+        EventBus::default(),
+        &artifact_root,
+    );
+    let outcome = service
+        .execute_manual_run(ManualRunRequest {
+            workspace_id: workspace.id,
+            version_id: version.id,
+            group_id: None,
+            label: "Create terminal run".to_owned(),
+            provider: "mock".to_owned(),
+            graph: super::tests::executable_graph(),
+            force_rerun: false,
+        })
+        .await
+        .expect("execute terminal run");
+    let step_id = &outcome.steps[0].id;
+    let orphan_relative = "artifacts/orphan-recovery.png";
+    let orphan_path = artifact_root.join(orphan_relative);
+    tokio::fs::create_dir_all(orphan_path.parent().expect("artifact parent"))
+        .await
+        .expect("create artifact parent");
+    tokio::fs::write(&orphan_path, b"orphan")
+        .await
+        .expect("write orphan");
+    store
+        .create_or_read_artifact_publish_journal(NewArtifactPublishJournal {
+            operation_key: "artifact:expired-orphan",
+            run_id: &outcome.run.id,
+            run_step_id: step_id,
+            staged_path: orphan_relative,
+            content_sha256: "sha256:orphan",
+            owner_id: "stale-materializer",
+            expires_after_seconds: 1,
+        })
+        .await
+        .expect("create expiring journal");
+    let referenced_relative = "artifacts/referenced-recovery.png";
+    let referenced_path = artifact_root.join(referenced_relative);
+    tokio::fs::write(&referenced_path, b"referenced")
+        .await
+        .expect("write referenced artifact");
+    store
+        .create_artifact(NewArtifact {
+            workspace_id: &outcome.run.workspace_id,
+            run_id: Some(&outcome.run.id),
+            run_step_id: Some(step_id),
+            node_id: None,
+            kind: "image",
+            storage_uri: referenced_relative,
+            sha256: None,
+            mime: Some("image/png"),
+            width: None,
+            height: None,
+            duration_ms: None,
+            selected: false,
+            meta_json: None,
+        })
+        .await
+        .expect("create referenced artifact");
+    store
+        .create_or_read_artifact_publish_journal(NewArtifactPublishJournal {
+            operation_key: "artifact:referenced-file",
+            run_id: &outcome.run.id,
+            run_step_id: step_id,
+            staged_path: referenced_relative,
+            content_sha256: "sha256:referenced",
+            owner_id: "stale-materializer",
+            expires_after_seconds: 1,
+        })
+        .await
+        .expect("create referenced journal");
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    service
+        .reconcile_artifact_publish_journals()
+        .await
+        .expect("reconcile journals");
+    assert!(!orphan_path.exists());
+    assert!(referenced_path.exists());
+    let pending = store
+        .pending_artifact_publish_journals()
+        .await
+        .expect("read pending journals");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].operation_key, "artifact:referenced-file");
 }

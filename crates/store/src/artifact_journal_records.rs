@@ -266,6 +266,100 @@ impl Store {
         .fetch_all(self.pool())
         .await?)
     }
+
+    pub async fn claim_expired_artifact_journals_for_gc(
+        &self,
+        owner_id: &str,
+        lease_seconds: i64,
+    ) -> StoreResult<Vec<ArtifactPublishJournalRecord>> {
+        if lease_seconds <= 0 {
+            return Err(StoreError::RecoveryInvariant {
+                operation: "claim_expired_artifact_journals_for_gc",
+                message: "GC lease must be positive".to_owned(),
+            });
+        }
+        let candidates = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT operation_key
+            FROM artifact_publish_journal
+            WHERE state IN ('staged', 'published')
+              AND artifact_id IS NULL
+              AND expires_at <= current_timestamp
+            ORDER BY created_at, operation_key
+            "#,
+        )
+        .fetch_all(self.pool())
+        .await?;
+        let lease = format!("+{lease_seconds} seconds");
+        let mut claimed = Vec::new();
+        for operation_key in candidates {
+            let record = sqlx::query_as::<_, ArtifactPublishJournalRecord>(
+                r#"
+                UPDATE artifact_publish_journal
+                SET owner_id = ?,
+                    expires_at = datetime('now', ?),
+                    updated_at = current_timestamp
+                WHERE operation_key = ?
+                  AND state IN ('staged', 'published')
+                  AND artifact_id IS NULL
+                  AND expires_at <= current_timestamp
+                  AND NOT EXISTS (
+                      SELECT 1 FROM artifacts
+                      WHERE storage_uri = artifact_publish_journal.staged_path
+                         OR storage_uri = artifact_publish_journal.published_path
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM run_provider_tasks
+                      WHERE run_step_id = artifact_publish_journal.run_step_id
+                        AND state IN ('dispatching', 'active', 'result_ready')
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM run_terminalization_work_items
+                      WHERE run_id = artifact_publish_journal.run_id
+                        AND state IN ('settling', 'ready')
+                  )
+                RETURNING operation_key, run_id, run_step_id, staged_path, published_path,
+                          artifact_id, content_sha256, state, owner_id, expires_at,
+                          created_at, updated_at
+                "#,
+            )
+            .bind(owner_id)
+            .bind(&lease)
+            .bind(&operation_key)
+            .fetch_optional(self.pool())
+            .await?;
+            if let Some(record) = record {
+                claimed.push(record);
+            }
+        }
+        Ok(claimed)
+    }
+
+    pub async fn complete_artifact_journal_gc(
+        &self,
+        operation_key: &str,
+        owner_id: &str,
+    ) -> StoreResult<bool> {
+        let deleted = sqlx::query(
+            r#"
+            DELETE FROM artifact_publish_journal
+            WHERE operation_key = ?
+              AND owner_id = ?
+              AND state IN ('staged', 'published')
+              AND artifact_id IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM artifacts
+                  WHERE storage_uri = artifact_publish_journal.staged_path
+                     OR storage_uri = artifact_publish_journal.published_path
+              )
+            "#,
+        )
+        .bind(operation_key)
+        .bind(owner_id)
+        .execute(self.pool())
+        .await?;
+        Ok(deleted.rows_affected() == 1)
+    }
 }
 
 async fn artifact_in_transaction(

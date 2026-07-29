@@ -8,8 +8,10 @@ use helixflow_store::{
     ProviderTaskFailureFinalization, ProviderTaskRecord, RunStepRecord,
 };
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
-use super::artifacts::persist_provider_artifact;
+use super::artifact_path::validate_relative_path;
+use super::artifacts::{persist_provider_artifact_at, recovery_artifact_relative_path};
 use super::cache::{CachedArtifactLink, file_sha256_hex, is_local_artifact_path};
 use super::executor::artifact_kind_label;
 use super::provider_recovery::ProviderStepExecution;
@@ -17,6 +19,7 @@ use super::{RunError, RunResult, RunService, StepOutput};
 
 const MATERIALIZATION_RETRY_SECONDS: i64 = 1;
 const ARTIFACT_JOURNAL_EXPIRY_SECONDS: i64 = 3600;
+const ARTIFACT_GC_LEASE_SECONDS: i64 = 60;
 
 impl<P> RunService<P>
 where
@@ -32,6 +35,39 @@ where
                 self.store
                     .mark_artifact_journal_committed(&journal.operation_key, &journal.owner_id)
                     .await?;
+            }
+        }
+        let gc_owner = format!("artifact-gc:{}", Uuid::now_v7());
+        for journal in self
+            .store
+            .claim_expired_artifact_journals_for_gc(&gc_owner, ARTIFACT_GC_LEASE_SECONDS)
+            .await?
+        {
+            let relative = journal
+                .published_path
+                .as_deref()
+                .unwrap_or(&journal.staged_path);
+            if is_local_artifact_path(relative) {
+                let relative_path = std::path::Path::new(relative);
+                validate_relative_path(relative_path)?;
+                match tokio::fs::remove_file(self.artifact_root.join(relative_path)).await {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(_) => {
+                        return Err(RunError::ArtifactPersistence(
+                            "expired artifact journal cleanup failed".to_owned(),
+                        ));
+                    }
+                }
+            }
+            if !self
+                .store
+                .complete_artifact_journal_gc(&journal.operation_key, &gc_owner)
+                .await?
+            {
+                return Err(RunError::ArtifactPersistence(
+                    "expired artifact journal cleanup lost its lease".to_owned(),
+                ));
             }
         }
         Ok(())
@@ -147,7 +183,14 @@ where
                 self.store.artifact(artifact_id).await?
             } else {
                 let (artifact, operation_key) = self
-                    .publish_provider_artifact(workspace_id, step, record, task, &port, payload)
+                    .publish_provider_artifact(
+                        workspace_id,
+                        &step.node_id,
+                        record,
+                        task,
+                        &port,
+                        payload,
+                    )
                     .await?;
                 journal_keys.push(operation_key);
                 artifact
@@ -194,7 +237,7 @@ where
     async fn publish_provider_artifact(
         &self,
         workspace_id: &str,
-        step: &ExecutionStep,
+        node_id: &str,
         record: &RunStepRecord,
         task: &ProviderTaskRecord,
         port: &str,
@@ -202,9 +245,10 @@ where
     ) -> RunResult<(ArtifactRecord, String)> {
         let payload_bytes = serde_json::to_vec(&payload)?;
         let content_sha256 = format!("sha256:{:x}", Sha256::digest(&payload_bytes));
+        let planned_path = recovery_artifact_relative_path(&content_sha256, &payload)?;
         let operation_key = format!("artifact:{}:{port}", task.id);
         let owner_id = artifact_journal_owner(&task.id);
-        let staged_path = format!("recovery_spool/{}#{port}", task.id);
+        let staged_path = planned_path.to_string_lossy();
         let journal = self
             .store
             .create_or_read_artifact_publish_journal(NewArtifactPublishJournal {
@@ -220,14 +264,8 @@ where
         if let Some(artifact_id) = journal.artifact_id {
             return Ok((self.store.artifact(&artifact_id).await?, operation_key));
         }
-        let storage_uri = persist_provider_artifact(
-            &self.artifact_root,
-            &task.run_id,
-            &record.id,
-            &step.node_id,
-            &payload,
-        )
-        .await?;
+        let storage_uri =
+            persist_provider_artifact_at(&self.artifact_root, &payload, &planned_path).await?;
         let sha256 = if is_local_artifact_path(&storage_uri) {
             Some(format!(
                 "sha256:{}",
@@ -247,7 +285,7 @@ where
                     workspace_id,
                     run_id: Some(&task.run_id),
                     run_step_id: Some(&record.id),
-                    node_id: Some(&step.node_id),
+                    node_id: Some(node_id),
                     kind: artifact_kind_label(payload.kind),
                     storage_uri: &storage_uri,
                     sha256: sha256.as_deref(),

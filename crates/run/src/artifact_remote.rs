@@ -35,6 +35,7 @@ impl RemotePolicy {
     }
 }
 
+#[cfg(test)]
 pub(crate) async fn download_remote_artifact(
     root: &std::path::Path,
     raw_url: &str,
@@ -44,7 +45,22 @@ pub(crate) async fn download_remote_artifact(
     let policy = RemotePolicy::production();
     with_total_timeout(
         policy.total_timeout,
-        download_remote_artifact_inner(root, raw_url, payload, extension, policy),
+        download_remote_artifact_inner(root, raw_url, payload, extension, None, policy),
+    )
+    .await
+}
+
+pub(crate) async fn download_remote_artifact_to(
+    root: &std::path::Path,
+    raw_url: &str,
+    payload: &ArtifactPayload,
+    extension: &str,
+    relative: &std::path::Path,
+) -> RunResult<std::path::PathBuf> {
+    let policy = RemotePolicy::production();
+    with_total_timeout(
+        policy.total_timeout,
+        download_remote_artifact_inner(root, raw_url, payload, extension, Some(relative), policy),
     )
     .await
 }
@@ -54,6 +70,7 @@ async fn download_remote_artifact_inner(
     raw_url: &str,
     payload: &ArtifactPayload,
     extension: &str,
+    relative: Option<&std::path::Path>,
     policy: RemotePolicy,
 ) -> RunResult<std::path::PathBuf> {
     let mut current = parse_remote_url(raw_url)?;
@@ -91,7 +108,10 @@ async fn download_remote_artifact_inner(
         validate_response_mime(response.headers().get(CONTENT_TYPE), &payload.mime)?;
         validate_declared_size(response.content_length(), policy.max_bytes)?;
 
-        let mut pending = PendingArtifact::create(root, extension).await?;
+        let mut pending = match relative {
+            Some(relative) => PendingArtifact::create_at(root, relative).await?,
+            None => PendingArtifact::create(root, extension).await?,
+        };
         let mut received = 0u64;
         let mut bytes = Vec::with_capacity(
             response
