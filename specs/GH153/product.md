@@ -1,0 +1,127 @@
+# Product Spec
+
+## Linked Issue
+
+GH-153
+
+## 用户问题
+
+当前 run 失败后的自动自愈只会复制同一 `version_id` 与 `plan_json` 做有界重试。
+当根因来自图本身（参数、连线、模型或 connector 不兼容）时，同图重试不会改变结果；
+用户只能手动发送 debug 消息，才能进入现有 `DebugWorkflow` 修图路径。
+
+本功能提供一个默认关闭的后台修图回路：仅在符合来源条件的 run 已失败、且同图重试
+真正耗尽后，使用该失败 run 的脱敏诊断和对应版本图发起 `DebugWorkflow`，将合法修复
+作为新的可回滚 version 提交，再对新 version 重新编译、重新估价并通过既有 cost gate。
+
+## 目标
+
+- 用 `HELIXFLOW_RUN_AGENT_FIX_ENABLED` 提供默认关闭的显式开关；关闭时现有 retry、
+  sweep、cost gate 与 UI 行为逐字节兼容。
+- 用 `HELIXFLOW_RUN_MAX_FIX_ATTEMPTS` 提供默认 `1` 的独立修图上限；不得复用或改写
+  `runs.attempt` 的同图重试语义。
+- 只处理 agent run 与 recommended sweep 成员；manual run、非推荐 sweep 成员、
+  interrupted run 和输出打回触发的 force rerun 不自动修图。
+- 修图使用精确 source run 的脱敏诊断与 source version 图，固定为
+  `DebugWorkflow` / `FixError`，不经过关键词分类。
+- 修复产物沿用 proposal auto-apply 与 immutable version 契约；修复后的 run 必须用
+  新 version 重新编译、重新估价并经过既有 cost gate。
+- 持久化每次修图 operation、阶段和派生对象，使重复终态通知、并发执行和进程重启
+  不会重复 Agent 调用、重复 version 或重复 provider 执行。
+- 通过持久化 `run.fix_attempt`、`run.fix_applied`、`run.fix_exhausted` 事件，让 UI
+  明确区分同图 retry 与 Agent fix。
+
+## 非目标
+
+- 不改变 `HELIXFLOW_RUN_MAX_RETRIES` 的默认值、同图 retry 的 plan/estimate 复制语义，
+  也不把 retry 次数与 fix 次数合并。
+- 不修改 `classify_turn_mode` 的关键词顺序或用户手动 debug 路径。
+- 不自动修复 manual run、非推荐 sweep 成员或 artifact review rerun。
+- 不让 Agent 绕过 graph validation、version CAS、provider 选择或 cost confirmation。
+- 不把 Agent 修图调用伪装成 runtime provider 费用；provider ledger 只记录修复后真实
+  run 的估算与实际费用。
+- 不处理远端 provider task handle 的重启恢复；该能力属于 GH-154。
+- 不引入分布式队列、跨实例锁或无限后台循环。
+
+## Behavior Invariants
+
+1. `HELIXFLOW_RUN_AGENT_FIX_ENABLED` 缺失时为关闭；关闭时不得创建
+   `run_fix_attempts`、Agent session、proposal、version、派生 run 或 fix 事件。
+2. `HELIXFLOW_RUN_MAX_FIX_ATTEMPTS` 缺失时为 `1`；只接受非负整数。非法 UTF-8、
+   负数、浮点或溢出值必须 fail-closed，持久化 `run.fix_exhausted`，不得回退默认值。
+3. fix 上限按持久化 repair chain 计数，与 `runs.attempt` 完全独立。值为 `0` 时不调用
+   Agent，直接记录 exhausted；任何 restart 或 retry 都不得重置计数。
+4. fix 只在 source run 为 `failed`、同图 retry decision 明确为 `exhausted` 且没有
+   `waiting_confirmation` retry child 时触发。retry 正在运行、等待确认、配置错误或
+   基础设施结果不确定时不得抢跑 fix。
+5. 普通入口只允许根来源为 `agent` 的 run；sweep 入口只允许服务端确认的
+   recommended member。非推荐 sweep、manual、interrupted、succeeded 和
+   output-rejected force rerun 不得触发。
+6. 每次 attempt 先持久化唯一 operation 与 attempt index，再调用 Agent。重复终态通知
+   必须返回已有 operation；同一 repair chain 的并发 claim 最多一个成功。
+7. Agent request 固定使用 source run 对应的 workspace、version、graph、当前受约束的
+   provider catalog、`TurnMode::DebugWorkflow` 与 `AgentSkill::FixError`；不调用
+   `classify_turn_mode`，不混入其他 workspace 或“最新失败 run”。
+8. Agent 只接收 exact source run 及其 failed steps 的单行、截断、脱敏摘要。不得把 raw
+   `error_json`、stack、credential、auth header、signed URL、provider 原始响应或本地
+   绝对路径写入 prompt、event、message 或 `run_fix_attempts`。
+9. 修图输出必须通过现有 proposal/IntentPlan validation、graph preview 与 compiler
+   contract。无输出、clarify、非法 proposal、Agent runtime 失败都算一次已消耗 attempt，
+   保持 source run 为 `failed`，并显式记录稳定 reason code。
+10. 修复 version 必须是 source version 的 immutable child，保留可审计 proposal 与
+    rollback；提交时同时 CAS workspace current version 和 runtime provider。任一已变化
+    则显式 conflict，禁止覆盖用户或并发 Agent 的更新。
+11. candidate graph 文件发布、proposal/version/current pointer、attempt target linkage
+    要么共同提交，要么执行引用感知 cleanup；cleanup 失败必须显式报错并交给启动
+    reconciliation，不得遗留无记录的成功状态。
+12. 修复后的 child run 不复用 source `plan_json`、`estimate_json` 或 cost ledger；必须
+    从 target version 重新读取 graph、按 CAS 后的 provider 重新 compile/resolve/estimate。
+13. 修复后的 child run 必须经过既有 cost gate：估价未知或超过阈值保持
+    `waiting_confirmation`；阈值内才可自动 claim/执行。Agent fix 本身不写 provider
+    ledger，但受 fix 上限约束。
+14. fix child 与 source run 的关系由 `run_fix_attempts` 持久化，不借用
+    `runs.attempt`。child 失败后，必须先走自己独立的同图 retry，耗尽后才可能进入下一次
+    fix；形成 `fix → run → retry* → fix` 的有界链。
+15. `version_applied` 后重复执行或重启恢复必须复用同一 target version，并幂等创建或
+    返回同一 child run；不得再次调用 Agent。Agent 调用中进程退出时，该 in-flight
+    attempt 视为已消耗，恢复逻辑不得假装成功或无痕重放。
+16. `run.fix_attempt`、`run.fix_applied`、`run.fix_exhausted` 必须先写 `run_events`
+    再发布到内存 event bus。事件只包含稳定 ID、attempt/max、状态、reason code、
+    target/child ID、confirmation 标志等安全字段。
+17. `run.fix_applied` 只在 target version 与 child run 均可查询后发出；其
+    `requires_confirmation` 必须来自实际 cost gate。无法产出 child 的终态使用
+    `run.fix_exhausted`，source run 始终保持原 `failed` 与 `error_json`。
+18. UI 必须以不同文案/标识展示 retry 与 fix，并在 snapshot refetch 后保留未重复的 fix
+    notices。fix child 等待确认时复用现有确认卡；UI 不把“version 已修复”呈现为
+    “provider run 已成功”。
+19. workspace/version/provider 并发变化、重复事件、服务重启及事件发布失败都不得产生
+    多个 current version、多个 child run、重复收费或无限循环；所有失败均可从 DB
+    记录和稳定事件重建。
+20. GH-154 后续把“远端恢复后收敛为 failed”的 run 交给同一个 terminal failure
+    finalizer；`interrupted`、仍在恢复的远端 run 与计费风险事件不得进入本修图回路。
+
+## 验收标准
+
+- [ ] 默认关闭与 `max=0/1/N`、非法配置、retry pending、retry exhausted、来源过滤均有
+      确定性测试，现有 retry 测试保持通过。
+- [ ] 开启后，agent run 与 recommended sweep 各覆盖一次
+      `failed → retry exhausted → fix → new version → fresh child`；manual 与非推荐 sweep
+      有负向测试。
+- [ ] 测试证明修复 child 使用新 `version_id` 和重新生成的 plan/estimate，未知或超预算
+      时停在 `waiting_confirmation`，阈值内才自动执行。
+- [ ] 并发终态通知、重复 operation、version/provider CAS conflict 与候选文件故障注入
+      均不产生重复 version、child run 或 ledger。
+- [ ] restart 覆盖 Agent in-flight attempt 消耗，以及
+      `version_applied → child_created` 幂等恢复。
+- [ ] 脱敏测试覆盖 token、Authorization、signed URL、provider payload、绝对路径和超长
+      多行错误；这些值不出现在 session context、event、message 或 attempt record。
+- [ ] Web 测试覆盖 retry/fix 区分、snapshot notice 保留、等待确认和 exhausted 状态。
+- [ ] Rust workspace、Web test/build 与 `git diff --check` 使用 fresh output 全部通过。
+
+## 发布与回滚
+
+首个版本保持 `HELIXFLOW_RUN_AGENT_FIX_ENABLED` 关闭，只验证 schema、事件与关闭态兼容。
+灰度时先设较小 provider cost threshold 与 `HELIXFLOW_RUN_MAX_FIX_ATTEMPTS=1`，观察
+attempt、applied、exhausted、confirmation 和 conflict 分布。回滚只需关闭开关；已提交
+version、proposal、attempt、run 与 ledger 继续保留用于审计和手动 rollback，不删除或
+改写历史。
