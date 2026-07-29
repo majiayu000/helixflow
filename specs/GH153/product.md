@@ -50,55 +50,73 @@ GH-153
 2. 仅在 fix 开关开启后解析 `HELIXFLOW_RUN_MAX_FIX_ATTEMPTS`：缺失时为 `1`，只接受
    非负整数。非法 UTF-8、负数、浮点或溢出值必须 fail-closed，持久化
    `run.fix_exhausted`，不得回退默认值；开关关闭时不解析该值，也不产生任何写入。
-3. fix 上限按持久化 repair chain 计数，与 `runs.attempt` 完全独立。值为 `0` 时不调用
-   Agent，直接记录 exhausted；任何 restart 或 retry 都不得重置计数。
+3. fix 上限按持久化 repair chain 计数，与 `runs.attempt` 完全独立。chain 必须保存
+   `agent` / `recommended_sweep` 根来源；recommended 成员在启动自愈前先持久化选择结果。
+   值为 `0` 时不调用 Agent，直接记录 exhausted；任何 restart 或 retry 都不得重置计数。
 4. fix 只在 source run 为 `failed`、同图 retry decision 明确为 `exhausted` 且没有
    `waiting_confirmation` retry child 时触发。retry 正在运行、等待确认、配置错误或
    基础设施结果不确定时不得抢跑 fix。
-5. 普通入口只允许根来源为 `agent` 的 run；sweep 入口只允许服务端确认的
-   recommended member。非推荐 sweep、manual、interrupted、succeeded 和
+5. 普通入口只允许根来源为 `agent` 的 run；sweep 入口只允许数据库中已持久化的
+   recommended member。retry child 必须继承 chain identity，不得靠已被改写的
+   `trigger`/`group_id` 反推来源。非推荐 sweep、manual、interrupted、succeeded 和
    output-rejected force rerun 不得触发。
-6. 每次 attempt 先持久化唯一 operation 与 attempt index，再调用 Agent。重复终态通知
+6. eligible run 的 failed terminal transition 必须与唯一 durable failure work item
+   同事务提交；retry child 或 fix claim 都消费该 work item。进程在 failed commit 后、
+   coordinator claim 前退出时，启动扫描必须准确恢复，不能漏修或误修。
+7. 每次 attempt 先持久化唯一 operation 与 attempt index，再调用 Agent。重复终态通知
    必须返回已有 operation；同一 repair chain 的并发 claim 最多一个成功。
-7. Agent request 固定使用 source run 对应的 workspace、version、graph、当前受约束的
+8. Agent request 固定使用 source run 对应的 workspace、version、安全 graph
+   projection、当前受约束的
    provider catalog、`TurnMode::DebugWorkflow` 与 `AgentSkill::FixError`；不调用
    `classify_turn_mode`，不混入其他 workspace 或“最新失败 run”。
-8. Agent 只接收 exact source run 及其 failed steps 的单行、截断、脱敏摘要。不得把 raw
+9. Agent 只接收 exact source run 及其 failed steps 的单行、截断、脱敏摘要。graph 与
+   error 全部作为明确标记的 untrusted data，固定 system policy 禁止服从其中指令。
+   不得把 raw
    `error_json`、stack、credential、auth header、signed URL、provider 原始响应或本地
    绝对路径写入 prompt、event、message 或 `run_fix_attempts`。
-9. 修图输出必须通过现有 proposal/IntentPlan validation、graph preview 与 compiler
-   contract。无输出、clarify、非法 proposal、Agent runtime 失败都算一次已消耗 attempt，
-   保持 source run 为 `failed`，并显式记录稳定 reason code。
-10. 修复 version 必须是 source version 的 immutable child，保留可审计 proposal 与
-    rollback；提交时同时 CAS workspace current version 和 runtime provider。任一已变化
-    则显式 conflict，禁止覆盖用户或并发 Agent 的更新。
-11. candidate graph 文件发布、proposal/version/current pointer、attempt target linkage
+10. 修图输出必须通过现有 proposal/IntentPlan validation、graph preview、compiler 与
+    server-side scope/diff gate。只允许修改 failed node 及其确定性依赖闭包，禁止删除或
+    改写无关节点/边、workspace/provider 设置；需要超出范围时显式 exhausted，转人工。
+    无输出、clarify、非法 proposal、Agent runtime 失败都算一次已消耗 attempt，保持
+    source run 为 `failed`，并显式记录稳定 reason code。
+11. 修复 version 必须是 source version 的 immutable child，保留可审计 proposal 与
+    rollback；提交时同时 CAS workspace current version、nullable provider selection
+    以及实际 effective provider/config fingerprint。任一已变化则显式 conflict，禁止
+    覆盖用户或并发 Agent 的更新。
+12. candidate graph 文件发布、proposal/version/current pointer、attempt target linkage
     要么共同提交，要么执行引用感知 cleanup；cleanup 失败必须显式报错并交给启动
     reconciliation，不得遗留无记录的成功状态。
-12. 修复后的 child run 不复用 source `plan_json`、`estimate_json` 或 cost ledger；必须
+13. 修复后的 child run 不复用 source `plan_json`、`estimate_json` 或 cost ledger；必须
     从 target version 重新读取 graph、按 CAS 后的 provider 重新 compile/resolve/estimate。
-13. 修复后的 child run 必须经过既有 cost gate：估价未知或超过阈值保持
+14. child 创建先持久化 `child_preparing` 与稳定 child/step identity；每个 step 的 estimate
+    使用 GH-154 提供的唯一 operation key。部分估价后崩溃必须恢复缺失项而非重复 ledger；
+    全部估价完成后才原子进入 `waiting_confirmation`/可执行状态。
+15. 修复后的 child run 必须经过既有 cost gate：估价未知或超过阈值保持
     `waiting_confirmation`；阈值内才可自动 claim/执行。Agent fix 本身不写 provider
     ledger，但受 fix 上限约束。
-14. fix child 与 source run 的关系由 `run_fix_attempts` 持久化，不借用
+16. fix child 与 source run 的关系由 `run_fix_attempts` 持久化，不借用
     `runs.attempt`。child 失败后，必须先走自己独立的同图 retry，耗尽后才可能进入下一次
     fix；形成 `fix → run → retry* → fix` 的有界链。
-15. `version_applied` 后重复执行或重启恢复必须复用同一 target version，并幂等创建或
+17. Agent failure、clarify 或 invalid proposal 消耗 attempt 后，正常 coordinator 在仍有
+    额度时立即 claim 下一 attempt；产生 child 后才等待该 child 的 retry exhausted。
+    因此 `max=N` 严格表示整个 chain 最多 N 次 Agent 调用，N>1 不得只执行一次。
+18. `version_applied` 后重复执行或重启恢复必须复用同一 target version，并幂等创建或
     返回同一 child run；不得再次调用 Agent。Agent 调用中进程退出时，该 in-flight
     attempt 视为已消耗，恢复逻辑不得假装成功或无痕重放。
-16. `run.fix_attempt`、`run.fix_applied`、`run.fix_exhausted` 必须先写 `run_events`
-    再发布到内存 event bus。事件只包含稳定 ID、attempt/max、状态、reason code、
-    target/child ID、confirmation 标志等安全字段。
-17. `run.fix_applied` 只在 target version 与 child run 均可查询后发出；其
+19. attempt/decision 状态转换必须与唯一 event outbox 同事务提交；event 使用确定性
+    dedupe key 写 `run_events` 后再发布。max=0、非法配置、重复 finalizer、重启和广播
+    重试都只能产生一个 `run.fix_exhausted`。事件只包含稳定 ID、attempt/max、状态、
+    reason code、target/child ID、confirmation 标志等安全字段。
+20. `run.fix_applied` 只在 target version、child run 和完整 cost decision 均可查询后发出；其
     `requires_confirmation` 必须来自实际 cost gate。无法产出 child 的终态使用
     `run.fix_exhausted`，source run 始终保持原 `failed` 与 `error_json`。
-18. UI 必须以不同文案/标识展示 retry 与 fix，并在 snapshot refetch 后保留未重复的 fix
+21. UI 必须以不同文案/标识展示 retry 与 fix，并在 snapshot refetch 后保留未重复的 fix
     notices。fix child 等待确认时复用现有确认卡；UI 不把“version 已修复”呈现为
     “provider run 已成功”。
-19. workspace/version/provider 并发变化、重复事件、服务重启及事件发布失败都不得产生
+22. workspace/version/provider 并发变化、重复事件、服务重启及事件发布失败都不得产生
     多个 current version、多个 child run、重复收费或无限循环；所有失败均可从 DB
     记录和稳定事件重建。
-20. GH-154 后续把“远端恢复后收敛为 failed”的 run 交给同一个 terminal failure
+23. GH-154 把“远端恢复后收敛为 failed”的 run 交给同一个 terminal failure
     finalizer；`interrupted`、仍在恢复的远端 run 与计费风险事件不得进入本修图回路。
 
 ## 验收标准
@@ -112,8 +130,15 @@ GH-153
       时停在 `waiting_confirmation`，阈值内才自动执行。
 - [ ] 并发终态通知、重复 operation、version/provider CAS conflict 与候选文件故障注入
       均不产生重复 version、child run 或 ledger。
-- [ ] restart 覆盖 Agent in-flight attempt 消耗，以及
-      `version_applied → child_created` 幂等恢复。
+- [ ] restart 覆盖 recommended/non-recommended 在 failed commit 后、work-item claim 前的
+      provenance 恢复，Agent in-flight attempt 消耗，以及 version/child/分步 estimate
+      每个持久化窗口的幂等恢复。
+- [ ] nullable default provider、默认 provider 改变、同 provider id 配置漂移均有 CAS
+      测试；不得用新 account/provider config 执行旧 attempt。
+- [ ] 恶意 error 与 graph params 的 prompt-injection 测试证明 system policy 不被覆盖，
+      scope/diff gate 拒绝无关节点删除、全图改写与 provider/workspace 设置修改。
+- [ ] `max=2` 覆盖首次 Agent runtime failure/clarify/invalid 后的第二次 claim，以及达到
+      上限后的 exactly-once exhausted。
 - [ ] 脱敏测试覆盖 token、Authorization、signed URL、provider payload、绝对路径和超长
       多行错误；这些值不出现在 session context、event、message 或 attempt record。
 - [ ] Web 测试覆盖 retry/fix 区分、snapshot notice 保留、等待确认和 exhausted 状态。

@@ -25,21 +25,25 @@ GH-153
 ### 1. Typed terminal failure handoff
 
 `crates/run` 不依赖 `crates/agent`。在 run 层引入小型 terminal failure contract（建议
-独立 `failure_finalizer.rs`），由 server 提供实现或持久化工作通知：
+独立 `failure_finalizer.rs`）：
 
 - `RetryDecision::Continue(prepared)`：同图 retry 已 claim，继续执行；
 - `RetryDecision::Pending(child)`：retry child 等待 cost confirmation，不触发 fix；
 - `RetryDecision::Exhausted(terminal)`：run 为 failed 且同图额度明确耗尽；
 - `RetryDecision::Stop(reason)`：success/interrupted/ineligible/config 或基础设施异常。
 
-`run_with_self_heal` 返回最终 run/decision，而不是把所有 `None` 当作相同终态。普通
-agent run 在 `Exhausted` 后调用 finalizer；recommended sweep 由
-`continue_self_heal_from_failed` 返回其最终 failed retry，再调用同一 finalizer。
-非推荐 sweep 不进入该路径。该 contract 同时是 GH-154 的集成点。
+`run_with_self_heal` 返回最终 run/decision，而不是把所有 `None` 当作相同终态。但
+correctness 不依赖该返回值恰好被同一进程消费：feature 开启时，eligible run 的 failed
+terminal transaction 同时 insert-or-read `run_failure_work_items`。work item 至少携带
+`source_run_id`、durable repair chain/provenance 与稳定 reason，不携带 raw error。
+coordinator claim 后在一个 transaction 中创建 retry child 或把 item 推进为
+`fix_pending`；启动恢复扫描未完成 item。
 
-terminal handoff 至少携带 `source_run_id`、root provenance（agent 或
-recommended_sweep）与稳定 reason，不携带 raw error。重复 handoff 由 store claim
-去重，不能依赖 event bus 恰好只投递一次。
+普通 agent 在首个 eligible terminal 前建立/关联 chain。recommended sweep 必须在服务端
+选出推荐成员后、调用其 self-heal 前，把 `group_id + recommended_run_id` 与 chain 同事务
+持久化；retry child 显式继承 chain id，不能从会变化的 `trigger`/`group_id` 反推。
+非推荐成员没有 chain，因此即使同一 crash window 被扫描也不能触发。该 durable handoff
+同时是 GH-154 recovered-failed 的唯一入口。
 
 ### 2. Configuration
 
@@ -53,10 +57,19 @@ recommended_sweep）与稳定 reason，不携带 raw error。重复 handoff 由 
 开关检查发生在 durable attempt claim 之前，因此关闭态没有写放大。max 为 0 或非法配置
 时写一次幂等 exhausted event；不得调用 Agent。
 
-### 3. Durable `run_fix_attempts`
+### 3. Durable chain、work item、attempt 与 event outbox
 
 下一条 store migration（实现时以 main 的下一个空闲序号命名，当前基线候选为
-`0008_run_agent_fix.sql`）新增 `run_fix_attempts`。建议字段与约束：
+`0008_run_agent_fix.sql`）新增：
+
+- `run_repair_chains`：`root_run_id` UNIQUE，保存 `provenance`、可空
+  `sweep_group_id`/`recommended_run_id`、配置快照与创建时间；
+- `run_failure_work_items`：`source_run_id` UNIQUE，保存 chain、typed retry decision、
+  `pending/claimed/retry_created/fix_pending/completed` 状态和 claim lease；
+- `run_fix_attempts`：独立 Agent 调用状态；
+- `run_fix_event_outbox`：`dedupe_key` UNIQUE，保存安全 event payload 与投递状态。
+
+`run_fix_attempts` 建议字段与约束：
 
 | Field | Contract |
 | --- | --- |
@@ -64,21 +77,28 @@ recommended_sweep）与稳定 reason，不携带 raw error。重复 handoff 由 
 | `workspace_id` | FK workspace，删除 workspace 时级联 |
 | `root_run_id`, `source_run_id` | repair chain 根与本次精确 failed run；FK run |
 | `attempt_index`, `max_attempts` | 1-based 独立 fix 计数；UNIQUE(root_run_id, attempt_index) |
-| `source_version_id`, `source_provider_id` | Agent 输入和 version/provider CAS 快照 |
-| `state` | `claimed`, `agent_running`, `version_applied`, `child_created`, `failed`, `exhausted` |
+| `source_version_id` | Agent 输入和 version CAS 快照 |
+| `expected_runtime_provider_id` | workspace nullable selection 的 CAS 快照 |
+| `effective_provider_id`, `provider_config_fingerprint` | 实际 compile/estimate/run provider 与非秘密配置/catalog 指纹，均非空 |
+| `state` | `claimed`, `agent_running`, `version_applied`, `child_preparing`, `child_ready`, `failed`, `exhausted` |
 | `proposal_id`, `target_version_id`, `child_run_id` | 可空 FK；阶段推进后填充 |
 | `reason_code`, `error_summary` | 稳定 code 与脱敏、截断摘要；禁止 raw payload |
 | timestamps | created/updated/finished，用于恢复审计 |
 
 store API 使用 `BEGIN IMMEDIATE` 和条件 UPDATE 实现：
 
-1. 从 source/已有 child linkage 解析 root chain，统计已消耗 attempt；
+1. 只从显式 chain/work-item/child linkage 解析 root provenance，统计已消耗 attempt；
 2. 同一 source 的 active operation 或同一 `(root_run_id, attempt_index)` 只允许一个；
 3. 达到上限幂等返回 exhausted；
 4. 状态只按上述顺序前进，终态不可回退；
 5. `version_applied` 及以后 replay 返回已有 target，不重新调用 Agent；
-6. child 创建与 `child_run_id` linkage 在单 transaction 内完成，operation replay 返回
-   同一 child。
+6. child 创建与 `child_run_id` linkage 在单 transaction 内推进到 `child_preparing`，
+   operation replay 返回同一 child；
+7. Agent failure/clarify/invalid 将 attempt 标为 failed；若 chain 尚有额度，coordinator
+   立即 claim 下一 index，达到上限才写 exhausted；
+8. attempt/decision 变化与 outbox insert 同事务；dispatcher 用确定性 event id
+   insert-or-read `run_events`，再标记 outbox delivered 并广播。max=0/非法配置也在 chain
+   上有唯一 decision/dedupe key，不需要伪造 1-based attempt。
 
 attempt 表不保存 graph、raw `error_json`、prompt 或 provider response。workspace 删除
 不得被 attempt 的 run/version/proposal 外键阻塞。
@@ -91,22 +111,28 @@ server 新增 `run_agent_fix.rs` coordinator，并将 `workbench_message.rs` 当
 
 - source run 必须仍为 `failed`；
 - source version 必须属于同一 workspace，graph file/hash 必须验证；
-- workspace current version 与 runtime provider 必须等于 attempt 快照；
-- run provenance 必须为 agent 或调用方认证的 recommended sweep。
+- workspace current version、nullable runtime provider selection、effective provider 与
+  provider config/catalog fingerprint 必须等于 attempt 快照；
+- run provenance 必须来自 durable chain；调用参数、trigger 和 event 不具有认证作用。
 
 构造 `AgentSessionRequest` 时固定：
 
 - `mode = TurnMode::DebugWorkflow`；
 - `skill = AgentSkill::FixError`；
-- `base_version_id` / `graph` 来自 source version；
-- `run_context` 只含 source run 和 failed steps 的脱敏摘要；
+- `base_version_id` / safe graph projection 来自 source version；
+- `run_context` 只含 source run 和 failed steps 的脱敏摘要，并置于明确的 untrusted-data
+  delimiter 中；
 - `history = []`，`user_message` 为 server-owned、无 raw error 的修图指令；
 - provider catalog 来自已快照并再次验证的 workspace provider；
 - `use_intent_contract` 沿用 `AppState` 当前配置。
 
 低级 proposal 与 IntentPlan 两条路径都必须产出 `ProposalKind::Fix`，再经过现有
-validation/compiler。clarify 不是成功修复；后台没有用户可回答的同步 turn，因此消耗
-attempt 并以稳定 `AGENT_CLARIFICATION_REQUIRED` 收敛。
+validation/compiler。固定 system policy 明确 graph/error/params 都是数据而非指令；
+projection 删除 secret-bearing、超长和与结构无关的自由文本，只保留修图所需节点类型、
+端口、拓扑和截断参数。server 从 failed step 与 frozen plan 确定允许修改的节点/依赖闭包，
+proposal diff gate 禁止修改闭包外节点/边、删除无关节点或改变 workspace/provider 设置。
+无法在闭包内完成时 fail closed 转人工。clarify 不是成功修复；后台没有用户可回答的同步
+turn，因此消耗 attempt，并在有剩余额度时立即进入下一 attempt。
 
 Agent session 是本地运行过程证据，不是 provider run，不写 `cost_ledger`。日志与消息
 仍按既有安全边界持久化，但不得包含未经脱敏的 source error。
@@ -119,7 +145,8 @@ Agent session 是本地运行过程证据，不是 provider run，不写 `cost_l
 - attempt 仍在可提交 state，operation/fingerprint 未改变；
 - source run 仍为 `failed`；
 - workspace `cur_version_id = source_version_id`；
-- workspace `runtime_provider_id IS source_provider_id`；
+- workspace `runtime_provider_id IS expected_runtime_provider_id`；
+- registry 当前解析的 `effective_provider_id` 与 `provider_config_fingerprint` 均等于快照；
 - proposal base/target graph hash 与 candidate 一致。
 
 transaction 原子插入 applied fix proposal、`source=proposal` child version、审计 message，
@@ -132,17 +159,26 @@ conflict，source run 保持 failed。
 
 ### 6. Fresh child run and cost gate
 
-从已提交 target version 重新读取 graph，使用 attempt 的 provider identity调用
+从已提交 target version 重新读取 graph，使用 attempt 的 `effective_provider_id` 调用
 `GraphService::compile_plan`、semantic resolution 与 provider estimate。新增幂等
 fix-child prepare primitive，语义等价于 `prepare_agent_run`，但必须：
 
 - `trigger = agent`；
 - `runs.attempt = 0`，不复制 source retry attempt；
 - 不复制 source `plan_json`、`estimate_json`、force-rerun 或 ledger；
-- 新 run 与 attempt `child_run_id` 在单 transaction 内唯一关联；
+- 新 run/steps 与 attempt `child_run_id` 在单 transaction 内唯一关联，并把 attempt 推进
+  为 `child_preparing`；
 - 同一 operation replay 返回相同 child。
 
-child 估价完成后先处于 `waiting_confirmation`。调用既有
+每个 step 估价使用 GH-154 的 `estimate:{run_step_id}` 唯一 operation key 和
+insert-or-read payload 校验；compile 可确定性重放，已写 estimate 不重复。进程在任意
+step estimate 后退出时，fix recovery 识别 `child_preparing`/`estimating` child，复用同一
+run/step 与 ledger，补齐缺失项；GH-154 的通用 estimating 清理必须排除有 active
+fix-attempt linkage 的 child。全部 estimate 完成后，单 transaction 写 aggregate
+estimate/cost decision、推进 attempt `child_ready`，再把 child 置为
+`waiting_confirmation` 或可 claim。
+
+child 估价完成后调用既有
 `start_confirmed_run_within_budget`：未知/超阈值保持 pending；阈值内按既有 workspace
 atomic claim 自动执行。只有 child 可查询且 cost decision 已持久化后，才在 source run
 写 `run.fix_applied`。
@@ -157,19 +193,23 @@ fix attempt。
 recovery。恢复规则：
 
 - `claimed` / `agent_running`：进程内 Agent handle 已丢失；将该 attempt 记为已消耗
-  `failed`，不得以同一 operation 重放 Agent。若仍有额度，只能 claim 新 attempt；
+  `failed`，不得以同一 operation 重放 Agent。若仍有额度，立即 claim 新 attempt；
   否则写 exhausted。
 - `version_applied`：读取并验证已记录 target，幂等创建/恢复同一 child；不得再次生成
   proposal/version。
-- `child_created` / `failed` / `exhausted`：只补缺失的幂等事件或继续观察 child，
-  不创建副本。
+- `child_preparing`：复用同一 child/steps 和 stable estimate keys 补齐估价，禁止创建
+  新 run 或重复 ledger。
+- `child_ready` / `failed` / `exhausted`：只消费 durable outbox 或继续观察 child，
+  不创建副本；failed 且仍有额度时按正常 coordinator 语义推进下一 attempt。
+- 未完成 `run_failure_work_items`：按 durable chain/provenance 恢复 retry/fix decision；
+  不从 trigger、group 或最新 run 猜测来源。
 
-event bus 不是恢复真相；所有决策来自 DB。append event 成功、broadcast 失败时 DB 事件
-仍可由 snapshot/refetch 恢复。
+event bus 不是恢复真相；所有决策来自 DB/outbox。run event insert 成功、broadcast 失败
+时重投仍使用相同 event id，snapshot/refetch 与 UI 按 id 去重。
 
-GH-154 后续必须先恢复/收敛持久化 remote handles，再把确实收敛为 `failed` 且符合来源
-条件的 run 交给同一 finalizer。仍在 remote polling、补取消或被标为 `interrupted` 的 run
-不进入 fix。GH-153 不创建或模拟任何 provider remote handle。
+GH-154 先恢复/收敛持久化 remote handles，再把确实收敛为 `failed` 且符合来源条件的
+run 交给同一 durable work-item finalizer。仍在 remote polling、补取消或被标为
+`interrupted` 的 run 不进入 fix。GH-153 不创建或模拟任何 provider remote handle。
 
 ### 8. Event and frontend contract
 
@@ -181,7 +221,9 @@ GH-154 后续必须先恢复/收敛持久化 remote handles，再把确实收敛
 | `run.fix_applied` | 上述字段 + `target_version_id`, `child_run_id`, `requires_confirmation` |
 | `run.fix_exhausted` | `attempts`, `max_attempts`, stable `reason_code`, safe `error`（可选） |
 
-event 挂在 exact source run；不得包含 graph、params、raw error 或 provider endpoint。Web
+event 挂在 exact source run；outbox dedupe key 至少包含 chain/source、event kind 与
+attempt index（无 attempt 时用 decision kind），不得包含 graph、params、raw error 或
+provider endpoint。Web
 `applyRunEvent` 在 retry 分支之前识别 fix events，生成 `run-fix-*` system notice；
 `preserveRetryNotices` 扩展为同时保留 fix notices。`shouldRefetchWorkspaceState` 对
 `fix_applied` 和 `fix_exhausted` refetch。现有 pending confirmation payload 与 modal
@@ -210,18 +252,19 @@ event 挂在 exact source run；不得包含 graph、params、raw error 或 prov
 
 | Invariants | Test focus |
 | --- | --- |
-| 1–5 | policy parser、关闭态无写入、typed retry decision、agent/recommended sweep 来源过滤 |
-| 6, 14, 19 | store claim 幂等、repair chain 计数、并发 finalizer 与重复 operation |
-| 7–9 | exact source Agent request、DebugWorkflow bypass classifier、error redaction、invalid/clarify |
-| 10–11 | version/provider CAS、proposal/version/attempt 原子性、candidate fault cleanup |
-| 12–13 | target graph fresh compile/estimate、unknown/over/within budget、ledger 不复制 |
-| 15–17 | restart state matrix、single child、persist-before-publish event |
-| 18 | Web retry/fix notices、snapshot preservation、confirmation/refetch |
-| 20 | GH-154 common finalizer contract 的 unit/integration seam |
+| 1–6 | policy parser、关闭态无写入、durable work item、agent/recommended provenance |
+| 7, 16–19, 22 | store claim、chain 计数、N>1 推进、outbox/event 幂等 |
+| 8–10 | exact source、安全 projection、prompt injection 与 scope/diff gate |
+| 11–12 | nullable/effective provider CAS、proposal/version/attempt 原子性、candidate cleanup |
+| 13–15 | target graph fresh compile、partial estimate recovery、cost gate/ledger 幂等 |
+| 18–20 | restart matrix、single child、child_preparing、exactly-once event |
+| 21 | Web retry/fix notices、snapshot preservation、confirmation/refetch |
+| 23 | GH-154 common finalizer/work-item contract 的 unit/integration seam |
 
 ## 风险与回滚
 
-- Security：复用并强化 exact-run redaction；事件/attempt 不存 raw error 或 graph。
+- Security：exact-run redaction + untrusted-data system policy + safe graph projection +
+  deterministic scope/diff gate；事件/attempt 不存 raw error 或 graph。
 - Cost：Agent fix 不进入 provider ledger，但被独立上限约束；所有真实 provider run 仍走
   estimate/confirmation/actual ledger。
 - Concurrency：durable claim、current+provider CAS、唯一 operation/chain index 与 atomic
