@@ -48,10 +48,11 @@ run 已中断。
 3. 进程若在远端接受请求后、handle CAS 前崩溃，数据库只会留下 `dispatching`。
    Atlas/fal 当前没有可依赖的 submit idempotency 保证，因此启动恢复不得自动重发；
    该记录进入 `abandoned` 并产生计费风险。
-4. 持久化 handle 只能包含 provider identity、task identity、dispatch 时的非秘密
-   `recovery_scope_fingerprint` 和经过校验的轮询/结果定位信息；不得包含 API key、
-   Authorization header、cookie、userinfo、fragment 或 secret-bearing query。恢复或
-   取消前，当前 provider scope 必须与指纹完全一致，配置/account 漂移时 fail closed。
+4. 持久化 handle 只能包含 provider identity、task identity、dispatch 时的 canonical
+   `dispatch_origin`、非秘密 `recovery_scope_fingerprint` 和经过校验的轮询/结果定位
+   信息；不得包含 API key、Authorization header、cookie、userinfo、fragment 或
+   secret-bearing query。恢复或取消前，当前 canonical origin 与 provider scope 必须分别
+   完全一致，配置/account 漂移时 fail closed。
 5. 持久化 URL 在首次写入和每次恢复请求前都必须按当前 provider 配置重新校验
    scheme、origin 与允许路径；URL 不通过时 fail closed，不发网络请求。
 6. 日志、事件、artifact metadata、API 和前端不得暴露 task identity、完整远端 URL、
@@ -70,8 +71,10 @@ run 已中断。
     `run_step_outputs` → `artifacts`，不得根据文件名、最新 artifact 或内存 map 猜测。
 11. 同一 step/port 至多有一个 durable output，同一费用 operation key 至多有一条
     ledger 记录；恢复重放返回既有记录，不复制 artifact row 或费用。
-12. provider 返回远端 failed 时，step/run 进入 `failed`，保留脱敏错误和事件，再进入
-    与正常执行相同的 failure finalizer；不得转成 `interrupted` 或静默跳过。
+12. provider 返回远端 failed 时，先原子创建 durable terminalization work item，停止
+    调度新 step，并回收/收敛所有 sibling active remote tasks。只有 sibling task 均已
+    `completed/cancelled/abandoned` 后，run 才进入 `failed`、保留脱敏错误和事件，再进入
+    与正常执行相同的 failure finalizer；不得留下 terminal run + active paid task。
 13. provider 暂时不可轮询时按有界退避重试并续租；超过恢复期限后，若 provider 支持
     cancel 则补取消。取消成功记录 `cancelled` 并中断 run；取消失败或不支持则记录
     `abandoned` 与计费风险。
@@ -80,13 +83,19 @@ run 已中断。
     可按现有语义执行补取消。
 15. mock 只用于明确启用的本地/测试环境；测试恢复 handle 可由 frozen request
     确定性重建结果，不能把 mock output 伪装为真实 provider output。
-16. 缺少 handle 的 provider-backed `running` step、遗留 active row、非法 handle 或
-    `dispatching` crash window 都是显式不可恢复状态；run 进入 `interrupted`，task
-    进入 `abandoned`，并原子持久化与 `run.remote_cancel_unsupported` 同级的计费风险
-    event 和 system message；刷新或出现后续 run 后风险仍可见。
+16. 启动分类必须穷尽所有 `running` 形态：有 terminalization work item 先收敛 siblings；
+    有 active handle 恢复；所有 step 仍 queued 且有完整 execution intent 时可安全恢复
+    ready queue；明确标记 restart-safe 的 builtin 可重放。缺少 handle 的 provider-backed
+    running step、未声明 restart-safe 的 builtin running step、遗留 active row、非法
+    handle、`dispatching` crash window 或其他不完整组合都必须显式中断/abandon，不能
+    永久停在 running。存在远端计费不确定性时，原子持久化与
+    `run.remote_cancel_unsupported` 同级的计费风险 event 和 system message。
 17. `queued` run 在 `HELIXFLOW_RUN_REQUEUE_ON_RESTART` 缺失或为 false 时保持现状：
-    进入 `interrupted`；只有显式 true、frozen plan 合法且没有 provider task 时才可
-    requeue。同名配置非法值必须阻止启动，不得静默 fallback。
+    进入 `interrupted`。显式 true 时仍必须有匹配 plan/estimate fingerprint 的 durable
+    execution intent、完整 per-step estimate ledger/cost decision，且没有 provider task，
+    才能走正常 claim/execute 路径；不得直接跳入 DAG 或绕过 cost gate。缺 intent、部分
+    estimate 或 fingerprint 不匹配时显式中断。同名配置非法值必须阻止启动，不得静默
+    fallback。
 18. `estimating` 默认中断；`waiting_confirmation` 不参与启动清理，不能绕过用户成本
     确认。requeue 不得创建新 run、改变 estimate 或重复写 estimate ledger。
 19. terminal transition、对应 run event 和 task/step final state 必须由一个 store
@@ -127,6 +136,11 @@ run 已中断。
       interrupt、cancel 三方竞态只能提交一个终态。
 - [ ] artifact hydration/API 序列化测试证明 task id、poll/result URL 与 provider 原始
       payload 不会离开 store/gateway 边界。
+- [ ] queued requeue 只有在 execution intent、plan/estimate fingerprint、完整 ledger 和
+      cost decision 一致时发生；部分 estimate 不执行。running+全 queued、builtin
+      restart-safe、builtin unsafe、provider running 无 handle 均有确定终态测试。
+- [ ] 并行 provider step 一条失败时，其余 active handles 在 run.failed 前全部
+      completed/cancelled/abandoned；重启可继续 terminalization，不遗留付费任务。
 - [ ] Web 在实时事件和断线补拉后都显示恢复、补取消和计费风险，不伪装为成功；刷新
       后 durable 风险仍可见。
 - [ ] 正常执行、在线 interrupt、cost confirmation、sweep 与同图 self-heal 回归通过；
