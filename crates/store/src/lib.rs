@@ -31,6 +31,7 @@ mod run_cleanup;
 mod run_fix_records;
 #[cfg(test)]
 mod run_fix_records_tests;
+mod run_fix_version_records;
 mod run_records;
 #[cfg(test)]
 mod run_records_tests;
@@ -59,6 +60,7 @@ pub use node_cache_records::*;
 pub use proposal_records::*;
 pub use provider_task_records::*;
 pub use run_fix_records::*;
+pub use run_fix_version_records::*;
 pub use run_records::*;
 pub use run_recovery_records::*;
 pub use step_finalizer_records::*;
@@ -138,6 +140,9 @@ pub enum StoreError {
     RecoveryInvariant {
         operation: &'static str,
         message: String,
+    },
+    RunFixGuardConflict {
+        code: &'static str,
     },
 }
 
@@ -244,6 +249,9 @@ impl fmt::Display for StoreError {
                     f,
                     "recovery operation `{operation}` violated an invariant: {message}"
                 )
+            }
+            Self::RunFixGuardConflict { code } => {
+                write!(f, "run fix guard rejected the operation: {code}")
             }
         }
     }
