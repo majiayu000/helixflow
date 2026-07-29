@@ -5,9 +5,11 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use crate::{
-    ArtifactContent, ArtifactKind, ArtifactPayload, CostEstimate, Provider, ProviderCapability,
-    ProviderCatalog, ProviderError, ProviderHealth, ProviderRequest, ProviderResult,
-    ProviderResultValue, ProviderTaskHandle, wired_or_param_string,
+    ArtifactContent, ArtifactKind, ArtifactPayload, CostEstimate, DurableProviderTask, Provider,
+    ProviderCapability, ProviderCatalog, ProviderDispatch, ProviderDispatchFailure,
+    ProviderDispatchResult, ProviderError, ProviderHealth, ProviderRecoveryCapabilities,
+    ProviderRequest, ProviderResult, ProviderResultValue, ProviderResume, ProviderTaskHandle,
+    wired_or_param_string,
 };
 
 const DEFAULT_ATLAS_API_BASE: &str = "https://api.atlascloud.ai/v1";
@@ -274,7 +276,10 @@ impl AtlasProvider {
         ))
     }
 
-    async fn invoke_video(&self, req: ProviderRequest) -> ProviderResultValue<ProviderResult> {
+    async fn dispatch_video(
+        &self,
+        req: &ProviderRequest,
+    ) -> ProviderResultValue<DurableProviderTask> {
         let prompt = wired_or_param_string(&req, "prompt", "prompt")?;
         // GH130 T4: the model comes only from the run's resolved binding.
         let model = req
@@ -307,10 +312,62 @@ impl AtlasProvider {
                 ProviderError::InvalidResponse("video response missing data.id".to_owned())
             })?
             .to_owned();
-        self.register_in_flight(&req.run_id, &prediction_id).await;
-        let completed = self.poll_prediction(&prediction_id).await;
-        self.clear_in_flight(&req.run_id, &prediction_id).await;
-        let completed = completed?;
+        let dispatch_origin = self.dispatch_origin(self.id())?;
+        Ok(DurableProviderTask {
+            provider: self.id().to_owned(),
+            provider_task_id: prediction_id.clone(),
+            dispatch_origin,
+            recovery_scope_fingerprint: self.recovery_scope_fingerprint(self.id()),
+            status_url: Some(format!(
+                "{}/api/v1/model/prediction/{prediction_id}",
+                self.api_root()
+            )),
+            result_url: None,
+        })
+    }
+
+    async fn invoke_video(&self, req: ProviderRequest) -> ProviderResultValue<ProviderResult> {
+        let task = self.dispatch_video(&req).await?;
+        self.register_in_flight(&req.run_id, &task.provider_task_id)
+            .await;
+        let deadline = tokio::time::Instant::now() + self.config.poll_timeout;
+        let completed = loop {
+            match self.resume(&task, &req).await {
+                Ok(ProviderResume::Completed(result)) => break Ok(result),
+                Ok(ProviderResume::Pending { retry_after_ms })
+                    if tokio::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(Duration::from_millis(retry_after_ms)).await;
+                }
+                Ok(ProviderResume::Pending { .. }) => {
+                    break Err(ProviderError::RequestFailed(
+                        "Atlas prediction timed out".to_owned(),
+                    ));
+                }
+                Err(error) => break Err(error),
+            }
+        };
+        self.clear_in_flight(&req.run_id, &task.provider_task_id)
+            .await;
+        completed
+    }
+
+    fn completed_video_result(
+        &self,
+        req: &ProviderRequest,
+        completed: &Value,
+    ) -> ProviderResultValue<ProviderResult> {
+        let model = req
+            .operation_id
+            .clone()
+            .ok_or_else(|| ProviderError::ModelUnresolved {
+                capability: req.capability.clone(),
+            })?;
+        let duration = req
+            .params
+            .get("duration_sec")
+            .and_then(Value::as_u64)
+            .unwrap_or(5);
         let output = first_output(&completed)?;
         let mut result = remote_output_result(
             "video",
@@ -320,7 +377,6 @@ impl AtlasProvider {
             json!({
                 "provider": "atlas",
                 "model": model,
-                "prediction_id": prediction_id,
                 "capability": req.capability
             }),
         );
@@ -330,35 +386,34 @@ impl AtlasProvider {
         Ok(result)
     }
 
-    async fn poll_prediction(&self, prediction_id: &str) -> ProviderResultValue<Value> {
-        let deadline = tokio::time::Instant::now() + self.config.poll_timeout;
-        loop {
-            let response = self
-                .get_json(format!(
-                    "{}/api/v1/model/prediction/{}",
-                    self.api_root(),
-                    prediction_id
-                ))
-                .await?;
-            let data = response.get("data").unwrap_or(&response);
-            let status = data.get("status").and_then(Value::as_str).unwrap_or("");
-            match status {
-                "completed" | "succeeded" => return Ok(data.clone()),
-                "failed" => {
-                    let message = data
-                        .get("error")
-                        .and_then(Value::as_str)
-                        .unwrap_or("Atlas prediction failed");
-                    return Err(ProviderError::RequestFailed(message.to_owned()));
-                }
-                _ if tokio::time::Instant::now() >= deadline => {
-                    return Err(ProviderError::RequestFailed(
-                        "Atlas prediction timed out".to_owned(),
-                    ));
-                }
-                _ => tokio::time::sleep(self.config.poll_interval).await,
-            }
+    fn validate_recovery_task(&self, task: &DurableProviderTask) -> ProviderResultValue<()> {
+        if task.provider != self.id() {
+            return Err(ProviderError::WrongProvider {
+                expected: self.id().to_owned(),
+                actual: task.provider.clone(),
+            });
         }
+        if !is_safe_task_id(&task.provider_task_id)
+            || task.dispatch_origin != self.dispatch_origin(self.id())?
+            || task.recovery_scope_fingerprint != self.recovery_scope_fingerprint(self.id())
+        {
+            return Err(ProviderError::InvalidRequest(
+                "Atlas recovery handle does not match the configured provider scope".to_owned(),
+            ));
+        }
+        let expected_status_url = format!(
+            "{}/api/v1/model/prediction/{}",
+            self.api_root(),
+            task.provider_task_id
+        );
+        if task.status_url.as_deref() != Some(expected_status_url.as_str())
+            || task.result_url.is_some()
+        {
+            return Err(ProviderError::InvalidRequest(
+                "Atlas recovery handle has an invalid status locator".to_owned(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -379,7 +434,26 @@ impl Provider for AtlasProvider {
         if let Some((name, _)) = &self.config.extra_header {
             hasher.update(name.as_bytes());
         }
+        hasher.update([0]);
+        hasher.update(self.config.api_key.as_bytes());
         format!("sha256:{:x}", hasher.finalize())
+    }
+
+    fn dispatch_origin(&self, provider_id: &str) -> ProviderResultValue<String> {
+        if provider_id != self.id() {
+            return Err(ProviderError::WrongProvider {
+                expected: self.id().to_owned(),
+                actual: provider_id.to_owned(),
+            });
+        }
+        canonical_origin(&self.config.api_base)
+    }
+
+    fn recovery_capabilities(&self, _provider_id: &str) -> ProviderRecoveryCapabilities {
+        ProviderRecoveryCapabilities {
+            resume: true,
+            cancel: false,
+        }
     }
 
     async fn health(&self) -> ProviderHealth {
@@ -453,6 +527,59 @@ impl Provider for AtlasProvider {
         }
     }
 
+    async fn dispatch(&self, req: ProviderRequest) -> ProviderDispatchResult {
+        if let Err(error) = self.ensure_provider(&req) {
+            return Err(ProviderDispatchFailure::classify(error));
+        }
+        let result = match req.capability.as_str() {
+            "prompt_writer" => self.invoke_chat(req).await.map(ProviderDispatch::Completed),
+            "text_to_image" => self
+                .invoke_image(req)
+                .await
+                .map(ProviderDispatch::Completed),
+            "text_to_video" => self
+                .dispatch_video(&req)
+                .await
+                .map(ProviderDispatch::Accepted),
+            capability => Err(ProviderError::UnsupportedCapability(capability.to_owned())),
+        };
+        result.map_err(ProviderDispatchFailure::classify)
+    }
+
+    async fn resume(
+        &self,
+        task: &DurableProviderTask,
+        req: &ProviderRequest,
+    ) -> ProviderResultValue<ProviderResume> {
+        self.ensure_provider(req)?;
+        if req.capability != "text_to_video" {
+            return Err(ProviderError::UnsupportedCapability(req.capability.clone()));
+        }
+        self.validate_recovery_task(task)?;
+        let response = self
+            .get_json(task.status_url.clone().ok_or_else(|| {
+                ProviderError::InvalidRequest(
+                    "Atlas recovery handle is missing a status locator".to_owned(),
+                )
+            })?)
+            .await?;
+        let data = response.get("data").unwrap_or(&response);
+        match data.get("status").and_then(Value::as_str).unwrap_or("") {
+            "completed" | "succeeded" => self
+                .completed_video_result(req, data)
+                .map(ProviderResume::Completed),
+            "failed" => Err(ProviderError::RequestFailed(
+                data.get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Atlas prediction failed")
+                    .to_owned(),
+            )),
+            _ => Ok(ProviderResume::Pending {
+                retry_after_ms: self.config.poll_interval.as_millis().min(u64::MAX as u128) as u64,
+            }),
+        }
+    }
+
     async fn cancel(&self, handle: ProviderTaskHandle) -> ProviderResultValue<()> {
         // The Atlas API only exposes submit (generateImage/generateVideo) and
         // poll (prediction/{id}) endpoints; there is no cancel endpoint, so an
@@ -470,7 +597,7 @@ async fn response_json(response: reqwest::Response) -> ProviderResultValue<Value
         .await
         .map_err(|err| ProviderError::RequestFailed(err.to_string()))?;
     if !status.is_success() {
-        return Err(ProviderError::RequestFailed(format!(
+        return Err(ProviderError::RequestRejected(format!(
             "HTTP {}: {}",
             status.as_u16(),
             truncate(&text, 512)
@@ -553,6 +680,32 @@ fn normalize_api_base(api_base: &str) -> String {
     } else {
         trimmed.to_owned()
     }
+}
+
+fn canonical_origin(api_base: &str) -> ProviderResultValue<String> {
+    let parsed = reqwest::Url::parse(api_base).map_err(|_| {
+        ProviderError::InvalidRequest("Atlas API base is not a valid URL".to_owned())
+    })?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(ProviderError::InvalidRequest(
+            "Atlas API base has an unsafe origin".to_owned(),
+        ));
+    }
+    Ok(parsed.origin().ascii_serialization())
+}
+
+fn is_safe_task_id(task_id: &str) -> bool {
+    !task_id.is_empty()
+        && task_id.len() <= 256
+        && task_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
 }
 
 fn env_duration_ms(key: &str, default_ms: u64) -> Duration {

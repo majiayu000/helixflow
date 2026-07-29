@@ -5,9 +5,11 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use crate::{
-    ArtifactContent, ArtifactKind, ArtifactPayload, CostEstimate, Provider, ProviderCapability,
-    ProviderCatalog, ProviderError, ProviderHealth, ProviderRequest, ProviderResult,
-    ProviderResultValue, ProviderTaskHandle, wired_or_param_string,
+    ArtifactContent, ArtifactKind, ArtifactPayload, CostEstimate, DurableProviderTask, Provider,
+    ProviderCapability, ProviderCatalog, ProviderDispatch, ProviderDispatchFailure,
+    ProviderDispatchResult, ProviderError, ProviderHealth, ProviderRecoveryCapabilities,
+    ProviderRequest, ProviderResult, ProviderResultValue, ProviderResume, ProviderTaskHandle,
+    wired_or_param_string,
 };
 
 const DEFAULT_FAL_API_BASE: &str = "https://queue.fal.run";
@@ -141,7 +143,10 @@ impl FalProvider {
         response_json(response, &self.config.api_key).await
     }
 
-    async fn invoke_image(&self, req: ProviderRequest) -> ProviderResultValue<ProviderResult> {
+    async fn dispatch_image(
+        &self,
+        req: &ProviderRequest,
+    ) -> ProviderResultValue<DurableProviderTask> {
         let prompt = wired_or_param_string(&req, "prompt", "prompt")?;
         // GH130 T4: the queue path comes only from the run's resolved
         // binding; it must still be a safe single model path.
@@ -175,11 +180,59 @@ impl FalProvider {
             status_url(&submit, &self.config.api_base, &model, &request_id),
             &self.config.api_base,
         )?;
+        Ok(DurableProviderTask {
+            provider: self.id().to_owned(),
+            provider_task_id: request_id,
+            dispatch_origin: self.dispatch_origin(self.id())?,
+            recovery_scope_fingerprint: self.recovery_scope_fingerprint(self.id()),
+            status_url: Some(status_url),
+            result_url: Some(response_url),
+        })
+    }
+
+    async fn invoke_image(&self, req: ProviderRequest) -> ProviderResultValue<ProviderResult> {
+        let task = self.dispatch_image(&req).await?;
+        let status_url = task.status_url.clone().ok_or_else(|| {
+            ProviderError::InvalidResponse("fal dispatch omitted status URL".to_owned())
+        })?;
         drop(self.register_in_flight(&req.run_id, &status_url).await);
-        let poll_result = self.poll_status(&status_url).await;
+        let deadline = tokio::time::Instant::now() + self.config.poll_timeout;
+        let completed = loop {
+            match self.resume(&task, &req).await {
+                Ok(ProviderResume::Completed(result)) => break Ok(result),
+                Ok(ProviderResume::Pending { retry_after_ms })
+                    if tokio::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(Duration::from_millis(retry_after_ms)).await;
+                }
+                Ok(ProviderResume::Pending { .. }) => {
+                    break Err(ProviderError::RequestFailed(
+                        "fal request timed out".to_owned(),
+                    ));
+                }
+                Err(error) => break Err(error),
+            }
+        };
         self.clear_in_flight(&req.run_id, &status_url).await;
-        poll_result?;
-        let result = self.get_json(response_url).await?;
+        completed
+    }
+
+    async fn completed_image_result(
+        &self,
+        task: &DurableProviderTask,
+        req: &ProviderRequest,
+    ) -> ProviderResultValue<ProviderResult> {
+        let model = req
+            .operation_id
+            .clone()
+            .and_then(|operation| normalize_model_path(&operation))
+            .ok_or_else(|| ProviderError::ModelUnresolved {
+                capability: req.capability.clone(),
+            })?;
+        let result_url = task.result_url.clone().ok_or_else(|| {
+            ProviderError::InvalidRequest("fal recovery handle is missing result URL".to_owned())
+        })?;
+        let result = self.get_json(result_url).await?;
         let image = first_image(&result)?;
 
         Ok(ProviderResult {
@@ -196,7 +249,6 @@ impl FalProvider {
                     meta: json!({
                         "provider": "fal",
                         "model": model,
-                        "request_id": request_id,
                         "capability": req.capability
                     }),
                 },
@@ -212,34 +264,30 @@ impl FalProvider {
         })
     }
 
-    async fn poll_status(&self, status_url: &str) -> ProviderResultValue<()> {
-        let deadline = tokio::time::Instant::now() + self.config.poll_timeout;
-        loop {
-            let response = self.get_json(status_url.to_owned()).await?;
-            let status = response.get("status").and_then(Value::as_str).unwrap_or("");
-            if let Some(error) = response.get("error").and_then(Value::as_str) {
-                return Err(ProviderError::RequestFailed(redact_sensitive(
-                    error,
-                    &self.config.api_key,
-                )));
-            }
-            match status {
-                "COMPLETED" => return Ok(()),
-                "IN_QUEUE" | "IN_PROGRESS" | "" if tokio::time::Instant::now() < deadline => {
-                    tokio::time::sleep(self.config.poll_interval).await;
-                }
-                "IN_QUEUE" | "IN_PROGRESS" | "" => {
-                    return Err(ProviderError::RequestFailed(
-                        "fal request timed out".to_owned(),
-                    ));
-                }
-                other => {
-                    return Err(ProviderError::RequestFailed(format!(
-                        "fal request ended with status `{other}`"
-                    )));
-                }
-            }
+    fn validate_recovery_task(&self, task: &DurableProviderTask) -> ProviderResultValue<()> {
+        if task.provider != self.id() {
+            return Err(ProviderError::WrongProvider {
+                expected: self.id().to_owned(),
+                actual: task.provider.clone(),
+            });
         }
+        if !is_safe_request_id(&task.provider_task_id)
+            || task.dispatch_origin != self.dispatch_origin(self.id())?
+            || task.recovery_scope_fingerprint != self.recovery_scope_fingerprint(self.id())
+        {
+            return Err(ProviderError::InvalidRequest(
+                "fal recovery handle does not match the configured provider scope".to_owned(),
+            ));
+        }
+        let status = task.status_url.clone().ok_or_else(|| {
+            ProviderError::InvalidRequest("fal recovery handle is missing status URL".to_owned())
+        })?;
+        let result = task.result_url.clone().ok_or_else(|| {
+            ProviderError::InvalidRequest("fal recovery handle is missing result URL".to_owned())
+        })?;
+        drop(validate_callback_url(status, &self.config.api_base)?);
+        drop(validate_callback_url(result, &self.config.api_base)?);
+        Ok(())
     }
 }
 
@@ -255,7 +303,25 @@ impl Provider for FalProvider {
         hasher.update(b"fal-catalog-v1");
         hasher.update(self.config.api_base.as_bytes());
         hasher.update([0]);
+        hasher.update(self.config.api_key.as_bytes());
         format!("sha256:{:x}", hasher.finalize())
+    }
+
+    fn dispatch_origin(&self, provider_id: &str) -> ProviderResultValue<String> {
+        if provider_id != self.id() {
+            return Err(ProviderError::WrongProvider {
+                expected: self.id().to_owned(),
+                actual: provider_id.to_owned(),
+            });
+        }
+        canonical_origin(&self.config.api_base)
+    }
+
+    fn recovery_capabilities(&self, _provider_id: &str) -> ProviderRecoveryCapabilities {
+        ProviderRecoveryCapabilities {
+            resume: true,
+            cancel: true,
+        }
     }
 
     async fn health(&self) -> ProviderHealth {
@@ -330,6 +396,54 @@ impl Provider for FalProvider {
         }
     }
 
+    async fn dispatch(&self, req: ProviderRequest) -> ProviderDispatchResult {
+        if let Err(error) = self.ensure_provider(&req) {
+            return Err(ProviderDispatchFailure::classify(error));
+        }
+        let result = match req.capability.as_str() {
+            "text_to_image" => self
+                .dispatch_image(&req)
+                .await
+                .map(ProviderDispatch::Accepted),
+            capability => Err(ProviderError::UnsupportedCapability(capability.to_owned())),
+        };
+        result.map_err(ProviderDispatchFailure::classify)
+    }
+
+    async fn resume(
+        &self,
+        task: &DurableProviderTask,
+        req: &ProviderRequest,
+    ) -> ProviderResultValue<ProviderResume> {
+        self.ensure_provider(req)?;
+        if req.capability != "text_to_image" {
+            return Err(ProviderError::UnsupportedCapability(req.capability.clone()));
+        }
+        self.validate_recovery_task(task)?;
+        let status_url = task.status_url.clone().ok_or_else(|| {
+            ProviderError::InvalidRequest("fal recovery handle is missing status URL".to_owned())
+        })?;
+        let response = self.get_json(status_url).await?;
+        if let Some(error) = response.get("error").and_then(Value::as_str) {
+            return Err(ProviderError::RequestFailed(redact_sensitive(
+                error,
+                &self.config.api_key,
+            )));
+        }
+        match response.get("status").and_then(Value::as_str).unwrap_or("") {
+            "COMPLETED" => self
+                .completed_image_result(task, req)
+                .await
+                .map(ProviderResume::Completed),
+            "IN_QUEUE" | "IN_PROGRESS" | "" => Ok(ProviderResume::Pending {
+                retry_after_ms: self.config.poll_interval.as_millis().min(u64::MAX as u128) as u64,
+            }),
+            other => Err(ProviderError::RequestFailed(format!(
+                "fal request ended with status `{other}`"
+            ))),
+        }
+    }
+
     async fn cancel(&self, handle: ProviderTaskHandle) -> ProviderResultValue<()> {
         // fal queue API: PUT {status_url}/cancel. provider_task_id holds the
         // validated status URL for the in-flight request (HF-011).
@@ -362,6 +476,18 @@ impl Provider for FalProvider {
         }
         Ok(())
     }
+
+    async fn cancel_durable(&self, task: &DurableProviderTask) -> ProviderResultValue<()> {
+        self.validate_recovery_task(task)?;
+        let status_url = task.status_url.clone().ok_or_else(|| {
+            ProviderError::InvalidRequest("fal recovery handle is missing status URL".to_owned())
+        })?;
+        self.cancel(ProviderTaskHandle {
+            provider: task.provider.clone(),
+            provider_task_id: status_url,
+        })
+        .await
+    }
 }
 
 async fn response_json(response: reqwest::Response, api_key: &str) -> ProviderResultValue<Value> {
@@ -377,7 +503,7 @@ async fn response_json(response: reqwest::Response, api_key: &str) -> ProviderRe
             429 => "fal rate limit exceeded".to_owned(),
             code => format!("HTTP {code}: {}", truncate(&redacted, 512)),
         };
-        return Err(ProviderError::RequestFailed(message));
+        return Err(ProviderError::RequestRejected(message));
     }
     serde_json::from_str(&redacted).map_err(|err| {
         ProviderError::InvalidResponse(format!("{err}: {}", truncate(&redacted, 512)))
@@ -420,12 +546,37 @@ fn status_url(submit: &Value, api_base: &str, model: &str, request_id: &str) -> 
 }
 
 fn validate_callback_url(url: String, api_base: &str) -> ProviderResultValue<String> {
-    if url == api_base || url.starts_with(&format!("{api_base}/")) {
-        return Ok(url);
+    let parsed = reqwest::Url::parse(&url).map_err(|_| {
+        ProviderError::InvalidResponse("fal response has an invalid callback URL".to_owned())
+    })?;
+    let base = reqwest::Url::parse(api_base)
+        .map_err(|_| ProviderError::InvalidRequest("fal API base is not a valid URL".to_owned()))?;
+    if !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || parsed.scheme() != base.scheme()
+        || parsed.host() != base.host()
+        || parsed.port_or_known_default() != base.port_or_known_default()
+    {
+        return Err(ProviderError::InvalidResponse(
+            "fal response has unexpected callback URL".to_owned(),
+        ));
     }
-    Err(ProviderError::InvalidResponse(
-        "fal response has unexpected callback URL".to_owned(),
-    ))
+    let base_path = base.path().trim_end_matches('/');
+    let path_matches = base_path.is_empty()
+        || base_path == "/"
+        || parsed.path() == base_path
+        || parsed
+            .path()
+            .strip_prefix(base_path)
+            .is_some_and(|suffix| suffix.starts_with('/'));
+    if !path_matches {
+        return Err(ProviderError::InvalidResponse(
+            "fal response has unexpected callback URL".to_owned(),
+        ));
+    }
+    Ok(parsed.to_string())
 }
 
 struct FalImage {
@@ -507,6 +658,31 @@ fn normalize_api_base(api_base: &str) -> String {
     } else {
         trimmed.to_owned()
     }
+}
+
+fn canonical_origin(api_base: &str) -> ProviderResultValue<String> {
+    let parsed = reqwest::Url::parse(api_base)
+        .map_err(|_| ProviderError::InvalidRequest("fal API base is not a valid URL".to_owned()))?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(ProviderError::InvalidRequest(
+            "fal API base has an unsafe origin".to_owned(),
+        ));
+    }
+    Ok(parsed.origin().ascii_serialization())
+}
+
+fn is_safe_request_id(request_id: &str) -> bool {
+    !request_id.is_empty()
+        && request_id.len() <= 256
+        && request_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
 }
 
 fn normalize_model_path(value: &str) -> Option<String> {

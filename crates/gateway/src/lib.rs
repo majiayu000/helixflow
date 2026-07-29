@@ -1,10 +1,8 @@
-use std::collections::BTreeMap;
-use std::fmt;
-
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
 mod atlas;
 mod fal;
@@ -15,34 +13,15 @@ mod runtime_provider;
 pub use atlas::{ApiProviderConfig, AtlasProvider};
 pub use fal::{FalProvider, FalProviderConfig};
 pub use registry::ProviderRegistry;
-pub use runtime_provider::{RuntimeProvider, UnavailableProvider};
+pub use runtime_provider::{
+    DurableProviderTask, Provider, ProviderDispatch, ProviderDispatchFailure,
+    ProviderDispatchFailureKind, ProviderDispatchResult, ProviderError,
+    ProviderRecoveryCapabilities, ProviderResultValue, ProviderResume, ProviderTaskHandle,
+    RuntimeProvider, UnavailableProvider,
+};
 
 pub fn module_name() -> &'static str {
     "gateway"
-}
-
-pub type ProviderResultValue<T> = Result<T, ProviderError>;
-
-#[async_trait]
-pub trait Provider: Send + Sync {
-    fn id(&self) -> &str;
-    /// Fingerprint of the effective configuration (models, API base, catalog
-    /// revision) for the given provider id. Cached artifacts are keyed on
-    /// this so config changes invalidate stale entries (HF-021).
-    fn config_fingerprint(&self, _provider_id: &str) -> String {
-        String::new()
-    }
-    async fn health(&self) -> ProviderHealth;
-    /// Remote task handles currently in flight for the given run, so an
-    /// interrupt can cancel remote paid work instead of only dropping the
-    /// local future (HF-011).
-    async fn active_handles(&self, _run_id: &str) -> Vec<ProviderTaskHandle> {
-        Vec::new()
-    }
-    async fn catalog(&self) -> ProviderResultValue<ProviderCatalog>;
-    async fn estimate(&self, req: ProviderRequest) -> ProviderResultValue<CostEstimate>;
-    async fn invoke(&self, req: ProviderRequest) -> ProviderResultValue<ProviderResult>;
-    async fn cancel(&self, handle: ProviderTaskHandle) -> ProviderResultValue<()>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -184,75 +163,6 @@ pub struct CostEstimate {
     #[serde(default)]
     pub unknown: bool,
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProviderTaskHandle {
-    pub provider: String,
-    pub provider_task_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProviderError {
-    WrongProvider { expected: String, actual: String },
-    UnsupportedCapability(String),
-    CancelUnsupported(String),
-    Unavailable { provider: String, reason: String },
-    InvalidRequest(String),
-    InvalidResponse(String),
-    RequestFailed(String),
-    ModelUnresolved { capability: String },
-}
-
-impl fmt::Display for ProviderError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::WrongProvider { expected, actual } => {
-                write!(f, "wrong provider: expected `{expected}`, got `{actual}`")
-            }
-            Self::UnsupportedCapability(capability) => {
-                write!(f, "unsupported provider capability: {capability}")
-            }
-            Self::CancelUnsupported(provider_task_id) => {
-                write!(
-                    f,
-                    "provider does not support cancelling remote task: {provider_task_id}"
-                )
-            }
-            Self::Unavailable { provider, reason } => {
-                write!(f, "runtime provider `{provider}` is unavailable: {reason}")
-            }
-            Self::ModelUnresolved { capability } => {
-                write!(
-                    f,
-                    "no resolved model binding for capability `{capability}`; run preflight must resolve implementations before invoke"
-                )
-            }
-            Self::InvalidRequest(message) => {
-                write!(
-                    f,
-                    "invalid provider request: {}",
-                    safe_provider_message(message)
-                )
-            }
-            Self::InvalidResponse(message) => {
-                write!(
-                    f,
-                    "invalid provider response: {}",
-                    safe_provider_message(message)
-                )
-            }
-            Self::RequestFailed(message) => {
-                write!(
-                    f,
-                    "provider request failed: {}",
-                    safe_provider_message(message)
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for ProviderError {}
 
 #[derive(Debug, Default, Clone)]
 pub struct MockProvider;
