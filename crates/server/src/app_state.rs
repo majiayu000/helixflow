@@ -12,11 +12,9 @@ use helixflow_agent::{
 use helixflow_gateway::RuntimeProvider;
 use helixflow_gateway::{ProviderCatalogSnapshot, ProviderRegistry};
 use helixflow_run::{
-    DEFAULT_MAX_PARALLEL_STEPS, EventBus, RunEventEnvelope, RunService,
-    normalize_max_parallel_steps,
+    DEFAULT_MAX_PARALLEL_STEPS, EventBus, RunError, RunService, normalize_max_parallel_steps,
 };
 use helixflow_store::{Store, StoreError, WorkspaceRecord};
-use serde_json::json;
 use tokio::sync::Mutex;
 
 use crate::version_file_reconciliation::{
@@ -57,16 +55,12 @@ impl AppState {
         tokio::fs::create_dir_all(&data_dir).await?;
         let store = Store::open(&database_url).await?;
         let reconciliation_report = Arc::new(reconcile_version_files(&store, &data_dir).await?);
-        interrupt_stale_active_runs(&store, &events).await?;
         let registry = default_provider_registry();
         persist_runtime_provider_status(&store, &registry).await?;
-        Ok(Self::with_store_provider(
-            events,
-            store,
-            data_dir,
-            registry,
-            reconciliation_report,
-        ))
+        let state =
+            Self::with_store_provider(events, store, data_dir, registry, reconciliation_report);
+        state.runner.recover_after_restart().await?;
+        Ok(state)
     }
 
     #[cfg(test)]
@@ -201,32 +195,11 @@ fn version_migration_apply_enabled() -> bool {
         .is_some_and(|value| matches!(value.trim(), "1" | "true" | "TRUE"))
 }
 
-async fn interrupt_stale_active_runs(
-    store: &Store,
-    events: &EventBus,
-) -> Result<(), AppStateError> {
-    let runs = store.interrupt_stale_active_runs().await?;
-    for run in runs {
-        let data = json!({ "reason": "server_restart" });
-        let event = store
-            .append_run_event(&run.id, "run.interrupted", &data.to_string())
-            .await?;
-        drop(events.publish(RunEventEnvelope {
-            workspace_id: run.workspace_id,
-            run_id: event.run_id,
-            seq: event.seq,
-            server_time: event.created_at,
-            ev: event.ev,
-            data,
-        }));
-    }
-    Ok(())
-}
-
 #[derive(Debug)]
 pub(crate) enum AppStateError {
     Io(std::io::Error),
     Store(StoreError),
+    Run(RunError),
     VersionFileConsistency(VersionFileReconciliationError),
 }
 
@@ -235,6 +208,7 @@ impl fmt::Display for AppStateError {
         match self {
             Self::Io(err) => write!(f, "failed to initialize app data directory: {err}"),
             Self::Store(err) => write!(f, "failed to initialize store: {err}"),
+            Self::Run(err) => write!(f, "failed to recover runs: {err}"),
             Self::VersionFileConsistency(err) => write!(f, "{err}"),
         }
     }
@@ -251,6 +225,12 @@ impl From<std::io::Error> for AppStateError {
 impl From<StoreError> for AppStateError {
     fn from(err: StoreError) -> Self {
         Self::Store(err)
+    }
+}
+
+impl From<RunError> for AppStateError {
+    fn from(err: RunError) -> Self {
+        Self::Run(err)
     }
 }
 
@@ -588,9 +568,10 @@ mod tests {
             .expect("create step");
         let events = EventBus::new(16);
 
-        interrupt_stale_active_runs(&store, &events)
+        RunService::with_provider_and_events(store.clone(), RuntimeProvider::mock(), events)
+            .recover_after_restart()
             .await
-            .expect("cleanup active runs");
+            .expect("recover active runs");
 
         let run = store.run(&run.id).await.expect("run");
         let steps = store.run_steps(&run.id).await.expect("steps");
@@ -598,6 +579,6 @@ mod tests {
         assert_eq!(run.status, "interrupted");
         assert_eq!(steps[0].state, "skipped");
         assert_eq!(stored_events[0].ev, "run.interrupted");
-        assert!(stored_events[0].data_json.contains("server_restart"));
+        assert_eq!(stored_events[0].data_json, "{}");
     }
 }

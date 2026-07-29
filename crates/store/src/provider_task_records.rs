@@ -138,7 +138,6 @@ impl Store {
         &self,
         input: NewProviderTask<'_>,
     ) -> StoreResult<ProviderTaskRecord> {
-        let mut tx = self.pool().begin().await?;
         let id = new_id("ptask");
         let lease = positive_duration(input.dispatch_lease_seconds, "dispatch lease")?;
         let deadline = positive_duration(input.dispatch_deadline_seconds, "dispatch deadline")?;
@@ -167,9 +166,18 @@ impl Store {
         .bind(input.dispatch_owner_id)
         .bind(lease)
         .bind(deadline)
-        .execute(&mut *tx)
+        .execute(self.pool())
         .await?;
-        let task = provider_task_for_step_in(&mut tx, input.run_step_id).await?;
+        let task = self
+            .provider_task_for_step(input.run_step_id)
+            .await?
+            .ok_or_else(|| StoreError::RecoveryInvariant {
+                operation: "insert_or_read_provider_task",
+                message: format!(
+                    "step `{}` provider task disappeared after insert",
+                    input.run_step_id
+                ),
+            })?;
         if task.run_id != input.run_id
             || task.provider != input.provider
             || task.dispatch_origin != input.dispatch_origin
@@ -184,7 +192,6 @@ impl Store {
                 ),
             });
         }
-        tx.commit().await?;
         Ok(task)
     }
 
@@ -301,20 +308,6 @@ impl Store {
             "materialization deadline",
         )?;
         let mut tx = self.pool().begin().await?;
-        let task = sqlx::query_as::<_, ProviderTaskRecord>(provider_task_sql!("WHERE id = ?"))
-            .bind(input.task_id)
-            .fetch_one(&mut *tx)
-            .await?;
-        let owner_matches = task.state != PROVIDER_TASK_DISPATCHING
-            || task.dispatch_owner_id.as_deref() == input.dispatch_owner_id;
-        if !matches!(
-            task.state.as_str(),
-            PROVIDER_TASK_DISPATCHING | PROVIDER_TASK_ACTIVE
-        ) || !owner_matches
-        {
-            tx.rollback().await?;
-            return Ok(None);
-        }
         let result = sqlx::query(
             r#"
             UPDATE run_provider_tasks
@@ -327,7 +320,14 @@ impl Store {
                 materialization_next_retry_at = current_timestamp,
                 dispatch_lease_expires_at = NULL,
                 updated_at = current_timestamp
-            WHERE id = ? AND state = ?
+            WHERE id = ?
+              AND (
+                state = 'active'
+                OR (
+                  state = 'dispatching'
+                  AND dispatch_owner_id = ?
+                )
+              )
             "#,
         )
         .bind(input.terminal_outcome)
@@ -335,13 +335,17 @@ impl Store {
         .bind(input.result_fingerprint)
         .bind(deadline)
         .bind(input.task_id)
-        .bind(&task.state)
+        .bind(input.dispatch_owner_id)
         .execute(&mut *tx)
         .await?;
         if result.rows_affected() != 1 {
             tx.rollback().await?;
             return Ok(None);
         }
+        let task = sqlx::query_as::<_, ProviderTaskRecord>(provider_task_sql!("WHERE id = ?"))
+            .bind(input.task_id)
+            .fetch_one(&mut *tx)
+            .await?;
         insert_actual_cost_once(&mut tx, &task, &input).await?;
         let updated = sqlx::query_as::<_, ProviderTaskRecord>(provider_task_sql!("WHERE id = ?"))
             .bind(input.task_id)
@@ -571,6 +575,22 @@ impl Store {
         Ok(intent)
     }
 
+    pub async fn run_execution_intent(
+        &self,
+        run_id: &str,
+    ) -> StoreResult<Option<RunExecutionIntentRecord>> {
+        Ok(sqlx::query_as::<_, RunExecutionIntentRecord>(
+            r#"
+            SELECT run_id, plan_fingerprint, estimate_fingerprint, cost_decision, created_at
+            FROM run_execution_intents
+            WHERE run_id = ?
+            "#,
+        )
+        .bind(run_id)
+        .fetch_optional(self.pool())
+        .await?)
+    }
+
     pub async fn request_run_terminalization(
         &self,
         run_id: &str,
@@ -636,18 +656,6 @@ impl Store {
         .fetch_all(self.pool())
         .await?)
     }
-}
-
-async fn provider_task_for_step_in(
-    tx: &mut Transaction<'_, Sqlite>,
-    run_step_id: &str,
-) -> StoreResult<ProviderTaskRecord> {
-    Ok(
-        sqlx::query_as::<_, ProviderTaskRecord>(provider_task_sql!("WHERE run_step_id = ?"))
-            .bind(run_step_id)
-            .fetch_one(&mut **tx)
-            .await?,
-    )
 }
 
 async fn insert_actual_cost_once(

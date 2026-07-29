@@ -64,6 +64,7 @@ impl StepDag {
         })
     }
 
+    #[cfg(test)]
     fn initial_ready(&self) -> VecDeque<usize> {
         self.upstream_counts
             .iter()
@@ -87,6 +88,8 @@ where
     ) -> RunResult<RunOutcome> {
         let steps = self.ensure_run_steps(&run.id, plan).await?;
         let dag = StepDag::from_plan(plan)?;
+        self.ensure_execution_intent(&run.id, plan, run.estimate_json.as_deref())
+            .await?;
 
         self.store
             .update_run_status(&run.id, RunStatus::Running.as_str(), None)
@@ -104,7 +107,6 @@ where
         }
 
         let mut outputs = BTreeMap::new();
-        let mut ready = dag.initial_ready();
         let mut remaining = dag.upstream_counts.clone();
         let mut started = vec![false; plan.steps.len()];
         let mut finished = vec![false; plan.steps.len()];
@@ -112,6 +114,40 @@ where
         let mut running = JoinSet::new();
         let mut first_error = None;
         let mut interrupted = false;
+        for output in self.store.run_step_outputs(&run.id).await? {
+            let Some((index, step)) = steps
+                .iter()
+                .enumerate()
+                .find(|(_, step)| step.id == output.run_step_id)
+            else {
+                continue;
+            };
+            let artifact = self.store.artifact(&output.artifact_id).await?;
+            outputs.insert(
+                [step.node_id.clone(), output.port],
+                ArtifactRef {
+                    artifact_id: artifact.id,
+                    storage_uri: artifact.storage_uri,
+                },
+            );
+            started[index] = true;
+        }
+        for (index, step) in steps.iter().enumerate() {
+            if step.state == RunStepState::Succeeded.as_str() {
+                started[index] = true;
+                finished[index] = true;
+                for &next in &dag.downstream[index] {
+                    remaining[next] = remaining[next].saturating_sub(1);
+                }
+            }
+        }
+        let mut ready: VecDeque<usize> = remaining
+            .iter()
+            .enumerate()
+            .filter_map(|(index, count)| {
+                (*count == 0 && !finished[index] && !skipped[index]).then_some(index)
+            })
+            .collect();
 
         loop {
             if interrupt.is_requested() && first_error.is_none() {
@@ -245,39 +281,35 @@ where
                 "error": err.to_string(),
                 "phase": "actual_cost_ledger"
             }))?;
-            self.store
-                .update_run_status(&run.id, RunStatus::Failed.as_str(), Some(&error_json))
-                .await?;
-            self.emit(
+            self.request_and_settle_terminal(
                 workspace_id,
                 &run.id,
-                "run.failed",
-                json!({ "error": err.to_string(), "phase": "actual_cost_ledger" }),
+                RunStatus::Failed.as_str(),
+                Some(&error_json),
             )
             .await?;
             return Err(err);
         }
 
         if let Some((err, error_json)) = first_error {
-            self.store
-                .update_run_status(&run.id, RunStatus::Failed.as_str(), Some(&error_json))
-                .await?;
-            self.emit(
+            self.request_and_settle_terminal(
                 workspace_id,
                 &run.id,
-                "run.failed",
-                json!({ "error": err.to_string() }),
+                RunStatus::Failed.as_str(),
+                Some(&error_json),
             )
             .await?;
             return Err(err);
         }
 
         if interrupted || interrupt.is_requested() {
-            self.store
-                .update_run_status(&run.id, RunStatus::Interrupted.as_str(), None)
-                .await?;
-            self.emit(workspace_id, &run.id, "run.interrupted", json!({}))
-                .await?;
+            self.request_and_settle_terminal(
+                workspace_id,
+                &run.id,
+                RunStatus::Interrupted.as_str(),
+                None,
+            )
+            .await?;
             return self.outcome(&run.id).await;
         }
 
@@ -351,9 +383,9 @@ where
         self.emit_node_state(workspace_id, run_id, step, RunStepState::Running, None)
             .await?;
 
-        let mut cache_links = Vec::new();
-        let mut step_outputs = Vec::new();
-        let cost = if let (Some(provider), Some(capability)) = (&step.provider, &step.capability) {
+        let (cache_links, step_outputs, cost_json) = if let (Some(provider), Some(capability)) =
+            (&step.provider, &step.capability)
+        {
             let input_texts = crate::input_materialize::materialize_text_inputs(
                 &self.store,
                 &self.artifact_root,
@@ -377,41 +409,33 @@ where
                     .as_ref()
                     .map(|resolved| resolved.operation_id.clone()),
             };
-            let result = tokio::select! {
-                result = self.provider.invoke(request) => result?,
-                _ = interrupt.cancelled() => return Ok(StepExecution::Interrupted),
+            let Some(execution) = self
+                .execute_provider_step(workspace_id, run_id, step, record, request, interrupt)
+                .await?
+            else {
+                return Ok(StepExecution::Interrupted);
             };
-            for (port, payload) in result.outputs {
-                let artifact = self
-                    .persist_artifact(workspace_id, run_id, &record.id, &step.node_id, payload)
-                    .await?;
-                cache_links.push(CachedArtifactLink {
-                    port: Some(port.clone()),
-                    artifact_id: artifact.id.clone(),
-                });
-                step_outputs.push(StepOutput {
-                    port,
-                    artifact: ArtifactRef {
-                        artifact_id: artifact.id,
-                        storage_uri: artifact.storage_uri,
-                    },
-                });
-            }
-            Some(result.cost)
+            (
+                execution.cache_links,
+                execution.outputs,
+                Some(execution.cost_json),
+            )
         } else {
             let builtin = self
                 .execute_builtin(workspace_id, run_id, step, record, &inputs)
                 .await?;
-            cache_links = builtin.cache_links;
-            step_outputs = builtin.outputs;
-            None
+            for output in &builtin.outputs {
+                self.store
+                    .link_run_step_output(&record.id, &output.port, &output.artifact.artifact_id)
+                    .await?;
+            }
+            (builtin.cache_links, builtin.outputs, None)
         };
 
         if interrupt.is_requested() {
             return Ok(StepExecution::Interrupted);
         }
 
-        let cost_json = cost.as_ref().map(serde_json::to_string).transpose()?;
         self.store
             .update_run_step_state(
                 &record.id,
@@ -582,7 +606,7 @@ where
         })
     }
 
-    async fn persist_artifact(
+    pub(crate) async fn persist_artifact(
         &self,
         workspace_id: &str,
         run_id: &str,

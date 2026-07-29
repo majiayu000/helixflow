@@ -703,12 +703,9 @@ async fn interrupt_surfaces_unsupported_remote_cancel() {
         .and_then(serde_json::Value::as_str)
         .expect("unsupported event carries a user-facing message");
     assert!(message.contains("incur charges"));
-    assert_eq!(
-        unsupported_event
-            .data
-            .get("provider_task_id")
-            .and_then(serde_json::Value::as_str),
-        Some(format!("remote-{}", outcome.run.id).as_str())
+    assert!(
+        unsupported_event.data.get("provider_task_id").is_none(),
+        "remote task identity must not leave the gateway/store boundary"
     );
 
     blocking.release();

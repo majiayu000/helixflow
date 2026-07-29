@@ -677,29 +677,6 @@ where
         Ok(total)
     }
 
-    pub(crate) async fn record_actual_costs(&self, outcome: &RunOutcome) -> RunResult<()> {
-        for step in &outcome.steps {
-            let (Some(provider), Some(cost_json)) = (&step.provider, &step.cost_actual_json) else {
-                continue;
-            };
-            let cost: CostEstimate = serde_json::from_str(cost_json)?;
-            self.store
-                .create_cost_ledger(NewCostLedger {
-                    workspace_id: &outcome.run.workspace_id,
-                    run_id: Some(&outcome.run.id),
-                    run_step_id: Some(&step.id),
-                    provider,
-                    amount: cost.amount,
-                    currency: &cost.currency,
-                    // Providers that cannot report actual cost keep the
-                    // estimated flag so the ledger never fakes a confirmed $0.
-                    estimated: cost.estimated,
-                })
-                .await?;
-        }
-        Ok(())
-    }
-
     async fn revert_claimed_runs(&self, run_ids: &[String]) -> RunResult<()> {
         for run_id in run_ids {
             if self

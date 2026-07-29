@@ -75,6 +75,9 @@ where
                 .copy_cached_artifact(workspace_id, run_id, &record.id, &step.node_id, &source)
                 .await?;
             if let Some(port) = port {
+                self.store
+                    .link_run_step_output(&record.id, &port, &artifact.id)
+                    .await?;
                 outputs.push(StepOutput {
                     port,
                     artifact: ArtifactRef {

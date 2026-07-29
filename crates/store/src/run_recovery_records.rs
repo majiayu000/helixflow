@@ -276,7 +276,7 @@ impl Store {
             });
         }
         let parent = run_in_transaction(&mut tx, parent_run_id).await?;
-        let child_id = format!("run-retry-{}", parent.id);
+        let child_id = new_id("run");
         let trigger = if parent.trigger == "sweep" {
             "agent"
         } else {

@@ -29,6 +29,7 @@ mod executor;
 mod input_materialize;
 #[cfg(test)]
 mod invalid_media_tests;
+mod provider_recovery;
 mod run_policy;
 mod self_heal;
 #[cfg(test)]
@@ -285,15 +286,20 @@ where
     pub async fn interrupt_run(&self, run_id: &str) -> RunResult<()> {
         {
             let interrupts = self.interrupts.lock().await;
-            let interrupt = interrupts
-                .get(run_id)
-                .ok_or_else(|| RunError::RunNotActive(run_id.to_owned()))?;
-            interrupt.request();
+            if let Some(interrupt) = interrupts.get(run_id) {
+                interrupt.request();
+            }
         }
+        let run = self.store.run(run_id).await?;
+        if !matches!(run.status.as_str(), "queued" | "estimating" | "running") {
+            return Err(RunError::RunNotActive(run_id.to_owned()));
+        }
+        self.store
+            .request_run_terminalization(run_id, RunStatus::Interrupted.as_str(), None)
+            .await?;
         // Also cancel remote paid work instead of only dropping the local
         // future (HF-011). Failures are surfaced as run events so the UI
         // never claims a remote task stopped when it did not.
-        let run = self.store.run(run_id).await?;
         for handle in self.provider.active_handles(run_id).await {
             match self.provider.cancel(handle.clone()).await {
                 Ok(()) => {
@@ -308,10 +314,10 @@ where
                 // A provider without a remote cancel endpoint (e.g. Atlas) is
                 // not a transient failure: the remote task will keep running
                 // and billing, and the user must be told explicitly.
-                Err(ProviderError::CancelUnsupported(provider_task_id)) => {
+                Err(ProviderError::CancelUnsupported(_)) => {
                     eprintln!(
                         "run `{run_id}`: provider `{}` does not support remote cancel; \
-                         task `{provider_task_id}` keeps running remotely",
+                         remote work may keep running",
                         handle.provider
                     );
                     self.emit(
@@ -320,7 +326,6 @@ where
                         "run.remote_cancel_unsupported",
                         serde_json::json!({
                             "provider": handle.provider,
-                            "provider_task_id": provider_task_id,
                             "message": format!(
                                 "Provider `{}` cannot cancel already-submitted remote tasks; \
                                  the remote task may keep running and incur charges.",
