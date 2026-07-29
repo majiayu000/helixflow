@@ -61,8 +61,7 @@ where
         }
         let mut workspace_keepers = BTreeMap::<String, (String, Option<String>)>::new();
         for run in self.store.restart_active_runs().await? {
-            let restart_candidate = run.status == "running" || (run.status == "queued" && requeue);
-            if restart_candidate {
+            if run.status == "running" {
                 if let Some((_, keeper_group)) = workspace_keepers.get(&run.workspace_id)
                     && (run.group_id.is_none() || run.group_id != *keeper_group)
                 {

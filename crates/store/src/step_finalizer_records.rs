@@ -11,6 +11,10 @@ impl Store {
         outputs: &[(String, String)],
     ) -> StoreResult<bool> {
         let mut tx = self.pool().begin().await?;
+        sqlx::query("UPDATE run_steps SET progress = progress WHERE id = ?")
+            .bind(run_step_id)
+            .execute(&mut *tx)
+            .await?;
         if let Some(task_id) = provider_task_id {
             let state: String =
                 sqlx::query_scalar("SELECT state FROM run_provider_tasks WHERE id = ?")

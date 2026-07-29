@@ -24,23 +24,21 @@ where
         let capabilities = self.provider.recovery_capabilities(&request.provider);
         let dispatch = self.provider.dispatch(request);
         tokio::pin!(dispatch);
-        tokio::select! {
-            result = &mut dispatch => return Ok(result),
-            _ = interrupt.cancelled() => {
-                if !capabilities.resume && !capabilities.cancel {
-                    return Ok(Err(ProviderDispatchFailure {
-                        kind: ProviderDispatchFailureKind::NotSubmitted,
-                        error: ProviderError::RequestFailed(
-                            "local provider execution was interrupted".to_owned(),
-                        ),
-                    }));
-                }
-            }
-        }
-
+        let mut interrupted = false;
         loop {
             tokio::select! {
                 result = &mut dispatch => return Ok(result),
+                _ = interrupt.cancelled(), if !interrupted => {
+                    if !capabilities.resume && !capabilities.cancel {
+                        return Ok(Err(ProviderDispatchFailure {
+                            kind: ProviderDispatchFailureKind::NotSubmitted,
+                            error: ProviderError::RequestFailed(
+                                "local provider execution was interrupted".to_owned(),
+                            ),
+                        }));
+                    }
+                    interrupted = true;
+                }
                 _ = tokio::time::sleep(DISPATCH_RENEW_INTERVAL) => {
                     if !self
                         .store

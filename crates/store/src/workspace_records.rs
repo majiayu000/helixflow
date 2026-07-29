@@ -140,9 +140,11 @@ impl Store {
             r#"
             SELECT id, workspace_id, role, text, kind, ref_id, attachment_ids_json, created_at
             FROM messages
-            WHERE ref_id = ?
+            WHERE workspace_id = ? AND kind = ? AND ref_id = ?
             "#,
         )
+        .bind(input.workspace_id)
+        .bind(input.kind)
         .bind(ref_id)
         .fetch_one(self.pool())
         .await?)

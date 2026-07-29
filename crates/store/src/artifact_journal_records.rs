@@ -132,6 +132,17 @@ impl Store {
         input: NewArtifact<'_>,
     ) -> StoreResult<ArtifactRecord> {
         let mut tx = self.pool().begin().await?;
+        sqlx::query(
+            r#"
+            UPDATE artifact_publish_journal
+            SET updated_at = updated_at
+            WHERE operation_key = ? AND owner_id = ?
+            "#,
+        )
+        .bind(operation_key)
+        .bind(owner_id)
+        .execute(&mut *tx)
+        .await?;
         let journal = sqlx::query_as::<_, ArtifactPublishJournalRecord>(
             r#"
             SELECT operation_key, run_id, run_step_id, staged_path, published_path, artifact_id,
