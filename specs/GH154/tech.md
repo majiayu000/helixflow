@@ -385,7 +385,8 @@ run → failed、写 `run.failed` event，并调用共同 failure finalizer。�
    - `running` 且所有 step queued、execution intent 完整、无 provider task/output：
      lease claim 并从 ready queue 恢复；
    - `running` builtin step 仅当 capability 明确声明并测试 `restart_safe=true` 时可重放；
-     否则 interrupted；
+     否则创建/合并 `desired=interrupted` work item、撤销 DAG 并收敛全部 siblings 后
+     terminal；
    - `dispatching`、provider-backed running 无 handle、非法 handle：把已知 task
      abandoned，创建/合并 `desired=interrupted` work item + durable risk event，再收敛
      siblings；
@@ -426,7 +427,8 @@ interrupt 后的 task finalizer 只有持有 matching work item 才可绕过 run
 
 workspace active-run 检查排除当前 recovery run；同 group sweep 保留既有例外。若 DB
 存在互相冲突的多个 active run，按 `created_at,id` 确定顺序认领，不能同时恢复；
-未认领者以稳定 conflict code 显式中断，不静默选择。
+未认领者以稳定 conflict code 创建/合并 `desired=interrupted` work item，收敛其全部
+sibling tasks 后再 terminal，不静默选择或遗留 paid task。
 
 ## 6. Unrecoverable 与用户可见事件
 

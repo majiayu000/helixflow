@@ -92,6 +92,7 @@ implementation PR 仍须以 exact-head review、fresh GitHub Actions 和上述�
 - failed-settling 与 user interrupt 并发，interrupt 胜出且不 self-heal；
 - failed-ready 与 user interrupt 并发，interrupt 胜出且不 self-heal；
 - outcome-unknown、missing/invalid handle、deadline abandon 的 parallel sibling settlement；
+- restart-unsafe builtin、workspace active-run conflict loser 的 parallel sibling settlement；
 - failed commit→continuation claim、retry child insert→linkage commit；
 - 含历史重复 `(parent_run_id,attempt)` rows 的 migration；
 - recovery deadline 跨连续多次 restart；
