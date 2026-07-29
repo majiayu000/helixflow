@@ -47,8 +47,9 @@ GH-153
 
 1. `HELIXFLOW_RUN_AGENT_FIX_ENABLED` 缺失时为关闭；关闭时不得创建
    `run_fix_attempts`、Agent session、proposal、version、派生 run 或 fix 事件。
-2. `HELIXFLOW_RUN_MAX_FIX_ATTEMPTS` 缺失时为 `1`；只接受非负整数。非法 UTF-8、
-   负数、浮点或溢出值必须 fail-closed，持久化 `run.fix_exhausted`，不得回退默认值。
+2. 仅在 fix 开关开启后解析 `HELIXFLOW_RUN_MAX_FIX_ATTEMPTS`：缺失时为 `1`，只接受
+   非负整数。非法 UTF-8、负数、浮点或溢出值必须 fail-closed，持久化
+   `run.fix_exhausted`，不得回退默认值；开关关闭时不解析该值，也不产生任何写入。
 3. fix 上限按持久化 repair chain 计数，与 `runs.attempt` 完全独立。值为 `0` 时不调用
    Agent，直接记录 exhausted；任何 restart 或 retry 都不得重置计数。
 4. fix 只在 source run 为 `failed`、同图 retry decision 明确为 `exhausted` 且没有

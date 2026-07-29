@@ -47,7 +47,8 @@ recommended_sweep）与稳定 reason，不携带 raw error。重复 handoff 由 
 
 - `HELIXFLOW_RUN_AGENT_FIX_ENABLED`：缺失/`0`/`false`/`off` 为 false，
   `1`/`true`/`on` 为 true；其他值显式配置错误。
-- `HELIXFLOW_RUN_MAX_FIX_ATTEMPTS`：缺失为 `1`，非负 `u32`；非法值 fail-closed。
+- `HELIXFLOW_RUN_MAX_FIX_ATTEMPTS`：只在开关开启后解析；缺失为 `1`，非负 `u32`；
+  非法值 fail-closed。开关关闭时忽略该值，保持零写入。
 
 开关检查发生在 durable attempt claim 之前，因此关闭态没有写放大。max 为 0 或非法配置
 时写一次幂等 exhausted event；不得调用 Agent。
