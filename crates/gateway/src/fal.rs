@@ -147,7 +147,7 @@ impl FalProvider {
         &self,
         req: &ProviderRequest,
     ) -> ProviderResultValue<DurableProviderTask> {
-        let prompt = wired_or_param_string(&req, "prompt", "prompt")?;
+        let prompt = wired_or_param_string(req, "prompt", "prompt")?;
         // GH130 T4: the queue path comes only from the run's resolved
         // binding; it must still be a safe single model path.
         let model = req

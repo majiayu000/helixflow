@@ -280,7 +280,7 @@ impl AtlasProvider {
         &self,
         req: &ProviderRequest,
     ) -> ProviderResultValue<DurableProviderTask> {
-        let prompt = wired_or_param_string(&req, "prompt", "prompt")?;
+        let prompt = wired_or_param_string(req, "prompt", "prompt")?;
         // GH130 T4: the model comes only from the run's resolved binding.
         let model = req
             .operation_id
@@ -371,7 +371,7 @@ impl AtlasProvider {
             .get("duration_sec")
             .and_then(Value::as_u64)
             .unwrap_or(5);
-        let output = first_output(&completed)?;
+        let output = first_output(completed)?;
         let mut result = remote_output_result(
             "video",
             ArtifactKind::Video,
