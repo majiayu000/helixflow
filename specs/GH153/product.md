@@ -64,8 +64,8 @@ GH-153
    recommended member。retry child 必须继承 chain identity，不得靠已被改写的
    `trigger`/`group_id` 反推来源。非推荐 sweep、manual、interrupted、succeeded 和
    output-rejected force rerun 不得触发。
-6. eligible run 的 failed terminal transition 必须与唯一 durable failure work item
-   同事务提交；retry child 或 fix claim 都消费该 work item。进程在 failed commit 后、
+6. eligible run 的 failed terminal transition 必须与唯一 durable failure continuation
+   同事务提交；retry child 或 fix claim 都消费该 continuation。进程在 failed commit 后、
    coordinator claim 前退出时，启动扫描必须准确恢复，不能漏修或误修。
 7. 每次 attempt 先持久化唯一 operation 与 attempt index，再调用 Agent。重复终态通知
    必须返回已有 operation；同一 repair chain 的并发 claim 最多一个成功。
@@ -90,6 +90,8 @@ GH-153
     `target_version_id`、nullable provider selection 仍等于快照，并在 child 创建、每次
     estimate、自动启动、稍后的用户确认和真实 dispatch 前重验；任一已变化则 fail closed，
     禁止执行已被 rollback/deselect 的 target 或用新 account/credential 执行旧 child。
+    所有 fix-linked auto-start、manual confirm、claim 和 dispatch 还必须重验 feature
+    enabled；关闭时返回 `FIX_DISABLED` 且不改 child。用户显式 hold/interrupt 仍允许。
 12. candidate graph 文件发布、proposal/version/current pointer、attempt target linkage
     要么共同提交，要么执行引用感知 cleanup；cleanup 失败必须显式报错并交给启动
     reconciliation，不得遗留无记录的成功状态。
@@ -110,7 +112,8 @@ GH-153
 18. `version_applied` 后重复执行或重启恢复必须复用同一 target version，并幂等创建或
     返回同一 child run；不得再次调用 Agent。Agent 调用中进程退出时，该 in-flight
     attempt 视为已消耗，恢复逻辑不得假装成功或无痕重放。feature 已关闭时所有未派发
-    attempt/child 状态保持不动。
+    attempt/child 状态保持不动；这类 quiescent child 在无 provider task 时不占 workspace
+    active-run slot，但自身的 execute/confirm 入口仍被 disabled guard 拒绝。
 19. attempt/decision 状态转换必须与唯一 event outbox 同事务提交；event 使用确定性
     dedupe key 写 `run_events` 后再发布。max=0、非法配置、重复 finalizer、重启和广播
     重试都只能产生一个 `run.fix_exhausted`。事件只包含稳定 ID、attempt/max、状态、
@@ -138,7 +141,7 @@ GH-153
       时停在 `waiting_confirmation`，阈值内才自动执行。
 - [ ] 并发终态通知、重复 operation、version/provider CAS conflict 与候选文件故障注入
       均不产生重复 version、child run 或 ledger。
-- [ ] restart 覆盖 recommended/non-recommended 在 failed commit 后、work-item claim 前的
+- [ ] restart 覆盖 recommended/non-recommended 在 failed commit 后、continuation claim 前的
       provenance 恢复，Agent in-flight attempt 消耗，以及 version/child/分步 estimate
       每个持久化窗口的幂等恢复。
 - [ ] nullable default provider、默认 provider 改变、同 provider id 配置漂移均有 CAS
@@ -148,6 +151,9 @@ GH-153
       selector 时，child create、estimate、confirmation 与 dispatch 全部拒绝。
 - [ ] restart 前关闭 feature 时，claimed/version_applied/child_preparing/outbox 不产生
       新写入或 provider dispatch；重新开启后从同一 durable state 恢复。
+- [ ] disabled restart 后仍可启动普通 manual run；quiescent fix child 的 confirm/dispatch
+      返回 `FIX_DISABLED`。重新开启时若 workspace 忙则等待，current/selector 已变化则
+      fail closed，绝不并行恢复。
 - [ ] 恶意 error 与 graph params 的 prompt-injection 测试证明 system policy 不被覆盖，
       scope/diff gate 拒绝无关节点删除、全图改写与 provider/workspace 设置修改。
 - [ ] `max=2` 覆盖首次 Agent runtime failure/clarify/invalid 后的第二次 claim，以及达到

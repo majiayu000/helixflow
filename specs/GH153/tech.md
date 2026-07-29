@@ -34,10 +34,10 @@ GH-153
 
 `run_with_self_heal` 返回最终 run/decision，而不是把所有 `None` 当作相同终态。但
 correctness 不依赖该返回值恰好被同一进程消费：feature 开启时，eligible run 的 failed
-terminal transaction 同时 insert-or-read GH-154 `run_failure_continuations`。continuation 至少携带
-`source_run_id`、durable repair chain/provenance 与稳定 reason，不携带 raw error。
-coordinator claim 后在一个 transaction 中创建 retry child 或把 item 推进为
-`fix_pending`；启动恢复扫描未完成 item。
+terminal transaction 同时 insert-or-read GH-154 `run_failure_continuations`。continuation
+至少携带 `source_run_id`、durable repair chain/provenance 与稳定 reason，不携带 raw
+error。coordinator claim 后在一个 transaction 中创建 retry child 或把 continuation
+推进为 `fix_pending`；启动恢复扫描未完成 continuation。
 
 普通 agent 在首个 eligible terminal 前建立/关联 chain。feature 开启时，
 `start_confirmed_sweep` 必须把 `group_id + recommended_run_id + chain` 与 sweep
@@ -68,7 +68,7 @@ transaction 只引用这个已存在的 chain；不得等到推荐 run 已失败
 - `run_repair_chains`：`root_run_id` UNIQUE，保存 `provenance`、可空
   `sweep_group_id`/`recommended_run_id`、配置快照与创建时间；
 - 扩展 GH-154 `run_failure_continuations`：关联 chain，复用其
-  `source_run_id` UNIQUE、retry child linkage 与 claim lease，并增加
+  `source_run_id` UNIQUE、retry child linkage，并增加
   `fix_pending/fix_claimed/fix_completed` 状态；不创建第二套 failure handoff；
 - `run_fix_attempts`：独立 Agent 调用状态；
 - `run_fix_event_outbox`：`dedupe_key` UNIQUE，保存安全 event payload 与投递状态。
@@ -93,7 +93,7 @@ transaction 只引用这个已存在的 chain；不得等到推荐 run 已失败
 
 store API 使用 `BEGIN IMMEDIATE` 和条件 UPDATE 实现：
 
-1. 只从显式 chain/work-item/child linkage 解析 root provenance，统计已消耗 attempt；
+1. 只从显式 chain/continuation/child linkage 解析 root provenance，统计已消耗 attempt；
 2. 同一 source 的 active operation 或同一 `(root_run_id, attempt_index)` 只允许一个；
 3. 达到上限幂等返回 exhausted；
 4. 状态只按上述顺序前进，终态不可回退；
@@ -108,6 +108,17 @@ store API 使用 `BEGIN IMMEDIATE` 和条件 UPDATE 实现：
    commit 后、broadcast 前退出，或广播成功后、标记前退出，启动扫描都可安全重播，客户端
    按 event id 去重。max=0/非法配置也在 chain 上有唯一 decision/dedupe key，不需要伪造
    1-based attempt。
+
+continuation fix claim 不使用 recovery lease：短 transaction 条件 CAS
+`exhausted/fix_pending → fix_claimed`，并依靠
+`UNIQUE(root_run_id, attempt_index)` 创建 attempt，保证单赢家。进程死在 Agent 调用中时，
+restart 读取 `fix_claimed + claimed/agent_running attempt`，按既有规则消耗该 attempt 并
+推进，不需要续租长调用。
+
+GH-154 初始 continuation CHECK 不包含 fix states；本 migration 必须在单 transaction
+安全 rebuild table：创建扩展 CHECK 的新表、逐行复制/校验 GH-154
+`pending/retry_created/exhausted/completed` 记录、重建 UNIQUE/FK/index、原子 rename。
+测试用含每种旧 state 的数据库证明行数、child linkage 与 retry key 完整保留。
 
 attempt 表不保存 graph、raw `error_json`、prompt 或 provider response。workspace 删除
 不得被 attempt 的 run/version/proposal 外键阻塞。
@@ -198,6 +209,11 @@ provider/scope/catalog 与 attempt 快照相等。target deselected 时
 审计），不得调用 estimate 或 provider；通用 `start_confirmed_run` 对带 fix-attempt
 linkage 的 child 必须执行同一 guard，不能旁路。
 
+所有带 fix-attempt linkage 的 auto-start、manual confirmation、background claim 与
+provider dispatch 在上述 target/provider guard 前还要读取当前 fix policy；disabled
+返回稳定 `FIX_DISABLED` conflict，不改变 run/attempt/outbox。`hold`/`interrupt` 是用户
+显式终止动作，保持可用。
+
 child 估价完成后调用既有
 `start_confirmed_run_within_budget`：未知/超阈值保持 pending；阈值内按既有 workspace
 atomic claim 自动执行。只有 child 可查询且 cost decision 已持久化后，才在 source run
@@ -215,6 +231,13 @@ attempt/child/outbox 不 claim、不改状态、不发 event；`child_preparing/
 从 GH-154 通用 stale-estimating interrupt 中排除并保持 quiescent。只有已存在
 dispatching/active provider task 的 child 交给 GH-154 terminalization 做计费安全收敛，
 不得继续 DAG 或产生下一 fix。
+
+为避免 rollback 冻结 workspace，所有 busy/atomic workspace-claim 查询在 feature 关闭时
+动态忽略“有 fix-attempt linkage、处于 child_preparing/estimating/waiting_confirmation、
+且没有 dispatching/active provider task”的 quiescent child；该排除不写 DB。它只释放
+其他普通 run 的 slot，不授权 quiescent child 执行。重新开启时 coordinator 先做 target/
+selector/provider guard，再按正常 workspace claim：若已有新 active run则保持等待；若
+current/selector 已变则 fail closed，不并行恢复。
 
 feature 开启时，startup 必须先识别并保留 fix-linked `child_preparing/estimating`，再让
 GH-154 分类其他 estimating run；随后恢复：
@@ -237,7 +260,7 @@ event bus 不是恢复真相；所有决策来自 DB/outbox。`pending → event
 at-least-once 重播，snapshot/refetch 与 UI 按 id 去重。
 
 GH-154 先恢复/收敛持久化 remote handles，再把确实收敛为 `failed` 且符合来源条件的
-run 交给同一 durable work-item finalizer。仍在 remote polling、补取消或被标为
+run 交给同一 durable continuation finalizer。仍在 remote polling、补取消或被标为
 `interrupted` 的 run 不进入 fix。GH-153 不创建或模拟任何 provider remote handle。
 
 ### 8. Event and frontend contract
@@ -283,14 +306,14 @@ provider endpoint。Web
 
 | Invariants | Test focus |
 | --- | --- |
-| 1–6 | policy parser、关闭态无写入、durable work item、agent/recommended provenance |
+| 1–6 | policy parser、关闭态无写入、durable continuation、agent/recommended provenance |
 | 7, 16–19, 22 | store claim、chain 计数、N>1 推进、outbox/event 幂等 |
 | 8–10 | exact source、安全 projection、prompt injection 与 scope/diff gate |
 | 11–12 | nullable/effective provider CAS、proposal/version/attempt 原子性、candidate cleanup |
 | 13–15 | target graph fresh compile、partial estimate recovery、cost gate/ledger 幂等 |
 | 18–20 | restart matrix、single child、child_preparing、exactly-once event |
 | 21 | Web retry/fix notices、snapshot preservation、confirmation/refetch |
-| 23 | GH-154 common finalizer/work-item contract 的 unit/integration seam |
+| 23 | GH-154 durable continuation contract 的 unit/integration seam |
 
 ## 风险与回滚
 
