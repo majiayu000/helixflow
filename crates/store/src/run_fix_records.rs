@@ -80,7 +80,7 @@ pub struct RunFixSnapshot<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunFixClaim {
-    Claimed(RunFixAttemptRecord),
+    Claimed(Box<RunFixAttemptRecord>),
     Exhausted,
     NotEligible,
 }
@@ -366,7 +366,7 @@ impl Store {
         .await?;
         let attempt = fix_attempt_in_tx(&mut tx, &attempt_id).await?;
         tx.commit().await?;
-        Ok(RunFixClaim::Claimed(attempt))
+        Ok(RunFixClaim::Claimed(Box::new(attempt)))
     }
 
     pub async fn mark_run_fix_agent_running(
