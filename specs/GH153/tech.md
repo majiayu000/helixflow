@@ -34,7 +34,7 @@ GH-153
 
 `run_with_self_heal` 返回最终 run/decision，而不是把所有 `None` 当作相同终态。但
 correctness 不依赖该返回值恰好被同一进程消费：feature 开启时，eligible run 的 failed
-terminal transaction 同时 insert-or-read `run_failure_work_items`。work item 至少携带
+terminal transaction 同时 insert-or-read GH-154 `run_failure_continuations`。continuation 至少携带
 `source_run_id`、durable repair chain/provenance 与稳定 reason，不携带 raw error。
 coordinator claim 后在一个 transaction 中创建 retry child 或把 item 推进为
 `fix_pending`；启动恢复扫描未完成 item。
@@ -60,15 +60,16 @@ transaction 只引用这个已存在的 chain；不得等到推荐 run 已失败
 开关检查发生在 durable attempt claim 之前，因此关闭态没有写放大。max 为 0 或非法配置
 时写一次幂等 exhausted event；不得调用 Agent。
 
-### 3. Durable chain、work item、attempt 与 event outbox
+### 3. Durable chain、continuation、attempt 与 event outbox
 
 下一条 store migration（实现时以 main 的下一个空闲序号命名，当前基线候选为
 `0008_run_agent_fix.sql`）新增：
 
 - `run_repair_chains`：`root_run_id` UNIQUE，保存 `provenance`、可空
   `sweep_group_id`/`recommended_run_id`、配置快照与创建时间；
-- `run_failure_work_items`：`source_run_id` UNIQUE，保存 chain、typed retry decision、
-  `pending/claimed/retry_created/fix_pending/completed` 状态和 claim lease；
+- 扩展 GH-154 `run_failure_continuations`：关联 chain，复用其
+  `source_run_id` UNIQUE、retry child linkage 与 claim lease，并增加
+  `fix_pending/fix_claimed/fix_completed` 状态；不创建第二套 failure handoff；
 - `run_fix_attempts`：独立 Agent 调用状态；
 - `run_fix_event_outbox`：`dedupe_key` UNIQUE，保存安全 event payload 与投递状态。
 
@@ -119,7 +120,8 @@ server 新增 `run_agent_fix.rs` coordinator，并将 `workbench_message.rs` 当
 
 - source run 必须仍为 `failed`；
 - source version 必须属于同一 workspace，graph file/hash 必须验证；
-- workspace current version、nullable runtime provider selection、effective provider、
+- child 创建前，workspace current version 必须等于已记录的 `target_version_id`；
+  nullable runtime provider selection、effective provider、
   GH-154 recovery scope 与 provider catalog fingerprint 必须等于 attempt 快照；
 - run provenance 必须来自 durable chain；调用参数、trigger 和 event 不具有认证作用。
 
@@ -189,8 +191,10 @@ estimate/cost decision、推进 attempt `child_ready`，再把 child 置为
 
 `expected_recovery_scope_fingerprint` 不只在 version apply 时检查。每次 step estimate、
 threshold 内 auto-start、等待确认后的用户 confirm、restart recovery 与 provider dispatch
-都必须从 registry 重新解析 effective provider/scope/catalog 并与 attempt 快照相等。
-scope 改变时把 child fail closed 为 `FIX_PROVIDER_SCOPE_CHANGED`（target version 保留用于
+都必须要求 workspace current version == `target_version_id`、
+`runtime_provider_id IS expected_runtime_provider_id`，并从 registry 重新解析 effective
+provider/scope/catalog 与 attempt 快照相等。target deselected 时
+`FIX_TARGET_DESELECTED`，scope 改变时 `FIX_PROVIDER_SCOPE_CHANGED`（target version 保留
 审计），不得调用 estimate 或 provider；通用 `start_confirmed_run` 对带 fix-attempt
 linkage 的 child 必须执行同一 guard，不能旁路。
 
@@ -205,19 +209,27 @@ fix attempt。
 
 ### 7. Restart recovery and idempotency
 
-`AppState::open_in_data_dir` 在 store migration、version-file reconciliation 之后启动 fix
-recovery。恢复规则：
+`AppState::open_in_data_dir` 在 store migration、version-file reconciliation 之后，先
+严格解析 fix policy，再做 GH-154 startup classification。feature 关闭时，fix-linked
+attempt/child/outbox 不 claim、不改状态、不发 event；`child_preparing/estimating` 也必须
+从 GH-154 通用 stale-estimating interrupt 中排除并保持 quiescent。只有已存在
+dispatching/active provider task 的 child 交给 GH-154 terminalization 做计费安全收敛，
+不得继续 DAG 或产生下一 fix。
+
+feature 开启时，startup 必须先识别并保留 fix-linked `child_preparing/estimating`，再让
+GH-154 分类其他 estimating run；随后恢复：
 
 - `claimed` / `agent_running`：进程内 Agent handle 已丢失；将该 attempt 记为已消耗
   `failed`，不得以同一 operation 重放 Agent。若仍有额度，立即 claim 新 attempt；
   否则写 exhausted。
-- `version_applied`：读取并验证已记录 target，幂等创建/恢复同一 child；不得再次生成
-  proposal/version。
+- `version_applied`：先要求 workspace current version == target、nullable provider
+  selector/effective scope/catalog 全匹配，再幂等创建/恢复同一 child；否则
+  `FIX_TARGET_DESELECTED`/provider conflict，不得再次生成 proposal/version 或 child。
 - `child_preparing`：复用同一 child/steps 和 stable estimate keys 补齐估价，禁止创建
   新 run 或重复 ledger。
 - `child_ready` / `failed` / `exhausted`：只消费 durable outbox 或继续观察 child，
   不创建副本；failed 且仍有额度时按正常 coordinator 语义推进下一 attempt。
-- 未完成 `run_failure_work_items`：按 durable chain/provenance 恢复 retry/fix decision；
+- 未完成 `run_failure_continuations`：按 durable chain/provenance 恢复 retry/fix decision；
   不从 trigger、group 或最新 run 猜测来源。
 
 event bus 不是恢复真相；所有决策来自 DB/outbox。`pending → event_persisted` 与 run event
@@ -257,6 +269,7 @@ provider endpoint。Web
 - `FIX_SOURCE_CHANGED`
 - `FIX_PROVIDER_CHANGED`
 - `FIX_PROVIDER_SCOPE_CHANGED`
+- `FIX_TARGET_DESELECTED`
 - `FIX_AGENT_FAILED`
 - `AGENT_CLARIFICATION_REQUIRED`
 - `FIX_PROPOSAL_INVALID`

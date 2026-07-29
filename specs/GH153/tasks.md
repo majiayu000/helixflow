@@ -13,12 +13,12 @@ GH-153
 
 | ID | Owner | Dependencies | Task | Done When | Verify |
 | --- | --- | --- | --- | --- | --- |
-| `SP153-T0` | run policy | GH154 | 增加 default-off fix flag、独立 max-fix parser 与 typed retry terminal decision；为 eligible failed terminal 原子创建 durable work item，并在 sweep confirmation/claim、首次执行前持久化 recommended chain。 | 关闭态零副作用；confirmation→execution 与 failed→claim crash 均可恢复；retry child 继承 chain；manual/非推荐 sweep 负向测试通过。 | `cargo test -p helixflow-run run_policy && cargo test -p helixflow-run self_heal` |
-| `SP153-T1` | store | `T0` | 新增 repair chain、failure work item、`run_fix_attempts`、event outbox migration/records、状态机、operation replay 与 child linkage。 | fix 计数不使用 `runs.attempt`；并发 claim 单赢家；max=0/非法/N>1 与重复 finalizer exactly-once；workspace 删除不被 FK 阻塞。 | `cargo test -p helixflow-store run_fix` |
+| `SP153-T0` | run policy | GH154 | 增加 default-off fix flag、独立 max-fix parser 与 typed retry terminal decision；扩展 GH154 durable continuation，并在 sweep confirmation/claim、首次执行前持久化 recommended chain。 | 关闭态及遗留未派发 attempt 零写入；confirmation→execution 与 failed→claim crash 可恢复；retry child 继承 chain。 | `cargo test -p helixflow-run run_policy && cargo test -p helixflow-run self_heal` |
+| `SP153-T1` | store | `T0` | 新增 repair chain、扩展 GH154 failure continuation、增加 `run_fix_attempts` 与 event outbox migration/API、状态机、operation replay 与 child linkage。 | 不复制 handoff；fix 计数独立；并发 claim 单赢家；max=0/非法/N>1 与重复 finalizer exactly-once；FK/cascade 正确。 | `cargo test -p helixflow-store run_fix` |
 | `SP153-T2` | server security/agent | `T1` | 抽取 exact-run 脱敏 context与 safe graph projection；固定 DebugWorkflow/FixError/system policy；实现 deterministic scope/diff gate，处理 Agent invalid/clarify/failure。 | prompt 把 error/graph 当 untrusted data；恶意 params/error 不越权；无关 destructive diff 被拒绝；有余额时失败立即 claim 下一 attempt。 | `cargo test -p helixflow-server run_agent_fix` |
 | `SP153-T3` | server/store version | `T1`,`T2` | 扩展 proposal candidate/auto-apply primitive，以 current version + nullable selection + effective provider + GH154 recovery scope + catalog fingerprint CAS 原子提交 fix proposal/version/message/attempt；接入 cleanup/reconciliation。 | NULL default、account/credential/catalog 漂移 fail closed；CAS conflict 不覆盖用户；fault injection 无孤儿 DB row。 | `cargo test -p helixflow-store run_fix && cargo test -p helixflow-server run_agent_fix` |
-| `SP153-T4` | run cost gate | `T3` | 从 target graph fresh compile/resolve/estimate，持久化 `child_preparing`，复用 GH154 stable estimate keys 幂等补齐；在 estimate/auto-start/manual confirm/restart/dispatch 每次重验 provider scope；完成后复用 confirmation/execute。 | 每个 estimate crash window reopen 可恢复；等待确认后换 credential/account 必须拒绝；unknown/over budget pending，within budget 自动执行；不重复 ledger。 | `cargo test -p helixflow-run run_agent_fix && cargo test -p helixflow-server run_agent_fix` |
-| `SP153-T5` | recovery | `T1`–`T4` | AppState 启动恢复 work item/attempt/outbox；Agent in-flight 明确消耗，`version_applied` 补 child，`child_preparing` 补 estimate；消费 GH-154 common finalizer seam。 | provenance、Agent、version、每步 estimate、event publish crash matrix 全覆盖；不重放 Agent/version/ledger；interrupted/remote-active 被拒绝。 | `cargo test -p helixflow-server run_agent_fix_recovery` |
+| `SP153-T4` | run cost gate | `T3` | 从 target graph fresh compile/resolve/estimate，持久化 `child_preparing`，复用 GH154 stable estimate keys；在 child create/estimate/auto-start/manual confirm/restart/dispatch 每次重验 current target、nullable selector 与 provider scope。 | rollback/deselect 或换 credential/account 全部拒绝旧 child；partial estimate 可恢复；cost gate/ledger 幂等。 | `cargo test -p helixflow-run run_agent_fix && cargo test -p helixflow-server run_agent_fix` |
+| `SP153-T5` | recovery | `T1`–`T4` | fix policy 先于 GH154 stale classification；关闭时 quiesce 未派发状态，开启时恢复 continuation/attempt/outbox、Agent、version 与 partial estimate；remote handle 只交 GH154 收敛。 | disabled/reenabled matrix、provenance、Agent、target/version、每步 estimate、event crash 全覆盖；不重放 Agent/version/ledger。 | `cargo test -p helixflow-server run_agent_fix_recovery` |
 | `SP153-T6` | frontend | `T4` | store-events/types/UI 增加 `run.fix_*` notice、retry/fix 区分、snapshot 保留、refetch 与 pending confirmation 集成。 | fix attempt/applied/exhausted 可区分；notice 不重复；fix version 不误报 run success；现有 retry 文案不回归。 | `cd web && npx vitest run src/store-events.test.ts src/components/run-panels.test.tsx && npm run build` |
 | `SP153-T7` | coordinator | `T0`–`T6` | 执行全量 fresh verification、安全/并发/恢复 review；确认 GH-154 边界与默认关闭发布说明。 | 全部 product invariants 有测试映射；无 raw secret/graph event；无 actionable review finding。 | `cargo fmt --all -- --check && cargo check --workspace --locked && cargo test --workspace --locked && (cd web && npm ci && npm test && npm run build) && git diff --check` |
 
@@ -60,11 +60,13 @@ implementation PR 仍须以 exact-head review、fresh GitHub Actions 和上述�
 - `runs.attempt` 只表示同图 retry；fix 计数与 child lineage 只认 `run_fix_attempts`。
 - `retry waiting_confirmation` 不是 exhausted，不能触发 Agent fix。
 - 后台 fix 直接构造 `DebugWorkflow` / `FixError`，不修改或调用关键词分类。
-- recommended provenance 只认 durable chain/work item；不得从 retry 后的 trigger/group
+- recommended provenance 只认 durable chain/continuation；不得从 retry 后的 trigger/group
   反推。
 - 修复 version 提交必须同时 CAS current version、nullable provider selection、
   effective provider、GH-154 recovery scope 与 catalog fingerprint；estimate、确认和
-  dispatch 前还要重验，只做 current CAS 不满足本规格。
+  dispatch 前还要重验 target current version 与 selector，只做 apply-time CAS 不满足本规格。
+- feature disabled 时未派发 fix 状态 quiescent；已有 remote handle 只允许 GH-154 计费
+  安全收敛，不能触发下一 fix。
 - error/graph/params 均视为 untrusted data；proposal 还必须过 server-side scope/diff gate。
 - fix child 的 partial estimate recovery 依赖 GH-154 stable ledger operation key。
 - `run.fix_applied` 意味着 target 与 child 都已持久化，不等于 child provider run 成功。

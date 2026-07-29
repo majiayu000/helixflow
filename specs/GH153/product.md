@@ -46,7 +46,10 @@ GH-153
 ## Behavior Invariants
 
 1. `HELIXFLOW_RUN_AGENT_FIX_ENABLED` 缺失时为关闭；关闭时不得创建
-   `run_fix_attempts`、Agent session、proposal、version、派生 run 或 fix 事件。
+   `run_fix_attempts`、Agent session、proposal、version、派生 run 或 fix 事件，也不得
+   推进崩溃前遗留的 fix attempt/child preparation/outbox。既有未派发记录保持 quiescent，
+   重新开启后才恢复；已经存在 remote handle 的 child 仅由 GH-154 做计费安全收敛，不得
+   由此触发新 fix/下游 run。
 2. 仅在 fix 开关开启后解析 `HELIXFLOW_RUN_MAX_FIX_ATTEMPTS`：缺失时为 `1`，只接受
    非负整数。非法 UTF-8、负数、浮点或溢出值必须 fail-closed，持久化
    `run.fix_exhausted`，不得回退默认值；开关关闭时不解析该值，也不产生任何写入。
@@ -83,8 +86,10 @@ GH-153
 11. 修复 version 必须是 source version 的 immutable child，保留可审计 proposal 与
     rollback；提交时同时 CAS workspace current version、nullable provider selection、
     实际 effective provider、GH-154 recovery scope fingerprint 与 catalog fingerprint。
-    同样的 guard 必须在每次 estimate、自动启动、稍后的用户确认和真实 dispatch 前重验；
-    任一已变化则 fail closed，禁止用新 account/credential 执行旧 attempt/child。
+    version apply 后，同样的 guard 还必须要求 workspace current version 仍等于
+    `target_version_id`、nullable provider selection 仍等于快照，并在 child 创建、每次
+    estimate、自动启动、稍后的用户确认和真实 dispatch 前重验；任一已变化则 fail closed，
+    禁止执行已被 rollback/deselect 的 target 或用新 account/credential 执行旧 child。
 12. candidate graph 文件发布、proposal/version/current pointer、attempt target linkage
     要么共同提交，要么执行引用感知 cleanup；cleanup 失败必须显式报错并交给启动
     reconciliation，不得遗留无记录的成功状态。
@@ -104,7 +109,8 @@ GH-153
     因此 `max=N` 严格表示整个 chain 最多 N 次 Agent 调用，N>1 不得只执行一次。
 18. `version_applied` 后重复执行或重启恢复必须复用同一 target version，并幂等创建或
     返回同一 child run；不得再次调用 Agent。Agent 调用中进程退出时，该 in-flight
-    attempt 视为已消耗，恢复逻辑不得假装成功或无痕重放。
+    attempt 视为已消耗，恢复逻辑不得假装成功或无痕重放。feature 已关闭时所有未派发
+    attempt/child 状态保持不动。
 19. attempt/decision 状态转换必须与唯一 event outbox 同事务提交；event 使用确定性
     dedupe key 写 `run_events` 后再发布。max=0、非法配置、重复 finalizer、重启和广播
     重试都只能产生一个 `run.fix_exhausted`。事件只包含稳定 ID、attempt/max、状态、
@@ -138,6 +144,10 @@ GH-153
 - [ ] nullable default provider、默认 provider 改变、同 provider id 配置漂移均有 CAS
       测试；version applied 后和 child ready/等待确认后变更 account/credential 时，estimate、
       auto-start、manual confirm、dispatch 都必须拒绝旧 child。
+- [ ] version applied 后 rollback/选择其他 current version 或改变 nullable provider
+      selector 时，child create、estimate、confirmation 与 dispatch 全部拒绝。
+- [ ] restart 前关闭 feature 时，claimed/version_applied/child_preparing/outbox 不产生
+      新写入或 provider dispatch；重新开启后从同一 durable state 恢复。
 - [ ] 恶意 error 与 graph params 的 prompt-injection 测试证明 system policy 不被覆盖，
       scope/diff gate 拒绝无关节点删除、全图改写与 provider/workspace 设置修改。
 - [ ] `max=2` 覆盖首次 Agent runtime failure/clarify/invalid 后的第二次 claim，以及达到
@@ -151,6 +161,6 @@ GH-153
 
 首个版本保持 `HELIXFLOW_RUN_AGENT_FIX_ENABLED` 关闭，只验证 schema、事件与关闭态兼容。
 灰度时先设较小 provider cost threshold 与 `HELIXFLOW_RUN_MAX_FIX_ATTEMPTS=1`，观察
-attempt、applied、exhausted、confirmation 和 conflict 分布。回滚只需关闭开关；已提交
-version、proposal、attempt、run 与 ledger 继续保留用于审计和手动 rollback，不删除或
-改写历史。
+attempt、applied、exhausted、confirmation 和 conflict 分布。回滚关闭开关后，未派发
+attempt/child 保持 quiescent，不再创建 child 或 dispatch；已经派发的 remote handle 仍由
+GH-154 安全收敛。历史 version、proposal、attempt、run 与 ledger 保留审计，不删除或改写。
