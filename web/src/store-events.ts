@@ -27,6 +27,10 @@ export function applyRunEvent(state: WorkbenchState, event: RunEventEnvelope): W
     return applyRemoteCancelNotice(state, event);
   }
 
+  if (isRecoveryEvent(event.ev)) {
+    return applyRecoveryNotice(state, event);
+  }
+
   if (!state.run || event.run_id !== state.run.id || event.seq <= state.eventSeq) {
     return state;
   }
@@ -81,8 +85,10 @@ export function preserveRetryNotices(
 ): WorkbenchState {
   const existingIds = new Set(snapshot.chat.messages.map((message) => message.id));
   const notices = current.chat.messages.filter(
-    (message) =>
-      (message.id.startsWith('run-retry-') || message.id.startsWith('run-remote-cancel-')) &&
+      (message) =>
+      (message.id.startsWith('run-retry-') ||
+        message.id.startsWith('run-remote-cancel-') ||
+        message.id.startsWith('run-recovery-')) &&
       !existingIds.has(message.id),
   );
   if (notices.length === 0) {
@@ -93,6 +99,49 @@ export function preserveRetryNotices(
     chat: {
       ...snapshot.chat,
       messages: [...snapshot.chat.messages, ...notices],
+    },
+  };
+}
+
+function isRecoveryEvent(eventName: string): boolean {
+  return (
+    eventName === 'run.recovery_started' ||
+    eventName === 'run.recovery_succeeded' ||
+    eventName === 'run.recovery_cancelled' ||
+    eventName === 'run.recovery_abandoned'
+  );
+}
+
+function applyRecoveryNotice(state: WorkbenchState, event: RunEventEnvelope): WorkbenchState {
+  const provider = stringData(event, 'provider') ?? '远端 provider';
+  const messageId = `run-recovery-${event.ev}-${event.run_id}-${event.seq}`;
+  const text =
+    event.ev === 'run.recovery_started'
+      ? '服务重启后正在恢复此运行。'
+      : event.ev === 'run.recovery_succeeded'
+        ? '服务重启后的运行恢复已完成。'
+        : event.ev === 'run.recovery_cancelled'
+          ? `恢复期间已取消 ${provider} 的远端任务。`
+          : (stringData(event, 'message') ??
+            `${provider} 的远端任务终态无法确认，可能继续产生费用。`);
+  if (state.chat.messages.some((item) => item.id === messageId)) {
+    return state;
+  }
+  return {
+    ...state,
+    eventSeq: Math.max(state.eventSeq, event.seq),
+    chat: {
+      ...state.chat,
+      messages: [
+        ...state.chat.messages,
+        {
+          id: messageId,
+          role: 'system',
+          kind: event.ev === 'run.recovery_abandoned' ? 'run_failed' : 'run_requested',
+          text,
+          time: event.server_time,
+        },
+      ],
     },
   };
 }
@@ -174,6 +223,7 @@ export function shouldRefetchWorkspaceState(
       event.ev === 'run.retry' ||
       event.ev === 'run.retry_pending' ||
       event.ev === 'run.retry_failed' ||
+      isRecoveryEvent(event.ev) ||
       event.ev === 'run.succeeded' ||
       event.ev === 'run.failed' ||
       event.ev === 'run.interrupted')
