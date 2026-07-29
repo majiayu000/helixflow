@@ -51,7 +51,8 @@ GH-153
    非负整数。非法 UTF-8、负数、浮点或溢出值必须 fail-closed，持久化
    `run.fix_exhausted`，不得回退默认值；开关关闭时不解析该值，也不产生任何写入。
 3. fix 上限按持久化 repair chain 计数，与 `runs.attempt` 完全独立。chain 必须保存
-   `agent` / `recommended_sweep` 根来源；recommended 成员在启动自愈前先持久化选择结果。
+   `agent` / `recommended_sweep` 根来源；feature 开启时，recommended 成员必须在 sweep
+   confirmation/claim transaction 中、任何成员进入 queued/running/dispatch 前持久化。
    值为 `0` 时不调用 Agent，直接记录 exhausted；任何 restart 或 retry 都不得重置计数。
 4. fix 只在 source run 为 `failed`、同图 retry decision 明确为 `exhausted` 且没有
    `waiting_confirmation` retry child 时触发。retry 正在运行、等待确认、配置错误或
@@ -80,9 +81,10 @@ GH-153
     无输出、clarify、非法 proposal、Agent runtime 失败都算一次已消耗 attempt，保持
     source run 为 `failed`，并显式记录稳定 reason code。
 11. 修复 version 必须是 source version 的 immutable child，保留可审计 proposal 与
-    rollback；提交时同时 CAS workspace current version、nullable provider selection
-    以及实际 effective provider/config fingerprint。任一已变化则显式 conflict，禁止
-    覆盖用户或并发 Agent 的更新。
+    rollback；提交时同时 CAS workspace current version、nullable provider selection、
+    实际 effective provider、GH-154 recovery scope fingerprint 与 catalog fingerprint。
+    同样的 guard 必须在每次 estimate、自动启动、稍后的用户确认和真实 dispatch 前重验；
+    任一已变化则 fail closed，禁止用新 account/credential 执行旧 attempt/child。
 12. candidate graph 文件发布、proposal/version/current pointer、attempt target linkage
     要么共同提交，要么执行引用感知 cleanup；cleanup 失败必须显式报错并交给启动
     reconciliation，不得遗留无记录的成功状态。
@@ -134,7 +136,8 @@ GH-153
       provenance 恢复，Agent in-flight attempt 消耗，以及 version/child/分步 estimate
       每个持久化窗口的幂等恢复。
 - [ ] nullable default provider、默认 provider 改变、同 provider id 配置漂移均有 CAS
-      测试；不得用新 account/provider config 执行旧 attempt。
+      测试；version applied 后和 child ready/等待确认后变更 account/credential 时，estimate、
+      auto-start、manual confirm、dispatch 都必须拒绝旧 child。
 - [ ] 恶意 error 与 graph params 的 prompt-injection 测试证明 system policy 不被覆盖，
       scope/diff gate 拒绝无关节点删除、全图改写与 provider/workspace 设置修改。
 - [ ] `max=2` 覆盖首次 Agent runtime failure/clarify/invalid 后的第二次 claim，以及达到

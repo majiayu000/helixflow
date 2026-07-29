@@ -39,9 +39,12 @@ terminal transaction 同时 insert-or-read `run_failure_work_items`。work item 
 coordinator claim 后在一个 transaction 中创建 retry child 或把 item 推进为
 `fix_pending`；启动恢复扫描未完成 item。
 
-普通 agent 在首个 eligible terminal 前建立/关联 chain。recommended sweep 必须在服务端
-选出推荐成员后、调用其 self-heal 前，把 `group_id + recommended_run_id` 与 chain 同事务
-持久化；retry child 显式继承 chain id，不能从会变化的 `trigger`/`group_id` 反推。
+普通 agent 在首个 eligible terminal 前建立/关联 chain。feature 开启时，
+`start_confirmed_sweep` 必须把 `group_id + recommended_run_id + chain` 与 sweep
+confirmation/全部成员 claim 放在同一 store transaction，并在任何成员进入
+`queued`/`running`、启动 background task 或远端 dispatch 之前提交。失败 terminal
+transaction 只引用这个已存在的 chain；不得等到推荐 run 已失败、准备调用 self-heal 时
+再补写。retry child 显式继承 chain id，不能从会变化的 `trigger`/`group_id` 反推。
 非推荐成员没有 chain，因此即使同一 crash window 被扫描也不能触发。该 durable handoff
 同时是 GH-154 recovered-failed 的唯一入口。
 
@@ -79,7 +82,9 @@ coordinator claim 后在一个 transaction 中创建 retry child 或把 item 推
 | `attempt_index`, `max_attempts` | 1-based 独立 fix 计数；UNIQUE(root_run_id, attempt_index) |
 | `source_version_id` | Agent 输入和 version CAS 快照 |
 | `expected_runtime_provider_id` | workspace nullable selection 的 CAS 快照 |
-| `effective_provider_id`, `provider_config_fingerprint` | 实际 compile/estimate/run provider 与非秘密配置/catalog 指纹，均非空 |
+| `effective_provider_id` | 实际 compile/estimate/run provider，非空 |
+| `expected_recovery_scope_fingerprint` | 复用 GH-154 的 account/tenant/credential identity scope，非空且不含 raw secret |
+| `provider_catalog_fingerprint` | Agent 可见 provider/model catalog 的非秘密 revision/fingerprint |
 | `state` | `claimed`, `agent_running`, `version_applied`, `child_preparing`, `child_ready`, `failed`, `exhausted` |
 | `proposal_id`, `target_version_id`, `child_run_id` | 可空 FK；阶段推进后填充 |
 | `reason_code`, `error_summary` | 稳定 code 与脱敏、截断摘要；禁止 raw payload |
@@ -96,9 +101,12 @@ store API 使用 `BEGIN IMMEDIATE` 和条件 UPDATE 实现：
    operation replay 返回同一 child；
 7. Agent failure/clarify/invalid 将 attempt 标为 failed；若 chain 尚有额度，coordinator
    立即 claim 下一 index，达到上限才写 exhausted；
-8. attempt/decision 变化与 outbox insert 同事务；dispatcher 用确定性 event id
-   insert-or-read `run_events`，再标记 outbox delivered 并广播。max=0/非法配置也在 chain
-   上有唯一 decision/dedupe key，不需要伪造 1-based attempt。
+8. attempt/decision 变化与 outbox `pending` insert 同事务；dispatcher 在 transaction
+   中用确定性 event id insert-or-read `run_events`，把 outbox 推进为
+   `event_persisted` 后 commit，再广播；只有广播成功后才标 `broadcasted`。进程在 event
+   commit 后、broadcast 前退出，或广播成功后、标记前退出，启动扫描都可安全重播，客户端
+   按 event id 去重。max=0/非法配置也在 chain 上有唯一 decision/dedupe key，不需要伪造
+   1-based attempt。
 
 attempt 表不保存 graph、raw `error_json`、prompt 或 provider response。workspace 删除
 不得被 attempt 的 run/version/proposal 外键阻塞。
@@ -111,8 +119,8 @@ server 新增 `run_agent_fix.rs` coordinator，并将 `workbench_message.rs` 当
 
 - source run 必须仍为 `failed`；
 - source version 必须属于同一 workspace，graph file/hash 必须验证；
-- workspace current version、nullable runtime provider selection、effective provider 与
-  provider config/catalog fingerprint 必须等于 attempt 快照；
+- workspace current version、nullable runtime provider selection、effective provider、
+  GH-154 recovery scope 与 provider catalog fingerprint 必须等于 attempt 快照；
 - run provenance 必须来自 durable chain；调用参数、trigger 和 event 不具有认证作用。
 
 构造 `AgentSessionRequest` 时固定：
@@ -146,7 +154,8 @@ Agent session 是本地运行过程证据，不是 provider run，不写 `cost_l
 - source run 仍为 `failed`；
 - workspace `cur_version_id = source_version_id`；
 - workspace `runtime_provider_id IS expected_runtime_provider_id`；
-- registry 当前解析的 `effective_provider_id` 与 `provider_config_fingerprint` 均等于快照；
+- registry 当前解析的 `effective_provider_id`、GH-154
+  `recovery_scope_fingerprint` 与 `provider_catalog_fingerprint` 均等于快照；
 - proposal base/target graph hash 与 candidate 一致。
 
 transaction 原子插入 applied fix proposal、`source=proposal` child version、审计 message，
@@ -178,6 +187,13 @@ fix-attempt linkage 的 child。全部 estimate 完成后，单 transaction 写 
 estimate/cost decision、推进 attempt `child_ready`，再把 child 置为
 `waiting_confirmation` 或可 claim。
 
+`expected_recovery_scope_fingerprint` 不只在 version apply 时检查。每次 step estimate、
+threshold 内 auto-start、等待确认后的用户 confirm、restart recovery 与 provider dispatch
+都必须从 registry 重新解析 effective provider/scope/catalog 并与 attempt 快照相等。
+scope 改变时把 child fail closed 为 `FIX_PROVIDER_SCOPE_CHANGED`（target version 保留用于
+审计），不得调用 estimate 或 provider；通用 `start_confirmed_run` 对带 fix-attempt
+linkage 的 child 必须执行同一 guard，不能旁路。
+
 child 估价完成后调用既有
 `start_confirmed_run_within_budget`：未知/超阈值保持 pending；阈值内按既有 workspace
 atomic claim 自动执行。只有 child 可查询且 cost decision 已持久化后，才在 source run
@@ -204,8 +220,9 @@ recovery。恢复规则：
 - 未完成 `run_failure_work_items`：按 durable chain/provenance 恢复 retry/fix decision；
   不从 trigger、group 或最新 run 猜测来源。
 
-event bus 不是恢复真相；所有决策来自 DB/outbox。run event insert 成功、broadcast 失败
-时重投仍使用相同 event id，snapshot/refetch 与 UI 按 id 去重。
+event bus 不是恢复真相；所有决策来自 DB/outbox。`pending → event_persisted` 与 run event
+写入同事务，broadcast 成功后才推进 `broadcasted`；任何中间 crash 都以相同 event id
+at-least-once 重播，snapshot/refetch 与 UI 按 id 去重。
 
 GH-154 先恢复/收敛持久化 remote handles，再把确实收敛为 `failed` 且符合来源条件的
 run 交给同一 durable work-item finalizer。仍在 remote polling、补取消或被标为
@@ -239,6 +256,7 @@ provider endpoint。Web
 - `FIX_SOURCE_INELIGIBLE`
 - `FIX_SOURCE_CHANGED`
 - `FIX_PROVIDER_CHANGED`
+- `FIX_PROVIDER_SCOPE_CHANGED`
 - `FIX_AGENT_FAILED`
 - `AGENT_CLARIFICATION_REQUIRED`
 - `FIX_PROPOSAL_INVALID`
