@@ -1,0 +1,352 @@
+# Tech Spec
+
+## Linked Issue
+
+GH-154
+
+## Product Spec
+
+见 `specs/GH154/product.md`。
+
+## Codebase Context
+
+| Area | Current files | Current behavior | Required change |
+| --- | --- | --- | --- |
+| Store schema | `crates/store/migrations/0001_initial.sql`、`0004_run_retry_and_artifact_review.sql` | `runs`、`run_steps`、`artifacts`、`cost_ledger` 无远端 handle、output port 或 recovery lease | 新 migration 与 typed records；DB 成为 handle/output/lease 真相 |
+| Restart cleanup | `crates/store/src/run_cleanup.rs` | `queued/estimating/running` 全部直接中断并 skip step | 分类 + lease claim + durable unrecoverable finalization |
+| Gateway contract | `crates/gateway/src/lib.rs` | `Provider::invoke` 同时 submit/poll；`ProviderTaskHandle` 只有 provider/task id | 拆分 dispatch/resume，扩展 secret-free durable handle |
+| Atlas | `crates/gateway/src/atlas.rs` | video submit 后 prediction id 只进 `in_flight`，同 future poll；cancel 明确 unsupported | prediction handle 返回 runner；支持 resume poll；不增加 cancel |
+| fal | `crates/gateway/src/fal.rs` | status URL 只进 `in_flight`；同 future poll/result；可由 status URL cancel | 返回已验证 handle；resume poll/result；恢复前 revalidate；保留 cancel |
+| Runtime registry | `crates/gateway/src/registry.rs`、`runtime_provider.rs` | 转发 invoke/active_handles/cancel | 按 handle provider 转发 dispatch/resume/cancel 与 capability |
+| Executor | `crates/run/src/executor.rs` | outputs 和 DAG readiness 主要在内存；末尾遍历 step 写 actual cost | dispatch intent、CAS handle、幂等 step finalize、durable DAG reconstruction |
+| Background/self-heal | `crates/run/src/background.rs`、`self_heal.rs`、`cost_gate.rs` | normal background future 驱动；failed 后同图重试 | 新 recovery coordinator；normal/recovered 共享 terminal/failure finalizer |
+| Server startup | `crates/server/src/app_state.rs` | 构建 provider registry 前同步批量 interrupt | 先构建 AppState，再短扫描/认领并 spawn recovery |
+| Events/UI | `crates/server/src/workspace_events.rs`、`workspace_state.rs`、`web/src/store-events.ts` | 支持 terminal/retry/remote-cancel 通知 | 新 recovery/risk event + durable system message；断线补拉和刷新后保留 notice |
+
+## 1. 持久化模型
+
+新增下一顺序 migration（实现时按 main 上最新编号命名），建立以下结构。
+
+### 1.1 `run_provider_tasks`
+
+```sql
+CREATE TABLE run_provider_tasks (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  run_step_id TEXT NOT NULL REFERENCES run_steps(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL,
+  operation_key TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (
+    state IN ('dispatching', 'active', 'completed', 'cancelled', 'abandoned')
+  ),
+  provider_task_id TEXT,
+  status_url TEXT,
+  result_url TEXT,
+  last_error_code TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  ended_at TEXT,
+  UNIQUE (run_step_id, operation_key)
+);
+```
+
+约束：
+
+- `dispatching` 的 handle 字段必须为空；`active` 必须有非空
+  `provider_task_id`，provider 可按能力要求 status/result URL。
+- `completed/cancelled/abandoned` 是 task 终态，不可退回 active；`completed` 表示已
+  观察到远端 terminal，远端失败可由 `last_error_code` 区分并将 run/step 标为 failed。
+- `operation_key` 由 run/step/provider/dispatch attempt 的稳定 identity 生成，不包含
+  prompt、URL 或 secret。
+- task id 和 URL 只在 store/gateway 内部使用，不序列化进普通 API/event。需要诊断时
+  只返回 record id、provider 和 stable code。
+
+SQLite CHECK 无法完整表达状态字段组合时，Store 写 API 必须在 transaction 中校验并
+返回 typed invariant error；禁止调用方直接拼 SQL 跨状态写入。
+
+### 1.2 `run_step_outputs`
+
+```sql
+CREATE TABLE run_step_outputs (
+  run_step_id TEXT NOT NULL REFERENCES run_steps(id) ON DELETE CASCADE,
+  port TEXT NOT NULL,
+  artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE RESTRICT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (run_step_id, port),
+  UNIQUE (artifact_id)
+);
+```
+
+provider 与有输出的 builtin step 都写 port 映射。恢复 DAG 以 frozen `runs.plan_json`
+结合该表重建 `OutputMap`；`run_step_artifacts` 的创建顺序和 artifact metadata 不能
+替代 port identity。
+
+### 1.3 Cost/event idempotency
+
+为 `cost_ledger` 增加 nullable `operation_key`，建立
+`UNIQUE(operation_key) WHERE operation_key IS NOT NULL`。新估算与实际费用分别使用
+`estimate:{run_step_id}`、`actual:{run_step_id}`；旧记录保持 NULL。Store 提供
+insert-or-read API，并核对同 key payload，不允许同 key 不同 amount/currency。
+
+terminal event 不通过“先更新 run、后 append event”两步完成。Store finalizer 在一个
+transaction 内以 run/step/task 当前状态 CAS，写 terminal state、必要的 event 和
+ended_at。CAS 未命中时读取既有终态并返回 replay，不追加第二个事件。
+
+### 1.4 `run_recovery_leases`
+
+```sql
+CREATE TABLE run_recovery_leases (
+  run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+  owner_id TEXT NOT NULL,
+  lease_expires_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+```
+
+claim、renew、release 都校验 owner。claim 只允许 active run 且 lease 缺失/已过期；
+续租失败即 lease loss。owner 是进程启动生成的随机 opaque ID，不复用 hostname、
+PID、credential。lease 不是分布式队列承诺，只防止旧 background future 或并发启动
+重复恢复。
+
+## 2. Gateway 生命周期契约
+
+把远端生命周期从单一 `Provider::invoke` 拆为可持久化边界；同步 provider 可直接返回
+completed。
+
+```rust
+pub enum ProviderDispatch {
+    Completed(ProviderResult),
+    Accepted(DurableProviderTaskHandle),
+}
+
+pub struct DurableProviderTaskHandle {
+    pub provider: String,
+    pub provider_task_id: String,
+    pub status_url: Option<String>,
+    pub result_url: Option<String>,
+}
+
+pub enum ProviderResume {
+    Pending,
+    Completed(ProviderResult),
+    Failed(ProviderTerminalError),
+}
+
+#[async_trait]
+pub trait Provider {
+    async fn dispatch(
+        &self,
+        request: ProviderRequest,
+        operation_key: &str,
+    ) -> ProviderResultValue<ProviderDispatch>;
+    async fn resume(
+        &self,
+        request: ProviderRequest,
+        handle: &DurableProviderTaskHandle,
+    ) -> ProviderResultValue<ProviderResume>;
+    async fn cancel(
+        &self,
+        handle: DurableProviderTaskHandle,
+    ) -> ProviderResultValue<()>;
+}
+```
+
+`ProviderRequest` 由 frozen plan、durable upstream outputs 和 materialized input
+重建。`operation_key` 只在 provider 明确支持幂等键时传给上游；Atlas/fal 当前不能
+因为本地有 key 就假定 submit 可安全重试。
+
+`active_handles` 和 Atlas/fal `in_flight` map 从 correctness path 删除。为兼容
+同步 chat/image，可由 dispatch 返回 `Completed`；若进程在远端可能已接受请求但
+dispatch 尚未返回时崩溃，DB 仍是 `dispatching`，按 unknown/abandoned 处理。
+
+### 2.1 Atlas
+
+- async video submit 返回 prediction id 后构造 `Accepted`，不在 gateway 内循环 poll。
+- `resume` 使用当前配置构造/验证 prediction endpoint，或验证 persisted status URL；
+  completed/succeeded → `Completed`，failed → typed terminal failure，其余 → Pending。
+- image/chat 当前同步 API 返回 `Completed`；dispatching crash window 不自动重发。
+- `cancel` 继续返回 `CancelUnsupported`；测试必须断言没有生成或调用 cancel URL。
+
+### 2.2 fal
+
+- submit response 的 request id、status URL、response URL 均先通过
+  `validate_callback_url`，然后返回 `Accepted`。
+- 持久化前删除 userinfo/fragment，拒绝 credential-like query；恢复每次请求前再次
+  对当前 `FAL_API_BASE` 做 same-origin 与 path 校验，防止配置漂移或 DB tampering
+  造成 SSRF。
+- `resume` poll status，COMPLETED 后读取 result URL 并返回 provider result。
+- recovery 超时后的 cancel 复用现有 PUT cancel 语义；cancel URL 同样重新校验。
+
+### 2.3 Mock
+
+默认 mock 仍受双开关保护。测试 adapter 使用 frozen request +
+`provider_task_id/operation_key` 确定性产生 Pending/Completed/Failed，不依赖旧进程
+内存，用于覆盖 restart、lease 与 replay。mock artifact 必须继续带明确 mock 标识。
+
+## 3. Dispatch 与 crash window
+
+provider-backed step 执行顺序：
+
+1. 将 step CAS 为 running。
+2. 以稳定 operation key insert-or-read `run_provider_tasks(dispatching)`；若已有
+   active/terminal record，进入 resume/replay，不重新 submit。
+3. 调用 `provider.dispatch`。
+4. `Completed`：进入幂等 step finalizer。
+5. `Accepted`：严格校验 handle，然后以
+   `WHERE id=? AND state='dispatching' AND operation_key=?` CAS 为 active。
+6. CAS 成功后 poll/resume；CAS 未命中则停止并读取 durable truth，不让失去 lease 或
+   被中断的 worker覆盖新状态。
+
+关键窗口：
+
+- crash 在步骤 2 后、provider 调用前：无法证明是否 submit，与步骤 3 已远端接受但
+  本地未收到响应不可区分。
+- crash 在步骤 3 成功后、步骤 5 commit 前：同样只留下 dispatching。
+- 对两者统一 fail closed：不自动再次 dispatch，task → abandoned，run →
+  interrupted，并写 `DISPATCH_OUTCOME_UNKNOWN` billing-risk event。
+- 只有未来某 provider 明确实现并测试 server-side idempotency lookup，才能在该
+  provider 独立扩展 recovery；不得把本地 operation key 当作上游保证。
+
+## 4. 幂等 step finalizer 与 DAG continuation
+
+provider `Completed` 后先把远端/inline payload 写为 content-addressed file；随后单个
+store transaction：
+
+1. 校验 recovery lease（normal execution 用显式 execution owner token）。
+2. insert-or-read artifacts 与 `(step, port)` outputs；同 key 不同 payload/hash
+   返回 invariant error。
+3. insert-or-read actual cost ledger。
+4. task active → completed，step running → succeeded。
+5. append exactly-once `node.state`/recovery event。
+
+transaction rollback 不删除已完成的 content-addressed file；后续 replay 使用同
+hash/path，孤儿文件沿用现有 artifact reconciliation/清理策略，不能先删可能被其他
+记录引用的文件。
+
+恢复 run 从 `runs.plan_json` 载入同一 `ExecutionPlan`：
+
+- 验证 plan version 与 run.version_id 一致；
+- 读取所有 run_steps、run_step_outputs 和 artifacts；
+- succeeded step 标记 finished，并把 durable outputs 注入 `OutputMap`；
+- active provider task 先 resume；queued 且依赖已满足的 step 放回 ready queue；
+- provider-backed running step 没有 active/terminal task 是 invariant violation，
+  按 unrecoverable 处理；遗留部署前 active row也走该路径；
+- 所有 step terminal 后使用共享 run finalizer；成功、失败、中断都以 CAS 防重。
+
+## 5. Startup recovery coordinator
+
+`AppState::open_in_data_dir` 调整为：
+
+1. 打开唯一 `Store`，完成 migration 与 version file reconciliation。
+2. 创建 provider registry、持久化 provider status。
+3. 用该 `Store` clone 构造 `RunService` 和完整 `AppState`。
+4. 严格解析 `HELIXFLOW_RUN_REQUEUE_ON_RESTART`：缺失/`0`/`false` 为 false，
+   `1`/`true` 为 true，其他值返回 startup config error。
+5. 短事务扫描 active rows并分类：
+   - `waiting_confirmation`：不变；
+   - `estimating`：interrupted；
+   - `queued`：默认 interrupted；flag true 且 plan 合法、无 provider task 时 lease
+     claim 并 requeue；
+   - `running + active handle` 或已有 durable step outputs：lease claim；
+   - `dispatching`、provider-backed running 无 handle、非法 handle：abandon +
+     interrupted + durable risk event。
+6. 对 claim 结果 spawn recovery future；HTTP server 启动不等待远端 poll。
+
+recovery future 周期续租。暂时网络错误采用有界指数退避，且总时长不超过 provider
+recovery deadline；到期后尝试补取消。有效 lease 被其他 owner 取代时，future 立即
+停止，不写 terminal state。
+
+workspace active-run 检查排除当前 recovery run；同 group sweep 保留既有例外。若 DB
+存在互相冲突的多个 active run，按 `created_at,id` 确定顺序认领，不能同时恢复；
+未认领者以稳定 conflict code 显式中断，不静默选择。
+
+## 6. Unrecoverable 与用户可见事件
+
+新增稳定事件：
+
+| Event | Meaning |
+| --- | --- |
+| `run.recovery_started` | lease 已认领并开始恢复 |
+| `run.recovery_succeeded` | 远端结果已幂等收敛并继续/完成 DAG |
+| `run.recovery_failed` | provider 明确返回 failed，run 进入 failed |
+| `run.recovery_cancelled` | 无法恢复但补取消成功，run interrupted |
+| `run.recovery_abandoned` | 远端终态未知且无法确认取消，存在计费风险 |
+| `run.requeued_after_restart` | 显式 flag 允许 queued run 重入 |
+
+`run.recovery_abandoned` data 只允许：
+
+```json
+{
+  "provider": "atlas",
+  "code": "DISPATCH_OUTCOME_UNKNOWN",
+  "message_id": "msg_recovery_task_...",
+  "message": "远端任务状态无法确认，可能仍在运行并产生费用。"
+}
+```
+
+禁止 provider task id、URL 和 raw error。Store transaction 同时写
+`run_provider_tasks.abandoned`、run/step terminal state、run event，以及确定性
+`message_id` 的 `role=system`/`kind=run_failed` workspace message。重复 finalizer
+insert-or-read 同一 message，不能追加第二条。EventBus publish 发生在 commit 后；
+publish 失败不影响 durable event/message。
+
+`web/src/store-events.ts` 将 recovery cancel/abandoned 映射为 system
+`run_failed` notice，并优先复用 event 的 `message_id`；`workspace_state.rs` 通过既有
+workspace messages 在全量 hydration 中返回同一 durable notice，因此刷新、断线后
+出现新 run或最新 run 改变都不会丢失。snapshot merge 按 message id 去重。
+`recovery_started/succeeded` 触发 state refetch。测试覆盖实时 WebSocket、seq gap
+补拉、刷新/切 workspace，不将风险展示为成功或普通 chat。
+
+## 7. #153 关系
+
+#154 先实现统一 `finalize_run`/`continue_after_terminal_run` 边界：
+
+- normal executor 与 recovery coordinator 都在 run CAS 为 failed 后调用同一
+  `continue_self_heal_from_failed`/failure finalizer；
+- 本 issue 保留现有同图有界 retry 与 cost gate；
+- #153 后续只在共同 finalizer 的“同图 retry 已耗尽”分支接入 Agent DebugWorkflow，
+  不直接从 recovery worker 再建修图循环；
+- recovered failed 的 `error_json`、parent/attempt 和 immutable plan 继续作为 #153
+  审计输入。
+
+因此 #153 依赖 #154；#154 不新增 Agent turn、version 或 fix attempt 字段。
+
+## 8. Product-to-Test Mapping
+
+| Invariant | Verification |
+| --- | --- |
+| dispatch-first + crash windows | store/run crash-point tests |
+| DB handle truth | reopened SQLite + interrupt/recovery integration |
+| lease exclusivity | concurrent claim/renew/expiry tests |
+| output/cost/terminal idempotency | repeated finalizer + restart tests |
+| Atlas resume/no cancel | Atlas mock HTTP contract tests |
+| fal resume/cancel/URL safety | fal mock HTTP + malicious callback tests |
+| mock deterministic recovery | run recovery tests |
+| queued default/strict env | app_state config/startup tests |
+| durable risk UI | workspace events + Web store event tests |
+| #153 handoff | recovered failure invokes existing self-heal finalizer once |
+
+## 9. 风险与回滚
+
+- **重复计费**：dispatching unknown 永不自动重发；所有 replay 先读 DB。
+- **SSRF/secret**：URL 两次校验且不进入日志/event；credential 只从当前 env 注入请求。
+- **长期 lease**：续租有上限；lease loss 终止写入，过期可重领。
+- **兼容性**：migration 前遗留 running row 无 handle，显式 interrupted/abandoned；
+  waiting confirmation 不变。
+- **回滚**：可关闭 recovery worker，但保留 schema、dispatch intent 与 DB-based online
+  cancel；不得恢复内存 handle truth。queued requeue 始终可保持 false。
+
+## 10. Verification
+
+```sh
+cargo fmt --all -- --check
+cargo check --workspace --locked
+cargo test -p helixflow-store --locked run_recovery
+cargo test -p helixflow-gateway --locked recovery
+cargo test -p helixflow-run --locked recovery
+cargo test -p helixflow-server --locked restart_recovery
+cargo test --workspace --locked
+cd web && npm ci && npx tsc --noEmit && npm test -- --run && npm run build
+cd .. && python3 checks/check_workflow.py --repo . --spec-dir specs/GH154
+git diff --check
+```
