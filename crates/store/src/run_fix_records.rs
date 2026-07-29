@@ -405,16 +405,25 @@ impl Store {
             tx.commit().await?;
             return Ok(Some(attempt));
         }
-        if !matches!(attempt.state.as_str(), "claimed" | "agent_running") {
+        if !matches!(
+            attempt.state.as_str(),
+            "claimed" | "agent_running" | "version_applied" | "child_preparing"
+        ) {
             tx.rollback().await?;
             return Ok(None);
         }
+        let failed_after_apply = matches!(
+            attempt.state.as_str(),
+            "version_applied" | "child_preparing"
+        );
         sqlx::query(
             r#"
             UPDATE run_fix_attempts
             SET state = 'failed', reason_code = ?, error_summary = ?,
                 finished_at = current_timestamp, updated_at = current_timestamp
-            WHERE id = ? AND state IN ('claimed', 'agent_running')
+            WHERE id = ? AND state IN (
+                'claimed', 'agent_running', 'version_applied', 'child_preparing'
+            )
             "#,
         )
         .bind(reason_code)
@@ -427,7 +436,7 @@ impl Store {
                 .bind(&attempt.chain_id)
                 .fetch_one(&mut *tx)
                 .await?;
-        if consumed >= attempt.max_attempts {
+        if failed_after_apply || consumed >= attempt.max_attempts {
             let chain = repair_chain_in_tx(&mut tx, &attempt.chain_id).await?;
             finish_continuation_exhausted(
                 &mut tx,
@@ -563,7 +572,7 @@ impl Store {
     }
 }
 
-async fn finish_continuation_exhausted(
+pub(super) async fn finish_continuation_exhausted(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     source_run_id: &str,
     chain: &RunRepairChainRecord,
@@ -622,7 +631,7 @@ async fn insert_fix_outbox(
     Ok(())
 }
 
-async fn repair_chain_in_tx(
+pub(super) async fn repair_chain_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     chain_id: &str,
 ) -> StoreResult<RunRepairChainRecord> {
@@ -638,7 +647,7 @@ async fn repair_chain_in_tx(
     .await?)
 }
 
-async fn fix_attempt_in_tx(
+pub(super) async fn fix_attempt_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     attempt_id: &str,
 ) -> StoreResult<RunFixAttemptRecord> {
@@ -650,7 +659,7 @@ async fn fix_attempt_in_tx(
     )
 }
 
-async fn run_in_tx(
+pub(super) async fn run_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     run_id: &str,
 ) -> StoreResult<RunRecord> {
@@ -665,4 +674,16 @@ async fn run_in_tx(
     .bind(run_id)
     .fetch_one(&mut **tx)
     .await?)
+}
+
+pub(super) fn require_one_write(operation: &'static str, rows: u64) -> StoreResult<()> {
+    if rows == 1 {
+        Ok(())
+    } else {
+        Err(StoreError::StatementInvariant {
+            operation,
+            expected_rows: 1,
+            actual_rows: rows,
+        })
+    }
 }

@@ -1,8 +1,8 @@
 use tempfile::TempDir;
 
 use super::{
-    ApplyRunFixVersionRecord, NewProposal, NewRun, NewVersion, RunFixClaim, RunFixSnapshot, Store,
-    StoreError, VersionSource,
+    ApplyRunFixVersionRecord, CompleteRunFixChildRecord, NewProposal, NewRun, NewVersion,
+    PrepareRunFixChildRecord, RunFixClaim, RunFixSnapshot, Store, StoreError, VersionSource,
 };
 
 async fn failed_agent_root(store: &Store, label: &str) -> (String, String, String) {
@@ -245,6 +245,115 @@ async fn fix_version_apply_rejects_nullable_provider_selection_drift_without_par
             .cur_version_id
             .as_deref(),
         Some(source.version_id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn quiescent_fix_child_can_be_ignored_by_claim_and_cancelled_atomically() {
+    let dir = TempDir::new().expect("temp dir");
+    let store = Store::open(&format!(
+        "sqlite://{}",
+        dir.path().join("cancel.sqlite").display()
+    ))
+    .await
+    .expect("open store");
+    let (source_run_id, _, workspace_id) = failed_agent_root(&store, "cancel fix").await;
+    let source = store.run(&source_run_id).await.expect("source");
+    let attempt = claim_running_attempt(&store, &source_run_id).await;
+    let applied = apply_fix_version(&store, &attempt.id, &workspace_id, &source.version_id)
+        .await
+        .expect("apply fix");
+    let (attempt, _child) = store
+        .prepare_run_fix_child(PrepareRunFixChildRecord {
+            attempt_id: &attempt.id,
+            label: "fix child",
+            plan_json: r#"{"schema_version":1,"version_id":"target","steps":[]}"#,
+            actual_runtime_provider_id: None,
+            actual_effective_provider_id: "mock",
+            actual_recovery_scope_fingerprint: "sha256:scope",
+            actual_provider_catalog_fingerprint: "sha256:catalog",
+        })
+        .await
+        .expect("prepare child");
+    let competing = store
+        .create_run(NewRun {
+            workspace_id: &workspace_id,
+            version_id: &applied.applied.version.id,
+            group_id: None,
+            label: "ordinary run",
+            trigger: "manual",
+            plan_json: None,
+            estimate_json: None,
+            status: "waiting_confirmation",
+        })
+        .await
+        .expect("competing run");
+    assert!(
+        store
+            .claim_run_if_workspace_idle(
+                &competing.id,
+                "waiting_confirmation",
+                "running",
+                &workspace_id,
+                None,
+                false,
+            )
+            .await
+            .expect("strict claim")
+            .is_none()
+    );
+    assert!(
+        store
+            .claim_run_if_workspace_idle(
+                &competing.id,
+                "waiting_confirmation",
+                "running",
+                &workspace_id,
+                None,
+                true,
+            )
+            .await
+            .expect("quiescent-aware claim")
+            .is_some()
+    );
+    store
+        .update_run_status(&competing.id, "interrupted", None)
+        .await
+        .expect("release competing run");
+    let (_, child) = store
+        .complete_run_fix_child(CompleteRunFixChildRecord {
+            attempt_id: &attempt.id,
+            estimate_json: r#"{"amount":1.0,"currency":"USD","estimated":true,"unknown":false}"#,
+            requires_confirmation: true,
+        })
+        .await
+        .expect("complete child");
+    assert_eq!(child.status, "waiting_confirmation");
+
+    let cancelled = store
+        .cancel_run_fix_child(&child.id)
+        .await
+        .expect("cancel child")
+        .expect("fix child");
+    assert_eq!(cancelled.status, "interrupted");
+    assert_eq!(
+        store
+            .run_fix_attempt(&attempt.id)
+            .await
+            .expect("attempt")
+            .expect("attempt row")
+            .state,
+        "cancelled"
+    );
+    let continuation = store
+        .failure_continuation(&source_run_id)
+        .await
+        .expect("continuation")
+        .expect("continuation row");
+    assert_eq!(continuation.state, "fix_completed");
+    assert_eq!(
+        continuation.reason_code.as_deref(),
+        Some("FIX_USER_CANCELLED")
     );
 }
 

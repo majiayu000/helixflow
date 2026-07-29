@@ -203,6 +203,10 @@ pub trait Provider: Send + Sync {
         self.config_fingerprint(provider_id)
     }
 
+    fn catalog_revision(&self, provider_id: &str) -> String {
+        self.config_fingerprint(provider_id)
+    }
+
     fn recovery_capabilities(&self, _provider_id: &str) -> ProviderRecoveryCapabilities {
         ProviderRecoveryCapabilities {
             resume: false,

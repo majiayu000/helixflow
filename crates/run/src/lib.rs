@@ -16,6 +16,7 @@ mod resolved;
 mod restart_policy;
 pub use resolved::{resolve_step_binding_for, shared_catalog};
 mod agent_fix;
+pub use agent_fix::provider_catalog_fingerprint;
 #[cfg(test)]
 mod artifact_path_tests;
 mod artifact_remote;
@@ -278,11 +279,15 @@ where
         group_id: Option<&str>,
         exclude_run_id: Option<&str>,
     ) -> RunResult<()> {
+        let ignore_quiescent_fix_children = self.ignore_quiescent_fix_children()?;
         for run in self.store.active_workspace_runs(workspace_id).await? {
             if Some(run.id.as_str()) == exclude_run_id {
                 continue;
             }
             if group_id.is_some() && run.group_id.as_deref() == group_id {
+                continue;
+            }
+            if ignore_quiescent_fix_children && self.is_quiescent_fix_child(&run.id).await? {
                 continue;
             }
             return Err(RunError::WorkspaceBusy {
@@ -301,6 +306,9 @@ where
             }
         }
         let run = self.store.run(run_id).await?;
+        if self.cancel_active_fix_child(run_id).await? {
+            return Ok(());
+        }
         if !matches!(run.status.as_str(), "queued" | "estimating" | "running") {
             return Err(RunError::RunNotActive(run_id.to_owned()));
         }

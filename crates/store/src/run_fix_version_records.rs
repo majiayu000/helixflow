@@ -1,5 +1,7 @@
 use sqlx::Row;
 
+use crate::run_fix_records::{fix_attempt_in_tx, require_one_write};
+
 use super::{
     AutoApplyProposalVersionResult, MessageRecord, NewProposal, NewVersion, ProposalRecord,
     RunFixAttemptRecord, Store, StoreError, StoreResult, VersionRecord, new_id,
@@ -28,7 +30,7 @@ impl Store {
         input: ApplyRunFixVersionRecord<'_>,
     ) -> StoreResult<ApplyRunFixVersionResult> {
         let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
-        let attempt = fix_attempt(&mut tx, input.attempt_id).await?;
+        let attempt = fix_attempt_in_tx(&mut tx, input.attempt_id).await?;
         if matches!(
             attempt.state.as_str(),
             "version_applied" | "child_preparing" | "child_ready"
@@ -83,7 +85,7 @@ impl Store {
         .bind(attempt.expected_runtime_provider_id.as_deref())
         .execute(&mut *tx)
         .await?;
-        require_one("advance_run_fix_current", current_update.rows_affected())?;
+        require_one_write("advance_run_fix_current", current_update.rows_affected())?;
 
         let attachments = serde_json::json!({ "versionId": version_id }).to_string();
         let message_insert = sqlx::query(
@@ -101,7 +103,7 @@ impl Store {
         .bind(&attachments)
         .execute(&mut *tx)
         .await?;
-        require_one("insert_run_fix_message", message_insert.rows_affected())?;
+        require_one_write("insert_run_fix_message", message_insert.rows_affected())?;
         insert_proposal(
             &mut tx,
             &proposal_id,
@@ -124,8 +126,8 @@ impl Store {
         .bind(input.attempt_id)
         .execute(&mut *tx)
         .await?;
-        require_one("link_run_fix_version", attempt_update.rows_affected())?;
-        let attempt = fix_attempt(&mut tx, input.attempt_id).await?;
+        require_one_write("link_run_fix_version", attempt_update.rows_affected())?;
+        let attempt = fix_attempt_in_tx(&mut tx, input.attempt_id).await?;
         applied_fix_result(tx, attempt).await
     }
 }
@@ -191,7 +193,7 @@ async fn insert_fix_version(
     .bind(version.semantics_json)
     .execute(&mut **tx)
     .await?;
-    require_one("insert_run_fix_version", result.rows_affected())
+    require_one_write("insert_run_fix_version", result.rows_affected())
 }
 
 async fn insert_proposal(
@@ -223,7 +225,7 @@ async fn insert_proposal(
     .bind(message_id)
     .execute(&mut **tx)
     .await?;
-    require_one("insert_run_fix_proposal", result.rows_affected())
+    require_one_write("insert_run_fix_proposal", result.rows_affected())
 }
 
 async fn applied_fix_result(
@@ -280,36 +282,4 @@ async fn applied_fix_result(
         },
         attempt,
     })
-}
-
-async fn fix_attempt(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    attempt_id: &str,
-) -> StoreResult<RunFixAttemptRecord> {
-    Ok(sqlx::query_as::<_, RunFixAttemptRecord>(
-        r#"
-        SELECT id, operation_id, workspace_id, chain_id, root_run_id, source_run_id,
-               attempt_index, max_attempts, source_version_id,
-               expected_runtime_provider_id, effective_provider_id,
-               expected_recovery_scope_fingerprint, provider_catalog_fingerprint,
-               state, proposal_id, target_version_id, child_run_id, reason_code,
-               error_summary, created_at, updated_at, finished_at
-        FROM run_fix_attempts WHERE id = ?
-        "#,
-    )
-    .bind(attempt_id)
-    .fetch_one(&mut **tx)
-    .await?)
-}
-
-fn require_one(operation: &'static str, rows: u64) -> StoreResult<()> {
-    if rows == 1 {
-        Ok(())
-    } else {
-        Err(StoreError::StatementInvariant {
-            operation,
-            expected_rows: 1,
-            actual_rows: rows,
-        })
-    }
 }

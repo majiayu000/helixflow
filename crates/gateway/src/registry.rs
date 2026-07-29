@@ -202,6 +202,13 @@ impl Provider for ProviderRegistry {
             .unwrap_or_default()
     }
 
+    fn catalog_revision(&self, provider_id: &str) -> String {
+        match serde_json::to_string(&self.catalog_snapshot_for_selected(Some(provider_id))) {
+            Ok(revision) => revision,
+            Err(error) => format!("catalog-serialization-error:{error}"),
+        }
+    }
+
     fn recovery_capabilities(&self, provider_id: &str) -> crate::ProviderRecoveryCapabilities {
         self.providers
             .get(provider_id)

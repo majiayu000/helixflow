@@ -14,6 +14,7 @@ impl Store {
         next_status: &str,
         workspace_id: &str,
         group_id: Option<&str>,
+        ignore_quiescent_fix_children: bool,
     ) -> StoreResult<Option<RunRecord>> {
         let result = sqlx::query(
             r#"
@@ -27,6 +28,19 @@ impl Store {
                   AND other.id <> ?
                   AND other.status IN ('queued', 'estimating', 'running')
                   AND (? IS NULL OR other.group_id IS NULL OR other.group_id <> ?)
+                  AND (
+                    ? = 0
+                    OR NOT EXISTS (
+                      SELECT 1 FROM run_fix_attempts AS fix
+                      WHERE fix.child_run_id = other.id
+                        AND fix.state IN ('child_preparing', 'child_ready')
+                    )
+                    OR EXISTS (
+                      SELECT 1 FROM run_provider_tasks AS task
+                      WHERE task.run_id = other.id
+                        AND task.state IN ('dispatching', 'active', 'result_ready')
+                    )
+                  )
               )
             "#,
         )
@@ -38,6 +52,7 @@ impl Store {
         .bind(run_id)
         .bind(group_id)
         .bind(group_id)
+        .bind(ignore_quiescent_fix_children)
         .execute(self.pool())
         .await?;
 
