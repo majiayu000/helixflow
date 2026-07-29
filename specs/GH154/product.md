@@ -100,11 +100,15 @@ run 已中断。
     fallback。
 18. `estimating` 默认中断；`waiting_confirmation` 不参与启动清理，不能绕过用户成本
     确认。requeue 不得创建新 run、改变 estimate 或重复写 estimate ledger。
-19. 每个 task/step 终态由独立 CAS 幂等收敛；当且仅当 terminalization work item 证明
+19. 每个 task/step 终态由独立 CAS 幂等收敛；任何会把 active run 变成 failed 或
+    interrupted 的原因（user interrupt、dispatch outcome unknown、missing/invalid handle、
+    recovery deadline/cancel-abandon）都必须先创建/合并 terminalization work item。当且
+    仅当 work item 证明
     所有相关 task 已终态时，最后一个 transaction 才同时提交 run terminal、对应 run
     event 和 work-item completed。failure 与用户 interrupt 竞争时，显式 interrupt 单调
-    覆盖 pending failed desired status，最终为 interrupted 且不得触发 self-heal；已经
-    completed 的 terminal 不可覆盖。重复恢复不会重复事件或把 terminal run 改回 active。
+    覆盖 `failed/(settling|ready)` desired status，最终为 interrupted 且不得触发
+    self-heal；已经 completed 的 terminal 不可覆盖。重复恢复不会重复事件或把 terminal
+    run 改回 active。
 20. workspace 单 active-run 规则和 sweep `group_id` 例外保持不变；恢复不能让同一
     workspace 的互斥 run 同时继续执行。
 21. 在线 interrupt 保留 queued、estimating、running 三种既有可中断状态。无远端 task
@@ -153,6 +157,9 @@ run 已中断。
       completed/cancelled/abandoned；重启可继续 terminalization，不遗留付费任务。
 - [ ] queued/estimating/running 在线 interrupt 均保持可用；dispatching/active 窗口中
       crash 后由 durable interrupt settler 继续，不遗留 terminal run 下的未跟踪任务。
+- [ ] `failed/ready` 提交前的用户 interrupt 原子升级为 interrupted 且不 self-heal；
+      outcome-unknown、invalid/missing handle 与 deadline abandon 在 parallel DAG 中也先
+      收敛全部 siblings 再 terminal。
 - [ ] failed commit 后、continuation claim 前和 retry child insert 后 crash 均恢复同一
       child；同一 `(parent, attempt)` 不重复。
 - [ ] artifact publish 后、DB commit 前 crash 由 journal 重放或安全 GC；引用中的

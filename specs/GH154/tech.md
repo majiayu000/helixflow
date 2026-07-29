@@ -149,8 +149,9 @@ running，使现有 active-run lease 可以恢复 settler；tasks 全部终态�
 同一 run 的 failure 与 interrupt 用单调 desired-status CAS 合并：
 
 - 无 work item 时 insert；
-- `failed/settling + user interrupt` 原子升级为 `interrupted/settling`，保留 source
-  failure audit，但最终不创建 self-heal continuation；
+- run 仍为 running 时，`failed/(settling|ready) + user interrupt` 原子升级为
+  `interrupted/settling`，保留 source failure audit，但最终不创建 self-heal
+  continuation；
 - 已 `interrupted` 后到达的 step failure 只补 task diagnostic，不降级为 failed；
 - work item completed 或 run 已 succeeded/failed/interrupted 后不再改写。
 
@@ -236,8 +237,9 @@ pub trait Provider {
 错误；收到明确的上游拒绝响应使用 `Rejected`；请求可能已被接收的 timeout、断线或无法
 解析的成功响应一律是 `OutcomeUnknown`。前两类把 task 收敛为 `completed` +
 `last_error_code`，把 step 标为 failed 并创建 terminalization work item；sibling 收敛后
-才把 run 送入共同 failed finalizer。`OutcomeUnknown` 才把 task 收敛为 `abandoned`、
-run 标为 interrupted 并写计费风险。三类均不得在 Atlas/fal 自动重提。
+才把 run 送入共同 failed finalizer。`OutcomeUnknown` 把当前 task 收敛为 `abandoned`、
+写计费风险并创建/合并 `desired=interrupted` terminalization；全部 siblings 收敛后才
+提交 run interrupted。三类均不得在 Atlas/fal 自动重提。
 
 `active_handles` 和 Atlas/fal `in_flight` map 从 correctness path 删除。为兼容
 同步 chat/image，可由 dispatch 返回 `Completed`；若进程在远端可能已接受请求但
@@ -285,7 +287,7 @@ provider-backed step 执行顺序：
 3. 调用 `provider.dispatch`。
 4. `Completed`：进入幂等 step finalizer；`NotSubmitted`/`Rejected` 原子写 task
    `completed`、step failed 与 terminalization work item；`OutcomeUnknown` 原子写 task
-   `abandoned`、run interrupted 与计费风险。
+   `abandoned`、`desired=interrupted` work item 与计费风险，不直接 terminal run。
 5. `Accepted`：严格校验 handle 和 scope，然后以
    `WHERE id=? AND state='dispatching' AND operation_key=?` CAS 为 active。
 6. CAS 成功后 poll/resume；CAS 未命中则停止并读取 durable truth，不让失去 lease 或
@@ -296,8 +298,9 @@ provider-backed step 执行顺序：
 - crash 在步骤 2 后、provider 调用前：无法证明是否 submit，与步骤 3 已远端接受但
   本地未收到响应不可区分。
 - crash 在步骤 3 成功后、步骤 5 commit 前：同样只留下 dispatching。
-- 对两者统一 fail closed：不自动再次 dispatch，task → abandoned，run →
-  interrupted，并写 `DISPATCH_OUTCOME_UNKNOWN` billing-risk event。
+- 对两者统一 fail closed：不自动再次 dispatch，task → abandoned，创建/合并
+  `desired=interrupted` work item，并写 `DISPATCH_OUTCOME_UNKNOWN` billing-risk；
+  sibling tasks 收敛后才 run interrupted。
 - gateway 返回的 typed `NotSubmitted`/`Rejected` 不是 crash window，不得误报
   abandoned；无法证明请求未提交时必须分类为 `OutcomeUnknown`。
 - 只有未来某 provider 明确实现并测试 server-side idempotency lookup，才能在该
@@ -383,14 +386,18 @@ run → failed、写 `run.failed` event，并调用共同 failure finalizer。�
      lease claim 并从 ready queue 恢复；
    - `running` builtin step 仅当 capability 明确声明并测试 `restart_safe=true` 时可重放；
      否则 interrupted；
-   - `dispatching`、provider-backed running 无 handle、非法 handle：abandon +
-     interrupted + durable risk event；
-   - 其他未匹配 running 组合：显式 interrupted/invariant event，禁止保留 stale running。
+   - `dispatching`、provider-backed running 无 handle、非法 handle：把已知 task
+     abandoned，创建/合并 `desired=interrupted` work item + durable risk event，再收敛
+     siblings；
+   - 其他未匹配 running 组合：创建/合并 interrupted work item + invariant event，禁止
+     绕过 settler 或保留 stale running。
 6. 对 claim 结果 spawn recovery future；HTTP server 启动不等待远端 poll。
 
 recovery future 周期续租。暂时网络错误采用有界指数退避，但绝对期限只认 task
 `recovery_deadline_at`；每次重启计算 `deadline - now`，到期立即尝试补取消/abandon，
-不得重新获得完整窗口。有效 lease 被其他 owner 取代时，future 立即停止写入。
+不得重新获得完整窗口。deadline 的 cancel/abandon 结果也合并
+`desired=interrupted` work item，收敛 siblings 后 terminal。有效 lease 被其他 owner
+取代时，future 立即停止写入。
 
 online interrupt 保留现有 `queued`、`estimating`、`running` 三种可中断状态，并使用
 durable terminalization：
