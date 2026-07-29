@@ -19,11 +19,11 @@ The name combines "helix" and "flow": each Agent edit → run → error → fix 
 
 ## Quickstart
 
-Requires Rust and Node.js.
+Requires Rust and Node.js 22.
 
 ```sh
-# 1. Build the frontend
-cd web && npm install && npm run build && cd ..
+# 1. Build the frontend from the lockfile
+cd web && npm ci && npm run build && cd ..
 
 # 2. Run with the mock provider (no API key needed)
 HELIXFLOW_RUNTIME_PROVIDER=mock \
@@ -89,9 +89,16 @@ web/         # React workbench
 cargo run -p helixflow-server            # 127.0.0.1:8787
 cd web && npm run dev                    # 127.0.0.1:5173
 
-# checks
-cargo check --workspace
-cd web && npm run build
+# Rust checks
+cargo fmt --all -- --check
+cargo check --workspace --locked
+cargo test --workspace --locked
+
+# Web checks
+cd web
+npm ci
+npm test
+npm run build
 ```
 
 Specs and design docs live in [`SPEC_WORKFLOW_ORCHESTRATOR.md`](SPEC_WORKFLOW_ORCHESTRATOR.md), [`docs/`](docs/), and [`specs/`](specs/).
