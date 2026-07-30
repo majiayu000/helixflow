@@ -6,6 +6,7 @@ use axum::{
 use helixflow_run::EventBus;
 use serde_json::{Value, json};
 
+mod agent_contract_observation;
 mod api_error;
 mod app_state;
 #[cfg(test)]
@@ -53,6 +54,7 @@ mod workbench_message_graph_tests;
 mod workbench_message_intent;
 mod workbench_message_metadata;
 mod workbench_message_proposals;
+mod workbench_message_run_fix;
 #[cfg(test)]
 mod workbench_message_tests;
 mod workbench_payload;
