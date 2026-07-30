@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-use super::{MessageRecord, NewVersion, Store, StoreError, StoreResult, VersionRecord, new_id};
+use super::{
+    CompleteAgentContractObservation, MessageRecord, NewVersion, Store, StoreError, StoreResult,
+    VersionRecord, new_id,
+};
+use crate::agent_contract_observation_records::complete_observation_in_tx;
 
 #[derive(Debug, Clone)]
 pub struct NewProposal<'a> {
@@ -408,6 +412,23 @@ impl Store {
         &self,
         input: AutoApplyProposalVersionRecord<'_>,
     ) -> StoreResult<AutoApplyProposalVersionResult> {
+        self.auto_apply_proposal_version_inner(input, None).await
+    }
+
+    pub async fn auto_apply_proposal_version_with_observation(
+        &self,
+        input: AutoApplyProposalVersionRecord<'_>,
+        completion: CompleteAgentContractObservation<'_>,
+    ) -> StoreResult<AutoApplyProposalVersionResult> {
+        self.auto_apply_proposal_version_inner(input, Some(completion))
+            .await
+    }
+
+    async fn auto_apply_proposal_version_inner(
+        &self,
+        input: AutoApplyProposalVersionRecord<'_>,
+        completion: Option<CompleteAgentContractObservation<'_>>,
+    ) -> StoreResult<AutoApplyProposalVersionResult> {
         let proposal_id = new_id("proposal");
         let version_id = new_id("ver");
         let message_id = new_id("msg");
@@ -543,6 +564,9 @@ impl Store {
             "insert_auto_applied_proposal",
             proposal_insert.rows_affected(),
         )?;
+        if let Some(completion) = completion.as_ref() {
+            complete_observation_in_tx(&mut tx, completion).await?;
+        }
 
         let proposal = sqlx::query_as::<_, ProposalRecord>(
             r#"

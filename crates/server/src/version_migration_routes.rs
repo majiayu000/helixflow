@@ -94,6 +94,12 @@ pub(crate) struct VersionMigrationReport {
     nodes: Vec<NodeMigrationResult>,
 }
 
+impl VersionMigrationReport {
+    pub(crate) fn status(&self) -> VersionMigrationStatus {
+        self.status
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct NodeMigrationResult {
@@ -126,9 +132,9 @@ pub(crate) struct ApplyVersionMigrationResponse {
     workspace_state: Value,
 }
 
-struct Assessment {
-    report: VersionMigrationReport,
-    migrated: Option<WorkflowGraph>,
+pub(crate) struct Assessment {
+    pub(crate) report: VersionMigrationReport,
+    pub(crate) migrated: Option<WorkflowGraph>,
 }
 
 pub(crate) async fn dry_run_version_migration(
@@ -291,7 +297,7 @@ pub(crate) async fn apply_version_migration(
     ))
 }
 
-async fn assess_current_version(
+pub(crate) async fn assess_current_version(
     state: &AppState,
     workspace_id: &str,
     version_id: &str,

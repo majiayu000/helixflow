@@ -6,10 +6,16 @@ use axum::{
 };
 use helixflow_agent::{AgentLogEntry, AgentSessionRequest, TurnMode, classify_turn_mode};
 use helixflow_graph::{PreparedProposal, ProposalOp, WorkflowGraph};
-use helixflow_store::{MessageRecord, NewMessage, RunRecord, RunStepRecord};
+use helixflow_store::{
+    AgentContractOutcome, MessageRecord, NewAgentContractObservation, NewMessage, RunRecord,
+    RunStepRecord,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::agent_contract_observation::{
+    AgentContractTurn, agent_error_code, contract_mode, finalize_agent_contract_error,
+};
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
 use crate::sweep_support::handle_run_request;
@@ -17,7 +23,7 @@ use crate::workbench_message_canvas::{WorkspaceCanvasContext, prepare_agent_canv
 use crate::workbench_message_graph::{VerifiedMessageGraph, verified_message_graph};
 use crate::workbench_message_intent::handle_intent_turn;
 use crate::workbench_message_metadata::turn_metadata_json;
-use crate::workbench_message_proposals::persist_and_apply_agent_proposal;
+use crate::workbench_message_proposals::persist_and_apply_agent_proposal_observed;
 use crate::workbench_payload::{PendingConfirmationPayload, ProposalPayload, RunPayload};
 
 #[derive(Debug, Deserialize)]
@@ -88,19 +94,6 @@ pub(crate) async fn post_workspace_message(
                 })
         })
         .collect();
-    let turn_metadata = turn_metadata_json(classification);
-    state
-        .store
-        .create_message(NewMessage {
-            workspace_id: &workspace_id,
-            role: "user",
-            kind: "text",
-            text: Some(&input.user_message),
-            ref_id: None,
-            attachment_ids_json: Some(&turn_metadata),
-        })
-        .await
-        .map_err(ApiError::store)?;
     let workspace = state
         .store
         .workspace(&workspace_id)
@@ -108,6 +101,39 @@ pub(crate) async fn post_workspace_message(
         .map_err(ApiError::store)?;
     let provider_catalog = state.provider_catalog_for_workspace(&workspace);
     let run_context = debug_run_context(&state, &workspace_id, classification.mode).await?;
+    let turn_metadata = turn_metadata_json(classification);
+    let user_message = NewMessage {
+        workspace_id: &workspace_id,
+        role: "user",
+        kind: "text",
+        text: Some(&input.user_message),
+        ref_id: None,
+        attachment_ids_json: Some(&turn_metadata),
+    };
+    let contract_turn = if matches!(
+        classification.mode,
+        TurnMode::CreateWorkflow | TurnMode::ModifyWorkflow | TurnMode::DebugWorkflow
+    ) {
+        let mode = contract_mode(state.use_intent_contract);
+        let started = state
+            .store
+            .create_graph_edit_message_with_observation(NewAgentContractObservation {
+                user_message,
+                contract_mode: mode,
+                release_id: state.agent_contract_attribution.release_id.as_deref(),
+                build_revision: state.agent_contract_attribution.build_revision.as_deref(),
+            })
+            .await
+            .map_err(ApiError::store)?;
+        Some(AgentContractTurn::new(started.observation.id, mode))
+    } else {
+        state
+            .store
+            .create_message(user_message)
+            .await
+            .map_err(ApiError::store)?;
+        None
+    };
     let use_intent_contract = state.use_intent_contract;
     let base_version_id = version.id.clone();
     let base_graph = graph.clone();
@@ -155,6 +181,9 @@ pub(crate) async fn post_workspace_message(
             }))
         }
         TurnMode::CreateWorkflow | TurnMode::ModifyWorkflow | TurnMode::DebugWorkflow => {
+            let turn = contract_turn.as_ref().ok_or_else(|| {
+                ApiError::server_error("graph-edit turn is missing a contract observation")
+            })?;
             if use_intent_contract {
                 let response = handle_intent_turn(
                     &state,
@@ -163,24 +192,73 @@ pub(crate) async fn post_workspace_message(
                     &base_graph,
                     classification.mode,
                     request,
+                    turn,
                 )
                 .await?;
                 return Ok(Json(response));
             }
-            let proposal = state
-                .agent
-                .propose_graph_change(request)
-                .await
-                .map_err(ApiError::agent)?;
-            persist_agent_logs(
+            let proposal = match state.agent.propose_graph_change(request).await {
+                Ok(proposal) => proposal,
+                Err(error) => {
+                    finalize_agent_contract_error(
+                        &state,
+                        &workspace_id,
+                        turn,
+                        agent_error_code(&error),
+                        None,
+                    )
+                    .await
+                    .map_err(ApiError::store)?;
+                    return Err(ApiError::agent(error));
+                }
+            };
+            if let Err(error) = persist_agent_logs(
                 &state,
                 &workspace_id,
                 &proposal.session_id,
                 &proposal.agent_logs,
             )
-            .await?;
-            let message =
-                persist_and_apply_agent_proposal(&state, &workspace_id, &proposal, None).await?;
+            .await
+            {
+                finalize_agent_contract_error(
+                    &state,
+                    &workspace_id,
+                    turn,
+                    "AGENT_LOG_PERSISTENCE_ERROR",
+                    Some(&proposal.session_id),
+                )
+                .await
+                .map_err(ApiError::store)?;
+                return Err(error);
+            }
+            let applied = persist_and_apply_agent_proposal_observed(
+                &state,
+                &workspace_id,
+                &proposal,
+                None,
+                turn.completion(
+                    &workspace_id,
+                    AgentContractOutcome::Success,
+                    "LEGACY_PROPOSAL_APPLIED",
+                    Some(&proposal.session_id),
+                ),
+            )
+            .await;
+            let message = match applied {
+                Ok(message) => message,
+                Err(error) => {
+                    finalize_agent_contract_error(
+                        &state,
+                        &workspace_id,
+                        turn,
+                        "PROPOSAL_APPLY_ERROR",
+                        Some(&proposal.session_id),
+                    )
+                    .await
+                    .map_err(ApiError::store)?;
+                    return Err(error);
+                }
+            };
             Ok(Json(WorkspaceMessageResponse {
                 turn_mode: classification.mode,
                 messages: vec![ChatMessagePayload::from_record(message)],

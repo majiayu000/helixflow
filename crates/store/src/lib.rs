@@ -7,6 +7,9 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Executor, Row, SqlitePool};
 use uuid::Uuid;
 
+mod agent_contract_observation_records;
+#[cfg(test)]
+mod agent_contract_observation_records_tests;
 mod artifact_journal_records;
 mod canvas_comment_records;
 mod cost_ledger_idempotency;
@@ -55,6 +58,7 @@ mod workspace_initialization_records;
 mod workspace_initialization_records_tests;
 mod workspace_records;
 
+pub use agent_contract_observation_records::*;
 pub use artifact_journal_records::*;
 pub use canvas_comment_records::*;
 pub use node_cache_records::*;
@@ -144,6 +148,9 @@ pub enum StoreError {
         message: String,
     },
     RunFixGuardConflict {
+        code: &'static str,
+    },
+    AgentContractObservationInvariant {
         code: &'static str,
     },
 }
@@ -254,6 +261,9 @@ impl fmt::Display for StoreError {
             }
             Self::RunFixGuardConflict { code } => {
                 write!(f, "run fix guard rejected the operation: {code}")
+            }
+            Self::AgentContractObservationInvariant { code } => {
+                write!(f, "agent contract observation invariant failed: {code}")
             }
         }
     }

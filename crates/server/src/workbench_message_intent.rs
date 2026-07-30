@@ -7,14 +7,17 @@ use helixflow_agent::{AgentSessionRequest, TurnMode, ValidatedAgentProposal};
 use helixflow_compiler::{ClarifyFirst, CompileOutcome, CompiledProposal, compile};
 use helixflow_graph::{GraphService, ProposalDraft, ProposalKind, WorkflowGraph};
 use helixflow_registry::NodeRegistry;
-use helixflow_store::NewMessage;
+use helixflow_store::{AgentContractOutcome, NewMessage};
 use serde_json::json;
 
+use crate::agent_contract_observation::{
+    AgentContractTurn, agent_error_code, finalize_agent_contract_error,
+};
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
 use crate::catalog_routes::connector_availability;
 use crate::workbench_message::{ChatMessagePayload, WorkspaceMessageResponse, persist_agent_logs};
-use crate::workbench_message_proposals::persist_and_apply_agent_proposal;
+use crate::workbench_message_proposals::persist_and_apply_agent_proposal_observed;
 
 /// GH130 T6 grayscale switch: on unless explicitly disabled. `0` / `false` /
 /// `off` restore the legacy proposal contract for rollback drills.
@@ -35,19 +38,42 @@ pub(crate) async fn handle_intent_turn(
     base_graph: &WorkflowGraph,
     mode: TurnMode,
     request: AgentSessionRequest,
+    turn: &AgentContractTurn,
 ) -> Result<WorkspaceMessageResponse, ApiError> {
-    let validated = state
-        .agent
-        .propose_intent(request)
-        .await
-        .map_err(ApiError::agent)?;
-    persist_agent_logs(
+    let validated = match state.agent.propose_intent(request).await {
+        Ok(validated) => validated,
+        Err(error) => {
+            finalize_agent_contract_error(
+                state,
+                workspace_id,
+                turn,
+                agent_error_code(&error),
+                None,
+            )
+            .await
+            .map_err(ApiError::store)?;
+            return Err(ApiError::agent(error));
+        }
+    };
+    if let Err(error) = persist_agent_logs(
         state,
         workspace_id,
         &validated.session_id,
         &validated.agent_logs,
     )
-    .await?;
+    .await
+    {
+        finalize_agent_contract_error(
+            state,
+            workspace_id,
+            turn,
+            "AGENT_LOG_PERSISTENCE_ERROR",
+            Some(&validated.session_id),
+        )
+        .await
+        .map_err(ApiError::store)?;
+        return Err(error);
+    }
 
     let catalog = helixflow_run::shared_catalog();
     let availability = connector_availability(&state.provider_registry.catalog_snapshot());
@@ -61,8 +87,22 @@ pub(crate) async fn handle_intent_turn(
         &availability,
     ) {
         Ok(CompileOutcome::Compiled(compiled)) => {
-            let semantics_json = serde_json::to_string(&compiled.target.collected_semantics())
-                .map_err(|err| ApiError::server_error(err.to_string()))?;
+            let semantics_json = match serde_json::to_string(&compiled.target.collected_semantics())
+            {
+                Ok(semantics_json) => semantics_json,
+                Err(error) => {
+                    finalize_agent_contract_error(
+                        state,
+                        workspace_id,
+                        turn,
+                        "INTENT_SERIALIZATION_ERROR",
+                        Some(&validated.session_id),
+                    )
+                    .await
+                    .map_err(ApiError::store)?;
+                    return Err(ApiError::server_error(error.to_string()));
+                }
+            };
             let draft = ProposalDraft {
                 base_version_id: base_version_id.to_owned(),
                 kind: proposal_kind_for_mode(mode),
@@ -71,26 +111,57 @@ pub(crate) async fn handle_intent_turn(
                 ops: compiled.ops.clone(),
                 message_id: None,
             };
-            let prepared = service
-                .preview_proposal(base_graph, base_version_id, draft)
-                .map_err(|err| {
-                    ApiError::conflict_with_details(
-                        format!("compiled proposal failed preview: {err}"),
-                        json!({ "code": "COMPILED_PROPOSAL_INVALID" }),
+            let prepared = match service.preview_proposal(base_graph, base_version_id, draft) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    finalize_agent_contract_error(
+                        state,
+                        workspace_id,
+                        turn,
+                        "COMPILED_PROPOSAL_INVALID",
+                        Some(&validated.session_id),
                     )
-                })?;
+                    .await
+                    .map_err(ApiError::store)?;
+                    return Err(ApiError::conflict_with_details(
+                        format!("compiled proposal failed preview: {error}"),
+                        json!({ "code": "COMPILED_PROPOSAL_INVALID" }),
+                    ));
+                }
+            };
             let proposal = ValidatedAgentProposal {
-                session_id: validated.session_id,
+                session_id: validated.session_id.clone(),
                 agent_logs: Vec::new(),
                 proposal: prepared,
             };
-            let message = persist_and_apply_agent_proposal(
+            let applied = persist_and_apply_agent_proposal_observed(
                 state,
                 workspace_id,
                 &proposal,
                 Some(&semantics_json),
+                turn.completion(
+                    workspace_id,
+                    AgentContractOutcome::Success,
+                    "INTENT_COMPILED",
+                    Some(&validated.session_id),
+                ),
             )
-            .await?;
+            .await;
+            let message = match applied {
+                Ok(message) => message,
+                Err(error) => {
+                    finalize_agent_contract_error(
+                        state,
+                        workspace_id,
+                        turn,
+                        "PROPOSAL_APPLY_ERROR",
+                        Some(&validated.session_id),
+                    )
+                    .await
+                    .map_err(ApiError::store)?;
+                    return Err(error);
+                }
+            };
             Ok(WorkspaceMessageResponse {
                 turn_mode: mode,
                 messages: vec![ChatMessagePayload::from_record(message)],
@@ -101,30 +172,49 @@ pub(crate) async fn handle_intent_turn(
         }
         Ok(CompileOutcome::Clarify(clarify)) => {
             let text = clarify_message_text(&clarify);
-            let message = state
+            let clarified = state
                 .store
-                .create_message(NewMessage {
-                    workspace_id,
-                    role: "agent",
-                    kind: "clarify",
-                    text: Some(&text),
-                    ref_id: None,
-                    attachment_ids_json: None,
-                })
+                .create_clarification_and_finalize_observation(
+                    NewMessage {
+                        workspace_id,
+                        role: "agent",
+                        kind: "clarify",
+                        text: Some(&text),
+                        ref_id: Some(&validated.session_id),
+                        attachment_ids_json: None,
+                    },
+                    turn.completion(
+                        workspace_id,
+                        AgentContractOutcome::Clarify,
+                        &clarify.reason_code,
+                        Some(&validated.session_id),
+                    ),
+                )
                 .await
                 .map_err(ApiError::store)?;
             Ok(WorkspaceMessageResponse {
                 turn_mode: mode,
-                messages: vec![ChatMessagePayload::from_record(message)],
+                messages: vec![ChatMessagePayload::from_record(clarified.message)],
                 proposal: None,
                 run: None,
                 pending_confirmation: None,
             })
         }
-        Err(err) => Err(ApiError::conflict_with_details(
-            err.to_string(),
-            json!({ "code": err.code(), "catalogRevision": catalog.catalog_revision }),
-        )),
+        Err(error) => {
+            finalize_agent_contract_error(
+                state,
+                workspace_id,
+                turn,
+                error.code(),
+                Some(&validated.session_id),
+            )
+            .await
+            .map_err(ApiError::store)?;
+            Err(ApiError::conflict_with_details(
+                error.to_string(),
+                json!({ "code": error.code(), "catalogRevision": catalog.catalog_revision }),
+            ))
+        }
     }
 }
 
@@ -197,7 +287,7 @@ mod run_agent_fix_tests {
 
     use crate::app_state::{AppState, WorkbenchAgent};
     use crate::graph_files::graph_hash;
-    use crate::workbench_message_proposals::recover_run_agent_fixes_with_policy;
+    use crate::workbench_message_run_fix::recover_run_agent_fixes_with_policy;
 
     struct FixAgent {
         calls: AtomicUsize,

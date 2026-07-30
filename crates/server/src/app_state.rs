@@ -17,6 +17,7 @@ use helixflow_run::{
 use helixflow_store::{Store, StoreError, WorkspaceRecord};
 use tokio::sync::Mutex;
 
+use crate::agent_contract_observation::AgentContractAttribution;
 use crate::version_file_reconciliation::{
     ReconciliationReport, VersionFileReconciliationError, reconcile_version_files,
 };
@@ -37,6 +38,7 @@ pub(crate) struct AppState {
     /// mechanics stay deterministically covered, and intent tests opt in.
     pub(crate) use_intent_contract: bool,
     pub(crate) migration_apply_enabled: bool,
+    pub(crate) agent_contract_attribution: AgentContractAttribution,
 }
 
 impl AppState {
@@ -52,13 +54,24 @@ impl AppState {
         data_dir: PathBuf,
         database_url: String,
     ) -> Result<Self, AppStateError> {
+        let attribution =
+            AgentContractAttribution::from_env().map_err(AppStateError::Configuration)?;
         tokio::fs::create_dir_all(&data_dir).await?;
         let store = Store::open(&database_url).await?;
+        store
+            .finalize_interrupted_agent_contract_observations()
+            .await?;
         let reconciliation_report = Arc::new(reconcile_version_files(&store, &data_dir).await?);
         let registry = default_provider_registry();
         persist_runtime_provider_status(&store, &registry).await?;
-        let state =
-            Self::with_store_provider(events, store, data_dir, registry, reconciliation_report);
+        let state = Self::with_store_provider(
+            events,
+            store,
+            data_dir,
+            registry,
+            reconciliation_report,
+            attribution,
+        );
         state.runner.validate_restart_config()?;
         let recovery_runner = state.runner.clone();
         let fix_state = state.clone();
@@ -69,7 +82,7 @@ impl AppState {
                     err.public_message()
                 );
             }
-            crate::workbench_message_proposals::run_agent_fix_worker(fix_state).await;
+            crate::workbench_message_run_fix::run_agent_fix_worker(fix_state).await;
         });
         Ok(state)
     }
@@ -89,6 +102,7 @@ impl AppState {
         data_dir: PathBuf,
         provider_registry: ProviderRegistry,
         reconciliation_report: Arc<ReconciliationReport>,
+        agent_contract_attribution: AgentContractAttribution,
     ) -> Self {
         let agent_sessions_dir = default_agent_sessions_dir();
         let agent = Arc::new(CodexWorkbenchAgent {
@@ -115,6 +129,7 @@ impl AppState {
             reconciliation_report,
             use_intent_contract: crate::workbench_message_intent::intent_contract_enabled(),
             migration_apply_enabled: version_migration_apply_enabled(),
+            agent_contract_attribution,
         }
     }
 
@@ -148,6 +163,7 @@ impl AppState {
             reconciliation_report,
             use_intent_contract: false,
             migration_apply_enabled: false,
+            agent_contract_attribution: AgentContractAttribution::default(),
         }
     }
 
@@ -182,6 +198,7 @@ impl AppState {
             reconciliation_report,
             use_intent_contract: false,
             migration_apply_enabled: false,
+            agent_contract_attribution: AgentContractAttribution::default(),
         }
     }
 
@@ -212,6 +229,7 @@ pub(crate) enum AppStateError {
     Store(StoreError),
     Run(RunError),
     VersionFileConsistency(VersionFileReconciliationError),
+    Configuration(String),
 }
 
 impl fmt::Display for AppStateError {
@@ -221,6 +239,7 @@ impl fmt::Display for AppStateError {
             Self::Store(err) => write!(f, "failed to initialize store: {err}"),
             Self::Run(err) => write!(f, "failed to recover runs: {err}"),
             Self::VersionFileConsistency(err) => write!(f, "{err}"),
+            Self::Configuration(message) => write!(f, "invalid server configuration: {message}"),
         }
     }
 }
@@ -415,6 +434,7 @@ mod tests {
             dir.path().to_path_buf(),
             registry,
             Arc::new(ReconciliationReport::default()),
+            AgentContractAttribution::default(),
         );
 
         let selected = state.selected_provider_for_workspace(&workspace);
