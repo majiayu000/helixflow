@@ -1,9 +1,9 @@
 use tempfile::tempdir;
 
 use super::{
-    AgentContractMode, AgentContractOutcome, AutoApplyProposalVersionRecord,
-    CompleteAgentContractObservation, NewAgentContractObservation, NewMessage, NewProposal,
-    NewVersion, Store, StoreError, VersionSource,
+    AgentContractEvidenceFilter, AgentContractMode, AgentContractOutcome,
+    AutoApplyProposalVersionRecord, CompleteAgentContractObservation, NewAgentContractObservation,
+    NewMessage, NewProposal, NewVersion, Store, StoreError, VersionSource,
 };
 
 async fn fixture() -> (Store, String) {
@@ -408,4 +408,101 @@ async fn proposal_success_and_observation_completion_share_one_transaction() {
         versions_before,
         "observation conflict must roll back proposal and version"
     );
+}
+
+#[tokio::test]
+async fn evidence_aggregate_filters_release_and_exposes_unattributed_inflight_rows() {
+    let (store, workspace_id) = fixture().await;
+    for (index, mode, outcome, reason, attributed) in [
+        (
+            1,
+            AgentContractMode::Intent,
+            Some(AgentContractOutcome::Success),
+            "INTENT_COMPILED",
+            true,
+        ),
+        (
+            2,
+            AgentContractMode::Intent,
+            Some(AgentContractOutcome::Clarify),
+            "REQUIRED_INPUT_MISSING",
+            true,
+        ),
+        (
+            3,
+            AgentContractMode::Legacy,
+            Some(AgentContractOutcome::Error),
+            "AGENT_RUNTIME_ERROR",
+            false,
+        ),
+        (4, AgentContractMode::Intent, None, "", false),
+    ] {
+        let text = format!("turn {index}");
+        let started = store
+            .create_graph_edit_message_with_observation(NewAgentContractObservation {
+                user_message: user_message(&workspace_id, &text),
+                contract_mode: mode,
+                release_id: attributed.then_some("v0.2.0"),
+                build_revision: attributed.then_some("abc123"),
+            })
+            .await
+            .expect("started");
+        if let Some(outcome) = outcome {
+            store
+                .finalize_agent_contract_observation(CompleteAgentContractObservation {
+                    observation_id: &started.observation.id,
+                    workspace_id: &workspace_id,
+                    contract_mode: mode,
+                    outcome,
+                    reason_code: reason,
+                    session_id: Some("agent"),
+                })
+                .await
+                .expect("complete");
+        }
+    }
+
+    let evidence = store
+        .agent_contract_evidence(AgentContractEvidenceFilter {
+            since: "2000-01-01 00:00:00",
+            until: "2100-01-01 00:00:00",
+            release_id: Some("v0.2.0"),
+            build_revision: Some("abc123"),
+        })
+        .await
+        .expect("evidence");
+    assert_eq!(evidence.unattributed, 2);
+    assert_eq!(evidence.in_flight, 1);
+    assert_eq!(
+        evidence
+            .groups
+            .iter()
+            .map(|group| (
+                group.contract_mode.as_str(),
+                group.outcome.as_str(),
+                group.reason_code.as_deref(),
+                group.count,
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("intent", "clarify", Some("REQUIRED_INPUT_MISSING"), 1),
+            ("intent", "success", Some("INTENT_COMPILED"), 1),
+        ]
+    );
+
+    let error = store
+        .agent_contract_evidence(AgentContractEvidenceFilter {
+            since: "2100-01-01 00:00:00",
+            until: "2000-01-01 00:00:00",
+            release_id: None,
+            build_revision: None,
+        })
+        .await
+        .expect_err("invalid window");
+    assert!(matches!(
+        error,
+        StoreError::AgentContractObservationInvariant {
+            code: "INVALID_EVIDENCE_WINDOW"
+        }
+    ));
 }

@@ -46,17 +46,19 @@ pub(crate) fn canonical_semantics_graph(
     graph: &WorkflowGraph,
     sidecar_json: Option<&str>,
 ) -> Result<Option<WorkflowGraph>, String> {
-    let embedded = graph.catalog_revision.is_some()
-        || graph.nodes.values().any(|node| node.semantics.is_some());
-    if embedded {
+    if graph.catalog_revision.is_some() {
         return Ok(Some(graph.clone()));
     }
-    let Some(encoded) = sidecar_json else {
-        return Ok(None);
-    };
-    let semantics: BTreeMap<String, NodeSemanticsEntry> =
-        serde_json::from_str(encoded).map_err(|error| error.to_string())?;
-    layer_sidecar_semantics(graph, semantics).map(Some)
+    if let Some(encoded) = sidecar_json {
+        let semantics: BTreeMap<String, NodeSemanticsEntry> =
+            serde_json::from_str(encoded).map_err(|error| error.to_string())?;
+        return layer_sidecar_semantics(graph, semantics).map(Some);
+    }
+    Ok(graph
+        .nodes
+        .values()
+        .any(|node| node.semantics.is_some())
+        .then(|| graph.clone()))
 }
 
 fn layer_sidecar_semantics(
@@ -80,9 +82,7 @@ pub(crate) fn derive_semantics_json(
     _before: &WorkflowGraph,
     after: &WorkflowGraph,
 ) -> Result<Option<String>, ApiError> {
-    let embedded = after.catalog_revision.is_some()
-        || after.nodes.values().any(|node| node.semantics.is_some());
-    let canonical = if embedded {
+    let canonical = if after.catalog_revision.is_some() {
         after.clone()
     } else if let Some(sidecar_json) = source.semantics_json.as_deref() {
         let mut semantics: BTreeMap<String, NodeSemanticsEntry> =
@@ -91,6 +91,8 @@ pub(crate) fn derive_semantics_json(
             })?;
         semantics.retain(|node_id, _| after.nodes.contains_key(node_id));
         layer_sidecar_semantics(after, semantics).map_err(derived_semantics_error)?
+    } else if after.nodes.values().any(|node| node.semantics.is_some()) {
+        after.clone()
     } else {
         return Ok(None);
     };

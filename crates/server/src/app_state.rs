@@ -54,6 +54,8 @@ impl AppState {
         data_dir: PathBuf,
         database_url: String,
     ) -> Result<Self, AppStateError> {
+        let attribution =
+            AgentContractAttribution::from_env().map_err(AppStateError::Configuration)?;
         tokio::fs::create_dir_all(&data_dir).await?;
         let store = Store::open(&database_url).await?;
         store
@@ -62,8 +64,6 @@ impl AppState {
         let reconciliation_report = Arc::new(reconcile_version_files(&store, &data_dir).await?);
         let registry = default_provider_registry();
         persist_runtime_provider_status(&store, &registry).await?;
-        let attribution =
-            AgentContractAttribution::from_env().map_err(AppStateError::Configuration)?;
         let state = Self::with_store_provider(
             events,
             store,

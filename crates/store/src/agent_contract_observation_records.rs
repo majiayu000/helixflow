@@ -84,6 +84,29 @@ pub struct ClarifiedAgentContractObservation {
     pub observation: AgentContractObservationRecord,
 }
 
+#[derive(Debug, Clone)]
+pub struct AgentContractEvidenceFilter<'a> {
+    pub since: &'a str,
+    pub until: &'a str,
+    pub release_id: Option<&'a str>,
+    pub build_revision: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct AgentContractEvidenceGroup {
+    pub contract_mode: String,
+    pub outcome: String,
+    pub reason_code: Option<String>,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentContractEvidenceAggregate {
+    pub groups: Vec<AgentContractEvidenceGroup>,
+    pub unattributed: i64,
+    pub in_flight: i64,
+}
+
 impl Store {
     pub async fn create_graph_edit_message_with_observation(
         &self,
@@ -190,6 +213,66 @@ impl Store {
         .execute(self.pool())
         .await?
         .rows_affected())
+    }
+
+    pub async fn agent_contract_evidence(
+        &self,
+        filter: AgentContractEvidenceFilter<'_>,
+    ) -> StoreResult<AgentContractEvidenceAggregate> {
+        if filter.since >= filter.until {
+            return Err(StoreError::AgentContractObservationInvariant {
+                code: "INVALID_EVIDENCE_WINDOW",
+            });
+        }
+        validate_optional_identity("INVALID_RELEASE_ID", filter.release_id, 64)?;
+        validate_optional_identity("INVALID_BUILD_REVISION", filter.build_revision, 128)?;
+        let groups = sqlx::query_as(
+            r#"
+            SELECT contract_mode, outcome, reason_code, COUNT(*) AS count
+            FROM agent_contract_observations
+            WHERE started_at >= ? AND started_at < ?
+              AND (? IS NULL OR release_id = ?)
+              AND (? IS NULL OR build_revision = ?)
+            GROUP BY contract_mode, outcome, reason_code
+            ORDER BY contract_mode, outcome, reason_code
+            "#,
+        )
+        .bind(filter.since)
+        .bind(filter.until)
+        .bind(filter.release_id)
+        .bind(filter.release_id)
+        .bind(filter.build_revision)
+        .bind(filter.build_revision)
+        .fetch_all(self.pool())
+        .await?;
+        let unattributed = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM agent_contract_observations
+            WHERE started_at >= ? AND started_at < ?
+              AND (release_id IS NULL OR build_revision IS NULL)
+            "#,
+        )
+        .bind(filter.since)
+        .bind(filter.until)
+        .fetch_one(self.pool())
+        .await?;
+        let in_flight = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM agent_contract_observations
+            WHERE started_at >= ? AND started_at < ? AND outcome = 'started'
+            "#,
+        )
+        .bind(filter.since)
+        .bind(filter.until)
+        .fetch_one(self.pool())
+        .await?;
+        Ok(AgentContractEvidenceAggregate {
+            groups,
+            unattributed,
+            in_flight,
+        })
     }
 }
 
