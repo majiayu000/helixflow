@@ -111,4 +111,3 @@ Agent/runtime error 在 `persist_agent_logs` 之前返回，contract mode、rele
 设置 `HELIXFLOW_RELEASE_ID` 与 `HELIXFLOW_BUILD_REVISION`，否则样本只进入
 unattributed，不可用于 #146。回滚本功能时可停止读取 evidence API，但不能删除或改写
 历史 observation。legacy contract 仍由原开关控制；本功能上线本身不改变 contract mode。
-
