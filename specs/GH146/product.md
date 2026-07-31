@@ -170,4 +170,3 @@ migration 0010 是 additive，v0.2.0 可以忽略删除版没有新增的应用�
 - [ ] unsupported catalog value 继续 typed fail closed，不新增 alias/default fallback。
 - [ ] 删除后在 canary DB 副本完成 v0.2.0 binary rollback 演练。
 - [ ] Rust/Web 全量验证、exact-head review 和 CI green。
-

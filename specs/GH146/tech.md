@@ -194,4 +194,3 @@ review 中解释，否则 gate 失败。
 删除版先部署到 `local-canary` 新 GitHub Deployment，使用 v0.2.0 canary database 副本
 完成 binary rollback drill。drill 与 exact-head review green 后才合并/发布。出现回归时
 回滚部署到 v0.2.0，不在 forward head 恢复 env switch。
-

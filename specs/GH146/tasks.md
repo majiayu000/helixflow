@@ -42,4 +42,3 @@ GH-146
 - restored Intent positive smoke：完成；
 - 正式稳定性窗口：从 `2026-07-31T06:34:00Z` 起，尚未满足 7×24h / 20 samples /
   3 UTC days，因此 T0 仍 blocked。
-
