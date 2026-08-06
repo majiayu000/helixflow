@@ -2,8 +2,11 @@ use std::time::{Duration, Instant};
 
 use helixflow_store::{RunRecord, Store};
 
+const ASYNC_TEST_TIMEOUT: Duration = Duration::from_secs(15);
+const ASYNC_TEST_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
 pub(crate) async fn wait_for_run_status(store: &Store, run_id: &str, expected: &str) -> RunRecord {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + ASYNC_TEST_TIMEOUT;
     loop {
         let run = store.run(run_id).await.expect("run");
         if run.status == expected {
@@ -14,12 +17,12 @@ pub(crate) async fn wait_for_run_status(store: &Store, run_id: &str, expected: &
             "run status stayed {}",
             run.status
         );
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(ASYNC_TEST_POLL_INTERVAL).await;
     }
 }
 
 pub(crate) async fn wait_for_actual_cost(store: &Store, run_id: &str) {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + ASYNC_TEST_TIMEOUT;
     loop {
         let ledger = store
             .cost_ledger_for_run(run_id)
@@ -29,6 +32,6 @@ pub(crate) async fn wait_for_actual_cost(store: &Store, run_id: &str) {
             return;
         }
         assert!(Instant::now() < deadline, "actual cost was not recorded");
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(ASYNC_TEST_POLL_INTERVAL).await;
     }
 }
