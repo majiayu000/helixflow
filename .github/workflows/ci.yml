@@ -9,6 +9,29 @@ permissions:
   contents: read
 
 jobs:
+  rust-audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit Rust dependencies
+        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # SQLx's macros feature leaves optional MySQL packages in Cargo.lock,
+          # but this SQLite-only workspace does not compile that backend. Keep
+          # the advisory ignored only while the reachability proof below holds.
+          ignore: RUSTSEC-2023-0071
+
+      - name: Prove ignored RSA advisory is unreachable
+        run: |
+          if cargo tree --locked --target all -e normal,build -i rsa | grep -q '^rsa '; then
+            echo 'RUSTSEC-2023-0071 is reachable; remove the ignore and remediate the dependency.' >&2
+            exit 1
+          fi
+
   verify:
     runs-on: ubuntu-latest
     steps:
@@ -49,6 +72,10 @@ jobs:
       - name: Install web dependencies
         working-directory: web
         run: npm ci
+
+      - name: Audit web dependencies
+        working-directory: web
+        run: npm audit --audit-level=high
 
       - name: Test web
         working-directory: web

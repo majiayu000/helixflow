@@ -21,6 +21,12 @@ fn max_upload_bytes() -> usize {
         .unwrap_or(16 * 1024 * 1024)
 }
 
+/// Leave bounded room for multipart headers while keeping the request body
+/// itself capped before the handler reads any field data.
+pub(crate) fn upload_request_limit() -> usize {
+    max_upload_bytes().saturating_add(64 * 1024)
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UploadResponse {
@@ -44,7 +50,7 @@ pub(crate) async fn upload_workspace_image(
         .map_err(ApiError::store)?;
 
     let mut uploaded: Option<UploadResponse> = None;
-    while let Some(field) = multipart
+    while let Some(mut field) = multipart
         .next_field()
         .await
         .map_err(|err| ApiError::bad_request(format!("invalid multipart request: {err}")))?
@@ -57,18 +63,26 @@ pub(crate) async fn upload_workspace_image(
             .map(str::to_owned)
             .filter(|name| !name.trim().is_empty())
             .unwrap_or_else(|| "upload".to_owned());
-        let bytes = field
-            .bytes()
+        let limit = max_upload_bytes();
+        let mut bytes = Vec::new();
+        while let Some(chunk) = field
+            .chunk()
             .await
-            .map_err(|err| ApiError::bad_request(format!("read upload body: {err}")))?;
+            .map_err(|err| ApiError::bad_request(format!("read upload body: {err}")))?
+        {
+            let next_len = bytes
+                .len()
+                .checked_add(chunk.len())
+                .ok_or_else(|| ApiError::bad_request("uploaded file size overflow"))?;
+            if next_len > limit {
+                return Err(ApiError::bad_request(format!(
+                    "uploaded file exceeds the {limit} byte limit"
+                )));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
         if bytes.is_empty() {
             return Err(ApiError::bad_request("uploaded file is empty"));
-        }
-        if bytes.len() > max_upload_bytes() {
-            return Err(ApiError::bad_request(format!(
-                "uploaded file exceeds the {} byte limit",
-                max_upload_bytes()
-            )));
         }
         let (mime, extension) = detect_image_type(&bytes).ok_or_else(|| {
             ApiError::bad_request("uploaded file is not a supported image (png, jpeg, webp)")
@@ -172,6 +186,12 @@ mod route_tests {
         png
     }
 
+    fn valid_png_with_size(size: usize) -> Vec<u8> {
+        let mut png = valid_png();
+        png.resize(size, 0);
+        png
+    }
+
     async fn serve_app() -> (tempfile::TempDir, AppState, std::net::SocketAddr, String) {
         let dir = tempfile::tempdir().expect("temp dir");
         let data_dir = dir.path().to_path_buf();
@@ -252,5 +272,24 @@ mod route_tests {
             .await
             .expect("upload request");
         assert_eq!(response.status(), 400);
+    }
+
+    #[tokio::test]
+    async fn upload_accepts_image_larger_than_axum_default_body_limit() {
+        let (_dir, _state, addr, workspace_id) = serve_app().await;
+        let (content_type, body) =
+            multipart_body(&valid_png_with_size(3 * 1024 * 1024), "large.png");
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "http://{addr}/api/workspaces/{workspace_id}/uploads"
+            ))
+            .header("content-type", content_type)
+            .body(body)
+            .send()
+            .await
+            .expect("upload request");
+
+        assert_eq!(response.status(), 200);
     }
 }
