@@ -1,5 +1,6 @@
 use axum::{
     Json, Router,
+    extract::DefaultBodyLimit,
     routing::put,
     routing::{get, post},
 };
@@ -83,7 +84,7 @@ use ops_routes::apply_workspace_ops;
 use proposal_routes::{apply_workspace_proposal, dismiss_workspace_proposal};
 use registry_routes::node_registry_catalog;
 use run_routes::{confirm_run, hold_run, interrupt_active_run, queue_workspace_run};
-use upload_routes::upload_workspace_image;
+use upload_routes::{upload_request_limit, upload_workspace_image};
 use version_file_reconciliation::ReconciliationReport;
 use version_migration_routes::{apply_version_migration, dry_run_version_migration};
 use version_routes::{export_workflow_version, restore_workspace_version, undo_workspace_version};
@@ -210,7 +211,7 @@ fn app(state: AppState) -> Router {
         )
         .route(
             "/api/workspaces/{workspace_id}/uploads",
-            post(upload_workspace_image),
+            post(upload_workspace_image).layer(DefaultBodyLimit::max(upload_request_limit())),
         )
         .route(
             "/api/workspaces/{workspace_id}/proposals/{proposal_id}/apply",
@@ -292,13 +293,14 @@ async fn ready(
         Err(_) => false,
     };
     let provider_health = helixflow_gateway::Provider::health(&state.provider_registry).await;
+    let ready_ok = db_ok && storage_ok && provider_health.ok;
     let body = json!({
-        "ok": db_ok && storage_ok,
+        "ok": ready_ok,
         "database": db_ok,
         "storage": storage_ok,
         "provider": { "ok": provider_health.ok, "message": provider_health.message },
     });
-    if !(db_ok && storage_ok) {
+    if !ready_ok {
         return Err(crate::api_error::ApiError::service_unavailable(
             body.to_string(),
         ));
@@ -333,6 +335,47 @@ mod tests {
 
         assert_eq!(body["ok"], true);
         assert_eq!(body["service"], "helixflow");
+    }
+
+    #[tokio::test]
+    async fn readiness_requires_a_healthy_runtime_provider() {
+        use axum::response::IntoResponse;
+        use helixflow_gateway::RuntimeProvider;
+
+        let events = EventBus::new(16);
+        let (dir, healthy_state) = test_app_state(events.clone()).await;
+        let unavailable_state = AppState::with_store_agent_provider(
+            events,
+            healthy_state.store.clone(),
+            healthy_state.data_dir.clone(),
+            Arc::new(FailingWorkbenchAgent),
+            dir.path().join("sessions-unavailable"),
+            RuntimeProvider::unavailable("atlas", "Atlas provider is not configured"),
+        );
+
+        let response = ready(axum::extract::State(unavailable_state))
+            .await
+            .expect_err("unavailable provider must fail readiness")
+            .into_response();
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[tokio::test]
+    async fn readiness_accepts_healthy_mock_provider() {
+        let events = EventBus::new(16);
+        let (_dir, state) = test_app_state(events).await;
+
+        let body = ready(axum::extract::State(state))
+            .await
+            .expect("healthy provider should pass readiness")
+            .0;
+
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["provider"]["ok"], true);
     }
 
     #[tokio::test]
