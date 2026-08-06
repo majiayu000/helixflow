@@ -320,6 +320,7 @@ where
         self.outcome(&run.id).await
     }
 
+    #[allow(clippy::too_many_arguments)] // Explicit execution context keeps spawned ownership visible.
     fn spawn_step(
         &self,
         running: &mut JoinSet<(usize, RunResult<StepExecution>)>,
@@ -351,6 +352,7 @@ where
         });
     }
 
+    #[allow(clippy::too_many_arguments)] // Mirrors the durable step execution boundary above.
     async fn execute_step(
         &self,
         workspace_id: &str,

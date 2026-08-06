@@ -194,6 +194,7 @@ impl ApiError {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)] // Keep error mapping tests adjacent to the constructors they verify.
 mod tests {
     use super::*;
 

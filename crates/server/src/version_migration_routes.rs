@@ -490,6 +490,7 @@ pub(crate) async fn assess_current_version(
     Ok(Assessment { report, migrated })
 }
 
+#[allow(clippy::too_many_arguments)] // Records the full migration evidence boundary explicitly.
 async fn validation_failure_assessment(
     state: &AppState,
     workspace_id: &str,
@@ -586,7 +587,7 @@ async fn persist_assessment(
         .map_err(|error| ApiError::server_error(format!("encode reason counts: {error}")))?;
     let top_level_code = report
         .code
-        .map(|code| serde_json::to_value(code))
+        .map(serde_json::to_value)
         .transpose()
         .map_err(|error| ApiError::server_error(format!("encode top-level code: {error}")))?
         .and_then(|value| value.as_str().map(str::to_owned));

@@ -106,6 +106,7 @@ pub(crate) struct CanvasCommentOpRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+#[allow(clippy::enum_variant_names)] // Variant names are the stable serialized operation contract.
 enum CanvasCommentOp {
     CommentAdd {
         id: Option<String>,

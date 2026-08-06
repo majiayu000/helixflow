@@ -303,7 +303,7 @@ async fn concurrent_same_base_auto_apply_has_one_winner_and_one_explicit_version
             .await
             .expect("proposals")
             .as_slice(),
-        [winner.proposal.clone()]
+        std::slice::from_ref(&winner.proposal)
     );
     assert_eq!(
         store
@@ -319,7 +319,7 @@ async fn concurrent_same_base_auto_apply_has_one_winner_and_one_explicit_version
             .await
             .expect("messages")
             .as_slice(),
-        [winner.message.clone()]
+        std::slice::from_ref(&winner.message)
     );
     assert_eq!(
         store.workspace(&workspace.id).await.unwrap().cur_version_id,

@@ -57,16 +57,15 @@ pub fn resolve_step_binding(
         requested_model_id,
         binding_id,
     }) = semantics.map(|entry| &entry.implementation)
+        && (&resolved.resolved_model_id != requested_model_id || &resolved.binding_id != binding_id)
     {
-        if &resolved.resolved_model_id != requested_model_id || &resolved.binding_id != binding_id {
-            return Err((
-                "PINNED_MODEL_MISMATCH".to_owned(),
-                format!(
-                    "pinned `{requested_model_id}` via `{binding_id}` but resolution produced `{}` via `{}`",
-                    resolved.resolved_model_id, resolved.binding_id
-                ),
-            ));
-        }
+        return Err((
+            "PINNED_MODEL_MISMATCH".to_owned(),
+            format!(
+                "pinned `{requested_model_id}` via `{binding_id}` but resolution produced `{}` via `{}`",
+                resolved.resolved_model_id, resolved.binding_id
+            ),
+        ));
     }
 
     let ImplementationTarget::ApiConnector {

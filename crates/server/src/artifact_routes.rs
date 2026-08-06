@@ -285,23 +285,21 @@ mod tests {
                 .expect("storage uri")
                 .starts_with("/api/artifacts/")
         }));
-        assert_eq!(
-            state
+        assert!(
+            !state
                 .store
                 .artifact(&first_id)
                 .await
                 .expect("first")
-                .selected,
-            false
+                .selected
         );
-        assert_eq!(
+        assert!(
             state
                 .store
                 .artifact(&second_id)
                 .await
                 .expect("second")
-                .selected,
-            true
+                .selected
         );
         let selected_output = outputs
             .iter()
@@ -349,14 +347,13 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![first_id.as_str()]
         );
-        assert_eq!(
-            state
+        assert!(
+            !state
                 .store
                 .artifact(&second_id)
                 .await
                 .expect("second")
-                .selected,
-            false
+                .selected
         );
     }
 

@@ -43,7 +43,7 @@ pub(crate) async fn workspace_state_value(
         .versions_for_workspace(workspace_id)
         .await
         .map_err(ApiError::store)?;
-    let current_version = current_version(&state, &workspace).await?;
+    let current_version = current_version(state, &workspace).await?;
     let graph = match &current_version {
         Some(version) => read_version_graph(&state.data_dir, version)
             .await
@@ -61,7 +61,7 @@ pub(crate) async fn workspace_state_value(
         .await
         .map_err(ApiError::store)?;
     let pending_proposal = pending_proposal_payload(
-        &state,
+        state,
         proposals.iter().rev().find(|item| item.state == "pending"),
     )
     .await?;
@@ -151,6 +151,7 @@ async fn current_version(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Mirrors the complete API payload without hidden mutable state.
 fn workspace_state_payload(
     workspace: &WorkspaceRecord,
     graph: &WorkflowGraph,

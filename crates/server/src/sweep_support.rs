@@ -38,11 +38,7 @@ async fn handle_run_request_with_threshold_config(
         return request_seed_sweep(state, request, label, confirmation_threshold_usd).await;
     }
     let provider = selected_provider_for_workspace(state, &request.workspace_id).await?;
-    crate::capability_preflight::preflight_provider_capabilities(
-        &state,
-        &provider,
-        &request.graph,
-    )?;
+    crate::capability_preflight::preflight_provider_capabilities(state, &provider, &request.graph)?;
 
     let pending = state
         .runner
@@ -147,11 +143,7 @@ async fn request_seed_sweep(
 ) -> Result<RunRequestResult, ApiError> {
     let count = seed_sweep_run_count(&request.user_message);
     let provider = selected_provider_for_workspace(state, &request.workspace_id).await?;
-    crate::capability_preflight::preflight_provider_capabilities(
-        &state,
-        &provider,
-        &request.graph,
-    )?;
+    crate::capability_preflight::preflight_provider_capabilities(state, &provider, &request.graph)?;
     let seed_plan = build_seed_sweep_plan(
         request.workspace_id,
         request.base_version_id,
