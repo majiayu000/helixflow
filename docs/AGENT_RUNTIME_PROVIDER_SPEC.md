@@ -84,8 +84,8 @@ Both automatic and user-confirmed starts use the same run service entrypoints.
 1. When a background run ends in `failed`, backend derives a retry run
    (`runs.parent_run_id` / `runs.attempt`) so the failed run and its
    `error_json` are preserved for audit.
-2. The retry is bounded by `HELIXFLOW_RUN_MAX_RETRIES` (default `1`;
-   `0` disables self-repair).
+2. The retry is bounded by `HELIXFLOW_RUN_MAX_RETRIES` (range `0`–`10`,
+   default `1`; `0` disables self-repair).
 3. Each retry reuses the same cost gate as the initial run: within
    `HELIXFLOW_AGENT_RUN_CONFIRMATION_THRESHOLD_USD` it auto-starts, otherwise
    it waits in `waiting_confirmation` for explicit user confirmation.

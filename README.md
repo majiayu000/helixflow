@@ -19,7 +19,7 @@ The name combines "helix" and "flow": each Agent edit → run → error → fix 
 
 ## Quickstart
 
-Requires Rust and Node.js 22.
+Requires Rust 1.95.0 (pinned by `rust-toolchain.toml`) and Node.js 22.
 
 ```sh
 # 1. Build the frontend from the lockfile
@@ -78,9 +78,13 @@ web/         # React workbench
 | `HELIXFLOW_RUNTIME_PROVIDER` | `atlas`, `fal`, or explicitly `mock` (dev/test). Unset fails closed. |
 | `HELIXFLOW_ENABLE_MOCK_PROVIDER` | Required to actually enable the `mock` provider. |
 | `HELIXFLOW_WEB_DIST` | Frontend build dir served by the backend (default `web/dist`). |
+| `HELIXFLOW_DATA_DIR` | Durable data root (default `$HOME/.helixflow`; never process cwd). |
+| `HELIXFLOW_DATABASE_URL` | Database URL override (default SQLite inside the data root). |
 | `ATLAS_API_KEY` / `FAL_KEY` | Provider credentials. |
 | `HELIXFLOW_AGENT_RUN_CONFIRMATION_THRESHOLD_USD` | Cost above which runs wait for confirmation (default 0). |
-| `HELIXFLOW_RUN_MAX_RETRIES` | Max derived retry runs after a failure (default `1`; `0` disables). |
+| `HELIXFLOW_RUN_MAX_RETRIES` | Max derived retry runs after a failure (`0`–`10`, default `1`). |
+| `HELIXFLOW_MAX_PARALLEL_STEPS` | Concurrent execution step limit (`1`–`1024`; invalid values fail startup). |
+| `HELIXFLOW_MAX_UPLOAD_BYTES` | Per-image upload limit in bytes (default 16 MiB). |
 
 ## Development
 
@@ -92,15 +96,21 @@ cd web && npm run dev                    # 127.0.0.1:5173
 # Rust checks
 cargo fmt --all -- --check
 cargo check --workspace --locked
-cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --all-targets --locked
 
 # Web checks
 cd web
 npm ci
 npm test
 npm run build
+
+# Release-topology startup/readiness/shutdown smoke
+cd ..
+./scripts/smoke-release.sh
 ```
 
+The production checklist is in [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 Specs and design docs live in [`SPEC_WORKFLOW_ORCHESTRATOR.md`](SPEC_WORKFLOW_ORCHESTRATOR.md), [`docs/`](docs/), and [`specs/`](specs/).
 
 ## Repository policy
