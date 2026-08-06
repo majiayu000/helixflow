@@ -15,4 +15,15 @@ describe('graph canvas view persistence', () => {
     expect(loadGraphCanvasView('workspace-1')).toEqual(DEFAULT_GRAPH_VIEW);
     expect(() => saveGraphCanvasView('workspace-1', { x: 1, y: 2, z: 1 })).not.toThrow();
   });
+
+  it('treats localStorage quota failures as best-effort persistence', () => {
+    vi.stubGlobal('localStorage', {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn(() => {
+        throw new DOMException('quota exceeded', 'QuotaExceededError');
+      }),
+    });
+
+    expect(() => saveGraphCanvasView('workspace-1', { x: 1, y: 2, z: 1 })).not.toThrow();
+  });
 });

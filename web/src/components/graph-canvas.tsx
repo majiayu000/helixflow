@@ -24,6 +24,7 @@ import { GraphEdges } from './graph-canvas-edges';
 import { GraphInspector, GraphSelectionInspector } from './graph-canvas-inspector';
 import {
   applyPositionDrafts,
+  selectionForNodePointer,
   type PositionDrafts,
 } from './graph-canvas-layout';
 import {
@@ -71,6 +72,7 @@ import type {
   SelectionDragState,
 } from './graph-canvas-types';
 import { NodeLibrary } from './node-library';
+import { createLatestFrameScheduler } from './latest-frame-scheduler';
 
 export { DEFAULT_GRAPH_VIEW, GRAPH_CANVAS_VIEW_STORAGE_PREFIX, clampZoom,
   computeMinimapLayout, loadGraphCanvasView, minimapViewportRect, normalizeView,
@@ -113,6 +115,11 @@ export function GraphCanvas({
   const localCursorRef = useRef<Point | null>(null);
   const presenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const drag = useRef<DragState | null>(null);
+  const [panScheduler] = useState(() =>
+    createLatestFrameScheduler<{ x: number; y: number }>((next) => {
+      setView((current) => ({ ...current, ...next }));
+    }),
+  );
   const suppressNextClick = useRef(false);
   const sourceGraph = canvasGraph ?? graph;
   const drawGraph = pendingProposal?.previewGraph ?? sourceGraph;
@@ -143,18 +150,22 @@ export function GraphCanvas({
     : null;
 
   useEffect(() => {
+    return () => panScheduler.cancel();
+  }, [panScheduler]);
+
+  useEffect(() => {
     if (!selectedCapability) {
       setResolution(null);
       return;
     }
-    let cancelled = false;
+    const controller = new AbortController();
     setResolution(null);
-    resolveImplementation(selectedCapability)
+    resolveImplementation(selectedCapability, undefined, controller.signal)
       .then((outcome) => {
-        if (!cancelled) setResolution(outcome);
+        if (!controller.signal.aborted) setResolution(outcome);
       })
       .catch(() => {
-        if (!cancelled) {
+        if (!controller.signal.aborted) {
           setResolution({
             status: 'unresolvable',
             code: 'UNKNOWN',
@@ -164,7 +175,7 @@ export function GraphCanvas({
         }
       });
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [selectedCapability]);
   const selectedNodes = useMemo(
@@ -253,6 +264,7 @@ export function GraphCanvas({
   }, [onPresenceChange, selectedIdList, view.x, view.y, view.z]);
 
   useEffect(() => {
+    panScheduler.cancel();
     setView(loadGraphCanvasView(workspaceId));
     setSelectedIds(new Set());
     setDraftPositions({});
@@ -262,7 +274,7 @@ export function GraphCanvas({
     setClipboardStatus(null);
     nodeDrag.reset();
     resetNodeResize();
-  }, [connection.reset, nodeDrag.reset, resetNodeResize, workspaceId]);
+  }, [connection.reset, nodeDrag.reset, panScheduler, resetNodeResize, workspaceId]);
 
   useEffect(() => {
     setDraftPositions({});
@@ -316,42 +328,42 @@ export function GraphCanvas({
   }, [view, workspaceId]);
 
   useEffect(() => {
-    let cancelled = false;
-    fetchNodeCatalog()
+    const controller = new AbortController();
+    fetchNodeCatalog(controller.signal)
       .then((nextCatalog) => {
-        if (!cancelled) {
+        if (!controller.signal.aborted) {
           setCatalog(nextCatalog);
           setCatalogError(null);
         }
       })
       .catch((error) => {
-        if (!cancelled) {
+        if (!controller.signal.aborted) {
           setCatalogError(error instanceof Error ? error.message : 'node catalog request failed');
         }
       });
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    fetchModelCatalog()
+    const controller = new AbortController();
+    fetchModelCatalog(controller.signal)
       .then((nextCatalog) => {
-        if (!cancelled) {
+        if (!controller.signal.aborted) {
           setModelCatalog(nextCatalog);
           setModelCatalogError(null);
         }
       })
       .catch((error) => {
-        if (!cancelled) {
+        if (!controller.signal.aborted) {
           setModelCatalogError(
             error instanceof Error ? error.message : 'model catalog request failed',
           );
         }
       });
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, []);
 
@@ -390,6 +402,12 @@ export function GraphCanvas({
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
+    panScheduler.cancel();
+    setView((current) => ({
+      ...current,
+      x: currentDrag.ox + event.clientX - currentDrag.sx,
+      y: currentDrag.oy + event.clientY - currentDrag.sy,
+    }));
     drag.current = null;
   };
 
@@ -447,6 +465,7 @@ export function GraphCanvas({
     <section
       ref={canvasRef}
       className="p-canvas cv-bold"
+      aria-label="Workflow graph canvas"
       tabIndex={0}
       onClick={() => {
         if (suppressNextClick.current) {
@@ -527,11 +546,7 @@ export function GraphCanvas({
         if (!currentDrag || currentDrag.pointerId !== event.pointerId) return;
         const nextX = currentDrag.ox + event.clientX - currentDrag.sx;
         const nextY = currentDrag.oy + event.clientY - currentDrag.sy;
-        setView((current) => ({
-          ...current,
-          x: nextX,
-          y: nextY,
-        }));
+        panScheduler.schedule({ x: nextX, y: nextY });
       }}
       onPointerCancel={(event) => {
         if (connection.cancel(event)) return;
@@ -606,6 +621,11 @@ export function GraphCanvas({
             selected={selectedIds.has(node.id)}
             stepState={stepStateByNodeId.get(node.id) ?? node.status}
             onSelectOutput={onSelectOutput}
+            onKeyboardSelect={(additive) => {
+              setSelectedIds((current) =>
+                selectionForNodePointer(current, node.id, additive),
+              );
+            }}
             onOutputPortPointerDown={connection.start}
             onPointerCancel={nodeDrag.stop}
             onPointerDown={(event) => {
@@ -692,5 +712,5 @@ function CanvasStatusToast({
     ? '待确认的图变更 · 预览中'
     : connectionStatus ?? clipboardStatus;
   if (!message) return null;
-  return <div className="canvas-status-toast">{message}</div>;
+  return <div className="canvas-status-toast" role="status" aria-live="polite">{message}</div>;
 }

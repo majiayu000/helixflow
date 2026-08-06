@@ -167,6 +167,34 @@ describe('background run state reconciliation', () => {
     expect(useWorkbenchStore.getState().error).toBeNull();
   });
 
+  it('aborts a workspace upload and rejects its delayed completion after navigation', async () => {
+    let resolveUpload!: (response: Response) => void;
+    let uploadSignal: AbortSignal | null = null;
+    vi.stubGlobal('fetch', vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      uploadSignal = init?.signal as AbortSignal;
+      return new Promise<Response>((resolve) => {
+        resolveUpload = resolve;
+      });
+    }));
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
+    const upload = useWorkbenchStore.getState().uploadImage(
+      new File(['image'], 'sample.png', { type: 'image/png' }),
+    );
+
+    const workspaceB = stateForWorkspace('ws_b');
+    useWorkbenchStore.getState().setInitialState(workspaceB);
+    expect((uploadSignal as unknown as AbortSignal).aborted).toBe(true);
+    resolveUpload(jsonResponse({
+      id: 'upload_a',
+      storageUri: 'workspace://uploads/upload_a/sample.png',
+      filename: 'sample.png',
+      mime: 'image/png',
+    }));
+
+    await expect(upload).rejects.toThrow('workspace changed');
+    expect(useWorkbenchStore.getState().state).toEqual(workspaceB);
+  });
+
   it('preserves the composer draft when the message request fails', async () => {
     vi.stubGlobal(
       'fetch',

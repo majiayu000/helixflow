@@ -15,14 +15,14 @@ function TextArtifactPreview({ artifact }: { artifact: ArtifactOutput }) {
   const [content, setContent] = useState<TextContentState>({ status: 'loading' });
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
     setContent({ status: 'loading' });
-    fetchArtifactText(artifact.id)
+    fetchArtifactText(artifact.id, controller.signal)
       .then((text) => {
-        if (!cancelled) setContent({ status: 'loaded', text });
+        if (!controller.signal.aborted) setContent({ status: 'loaded', text });
       })
       .catch((error: unknown) => {
-        if (!cancelled) {
+        if (!controller.signal.aborted) {
           setContent({
             status: 'error',
             message: error instanceof Error ? error.message : 'artifact content request failed',
@@ -30,7 +30,7 @@ function TextArtifactPreview({ artifact }: { artifact: ArtifactOutput }) {
         }
       });
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [artifact.id]);
 

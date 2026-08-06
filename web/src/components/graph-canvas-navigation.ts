@@ -69,7 +69,11 @@ export function loadGraphCanvasView(workspaceId: string): ViewState {
 export function saveGraphCanvasView(workspaceId: string, view: ViewState): void {
   const storage = safeLocalStorage();
   if (!storage || !workspaceId) return;
-  storage.setItem(viewStorageKey(workspaceId), JSON.stringify(normalizeView(view)));
+  try {
+    storage.setItem(viewStorageKey(workspaceId), JSON.stringify(normalizeView(view)));
+  } catch {
+    // Persistence is best-effort; quota and privacy-mode failures must not break the canvas.
+  }
 }
 
 export function zoomViewAtPoint(

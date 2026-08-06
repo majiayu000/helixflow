@@ -266,7 +266,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       throw normalized;
     }
   },
-  uploadImage: createUploadImageAction(set, get),
+  uploadImage: createUploadImageAction(set, get, requestScope),
   sendMessage: async (text, canvasContext) => {
     const trimmed = text.trim();
     if (!trimmed) {

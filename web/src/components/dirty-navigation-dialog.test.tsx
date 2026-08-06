@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
-import { DirtyNavigationDialog } from './dirty-navigation-dialog';
+import { DirtyNavigationDialog, nextDialogFocusIndex } from './dirty-navigation-dialog';
 
 describe('dirty navigation dialog', () => {
   it('renders the shared commit, discard, and cancel decisions', () => {
@@ -23,5 +23,12 @@ describe('dirty navigation dialog', () => {
     expect(renderToStaticMarkup(
       <DirtyNavigationDialog busy={false} target={null} onDecision={vi.fn()} />,
     )).toBe('');
+  });
+
+  it('wraps keyboard focus only at dialog boundaries', () => {
+    expect(nextDialogFocusIndex(2, 3, false)).toBe(0);
+    expect(nextDialogFocusIndex(0, 3, true)).toBe(2);
+    expect(nextDialogFocusIndex(1, 3, false)).toBeNull();
+    expect(nextDialogFocusIndex(-1, 3, false)).toBe(0);
   });
 });
