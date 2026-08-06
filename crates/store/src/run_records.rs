@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
-use sqlx::Row;
+use sqlx::{Row, Sqlite, Transaction};
 
-use super::{Store, StoreResult, new_id};
+use super::{Store, StoreError, StoreResult, new_id};
 
 #[derive(Debug, Clone)]
 pub struct NewRun<'a> {
@@ -252,7 +252,7 @@ impl Store {
         status: &str,
         error_json: Option<&str>,
     ) -> StoreResult<RunRecord> {
-        sqlx::query(
+        let result = sqlx::query(
             r#"
             UPDATE runs
             SET status = ?,
@@ -260,6 +260,7 @@ impl Store {
                 started_at = CASE WHEN ? = 'running' AND started_at IS NULL THEN current_timestamp ELSE started_at END,
                 ended_at = CASE WHEN ? IN ('succeeded', 'failed', 'interrupted') THEN current_timestamp ELSE ended_at END
             WHERE id = ?
+              AND (status NOT IN ('succeeded', 'failed', 'interrupted') OR status = ?)
             "#,
         )
         .bind(status)
@@ -267,8 +268,16 @@ impl Store {
         .bind(status)
         .bind(status)
         .bind(run_id)
+        .bind(status)
         .execute(self.pool())
         .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(StoreError::RecoveryInvariant {
+                operation: "update_run_status",
+                message: format!("run `{run_id}` rejected a late transition to `{status}`"),
+            });
+        }
 
         self.run(run_id).await
     }
@@ -312,12 +321,13 @@ impl Store {
         estimate_json: Option<&str>,
         status: &str,
     ) -> StoreResult<RunRecord> {
-        sqlx::query(
+        let result = sqlx::query(
             r#"
             UPDATE runs
             SET estimate_json = ?,
                 status = ?
             WHERE id = ?
+              AND status NOT IN ('succeeded', 'failed', 'interrupted')
             "#,
         )
         .bind(estimate_json)
@@ -325,6 +335,15 @@ impl Store {
         .bind(run_id)
         .execute(self.pool())
         .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(StoreError::RecoveryInvariant {
+                operation: "update_run_estimate_and_status",
+                message: format!(
+                    "run `{run_id}` rejected a late estimate transition to `{status}`"
+                ),
+            });
+        }
 
         self.run(run_id).await
     }
@@ -374,7 +393,7 @@ impl Store {
         cost_actual_json: Option<&str>,
         error_json: Option<&str>,
     ) -> StoreResult<RunStepRecord> {
-        sqlx::query(
+        let result = sqlx::query(
             r#"
             UPDATE run_steps
             SET state = ?,
@@ -384,6 +403,7 @@ impl Store {
                 started_at = CASE WHEN ? = 'running' AND started_at IS NULL THEN current_timestamp ELSE started_at END,
                 ended_at = CASE WHEN ? IN ('succeeded', 'failed', 'skipped') THEN current_timestamp ELSE ended_at END
             WHERE id = ?
+              AND (state NOT IN ('succeeded', 'failed', 'skipped') OR state = ?)
             "#,
         )
         .bind(state)
@@ -393,8 +413,16 @@ impl Store {
         .bind(state)
         .bind(state)
         .bind(step_id)
+        .bind(state)
         .execute(self.pool())
         .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(StoreError::RecoveryInvariant {
+                operation: "update_run_step_state",
+                message: format!("run step `{step_id}` rejected a late transition to `{state}`"),
+            });
+        }
 
         self.run_step(step_id).await
     }
@@ -517,6 +545,8 @@ impl Store {
 
     pub async fn create_artifact(&self, input: NewArtifact<'_>) -> StoreResult<ArtifactRecord> {
         let id = new_id("art");
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        validate_artifact_identity(&mut tx, &input).await?;
         sqlx::query(
             r#"
             INSERT INTO artifacts (
@@ -540,8 +570,10 @@ impl Store {
         .bind(input.duration_ms)
         .bind(if input.selected { 1_i64 } else { 0_i64 })
         .bind(input.meta_json)
-        .execute(self.pool())
+        .execute(&mut *tx)
         .await?;
+
+        tx.commit().await?;
 
         self.artifact(&id).await
     }
@@ -723,6 +755,64 @@ impl Store {
         .await?;
 
         rows.into_iter().map(cost_ledger_from_row).collect()
+    }
+}
+
+pub(crate) async fn validate_artifact_identity(
+    tx: &mut Transaction<'_, Sqlite>,
+    input: &NewArtifact<'_>,
+) -> StoreResult<()> {
+    if input.run_step_id.is_some() && input.run_id.is_none() {
+        return Err(artifact_identity_error(
+            "a run step cannot be referenced without its run",
+        ));
+    }
+
+    if let Some(run_id) = input.run_id {
+        let run_matches: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM runs WHERE id = ? AND workspace_id = ?)",
+        )
+        .bind(run_id)
+        .bind(input.workspace_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        if !run_matches {
+            return Err(artifact_identity_error(
+                "run does not belong to the artifact workspace",
+            ));
+        }
+    }
+
+    if let Some(step_id) = input.run_step_id {
+        let step_matches: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM run_steps AS step
+                JOIN runs AS run ON run.id = step.run_id
+                WHERE step.id = ? AND step.run_id = ? AND run.workspace_id = ?
+            )
+            "#,
+        )
+        .bind(step_id)
+        .bind(input.run_id)
+        .bind(input.workspace_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        if !step_matches {
+            return Err(artifact_identity_error(
+                "run step does not belong to the artifact run and workspace",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn artifact_identity_error(message: &str) -> StoreError {
+    StoreError::RecoveryInvariant {
+        operation: "create_artifact",
+        message: message.to_owned(),
     }
 }
 

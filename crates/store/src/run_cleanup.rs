@@ -17,7 +17,11 @@ impl Store {
     }
 
     pub async fn interrupt_stale_active_runs(&self) -> StoreResult<Vec<RunRecord>> {
-        let mut tx = self.pool().begin().await?;
+        // Reserve the SQLite writer before selecting candidates. A deferred
+        // transaction can read an active run, allow another connection to
+        // finish it, and then either overwrite that terminal state or fail
+        // its lock upgrade with SQLITE_BUSY.
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
         let stale_runs = sqlx::query_as::<_, RunRecord>(
             r#"
             SELECT id, workspace_id, version_id, group_id, label, trigger, plan_json,
@@ -39,7 +43,7 @@ impl Store {
                 SET status = 'interrupted',
                     error_json = NULL,
                     ended_at = current_timestamp
-                WHERE id = ?
+                WHERE id = ? AND status IN ('queued', 'estimating', 'running')
                 "#,
             )
             .bind(&run.id)
