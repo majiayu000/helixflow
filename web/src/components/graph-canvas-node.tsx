@@ -1,4 +1,4 @@
-import type { CSSProperties, PointerEvent } from 'react';
+import type { CSSProperties, KeyboardEvent, PointerEvent } from 'react';
 import { Icon, Port } from '../icons';
 import type { GraphNodeState, NodeDefinition, RunStepState, WorkflowGraph } from '../types';
 import type { CanvasNodeArtifact } from './graph-canvas-artifacts';
@@ -24,6 +24,7 @@ type WorkflowNodeProps = {
   artifactOutputs: CanvasNodeArtifact[];
   resizable: boolean;
   onSelectOutput?: (outputId: string) => void;
+  onKeyboardSelect?: (additive: boolean) => void;
   onOutputPortPointerDown: (
     node: GraphNodeState,
     port: { name: string; type: string },
@@ -54,6 +55,7 @@ export function WorkflowNode({
   artifactOutputs,
   resizable,
   onSelectOutput,
+  onKeyboardSelect,
   onOutputPortPointerDown,
   onPointerCancel,
   onPointerDown,
@@ -87,12 +89,21 @@ export function WorkflowNode({
 
   return (
     <div
+      aria-label={`${node.title} (${node.nodeType})`}
+      aria-current={selected ? 'true' : undefined}
       className={classes}
+      onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        event.stopPropagation();
+        onKeyboardSelect?.(event.shiftKey || event.metaKey || event.ctrlKey);
+      }}
       onClick={(event) => event.stopPropagation()}
       onPointerCancel={onPointerCancel}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      role="group"
       style={{
         left: node.position.x,
         top: node.position.y,
@@ -100,6 +111,7 @@ export function WorkflowNode({
         minHeight: graphNodeHeight(node),
         '--swatch': categorySwatch(node.category),
       } as CSSProperties}
+      tabIndex={0}
     >
       {done && (
         <span className="p-done">

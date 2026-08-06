@@ -102,6 +102,32 @@ describe('GraphCanvas view-mode integration', () => {
     }));
   });
 
+  it('selects a graph node from the keyboard without dispatching a mutation', async () => {
+    renderer = await renderCanvas(true);
+    const workflowNode = renderer.root.findByType(WorkflowNode);
+
+    await act(async () => workflowNode.props.onKeyboardSelect(false));
+
+    expect(renderer.root.findByType(WorkflowNode).props.selected).toBe(true);
+    expect(onCreateProposal).not.toHaveBeenCalled();
+  });
+
+  it('aborts component-owned catalog requests on unmount', async () => {
+    const signals: AbortSignal[] = [];
+    vi.stubGlobal('fetch', vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.signal) signals.push(init.signal);
+      return new Promise<Response>(() => undefined);
+    }));
+    renderer = await renderCanvas(true);
+
+    expect(signals).toHaveLength(2);
+    expect(signals.every((signal) => !signal.aborted)).toBe(true);
+    await act(async () => renderer?.unmount());
+    renderer = null;
+
+    expect(signals.every((signal) => signal.aborted)).toBe(true);
+  });
+
   it('keeps selection drag coordinates after React releases the pointer event target', async () => {
     renderer = await renderCanvas(true);
     const start = pointerEvent();
