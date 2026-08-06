@@ -38,7 +38,7 @@ impl StrictSha256 {
 
     fn matches(self, bytes: &[u8]) -> bool {
         let actual = Sha256::digest(bytes);
-        actual.as_slice() == self.0
+        actual[..] == self.0
     }
 }
 

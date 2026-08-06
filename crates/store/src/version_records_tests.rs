@@ -312,7 +312,7 @@ async fn assert_parent_mismatch_is_write_free(
     );
 }
 
-async fn assert_version_statement_fault_rolls_back(trigger: &str) {
+async fn assert_version_statement_fault_rolls_back(trigger: &'static str) {
     let (store, _dir) = open_single_connection_store().await;
     let workspace = store
         .create_workspace("Statement fault")

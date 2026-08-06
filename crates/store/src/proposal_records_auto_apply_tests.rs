@@ -554,7 +554,7 @@ async fn auto_apply_proposal_insert_fault_rolls_back_all_database_records() {
     .await;
 }
 
-async fn assert_auto_apply_fault_rolls_back(trigger_sql: &str) {
+async fn assert_auto_apply_fault_rolls_back(trigger_sql: &'static str) {
     let (store, _dir) = proposal_test_store().await;
     let workspace = store
         .create_workspace("Auto apply fault")
