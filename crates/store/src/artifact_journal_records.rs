@@ -3,7 +3,7 @@ use sqlx::FromRow;
 
 use super::{
     ArtifactRecord, NewArtifact, Store, StoreError, StoreResult, new_id,
-    run_records::artifact_from_row,
+    run_records::{artifact_from_row, validate_artifact_identity},
 };
 
 #[derive(Debug, Clone)]
@@ -174,6 +174,7 @@ impl Store {
                 message: "artifact journal does not match artifact identity".to_owned(),
             });
         }
+        validate_artifact_identity(&mut tx, &input).await?;
         let artifact_id = new_id("art");
         sqlx::query(
             r#"

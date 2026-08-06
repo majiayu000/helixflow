@@ -1,11 +1,13 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use helixflow_gateway::{
     CostEstimate, DurableProviderTask, MockProvider, Provider, ProviderCatalog, ProviderError,
-    ProviderHealth, ProviderRequest, ProviderResult, ProviderResultValue, ProviderResume,
-    ProviderTaskHandle,
+    ProviderHealth, ProviderRecoveryCapabilities, ProviderRequest, ProviderResult,
+    ProviderResultValue, ProviderResume, ProviderTaskHandle,
 };
 use helixflow_graph::{ExecutionPlan, ExecutionStep, GraphEdge, GraphNode, WorkflowGraph};
 use helixflow_store::{
@@ -13,6 +15,7 @@ use helixflow_store::{
     RunRecord, Store, VersionSource,
 };
 use serde_json::json;
+use tokio::sync::Notify;
 
 use super::{AgentRunRequest, RunService, SweepPlan, SweepVariant};
 
@@ -208,6 +211,107 @@ async fn restart_queued_requires_complete_intent_estimate_and_atomic_claim() {
     );
 }
 
+#[tokio::test]
+async fn restart_finishes_pending_terminalization_before_recovery_scan() {
+    let (store, _dir) = open_self_heal_store().await;
+    let (workspace_id, version_id) = self_heal_workspace_version(&store).await;
+    let plan = ExecutionPlan {
+        schema_version: 1,
+        version_id: version_id.clone(),
+        catalog_revision: None,
+        steps: vec![ExecutionStep {
+            node_id: "writer-terminal".to_owned(),
+            node_type: "llm.prompt_writer".to_owned(),
+            provider: Some("mock".to_owned()),
+            capability: Some("prompt_writer".to_owned()),
+            inputs: BTreeMap::new(),
+            params: json!({}),
+            resolved: None,
+        }],
+    };
+    let plan_json = serde_json::to_string(&plan).expect("serialize plan");
+    let run = store
+        .create_run(NewRun {
+            workspace_id: &workspace_id,
+            version_id: &version_id,
+            group_id: None,
+            label: "Terminal recovery ordering",
+            trigger: "manual",
+            plan_json: Some(&plan_json),
+            estimate_json: Some(r#"{"amount":0.1}"#),
+            status: "running",
+        })
+        .await
+        .expect("create run");
+    let step = store
+        .create_run_step(NewRunStep {
+            run_id: &run.id,
+            node_id: "writer-terminal",
+            node_type: "llm.prompt_writer",
+            provider: Some("mock"),
+            state: "running",
+        })
+        .await
+        .expect("create step");
+    let task = store
+        .insert_or_read_provider_task(NewProviderTask {
+            run_id: &run.id,
+            run_step_id: &step.id,
+            provider: "mock",
+            dispatch_origin: "provider://mock",
+            recovery_scope_fingerprint: "",
+            operation_key: "dispatch:terminal-ordering",
+            dispatch_owner_id: "dead-process",
+            dispatch_lease_seconds: 30,
+            dispatch_deadline_seconds: 30,
+        })
+        .await
+        .expect("create task");
+    store
+        .activate_provider_task(ProviderTaskHandleUpdate {
+            task_id: &task.id,
+            dispatch_owner_id: "dead-process",
+            provider_task_id: "remote-terminal-ordering",
+            status_url: None,
+            result_url: None,
+            recovery_deadline_seconds: 300,
+        })
+        .await
+        .expect("activate task")
+        .expect("active task");
+    store
+        .request_run_terminalization(&run.id, "interrupted", None)
+        .await
+        .expect("request terminalization");
+
+    let provider = BlockingCancelProvider::new();
+    let cancel_started = provider.cancel_started.clone();
+    let release_cancel = provider.release_cancel.clone();
+    let resumes = provider.resumes.clone();
+    let service = RunService::with_provider(store.clone(), provider);
+    let recovery = tokio::spawn(async move { service.recover_after_restart().await });
+    tokio::time::timeout(Duration::from_secs(2), cancel_started.notified())
+        .await
+        .expect("cancellation did not start");
+
+    assert!(
+        store
+            .run_recovery_lease(&run.id)
+            .await
+            .expect("read recovery lease")
+            .is_none(),
+        "terminalizing run must not enter recovery"
+    );
+    assert_eq!(resumes.load(Ordering::SeqCst), 0);
+
+    release_cancel.notify_one();
+    recovery
+        .await
+        .expect("join recovery")
+        .expect("finish recovery");
+    assert_eq!(store.run(&run.id).await.expect("run").status, "interrupted");
+}
+
 #[derive(Clone, Copy)]
 struct RecoveringMockProvider;
 
@@ -243,6 +347,70 @@ impl Provider for RecoveringMockProvider {
 
     async fn cancel(&self, handle: ProviderTaskHandle) -> ProviderResultValue<()> {
         MockProvider::new().cancel(handle).await
+    }
+}
+
+#[derive(Clone)]
+struct BlockingCancelProvider {
+    cancel_started: Arc<Notify>,
+    release_cancel: Arc<Notify>,
+    resumes: Arc<AtomicUsize>,
+}
+
+impl BlockingCancelProvider {
+    fn new() -> Self {
+        Self {
+            cancel_started: Arc::new(Notify::new()),
+            release_cancel: Arc::new(Notify::new()),
+            resumes: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+#[async_trait]
+impl Provider for BlockingCancelProvider {
+    fn id(&self) -> &str {
+        "mock"
+    }
+
+    fn recovery_capabilities(&self, _provider_id: &str) -> ProviderRecoveryCapabilities {
+        ProviderRecoveryCapabilities {
+            resume: true,
+            cancel: true,
+        }
+    }
+
+    async fn health(&self) -> ProviderHealth {
+        MockProvider::new().health().await
+    }
+
+    async fn catalog(&self) -> ProviderResultValue<ProviderCatalog> {
+        MockProvider::new().catalog().await
+    }
+
+    async fn estimate(&self, req: ProviderRequest) -> ProviderResultValue<CostEstimate> {
+        MockProvider::new().estimate(req).await
+    }
+
+    async fn invoke(&self, req: ProviderRequest) -> ProviderResultValue<ProviderResult> {
+        MockProvider::new().invoke(req).await
+    }
+
+    async fn resume(
+        &self,
+        _task: &DurableProviderTask,
+        _req: &ProviderRequest,
+    ) -> ProviderResultValue<ProviderResume> {
+        self.resumes.fetch_add(1, Ordering::SeqCst);
+        Ok(ProviderResume::Pending {
+            retry_after_ms: 1_000,
+        })
+    }
+
+    async fn cancel(&self, _handle: ProviderTaskHandle) -> ProviderResultValue<()> {
+        self.cancel_started.notify_one();
+        self.release_cancel.notified().await;
+        Ok(())
     }
 }
 

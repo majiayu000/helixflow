@@ -144,6 +144,120 @@ async fn artifact_review_state_defaults_pending_and_guards_transitions() {
     );
 }
 
+#[tokio::test]
+async fn artifact_identity_rejects_cross_workspace_run_and_cross_run_step() {
+    let (store, _dir) = open_temp_store().await;
+    let (workspace_a, _version_a, run_a) = seed_run(&store, "running").await;
+    let (workspace_b, _version_b, run_b) = seed_run(&store, "running").await;
+    let step_b = store
+        .create_run_step(NewRunStep {
+            run_id: &run_b.id,
+            node_id: "foreign",
+            node_type: "image.generate",
+            provider: Some("atlas"),
+            state: "running",
+        })
+        .await
+        .expect("create foreign step");
+
+    let cross_workspace = store
+        .create_artifact(NewArtifact {
+            workspace_id: &workspace_a,
+            run_id: Some(&run_b.id),
+            run_step_id: None,
+            node_id: Some("foreign"),
+            kind: "image",
+            storage_uri: "artifacts/cross-workspace.png",
+            sha256: None,
+            mime: Some("image/png"),
+            width: None,
+            height: None,
+            duration_ms: None,
+            selected: false,
+            meta_json: None,
+        })
+        .await
+        .expect_err("cross-workspace artifact must fail closed");
+    assert!(matches!(
+        cross_workspace,
+        StoreError::RecoveryInvariant { .. }
+    ));
+
+    let cross_run_step = store
+        .create_artifact(NewArtifact {
+            workspace_id: &workspace_a,
+            run_id: Some(&run_a.id),
+            run_step_id: Some(&step_b.id),
+            node_id: Some("foreign"),
+            kind: "image",
+            storage_uri: "artifacts/cross-run-step.png",
+            sha256: None,
+            mime: Some("image/png"),
+            width: None,
+            height: None,
+            duration_ms: None,
+            selected: false,
+            meta_json: None,
+        })
+        .await
+        .expect_err("cross-run step artifact must fail closed");
+    assert!(matches!(
+        cross_run_step,
+        StoreError::RecoveryInvariant { .. }
+    ));
+
+    let artifact_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM artifacts")
+        .fetch_one(store.pool())
+        .await
+        .expect("count artifacts");
+    assert_eq!(artifact_count, 0);
+    assert_ne!(workspace_a, workspace_b);
+}
+
+#[tokio::test]
+async fn terminal_run_and_step_states_reject_late_overwrites() {
+    let (store, _dir) = open_temp_store().await;
+    let (_workspace_id, _version_id, run) = seed_run(&store, "running").await;
+    let step = store
+        .create_run_step(NewRunStep {
+            run_id: &run.id,
+            node_id: "writer",
+            node_type: "llm.prompt_writer",
+            provider: Some("atlas"),
+            state: "running",
+        })
+        .await
+        .expect("create step");
+
+    store
+        .update_run_status(&run.id, "interrupted", None)
+        .await
+        .expect("interrupt run");
+    store
+        .update_run_step_state(&step.id, "skipped", None, None, None)
+        .await
+        .expect("skip step");
+
+    store
+        .update_run_status(&run.id, "succeeded", None)
+        .await
+        .expect_err("late run success must not overwrite interruption");
+    store
+        .update_run_estimate_and_status(&run.id, Some("{}"), "waiting_confirmation")
+        .await
+        .expect_err("late estimate must not reopen interrupted run");
+    store
+        .update_run_step_state(&step.id, "succeeded", Some(1.0), None, None)
+        .await
+        .expect_err("late step success must not overwrite skip");
+
+    assert_eq!(store.run(&run.id).await.expect("run").status, "interrupted");
+    assert_eq!(
+        store.run_step(&step.id).await.expect("step").state,
+        "skipped"
+    );
+}
+
 async fn seed_run(store: &Store, status: &str) -> (String, String, RunRecord) {
     let workspace = store.create_workspace("Seed").await.expect("workspace");
     let version = store

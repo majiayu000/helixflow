@@ -1,6 +1,22 @@
-use super::{Store, StoreError, StoreResult};
+use super::{RunRecoveryLeaseRecord, Store, StoreError, StoreResult};
 
 impl Store {
+    pub async fn run_recovery_lease(
+        &self,
+        run_id: &str,
+    ) -> StoreResult<Option<RunRecoveryLeaseRecord>> {
+        Ok(sqlx::query_as::<_, RunRecoveryLeaseRecord>(
+            r#"
+            SELECT run_id, owner_id, lease_expires_at, updated_at
+            FROM run_recovery_leases
+            WHERE run_id = ? AND lease_expires_at > current_timestamp
+            "#,
+        )
+        .bind(run_id)
+        .fetch_optional(self.pool())
+        .await?)
+    }
+
     pub async fn renew_run_recovery_lease(
         &self,
         run_id: &str,
