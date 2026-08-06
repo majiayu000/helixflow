@@ -104,7 +104,7 @@ impl ApiError {
             err,
             StoreError::VersionConflict { .. } | StoreError::ProposalStateConflict { .. }
         ) {
-            return Self::bad_request(err.to_string());
+            return Self::conflict(err.to_string());
         }
         if matches!(err, StoreError::ProposalWorkspaceMismatch { .. }) {
             return Self::not_found(err.to_string());
@@ -190,6 +190,28 @@ impl ApiError {
             message: message.into(),
             details: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn optimistic_store_conflicts_map_to_http_409() {
+        let version = ApiError::store(StoreError::VersionConflict {
+            workspace_id: "ws_1".to_owned(),
+            expected_version_id: "ver_old".to_owned(),
+            actual_version_id: Some("ver_new".to_owned()),
+        });
+        let proposal = ApiError::store(StoreError::ProposalStateConflict {
+            proposal_id: "prop_1".to_owned(),
+            expected_state: "pending".to_owned(),
+            actual_state: Some("applied".to_owned()),
+        });
+
+        assert_eq!(version.status, StatusCode::CONFLICT);
+        assert_eq!(proposal.status, StatusCode::CONFLICT);
     }
 }
 
