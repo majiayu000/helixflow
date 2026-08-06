@@ -50,20 +50,17 @@ where
         self.reconcile_artifact_publish_journals().await?;
         for work in self.store.pending_run_terminalizations().await? {
             let run = self.store.run(&work.run_id).await?;
-            let runner = self.clone();
-            tokio::spawn(async move {
-                if let Err(err) = runner
-                    .request_and_settle_terminal(
-                        &run.workspace_id,
-                        &run.id,
-                        &work.desired_status,
-                        work.error_json.as_deref(),
-                    )
-                    .await
-                {
-                    eprintln!("run terminalization recovery failed: {err}");
-                }
-            });
+            // Finish an already-requested terminal transition before scanning
+            // active runs. Spawning this work allowed the same run to acquire
+            // a recovery lease and resume provider execution while its remote
+            // cancellation was still in flight.
+            self.request_and_settle_terminal(
+                &run.workspace_id,
+                &run.id,
+                &work.desired_status,
+                work.error_json.as_deref(),
+            )
+            .await?;
         }
         let mut workspace_keepers = BTreeMap::<String, (String, Option<String>)>::new();
         for run in self.store.restart_active_runs().await? {
