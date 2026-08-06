@@ -70,12 +70,14 @@ export type UploadedImage = {
 export async function uploadWorkspaceImage(
   workspaceId: string,
   file: File,
+  signal?: AbortSignal,
 ): Promise<UploadedImage> {
   const body = new FormData();
   body.append('file', file, file.name);
   const response = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/uploads`, {
     method: 'POST',
     body,
+    signal,
   });
   if (!response.ok) {
     throw new Error(`image upload failed: ${response.status}`);
@@ -84,8 +86,8 @@ export async function uploadWorkspaceImage(
   return (await response.json()) as UploadedImage;
 }
 
-export async function fetchArtifactText(outputId: string): Promise<string> {
-  const response = await fetch(`/api/artifacts/${encodeURIComponent(outputId)}/content`);
+export async function fetchArtifactText(outputId: string, signal?: AbortSignal): Promise<string> {
+  const response = await fetch(`/api/artifacts/${encodeURIComponent(outputId)}/content`, { signal });
   if (!response.ok) {
     throw new Error(`artifact content request failed: ${response.status}`);
   }
@@ -201,8 +203,8 @@ export async function fetchWorkspaces(signal?: AbortSignal): Promise<WorkspaceSu
   return WorkspaceSummarySchema.array().parse(await response.json());
 }
 
-export async function fetchNodeCatalog(): Promise<NodeCatalog> {
-  const response = await fetch('/api/registry/catalog');
+export async function fetchNodeCatalog(signal?: AbortSignal): Promise<NodeCatalog> {
+  const response = await fetch('/api/registry/catalog', { signal });
   if (!response.ok) {
     throw new Error(`node catalog request failed: ${response.status}`);
   }
@@ -210,8 +212,8 @@ export async function fetchNodeCatalog(): Promise<NodeCatalog> {
   return NodeCatalogSchema.parse(await response.json());
 }
 
-export async function fetchModelCatalog(): Promise<ModelCatalog> {
-  const response = await fetch('/api/catalog');
+export async function fetchModelCatalog(signal?: AbortSignal): Promise<ModelCatalog> {
+  const response = await fetch('/api/catalog', { signal });
   if (!response.ok) {
     throw new Error(`model catalog request failed: ${response.status}`);
   }
@@ -222,11 +224,13 @@ export async function fetchModelCatalog(): Promise<ModelCatalog> {
 export async function resolveImplementation(
   capabilityId: string,
   requestedModel?: string,
+  signal?: AbortSignal,
 ): Promise<ImplementationResolution> {
   const response = await fetch('/api/catalog/resolve', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ capabilityId, requestedModel: requestedModel ?? null }),
+    signal,
   });
   const body: unknown = await response.json().catch(() => null);
   if (response.ok) {
