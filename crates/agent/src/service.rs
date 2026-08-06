@@ -13,6 +13,7 @@ use crate::{
 };
 
 const DEFAULT_MAX_PROPOSAL_ROUNDS: usize = 3;
+pub(crate) const MAX_PROPOSAL_ROUNDS: usize = 10;
 
 #[derive(Debug, Clone)]
 pub struct AgentService<R> {
@@ -34,7 +35,7 @@ where
     }
 
     pub fn with_max_proposal_rounds(mut self, max_proposal_rounds: usize) -> Self {
-        self.max_proposal_rounds = max_proposal_rounds.max(1);
+        self.max_proposal_rounds = max_proposal_rounds.clamp(1, MAX_PROPOSAL_ROUNDS);
         self
     }
 

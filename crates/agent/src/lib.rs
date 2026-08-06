@@ -1,5 +1,6 @@
 use std::fmt;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use helixflow_gateway::ProviderCatalogSnapshot;
@@ -172,6 +173,16 @@ fn ensure_request_consistency(request: &AgentSessionRequest) -> AgentResult<()> 
             actual: request.mode.output_contract(),
         });
     }
+    if let Some(message) = request
+        .history
+        .iter()
+        .find(|message| !matches!(message.role.as_str(), "user" | "agent"))
+    {
+        return Err(AgentError::InvalidPromptContext(format!(
+            "unsupported conversation role `{}`",
+            message.role
+        )));
+    }
     Ok(())
 }
 
@@ -218,6 +229,8 @@ fn ensure_direct_child(parent: &Path, candidate: &Path) -> AgentResult<()> {
 }
 
 fn read_output_file(out_dir: &Path, output_path: &Path) -> AgentResult<Vec<u8>> {
+    const MAX_AGENT_OUTPUT_BYTES: u64 = 1024 * 1024;
+
     ensure_direct_child(out_dir, output_path)?;
 
     let out_type = fs::symlink_metadata(out_dir)?.file_type();
@@ -242,7 +255,23 @@ fn read_output_file(out_dir: &Path, output_path: &Path) -> AgentResult<Vec<u8>> 
         return Err(AgentError::PathOutsideSession(output_path.to_path_buf()));
     }
 
-    Ok(fs::read(canonical_output)?)
+    let file = fs::File::open(&canonical_output)?;
+    if file.metadata()?.len() > MAX_AGENT_OUTPUT_BYTES {
+        return Err(AgentError::InvalidOutputFile {
+            path: output_path.to_path_buf(),
+            reason: format!("agent output exceeds the {MAX_AGENT_OUTPUT_BYTES} byte limit"),
+        });
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_AGENT_OUTPUT_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_AGENT_OUTPUT_BYTES {
+        return Err(AgentError::InvalidOutputFile {
+            path: output_path.to_path_buf(),
+            reason: format!("agent output exceeds the {MAX_AGENT_OUTPUT_BYTES} byte limit"),
+        });
+    }
+    Ok(bytes)
 }
 
 pub type AgentResult<T> = Result<T, AgentError>;
@@ -261,6 +290,7 @@ pub enum AgentError {
         expected: OutputContract,
         actual: OutputContract,
     },
+    InvalidPromptContext(String),
     ProposalRetryExhausted {
         rounds: usize,
         last_error: String,
@@ -292,6 +322,9 @@ impl fmt::Display for AgentError {
                 f,
                 "agent turn mode `{mode}` uses `{actual}` but this path requires `{expected}`"
             ),
+            Self::InvalidPromptContext(message) => {
+                write!(f, "invalid agent prompt context: {message}")
+            }
             Self::ProposalRetryExhausted { rounds, last_error } => write!(
                 f,
                 "proposal retry exhausted after {rounds} rounds: {last_error}"

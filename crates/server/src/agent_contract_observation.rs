@@ -96,6 +96,7 @@ pub(crate) fn agent_error_code(error: &AgentError) -> &'static str {
         AgentError::PathOutsideSession(_) => "AGENT_OUTPUT_PATH_ERROR",
         AgentError::InvalidOutputFile { .. } => "AGENT_OUTPUT_INVALID",
         AgentError::InvalidMode { .. } => "AGENT_MODE_ERROR",
+        AgentError::InvalidPromptContext(_) => "AGENT_PROMPT_CONTEXT_INVALID",
         AgentError::ProposalRetryExhausted { .. } => "AGENT_RETRY_EXHAUSTED",
         AgentError::Runtime(_) => "AGENT_RUNTIME_ERROR",
     }
