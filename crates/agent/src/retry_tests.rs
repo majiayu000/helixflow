@@ -10,6 +10,7 @@ use helixflow_run::EventBus;
 use serde_json::{Value, json};
 
 use super::*;
+use crate::service::MAX_PROPOSAL_ROUNDS;
 
 fn sample_graph() -> WorkflowGraph {
     WorkflowGraph {
@@ -171,6 +172,30 @@ async fn retry_loop_exhausts_with_last_validation_error() {
             .iter()
             .any(|status| status == "proposal.retry_exhausted")
     );
+}
+
+#[tokio::test]
+async fn proposal_retry_configuration_is_capped() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let events = EventBus::new(64);
+    let _receiver = events.subscribe();
+    let runtime = ScriptedRuntime::new(
+        (0..MAX_PROPOSAL_ROUNDS)
+            .map(|_| ScriptedRound::Proposal(invalid_node_type_proposal()))
+            .collect(),
+    );
+    let service = AgentService::new(runtime.clone(), events).with_max_proposal_rounds(usize::MAX);
+
+    let err = service
+        .propose_graph_change(modify_request(&dir))
+        .await
+        .expect_err("bounded retry exhaustion");
+
+    assert!(
+        err.to_string()
+            .contains("proposal retry exhausted after 10 rounds")
+    );
+    assert_eq!(runtime.sent_turns().len(), MAX_PROPOSAL_ROUNDS);
 }
 
 #[tokio::test]

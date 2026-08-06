@@ -128,6 +128,7 @@ pub fn read_validated_reply(session: &AgentSession) -> AgentResult<ValidatedAgen
     let output_path = session.out_dir.join("reply.json");
     let output: ReplyOutput =
         serde_json::from_slice(&read_output_file(&session.out_dir, &output_path)?)?;
+    validate_text_field(&output_path, "message", &output.message, 64 * 1024)?;
 
     Ok(ValidatedAgentReply {
         session_id: session.id.clone(),
@@ -140,9 +141,26 @@ pub fn read_validated_run_request(session: &AgentSession) -> AgentResult<Validat
     let output_path = session.out_dir.join("run_request.json");
     let request: RunRequestOutput =
         serde_json::from_slice(&read_output_file(&session.out_dir, &output_path)?)?;
+    validate_text_field(&output_path, "summary", &request.summary, 4 * 1024)?;
 
     Ok(ValidatedRunRequest {
         session_id: session.id.clone(),
         request,
     })
+}
+
+fn validate_text_field(
+    output_path: &std::path::Path,
+    field: &str,
+    value: &str,
+    max_chars: usize,
+) -> AgentResult<()> {
+    let chars = value.chars().count();
+    if value.trim().is_empty() || chars > max_chars {
+        return Err(AgentError::InvalidOutputFile {
+            path: output_path.to_path_buf(),
+            reason: format!("`{field}` must contain 1 to {max_chars} characters"),
+        });
+    }
+    Ok(())
 }

@@ -250,6 +250,10 @@ async fn terminal_run_and_step_states_reject_late_overwrites() {
         .update_run_step_state(&step.id, "succeeded", Some(1.0), None, None)
         .await
         .expect_err("late step success must not overwrite skip");
+    store
+        .mark_run_step_cached_succeeded(&step.id, r#"{"cached":true}"#)
+        .await
+        .expect_err("cache metadata must not reopen a skipped step");
 
     assert_eq!(store.run(&run.id).await.expect("run").status, "interrupted");
     assert_eq!(

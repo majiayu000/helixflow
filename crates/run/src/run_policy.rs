@@ -1,6 +1,9 @@
 use super::cost_types::CostSummary;
 use super::{RunError, RunResult};
 
+const MAX_AUTOMATIC_RUN_RETRIES: u32 = 10;
+const MAX_AGENT_FIX_ATTEMPTS: u32 = 10;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AgentFixPolicy {
     pub enabled: bool,
@@ -39,9 +42,14 @@ pub fn parse_agent_fix_enabled(raw: Option<&str>) -> RunResult<bool> {
 }
 
 pub fn parse_max_fix_attempts(raw: Option<&str>) -> RunResult<u32> {
-    raw.unwrap_or("1")
+    let value = raw
+        .unwrap_or("1")
         .parse::<u32>()
-        .map_err(|_| fix_limit_error())
+        .map_err(|_| fix_limit_error())?;
+    if value > MAX_AGENT_FIX_ATTEMPTS {
+        return Err(fix_limit_error());
+    }
+    Ok(value)
 }
 
 fn fix_enabled_error() -> RunError {
@@ -51,9 +59,9 @@ fn fix_enabled_error() -> RunError {
 }
 
 fn fix_limit_error() -> RunError {
-    RunError::InvalidConfiguration(
-        "HELIXFLOW_RUN_MAX_FIX_ATTEMPTS must be a non-negative integer".to_owned(),
-    )
+    RunError::InvalidConfiguration(format!(
+        "HELIXFLOW_RUN_MAX_FIX_ATTEMPTS must be an integer from 0 to {MAX_AGENT_FIX_ATTEMPTS}"
+    ))
 }
 
 /// Reads `HELIXFLOW_AGENT_RUN_CONFIRMATION_THRESHOLD_USD` (default 0.0).
@@ -110,13 +118,17 @@ pub fn parse_max_run_retries(raw: Option<&str>) -> RunResult<u32> {
     let Some(raw) = raw else {
         return Ok(1);
     };
-    raw.parse::<u32>().map_err(|_| retry_limit_error())
+    let value = raw.parse::<u32>().map_err(|_| retry_limit_error())?;
+    if value > MAX_AUTOMATIC_RUN_RETRIES {
+        return Err(retry_limit_error());
+    }
+    Ok(value)
 }
 
 fn retry_limit_error() -> RunError {
-    RunError::InvalidConfiguration(
-        "HELIXFLOW_RUN_MAX_RETRIES must be a non-negative integer".to_owned(),
-    )
+    RunError::InvalidConfiguration(format!(
+        "HELIXFLOW_RUN_MAX_RETRIES must be an integer from 0 to {MAX_AUTOMATIC_RUN_RETRIES}"
+    ))
 }
 
 #[cfg(test)]
@@ -148,12 +160,8 @@ mod tests {
             parse_max_run_retries(Some("0")).expect("disabled retries"),
             0
         );
-        assert_eq!(parse_max_run_retries(Some("7")).expect("retry limit"), 7);
-        assert_eq!(
-            parse_max_run_retries(Some(&u32::MAX.to_string())).expect("u32 max retry limit"),
-            u32::MAX
-        );
-        for invalid in ["", "-1", "1.5", "not-a-number", "4294967296"] {
+        assert_eq!(parse_max_run_retries(Some("10")).expect("retry limit"), 10);
+        for invalid in ["", "-1", "1.5", "11", "not-a-number", "4294967296"] {
             assert!(
                 parse_max_run_retries(Some(invalid)).is_err(),
                 "invalid retry limit `{invalid}` must fail closed"
@@ -175,8 +183,8 @@ mod tests {
         }
         assert_eq!(parse_max_fix_attempts(None).expect("default limit"), 1);
         assert_eq!(parse_max_fix_attempts(Some("0")).expect("zero limit"), 0);
-        assert_eq!(parse_max_fix_attempts(Some("7")).expect("limit"), 7);
-        for invalid in ["", "-1", "1.5", "4294967296"] {
+        assert_eq!(parse_max_fix_attempts(Some("10")).expect("limit"), 10);
+        for invalid in ["", "-1", "1.5", "11", "4294967296"] {
             assert!(parse_max_fix_attempts(Some(invalid)).is_err());
         }
     }
