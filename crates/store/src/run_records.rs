@@ -432,7 +432,7 @@ impl Store {
         step_id: &str,
         metadata_json: &str,
     ) -> StoreResult<RunStepRecord> {
-        sqlx::query(
+        let result = sqlx::query(
             r#"
             UPDATE run_steps
             SET state = 'succeeded',
@@ -442,13 +442,22 @@ impl Store {
                 metadata_json = ?,
                 started_at = CASE WHEN started_at IS NULL THEN current_timestamp ELSE started_at END,
                 ended_at = current_timestamp
-            WHERE id = ?
+            WHERE id = ? AND state = 'succeeded'
             "#,
         )
         .bind(metadata_json)
         .bind(step_id)
         .execute(self.pool())
         .await?;
+
+        if result.rows_affected() != 1 {
+            return Err(StoreError::RecoveryInvariant {
+                operation: "mark_run_step_cached_succeeded",
+                message: format!(
+                    "run step `{step_id}` must be durably succeeded before cache metadata is applied"
+                ),
+            });
+        }
 
         self.run_step(step_id).await
     }

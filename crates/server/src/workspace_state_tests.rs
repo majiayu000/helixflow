@@ -274,6 +274,11 @@ async fn workspace_state_marks_cached_run_steps_and_graph_nodes() {
         .expect("create step");
     state
         .store
+        .update_run_step_state(&step.id, "succeeded", Some(1.0), None, None)
+        .await
+        .expect("complete step before attaching cache metadata");
+    state
+        .store
         .mark_run_step_cached_succeeded(&step.id, r#"{"cached":true}"#)
         .await
         .expect("mark cached");
