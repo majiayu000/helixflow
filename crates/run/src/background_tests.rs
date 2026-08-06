@@ -14,6 +14,7 @@ use serde_json::json;
 use tokio::sync::Notify;
 
 use super::*;
+use crate::test_wait::{ASYNC_TEST_POLL_INTERVAL, ASYNC_TEST_TIMEOUT};
 
 async fn open_background_store() -> (Store, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("create temp dir");
@@ -339,7 +340,7 @@ async fn start_confirmed_sweep_returns_queued_members_before_provider_finishes()
 }
 
 async fn wait_for_status(store: &Store, run_id: &str, expected: &str) {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + ASYNC_TEST_TIMEOUT;
     loop {
         let run = store.run(run_id).await.expect("run");
         if run.status == expected {
@@ -350,7 +351,7 @@ async fn wait_for_status(store: &Store, run_id: &str, expected: &str) {
             "run status stayed {}",
             run.status
         );
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep(ASYNC_TEST_POLL_INTERVAL).await;
     }
 }
 
@@ -363,7 +364,7 @@ struct BlockingProvider {
 
 impl BlockingProvider {
     async fn wait_until_blocked(&self) {
-        tokio::time::timeout(Duration::from_secs(2), self.blocked.notified())
+        tokio::time::timeout(ASYNC_TEST_TIMEOUT, self.blocked.notified())
             .await
             .expect("provider should block");
     }
