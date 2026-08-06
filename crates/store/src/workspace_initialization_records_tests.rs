@@ -109,7 +109,7 @@ async fn current_update_failure_rolls_back_initialization() {
     .await;
 }
 
-async fn assert_initialization_fault_rolls_back(trigger_sql: &str) {
+async fn assert_initialization_fault_rolls_back(trigger_sql: &'static str) {
     let (store, _dir) = open_temp_store().await;
     let identity = store.reserve_workspace_identity();
     sqlx::query(trigger_sql)

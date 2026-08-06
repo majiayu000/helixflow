@@ -569,7 +569,7 @@ async fn applied_message_insert_failure_rolls_back_every_record() {
     .await;
 }
 
-async fn assert_manual_apply_fault_rolls_back(trigger_sql: &str) {
+async fn assert_manual_apply_fault_rolls_back(trigger_sql: &'static str) {
     let (store, workspace_id, base_id, proposal_id, _dir) = apply_fixture().await;
     sqlx::query(trigger_sql)
         .execute(store.pool())

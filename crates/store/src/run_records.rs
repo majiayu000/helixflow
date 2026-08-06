@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use sqlx::{Row, Sqlite, Transaction};
+use sqlx::{QueryBuilder, Row, Sqlite, Transaction};
 
 use super::{Store, StoreError, StoreResult, new_id};
 
@@ -616,19 +616,20 @@ impl Store {
         expected_from: &[&str],
         next: &str,
     ) -> StoreResult<Option<ArtifactRecord>> {
-        let placeholders = expected_from
-            .iter()
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "UPDATE artifacts SET review_state = ? WHERE id = ? AND review_state IN ({placeholders})"
-        );
-        let mut query = sqlx::query(&sql).bind(next).bind(artifact_id);
-        for state in expected_from {
-            query = query.bind(*state);
+        let mut query = QueryBuilder::<Sqlite>::new("UPDATE artifacts SET review_state = ");
+        query
+            .push_bind(next)
+            .push(" WHERE id = ")
+            .push_bind(artifact_id)
+            .push(" AND review_state IN (");
+        {
+            let mut states = query.separated(", ");
+            for state in expected_from {
+                states.push_bind(*state);
+            }
+            states.push_unseparated(")");
         }
-        let result = query.execute(self.pool()).await?;
+        let result = query.build().execute(self.pool()).await?;
         if result.rows_affected() == 0 {
             return Ok(None);
         }
