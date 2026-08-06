@@ -158,6 +158,7 @@ impl EventBus {
         self.sender.subscribe()
     }
 
+    #[allow(clippy::result_large_err)] // Preserve the broadcast API and its original event on failure.
     pub fn publish(
         &self,
         event: RunEventEnvelope,
@@ -406,6 +407,8 @@ mod cache_tests;
 mod parallel_tests;
 #[cfg(test)]
 mod sweep_tests;
+#[cfg(test)]
+mod test_wait;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

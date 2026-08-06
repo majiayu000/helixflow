@@ -186,15 +186,11 @@ impl AgentRuntime for CodexRuntime {
 
         tokio::spawn(async move {
             if let Err(err) = run_codex_process(spec, sender.clone(), cancel_rx).await {
-                if sender
+                let _ = sender
                     .send(RuntimeEvent::Failed {
                         message: err.to_string(),
                     })
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
+                    .await;
             }
         });
         Ok(())
@@ -306,10 +302,10 @@ where
 {
     let mut lines = BufReader::new(stdout).lines();
     while let Ok(Some(line)) = lines.next_line().await {
-        if let Some(message) = runtime_status_from_line(&line) {
-            if sender.send(RuntimeEvent::Status { message }).await.is_err() {
-                break;
-            }
+        if let Some(message) = runtime_status_from_line(&line)
+            && sender.send(RuntimeEvent::Status { message }).await.is_err()
+        {
+            break;
         }
     }
 }

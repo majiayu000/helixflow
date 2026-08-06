@@ -354,7 +354,7 @@ fn parse_mp4_box(bytes: &[u8], offset: usize) -> Result<ParsedMp4Box<'_>, &'stat
 }
 
 fn validate_ftyp(payload: &[u8]) -> Result<(), &'static str> {
-    if payload.len() < 8 || (payload.len() - 8) % 4 != 0 {
+    if payload.len() < 8 || !(payload.len() - 8).is_multiple_of(4) {
         return Err("MP4 ftyp box has invalid length");
     }
     let supported = [*b"isom", *b"iso2", *b"avc1", *b"mp41", *b"mp42", *b"qt  "];

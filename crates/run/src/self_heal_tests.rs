@@ -18,6 +18,7 @@ use serde_json::json;
 use tokio::sync::Notify;
 
 use super::{AgentRunRequest, RunService, SweepPlan, SweepVariant};
+use crate::test_wait::{ASYNC_TEST_POLL_INTERVAL, ASYNC_TEST_TIMEOUT};
 
 const INVALID_RETRY_ENV_CHILD: &str = "HELIXFLOW_TEST_INVALID_RETRY_ENV_CHILD";
 
@@ -760,7 +761,7 @@ fn self_heal_graph(node_id: &str) -> WorkflowGraph {
 }
 
 async fn wait_for_retry(store: &Store, workspace_id: &str) -> RunRecord {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(ASYNC_TEST_TIMEOUT, async {
         loop {
             if let Some(run) = store
                 .latest_workspace_run(workspace_id)
@@ -770,7 +771,7 @@ async fn wait_for_retry(store: &Store, workspace_id: &str) -> RunRecord {
             {
                 return run;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::sleep(ASYNC_TEST_POLL_INTERVAL).await;
         }
     })
     .await
@@ -778,12 +779,12 @@ async fn wait_for_retry(store: &Store, workspace_id: &str) -> RunRecord {
 }
 
 async fn wait_for_self_heal_status(store: &Store, run_id: &str, expected: &str) {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(ASYNC_TEST_TIMEOUT, async {
         loop {
             if store.run(run_id).await.expect("run").status == expected {
                 return;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::sleep(ASYNC_TEST_POLL_INTERVAL).await;
         }
     })
     .await

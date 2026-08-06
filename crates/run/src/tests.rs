@@ -597,10 +597,10 @@ async fn self_heal_retries_failed_run_within_budget_and_bounded() {
 async fn wait_for_retry_run(store: &Store, workspace_id: &str) -> helixflow_store::RunRecord {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if let Ok(Some(run)) = store.latest_workspace_run(workspace_id).await {
-                if run.attempt >= 1 {
-                    return run;
-                }
+            if let Ok(Some(run)) = store.latest_workspace_run(workspace_id).await
+                && run.attempt >= 1
+            {
+                return run;
             }
             tokio::time::sleep(Duration::from_millis(15)).await;
         }
@@ -612,10 +612,10 @@ async fn wait_for_retry_run(store: &Store, workspace_id: &str) -> helixflow_stor
 async fn wait_for_run_status(store: &Store, run_id: &str, expected: &str) {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if let Ok(run) = store.run(run_id).await {
-                if run.status == expected {
-                    return;
-                }
+            if let Ok(run) = store.run(run_id).await
+                && run.status == expected
+            {
+                return;
             }
             tokio::time::sleep(Duration::from_millis(15)).await;
         }

@@ -8,7 +8,7 @@ use super::run_policy::{max_run_retries, run_requires_confirmation};
 use super::{RunError, RunInterrupt, RunResult, RunService, RunStatus};
 
 enum RetryDecision {
-    Continue(RunRecord, ExecutionPlan, RunInterrupt),
+    Continue(Box<RunRecord>, ExecutionPlan, RunInterrupt),
     Pending,
     Exhausted,
     Stop,
@@ -46,7 +46,7 @@ where
 
             match self.prepare_retry(&workspace_id, &run_id, attempt).await {
                 Ok(RetryDecision::Continue(next_run, next_plan, next_interrupt)) => {
-                    run = next_run;
+                    run = *next_run;
                     plan = next_plan;
                     interrupt = next_interrupt;
                 }
@@ -136,7 +136,7 @@ where
             .await
         {
             Ok(RetryDecision::Continue(next_run, next_plan, next_interrupt)) => {
-                self.run_with_self_heal(next_run, next_plan, next_interrupt)
+                self.run_with_self_heal(*next_run, next_plan, next_interrupt)
                     .await;
                 Ok(())
             }
@@ -232,7 +232,7 @@ where
             .complete_failure_continuation(run_id, false)
             .await?;
         Ok(RetryDecision::Continue(
-            child_run,
+            Box::new(child_run),
             child_plan,
             child_interrupt,
         ))
