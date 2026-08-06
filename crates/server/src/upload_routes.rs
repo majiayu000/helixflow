@@ -103,13 +103,23 @@ pub(crate) async fn upload_workspace_image(
         tokio::fs::write(&tmp_path, &bytes)
             .await
             .map_err(|err| ApiError::io("write upload temp file", err))?;
-        tokio::fs::rename(&tmp_path, &full_path)
-            .await
-            .map_err(|err| ApiError::io("commit upload file", err))?;
+        if let Err(commit_error) = tokio::fs::rename(&tmp_path, &full_path).await {
+            let cleanup_error = match tokio::fs::remove_file(&tmp_path).await {
+                Ok(()) => None,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => Some(error),
+            };
+            return Err(match cleanup_error {
+                Some(cleanup_error) => ApiError::server_error(format!(
+                    "commit upload file failed: {commit_error}; temporary upload cleanup failed: {cleanup_error}"
+                )),
+                None => ApiError::io("commit upload file", commit_error),
+            });
+        }
 
         let sha256 = format!("sha256:{:x}", Sha256::digest(&bytes));
         let relative_string = relative.to_string_lossy().into_owned();
-        let record = state
+        let record = match state
             .store
             .create_upload(NewUpload {
                 workspace_id: &workspace_id,
@@ -119,7 +129,22 @@ pub(crate) async fn upload_workspace_image(
                 mime: Some(mime),
             })
             .await
-            .map_err(ApiError::store)?;
+        {
+            Ok(record) => record,
+            Err(store_error) => {
+                let cleanup_error = match tokio::fs::remove_file(&full_path).await {
+                    Ok(()) => None,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => Some(error),
+                };
+                return Err(match cleanup_error {
+                    Some(cleanup_error) => ApiError::server_error(format!(
+                        "upload record commit failed: {store_error}; published upload cleanup failed: {cleanup_error}"
+                    )),
+                    None => ApiError::store(store_error),
+                });
+            }
+        };
         uploaded = Some(UploadResponse {
             storage_uri: format!("upload://{}", record.id),
             id: record.id,
@@ -291,5 +316,44 @@ mod route_tests {
             .expect("upload request");
 
         assert_eq!(response.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn upload_store_failure_removes_published_file() {
+        let (_dir, state, addr, workspace_id) = serve_app().await;
+        sqlx::query(
+            r#"
+            CREATE TRIGGER reject_upload_insert
+            BEFORE INSERT ON uploads
+            BEGIN
+              SELECT RAISE(ABORT, 'forced upload store failure');
+            END
+            "#,
+        )
+        .execute(state.store.pool())
+        .await
+        .expect("install failure trigger");
+        let (content_type, body) = multipart_body(&valid_png(), "orphan.png");
+
+        let response = reqwest::Client::new()
+            .post(format!(
+                "http://{addr}/api/workspaces/{workspace_id}/uploads"
+            ))
+            .header("content-type", content_type)
+            .body(body)
+            .send()
+            .await
+            .expect("upload request");
+
+        assert_eq!(response.status(), 500);
+        let workspace_upload_dir = state.data_dir.join("uploads").join(&workspace_id);
+        let entries = std::fs::read_dir(workspace_upload_dir)
+            .expect("upload directory")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read upload directory");
+        assert!(
+            entries.is_empty(),
+            "store failure must not leave upload bytes"
+        );
     }
 }
