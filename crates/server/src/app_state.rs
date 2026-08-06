@@ -54,6 +54,8 @@ impl AppState {
         data_dir: PathBuf,
         database_url: String,
     ) -> Result<Self, AppStateError> {
+        let max_parallel_steps =
+            configured_max_parallel_steps().map_err(AppStateError::Configuration)?;
         let attribution =
             AgentContractAttribution::from_env().map_err(AppStateError::Configuration)?;
         tokio::fs::create_dir_all(&data_dir).await?;
@@ -71,6 +73,7 @@ impl AppState {
             registry,
             reconciliation_report,
             attribution,
+            max_parallel_steps,
         );
         state.runner.validate_restart_config()?;
         let recovery_runner = state.runner.clone();
@@ -103,6 +106,7 @@ impl AppState {
         provider_registry: ProviderRegistry,
         reconciliation_report: Arc<ReconciliationReport>,
         agent_contract_attribution: AgentContractAttribution,
+        max_parallel_steps: usize,
     ) -> Self {
         let agent_sessions_dir = default_agent_sessions_dir();
         let agent = Arc::new(CodexWorkbenchAgent {
@@ -115,7 +119,7 @@ impl AppState {
             events.clone(),
             data_dir.clone(),
         )
-        .with_max_parallel_steps(default_max_parallel_steps());
+        .with_max_parallel_steps(max_parallel_steps);
         let run_queue_locks = Arc::new(Mutex::new(BTreeMap::new()));
         Self {
             events,
@@ -148,7 +152,7 @@ impl AppState {
             events.clone(),
             data_dir.clone(),
         )
-        .with_max_parallel_steps(default_max_parallel_steps());
+        .with_max_parallel_steps(DEFAULT_MAX_PARALLEL_STEPS);
         let run_queue_locks = Arc::new(Mutex::new(BTreeMap::new()));
         let reconciliation_report = Arc::new(ReconciliationReport::default());
         Self {
@@ -183,7 +187,7 @@ impl AppState {
             events.clone(),
             data_dir.clone(),
         )
-        .with_max_parallel_steps(default_max_parallel_steps());
+        .with_max_parallel_steps(DEFAULT_MAX_PARALLEL_STEPS);
         let run_queue_locks = Arc::new(Mutex::new(BTreeMap::new()));
         let reconciliation_report = Arc::new(ReconciliationReport::default());
         Self {
@@ -350,18 +354,30 @@ fn default_provider_registry() -> ProviderRegistry {
     ProviderRegistry::from_env()
 }
 
-fn default_max_parallel_steps() -> usize {
-    parse_max_parallel_steps(
-        std::env::var("HELIXFLOW_MAX_PARALLEL_STEPS")
-            .ok()
-            .as_deref(),
-    )
+fn configured_max_parallel_steps() -> Result<usize, String> {
+    match std::env::var("HELIXFLOW_MAX_PARALLEL_STEPS") {
+        Ok(value) => parse_max_parallel_steps(Some(&value)),
+        Err(std::env::VarError::NotPresent) => parse_max_parallel_steps(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(max_parallel_steps_error()),
+    }
 }
 
-fn parse_max_parallel_steps(raw: Option<&str>) -> usize {
-    raw.and_then(|value| value.parse::<usize>().ok())
-        .map(normalize_max_parallel_steps)
-        .unwrap_or(DEFAULT_MAX_PARALLEL_STEPS)
+fn parse_max_parallel_steps(raw: Option<&str>) -> Result<usize, String> {
+    const MAX_PARALLEL_STEPS: usize = 1024;
+    let Some(raw) = raw else {
+        return Ok(DEFAULT_MAX_PARALLEL_STEPS);
+    };
+    let value = raw
+        .parse::<usize>()
+        .map_err(|_| max_parallel_steps_error())?;
+    if value == 0 || value > MAX_PARALLEL_STEPS {
+        return Err(max_parallel_steps_error());
+    }
+    Ok(normalize_max_parallel_steps(value))
+}
+
+fn max_parallel_steps_error() -> String {
+    "HELIXFLOW_MAX_PARALLEL_STEPS must be an integer from 1 to 1024".to_owned()
 }
 
 async fn persist_runtime_provider_status(
@@ -435,6 +451,7 @@ mod tests {
             registry,
             Arc::new(ReconciliationReport::default()),
             AgentContractAttribution::default(),
+            DEFAULT_MAX_PARALLEL_STEPS,
         );
 
         let selected = state.selected_provider_for_workspace(&workspace);
@@ -489,14 +506,15 @@ mod tests {
     }
 
     #[test]
-    fn max_parallel_steps_config_uses_safe_default_and_normalization() {
-        assert_eq!(parse_max_parallel_steps(None), DEFAULT_MAX_PARALLEL_STEPS);
-        assert_eq!(parse_max_parallel_steps(Some("4")), 4);
-        assert_eq!(parse_max_parallel_steps(Some("0")), 1);
+    fn max_parallel_steps_config_is_bounded_and_fails_closed() {
         assert_eq!(
-            parse_max_parallel_steps(Some("not-a-number")),
+            parse_max_parallel_steps(None).expect("default"),
             DEFAULT_MAX_PARALLEL_STEPS
         );
+        assert_eq!(parse_max_parallel_steps(Some("4")).expect("four"), 4);
+        for invalid in ["", "0", "1025", "not-a-number"] {
+            assert!(parse_max_parallel_steps(Some(invalid)).is_err());
+        }
     }
 
     #[tokio::test]
