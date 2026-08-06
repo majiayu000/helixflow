@@ -9,6 +9,18 @@ permissions:
   contents: read
 
 jobs:
+  rust-audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit Rust dependencies
+        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
   verify:
     runs-on: ubuntu-latest
     steps:
@@ -49,6 +61,10 @@ jobs:
       - name: Install web dependencies
         working-directory: web
         run: npm ci
+
+      - name: Audit web dependencies
+        working-directory: web
+        run: npm audit --audit-level=high
 
       - name: Test web
         working-directory: web
