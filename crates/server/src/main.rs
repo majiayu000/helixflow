@@ -84,7 +84,7 @@ use ops_routes::apply_workspace_ops;
 use proposal_routes::{apply_workspace_proposal, dismiss_workspace_proposal};
 use registry_routes::node_registry_catalog;
 use run_routes::{confirm_run, hold_run, interrupt_active_run, queue_workspace_run};
-use upload_routes::{upload_request_limit, upload_workspace_image};
+use upload_routes::{upload_request_limit, upload_workspace_image, validate_upload_config};
 use version_file_reconciliation::ReconciliationReport;
 use version_migration_routes::{apply_version_migration, dry_run_version_migration};
 use version_routes::{export_workflow_version, restore_workspace_version, undo_workspace_version};
@@ -97,13 +97,6 @@ use ws::ws_handler;
 
 #[tokio::main]
 async fn main() {
-    let state = AppState::open(EventBus::default())
-        .await
-        .expect("initialize app state");
-    println!(
-        "{}",
-        version_file_reconciliation_event(&state.reconciliation_report)
-    );
     let auth_config = AuthConfig::from_env();
     let bind_addr =
         std::env::var("HELIXFLOW_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8787".to_owned());
@@ -111,12 +104,55 @@ async fn main() {
         eprintln!("{message}");
         std::process::exit(1);
     }
+    if let Err(message) = validate_upload_config() {
+        eprintln!("{message}");
+        std::process::exit(1);
+    }
+    let state = AppState::open(EventBus::default())
+        .await
+        .expect("initialize app state");
+    println!(
+        "{}",
+        version_file_reconciliation_event(&state.reconciliation_report)
+    );
     let app = serve_web_dist(app_with_auth(state, auth_config));
     let listener = tokio::net::TcpListener::bind(&bind_addr)
         .await
         .expect("bind local server");
+    eprintln!(
+        "helixflow listening on {}",
+        listener.local_addr().expect("resolve bound server address")
+    );
 
-    axum::serve(listener, app).await.expect("serve local app");
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .expect("serve local app");
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("install Ctrl-C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {}
+        () = terminate => {}
+    }
+    eprintln!("helixflow shutdown requested; draining active HTTP connections");
 }
 
 /// Serve the built frontend from the same process so the release topology

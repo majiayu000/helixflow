@@ -12,19 +12,59 @@ use sha2::{Digest, Sha256};
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
 
+const DEFAULT_MAX_UPLOAD_BYTES: usize = 16 * 1024 * 1024;
+const MAX_CONFIGURED_UPLOAD_BYTES: usize = 1024 * 1024 * 1024;
+
 /// Maximum accepted upload size (16 MiB by default).
 fn max_upload_bytes() -> usize {
-    std::env::var("HELIXFLOW_MAX_UPLOAD_BYTES")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(16 * 1024 * 1024)
+    parse_max_upload_bytes(std::env::var("HELIXFLOW_MAX_UPLOAD_BYTES").ok().as_deref())
+        .unwrap_or(DEFAULT_MAX_UPLOAD_BYTES)
+}
+
+pub(crate) fn validate_upload_config() -> Result<(), String> {
+    match std::env::var("HELIXFLOW_MAX_UPLOAD_BYTES") {
+        Ok(value) => parse_max_upload_bytes(Some(&value)).map(|_| ()),
+        Err(std::env::VarError::NotPresent) => Ok(()),
+        Err(std::env::VarError::NotUnicode(_)) => Err(upload_limit_error()),
+    }
+}
+
+fn parse_max_upload_bytes(raw: Option<&str>) -> Result<usize, String> {
+    let Some(raw) = raw else {
+        return Ok(DEFAULT_MAX_UPLOAD_BYTES);
+    };
+    let value = raw.parse::<usize>().map_err(|_| upload_limit_error())?;
+    if value == 0 || value > MAX_CONFIGURED_UPLOAD_BYTES {
+        return Err(upload_limit_error());
+    }
+    Ok(value)
+}
+
+fn upload_limit_error() -> String {
+    format!("HELIXFLOW_MAX_UPLOAD_BYTES must be an integer from 1 to {MAX_CONFIGURED_UPLOAD_BYTES}")
 }
 
 /// Leave bounded room for multipart headers while keeping the request body
 /// itself capped before the handler reads any field data.
 pub(crate) fn upload_request_limit() -> usize {
     max_upload_bytes().saturating_add(64 * 1024)
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn upload_limit_is_bounded_and_fails_closed() {
+        assert_eq!(
+            parse_max_upload_bytes(None).expect("default"),
+            DEFAULT_MAX_UPLOAD_BYTES
+        );
+        assert_eq!(parse_max_upload_bytes(Some("1024")).expect("one KiB"), 1024);
+        for invalid in ["", "0", "1073741825", "not-a-number"] {
+            assert!(parse_max_upload_bytes(Some(invalid)).is_err());
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]

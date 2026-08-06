@@ -93,3 +93,6 @@ jobs:
       - name: Build web
         working-directory: web
         run: npm run build
+
+      - name: Smoke release topology
+        run: ./scripts/smoke-release.sh
