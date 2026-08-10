@@ -18,6 +18,7 @@ use helixflow_store::{Store, StoreError, WorkspaceRecord};
 use tokio::sync::Mutex;
 
 use crate::agent_contract_observation::AgentContractAttribution;
+use crate::agent_turn_control::ActiveAgentTurns;
 use crate::version_file_reconciliation::{
     ReconciliationReport, VersionFileReconciliationError, reconcile_version_files,
 };
@@ -32,6 +33,7 @@ pub(crate) struct AppState {
     pub(crate) provider_registry: ProviderRegistry,
     pub(crate) runner: RunService<ProviderRegistry>,
     pub(crate) run_queue_locks: Arc<Mutex<BTreeMap<String, Arc<Mutex<()>>>>>,
+    pub(crate) active_agent_turns: ActiveAgentTurns,
     pub(crate) reconciliation_report: Arc<ReconciliationReport>,
     /// GH130 T6: IntentPlan contract switch. Production reads the env flag
     /// (default on); test states default to the legacy path so proposal
@@ -130,6 +132,7 @@ impl AppState {
             provider_registry,
             runner,
             run_queue_locks,
+            active_agent_turns: ActiveAgentTurns::default(),
             reconciliation_report,
             use_intent_contract: crate::workbench_message_intent::intent_contract_enabled(),
             migration_apply_enabled: version_migration_apply_enabled(),
@@ -164,6 +167,7 @@ impl AppState {
             data_dir,
             provider_registry,
             run_queue_locks,
+            active_agent_turns: ActiveAgentTurns::default(),
             reconciliation_report,
             use_intent_contract: false,
             migration_apply_enabled: false,
@@ -199,6 +203,7 @@ impl AppState {
             data_dir,
             provider_registry,
             run_queue_locks,
+            active_agent_turns: ActiveAgentTurns::default(),
             reconciliation_report,
             use_intent_contract: false,
             migration_apply_enabled: false,

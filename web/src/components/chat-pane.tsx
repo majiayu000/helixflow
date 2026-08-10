@@ -35,6 +35,7 @@ type ChatPaneProps = {
   editSessionSummary: EditSessionSummary | null;
   selectedNodeIds?: string[];
   onSend: (text: string) => Promise<void>;
+  onInterrupt?: () => Promise<void>;
   onConversationChange?: (conversationId: string) => void;
   onNewConversation?: () => Promise<void>;
   onUploadImage?: (file: File) => Promise<void>;
@@ -55,6 +56,7 @@ export function ChatPane({
   editSessionSummary,
   selectedNodeIds = [],
   onSend,
+  onInterrupt,
   onConversationChange,
   onNewConversation,
   onUploadImage,
@@ -64,6 +66,7 @@ export function ChatPane({
   onDismissProposal,
 }: ChatPaneProps) {
   const [draft, setDraft] = useState('');
+  const [interrupting, setInterrupting] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const isComposingRef = useRef(false);
@@ -188,9 +191,23 @@ export function ChatPane({
             </div>
             <div className="right">
               <span className="kbd">Enter 发送 · Shift+Enter 换行</span>
-              <button className="btn btn--primary btn--sm" disabled={busy} onClick={() => submit()}>
-                <Icon n="arrowUp" s={13} />
-              </button>
+              {busy && onInterrupt ? (
+                <button
+                  className="btn btn--danger btn--sm"
+                  disabled={interrupting}
+                  onClick={() => {
+                    setInterrupting(true);
+                    void onInterrupt().finally(() => setInterrupting(false));
+                  }}
+                  type="button"
+                >
+                  {interrupting ? '停止中…' : '停止 Agent'}
+                </button>
+              ) : (
+                <button className="btn btn--primary btn--sm" disabled={busy} onClick={() => submit()}>
+                  <Icon n="arrowUp" s={13} />
+                </button>
+              )}
             </div>
           </div>
         </div>

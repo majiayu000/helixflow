@@ -4,6 +4,26 @@ import { ChatPane } from './chat-pane';
 import type { WorkbenchState } from '../types';
 
 describe('ChatPane terminal agent turns', () => {
+  it('offers a real interrupt action while the agent is busy', () => {
+    const markup = renderToStaticMarkup(
+      <ChatPane
+        messages={[]}
+        pendingProposal={null}
+        run={null}
+        busy
+        editSessionSummary={null}
+        onSend={async () => {}}
+        onInterrupt={async () => {}}
+        onCommitEdits={async () => {}}
+        onDiscardEdits={() => {}}
+        onApplyProposal={async () => {}}
+        onDismissProposal={async () => {}}
+      />,
+    );
+
+    expect(markup).toContain('停止 Agent');
+  });
+
   it('renders a persisted log-only failure as terminal instead of running forever', () => {
     const messages: WorkbenchState['chat']['messages'] = [
       {

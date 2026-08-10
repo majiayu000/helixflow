@@ -51,6 +51,7 @@ export type WorkbenchStore = {
   uploadImage: (file: File) => Promise<void>;
   queueRun: (options?: QueueRunOptions) => Promise<void>;
   interruptRun: (runId?: string) => Promise<void>;
+  interruptAgent: () => Promise<void>;
   exportWorkflow: () => Promise<WorkflowGraph | null>;
   undoVersion: () => Promise<void>;
   restoreVersion: (versionId: string) => Promise<void>;

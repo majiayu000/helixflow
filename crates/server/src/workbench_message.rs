@@ -192,7 +192,12 @@ pub(crate) async fn post_workspace_message(
         use_intent_contract,
     };
 
-    match classification.mode {
+    let (active_turn_guard, mut interrupt_rx) = state
+        .active_agent_turns
+        .register(&workspace_id, &durable_turn.id)?;
+    let response = tokio::select! {
+        response = async {
+            match classification.mode {
         TurnMode::Chat => {
             let reply = match state.agent.answer_chat(request).await {
                 Ok(reply) => reply,
@@ -444,8 +449,34 @@ pub(crate) async fn post_workspace_message(
                 run: Some(run_request.run),
                 pending_confirmation: run_request.pending_confirmation,
             }))
+            }
         }
-    }
+        } => response,
+        _ = &mut interrupt_rx => {
+            if let Some(turn) = contract_turn.as_ref() {
+                finalize_agent_contract_error(
+                    &state,
+                    &workspace_id,
+                    turn,
+                    "USER_INTERRUPTED",
+                    None,
+                )
+                .await
+                .map_err(ApiError::store)?;
+            }
+            terminal_interrupted_response(
+                &state,
+                &workspace_id,
+                &conversation.id,
+                &durable_turn.id,
+                classification.mode,
+            )
+            .await
+            .map(Json)
+        }
+    };
+    drop(active_turn_guard);
+    response
 }
 
 pub(crate) async fn persist_agent_logs(
@@ -524,6 +555,44 @@ pub(crate) async fn terminal_error_response(
         conversation_id: conversation_id.to_owned(),
         turn_id: turn_id.to_owned(),
         turn_status: "error".to_owned(),
+        turn_mode,
+        messages: vec![ChatMessagePayload::from_record(message)],
+        proposal: None,
+        run: None,
+        pending_confirmation: None,
+    })
+}
+
+pub(crate) async fn terminal_interrupted_response(
+    state: &AppState,
+    workspace_id: &str,
+    conversation_id: &str,
+    turn_id: &str,
+    turn_mode: TurnMode,
+) -> Result<WorkspaceMessageResponse, ApiError> {
+    let message = state
+        .store
+        .create_message(NewMessage {
+            workspace_id,
+            role: "agent",
+            kind: "agent_interrupted",
+            text: Some("Agent 已停止。本轮已结束，可以重新发送。"),
+            ref_id: None,
+            attachment_ids_json: None,
+            conversation_id: Some(conversation_id),
+            turn_id: Some(turn_id),
+        })
+        .await
+        .map_err(ApiError::store)?;
+    state
+        .store
+        .finalize_agent_turn(turn_id, "interrupted", Some("USER_INTERRUPTED"), None)
+        .await
+        .map_err(ApiError::store)?;
+    Ok(WorkspaceMessageResponse {
+        conversation_id: conversation_id.to_owned(),
+        turn_id: turn_id.to_owned(),
+        turn_status: "interrupted".to_owned(),
         turn_mode,
         messages: vec![ChatMessagePayload::from_record(message)],
         proposal: None,
