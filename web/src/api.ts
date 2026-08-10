@@ -26,6 +26,7 @@ import {
   type WorkflowGraph,
   type WorkspaceSummary,
   type WorkspaceMessageResponse,
+  type Conversation,
   type WorkbenchState,
 } from './types';
 import { manualProposalWithIdempotency } from './workbench-edit-session';
@@ -296,6 +297,7 @@ export async function sendWorkspaceMessage(
     userMessage: string;
     graph: WorkflowGraph;
     canvasContext?: CanvasMessageContext;
+    conversationId?: string;
   },
   signal?: AbortSignal,
 ): Promise<WorkspaceMessageResponse> {
@@ -315,6 +317,37 @@ export async function sendWorkspaceMessage(
   }
 
   return WorkspaceMessageResponseSchema.parse(body);
+}
+
+export async function createWorkspaceConversation(
+  workspaceId: string,
+  title = '新对话',
+  signal?: AbortSignal,
+): Promise<Conversation> {
+  const response = await fetch(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/conversations`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title }),
+      signal,
+    },
+  );
+  const body = await response.json();
+  if (!response.ok) {
+    throw new Error(
+      body && typeof body.error === 'string'
+        ? body.error
+        : `conversation create request failed: ${response.status}`,
+    );
+  }
+  return {
+    id: String(body.id),
+    title: String(body.title),
+    codexThreadId: typeof body.codexThreadId === 'string' ? body.codexThreadId : null,
+    createdAt: String(body.createdAt),
+    updatedAt: String(body.updatedAt),
+  };
 }
 
 export async function confirmWorkspaceRun(

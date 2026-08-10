@@ -42,7 +42,16 @@ export function applyMessageResponse(
   state: WorkbenchState,
   response: WorkspaceMessageResponse,
 ): WorkbenchState {
-  let next = appendChatMessages(state, response.messages);
+  let next = appendChatMessages(
+    {
+      ...state,
+      chat: {
+        ...state.chat,
+        activeConversationId: response.conversationId ?? state.chat.activeConversationId,
+      },
+    },
+    response.messages,
+  );
   if (response.run) {
     next = applyRunSnapshot(next, response.run);
   }

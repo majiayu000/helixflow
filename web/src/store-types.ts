@@ -42,7 +42,12 @@ export type WorkbenchStore = {
   sendCanvasPresence: (presence: CanvasPresence) => Promise<void>;
   submitCanvasCommentOp: (input: CanvasCommentOpInput) => Promise<void>;
   applyEvent: (event: RunEventEnvelope, generation?: number) => void;
-  sendMessage: (text: string, canvasContext?: CanvasMessageContext) => Promise<void>;
+  sendMessage: (
+    text: string,
+    canvasContext?: CanvasMessageContext,
+    conversationId?: string,
+  ) => Promise<void>;
+  createConversation: () => Promise<string>;
   uploadImage: (file: File) => Promise<void>;
   queueRun: (options?: QueueRunOptions) => Promise<void>;
   interruptRun: (runId?: string) => Promise<void>;

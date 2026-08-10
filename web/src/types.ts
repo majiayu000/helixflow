@@ -33,6 +33,7 @@ const PrimaryChatMessageKindSchema = z.enum([
   'run_requested',
   'run_failed',
   'agent_status',
+  'agent_error',
 ]);
 
 const AgentLogMessageKindSchema = z.custom<`agent_log:${string}`>(
@@ -80,6 +81,8 @@ const ChatMessageSchema = z.object({
   turnMode: z
     .enum(['chat', 'create_workflow', 'modify_workflow', 'debug_workflow', 'run_request'])
     .optional(),
+  conversationId: z.string().nullish(),
+  turnId: z.string().nullish(),
 });
 
 const CanvasSizeSchema = z.object({
@@ -437,6 +440,7 @@ export const CatalogBindingSchema = z.object({
   mode: z.string(),
   implementation: CatalogImplementationSchema,
   bindingRevision: z.string(),
+  availability: z.enum(['enabled', 'disabled']),
 });
 
 export const ModelCatalogSchema = z.object({
@@ -484,6 +488,32 @@ export const WorkbenchStateSchema = z.object({
   }),
   providers: ProvidersSchema,
   chat: z.object({
+    activeConversationId: z.string().nullable().optional(),
+    conversations: z
+      .array(
+        z.object({
+          id: z.string(),
+          title: z.string(),
+          codexThreadId: z.string().nullable().optional(),
+          createdAt: z.string(),
+          updatedAt: z.string(),
+        }),
+      )
+      .optional(),
+    turns: z
+      .array(
+        z.object({
+          id: z.string(),
+          conversationId: z.string(),
+          executionId: z.string().nullable().optional(),
+          mode: z.string(),
+          status: z.enum(['running', 'succeeded', 'clarify', 'error', 'interrupted']),
+          reasonCode: z.string().nullable().optional(),
+          startedAt: z.string(),
+          completedAt: z.string().nullable().optional(),
+        }),
+      )
+      .optional(),
     messages: z.array(ChatMessageSchema),
   }),
   graph: GraphStateSchema,
@@ -505,6 +535,9 @@ export const WorkbenchStateSchema = z.object({
 });
 
 export const WorkspaceMessageResponseSchema = z.object({
+  conversationId: z.string().optional(),
+  turnId: z.string().optional(),
+  turnStatus: z.enum(['running', 'succeeded', 'clarify', 'error', 'interrupted']).optional(),
   turnMode: z.enum(['chat', 'create_workflow', 'modify_workflow', 'debug_workflow', 'run_request']),
   messages: z.array(ChatMessageSchema),
   proposal: ProposalSchema.nullable(),
@@ -562,6 +595,7 @@ export type NodeSizeUpdate = { id: string; width: number; height: number };
 export type ChatMessageKind = z.infer<typeof ChatMessageKindSchema>;
 export type WorkflowGraph = z.infer<typeof WorkflowGraphSchema>;
 export type WorkspaceMessageResponse = z.infer<typeof WorkspaceMessageResponseSchema>;
+export type Conversation = NonNullable<WorkbenchState['chat']['conversations']>[number];
 export type RunConfirmationResponse = z.infer<typeof RunConfirmationResponseSchema>;
 export type WorkspaceSummary = z.infer<typeof WorkspaceSummarySchema>;
 export type NodeCatalog = z.infer<typeof NodeCatalogSchema>;
