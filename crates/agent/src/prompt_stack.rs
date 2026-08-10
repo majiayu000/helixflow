@@ -378,7 +378,8 @@ fn canvas_ops_contract(mode: TurnMode, output_contract: OutputContract) -> &'sta
             r#"Canvas ops contract:
 - Read compact canvas state from `ctx/canvas_state.json`.
 - `run_selected_workflow` is only a run request contract for the current workflow/version.
-- Write `out/run_request.json`; backend estimates cost and only creates pending confirmation when the run exceeds the configured threshold.
+- Prefer `canvas.request_run` to submit `{"action":"request_confirmation","summary":"..."}` when the tool is available; otherwise write `out/run_request.json`.
+- The backend estimates cost and only creates pending confirmation when the run exceeds the configured threshold.
 - Do not confirm runs, queue provider execution directly, or implement selected-subgraph execution."#
         }
         TurnMode::Chat => "Canvas ops are not available in chat mode.",

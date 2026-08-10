@@ -507,6 +507,9 @@ fn rejects_blank_reply_and_run_request_summary() {
     run_request.mode = TurnMode::RunRequest;
     run_request.skill = AgentSkill::RunRequest;
     let run_session = create_session_contract(&run_request).expect("run session");
+    let run_ctx = fs::read_to_string(run_session.ctx_dir.join("instructions.md")).expect("ctx");
+    assert!(run_ctx.contains("canvas.request_run"));
+    assert!(run_ctx.contains("Do not confirm runs"));
     fs::write(
         run_session.out_dir.join("run_request.json"),
         br#"{"action":"request_confirmation","summary":""}"#,

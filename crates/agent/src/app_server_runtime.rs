@@ -361,6 +361,21 @@ fn canvas_dynamic_tools(
                 "additionalProperties": false
             }
         }));
+    } else if output_contract == Some(crate::OutputContract::RunRequestJson) {
+        tools.push(json!({
+            "type": "function",
+            "name": "request_run",
+            "description": "Request execution of the current workflow through backend estimation and cost gates. This never confirms or dispatches a provider directly.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["action", "summary"],
+                "properties": {
+                    "action": { "type": "string", "enum": ["request_confirmation"] },
+                    "summary": { "type": "string", "minLength": 1, "maxLength": 4096 }
+                },
+                "additionalProperties": false
+            }
+        }));
     }
     vec![json!({
         "type": "namespace",
@@ -402,6 +417,11 @@ async fn respond_to_dynamic_tool_call<W: AsyncWrite + Unpin>(
         {
             submit_intent_tool_result(out_dir, &params["arguments"]).await
         }
+        (true, Some("canvas"), Some("request_run"))
+            if output_contract == Some(crate::OutputContract::RunRequestJson) =>
+        {
+            request_run_tool_result(out_dir, &params["arguments"]).await
+        }
         _ => failed_tool_result("Unsupported or stale Helixflow dynamic tool call."),
     };
     write_rpc(writer, &json!({ "id": request_id, "result": result })).await
@@ -425,6 +445,17 @@ async fn submit_intent_tool_result(out_dir: &std::path::Path, arguments: &Value)
         "intent.json",
         "Intent",
         "Intent captured for deterministic backend compilation; it has not changed the canvas.",
+    )
+    .await
+}
+
+async fn request_run_tool_result(out_dir: &std::path::Path, arguments: &Value) -> Value {
+    capture_json_output(
+        out_dir,
+        arguments,
+        "run_request.json",
+        "Run request",
+        "Run request captured for backend estimation and cost gating; no provider was dispatched.",
     )
     .await
 }
@@ -583,8 +614,9 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::{
-        canvas_dynamic_tools, canvas_state_tool_result, completed_item_status, required_string,
-        submit_intent_tool_result, submit_proposal_tool_result,
+        canvas_dynamic_tools, canvas_state_tool_result, completed_item_status,
+        request_run_tool_result, required_string, submit_intent_tool_result,
+        submit_proposal_tool_result,
     };
 
     #[test]
@@ -620,6 +652,9 @@ mod tests {
         let intent_tools =
             canvas_dynamic_tools(dir.path(), Some(crate::OutputContract::IntentJson));
         assert_eq!(intent_tools[0]["tools"][1]["name"], "submit_intent");
+        let run_tools =
+            canvas_dynamic_tools(dir.path(), Some(crate::OutputContract::RunRequestJson));
+        assert_eq!(run_tools[0]["tools"][1]["name"], "request_run");
         let result = canvas_state_tool_result(dir.path()).await;
         assert_eq!(result["success"], true);
         assert!(
@@ -678,5 +713,31 @@ mod tests {
         )
         .expect("intent json");
         assert_eq!(captured, intent);
+    }
+
+    #[tokio::test]
+    async fn captures_run_requests_without_dispatching_providers() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let out_dir = dir.path().join("out");
+        fs::create_dir(&out_dir).expect("out dir");
+        let request = json!({
+            "action": "request_confirmation",
+            "summary": "Run the current workflow."
+        });
+
+        let result = request_run_tool_result(&out_dir, &request).await;
+
+        assert_eq!(result["success"], true);
+        assert!(
+            result["contentItems"][0]["text"]
+                .as_str()
+                .expect("tool result")
+                .contains("no provider was dispatched")
+        );
+        let captured: Value = serde_json::from_slice(
+            &fs::read(out_dir.join("run_request.json")).expect("captured run request"),
+        )
+        .expect("run request json");
+        assert_eq!(captured, request);
     }
 }
