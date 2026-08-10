@@ -682,6 +682,62 @@ printf '%s\n' '{"method":"turn/completed","params":{"turn":{"id":"turn_app","sta
     assert_eq!(identity.turn_id, "turn_app");
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn app_server_runtime_serves_canvas_state_dynamic_tool_calls() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let program = dir.path().join("fake-codex-canvas-tool");
+    fs::write(
+        &program,
+        r#"#!/bin/sh
+IFS= read -r initialize
+case "$initialize" in
+  *'"experimentalApi":true'*) ;;
+  *) printf '%s\n' '{"id":1,"error":{"message":"missing experimental capability"}}'; exit 30 ;;
+esac
+printf '%s\n' '{"id":1,"result":{"userAgent":"fake"}}'
+IFS= read -r initialized
+IFS= read -r thread_request
+case "$thread_request" in *'"method":"thread/start"'*|*'"method":"thread/resume"'*) ;; *) printf '%s\n' '{"id":2,"error":{"message":"missing thread request"}}'; exit 31 ;; esac
+case "$thread_request" in *'"dynamicTools"'*) ;; *) printf '%s\n' '{"id":2,"error":{"message":"missing dynamic tools field"}}'; exit 31 ;; esac
+case "$thread_request" in *'"name":"canvas"'*) ;; *) printf '%s\n' '{"id":2,"error":{"message":"missing canvas namespace"}}'; exit 31 ;; esac
+case "$thread_request" in *'"name":"get_state"'*) ;; *) printf '%s\n' '{"id":2,"error":{"message":"missing get state tool"}}'; exit 31 ;; esac
+printf '%s\n' '{"id":2,"result":{"thread":{"id":"thr_canvas","sessionId":"thr_canvas"}}}'
+IFS= read -r turn_request
+printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn_canvas","status":"inProgress","items":[],"error":null}}}'
+printf '%s\n' '{"id":40,"method":"item/tool/call","params":{"threadId":"thr_canvas","turnId":"turn_canvas","callId":"call_1","namespace":"canvas","tool":"get_state","arguments":{}}}'
+IFS= read -r tool_response
+case "$tool_response" in *'"id":40'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"missing tool response id"}}}'; exit 32 ;; esac
+case "$tool_response" in *'workspace_id'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"missing workspace state"}}}'; exit 32 ;; esac
+case "$tool_response" in *'node_count'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"missing graph state"}}}'; exit 32 ;; esac
+case "$tool_response" in *'"success":true'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"tool response not successful"}}}'; exit 32 ;; esac
+mkdir -p out
+printf '%s\n' '{"base_version_id":"ver_1","kind":"modify","title":"Shorter video","summary":"Set duration to three seconds.","ops":[{"op":"set_param","id":"video","key":"duration_sec","prev":5,"value":3}]}' > out/proposal.json
+printf '%s\n' '{"method":"item/completed","params":{"item":{"type":"dynamicToolCall","tool":"get_state","status":"completed","success":true}}}'
+printf '%s\n' '{"method":"turn/completed","params":{"turn":{"id":"turn_canvas","status":"completed","items":[],"error":null}}}'
+"#,
+    )
+    .expect("fake app-server");
+    let mut permissions = fs::metadata(&program).expect("metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&program, permissions).expect("executable");
+
+    let proposal = AgentService::new(
+        crate::CodexAppServerRuntime::new(program),
+        EventBus::new(16),
+    )
+    .propose_graph_change(request(&dir))
+    .await
+    .expect("canvas tool proposal");
+
+    assert_eq!(proposal.proposal.title, "Shorter video");
+    let identity = proposal.runtime_identity.expect("runtime identity");
+    assert_eq!(identity.thread_id, "thr_canvas");
+    assert_eq!(identity.turn_id, "turn_canvas");
+}
+
 fn write_valid_proposal(session: &AgentSession) {
     write_proposal(
         session,

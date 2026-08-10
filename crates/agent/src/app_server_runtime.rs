@@ -171,7 +171,8 @@ async fn run_app_server_turn(
                     "name": "helixflow",
                     "title": "Helixflow",
                     "version": env!("CARGO_PKG_VERSION")
-                }
+                },
+                "capabilities": { "experimentalApi": true }
             }
         }),
     )
@@ -183,6 +184,7 @@ async fn run_app_server_turn(
     )
     .await?;
 
+    let dynamic_tools = canvas_dynamic_tools(&handle.root_dir);
     let thread_request = match handle.resume_thread_id().await {
         Some(thread_id) => json!({
             "method": "thread/resume",
@@ -192,7 +194,8 @@ async fn run_app_server_turn(
                 "cwd": handle.root_dir,
                 "approvalPolicy": "never",
                 "sandbox": "workspace-write",
-                "serviceName": "helixflow"
+                "serviceName": "helixflow",
+                "dynamicTools": dynamic_tools
             }
         }),
         None => json!({
@@ -202,7 +205,8 @@ async fn run_app_server_turn(
                 "cwd": handle.root_dir,
                 "approvalPolicy": "never",
                 "sandbox": "workspace-write",
-                "serviceName": "helixflow"
+                "serviceName": "helixflow",
+                "dynamicTools": dynamic_tools
             }
         }),
     };
@@ -245,6 +249,16 @@ async fn run_app_server_turn(
             .and_then(Value::as_str)
             .unwrap_or_default();
         match method {
+            "item/tool/call" => {
+                respond_to_dynamic_tool_call(
+                    &mut stdin,
+                    &value,
+                    &handle.root_dir,
+                    &thread_id,
+                    &turn_id,
+                )
+                .await?;
+            }
             "turn/completed" => {
                 let completed_turn_id = value
                     .pointer("/params/turn/id")
@@ -286,6 +300,87 @@ async fn run_app_server_turn(
             }
             _ => {}
         }
+    }
+}
+
+fn canvas_dynamic_tools(root_dir: &std::path::Path) -> Vec<Value> {
+    if !root_dir.join("ctx/canvas_state.json").is_file() {
+        return Vec::new();
+    }
+    vec![json!({
+        "type": "namespace",
+        "name": "canvas",
+        "description": "Read the current Helixflow workflow canvas.",
+        "tools": [{
+            "type": "function",
+            "name": "get_state",
+            "description": "Return the current compact graph, selection, version, and gate state.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }
+        }]
+    })]
+}
+
+async fn respond_to_dynamic_tool_call<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    request: &Value,
+    root_dir: &std::path::Path,
+    thread_id: &str,
+    turn_id: &str,
+) -> RuntimeResult<()> {
+    let request_id = request
+        .get("id")
+        .cloned()
+        .ok_or_else(|| RuntimeError::Failed("dynamic tool request is missing `id`".to_owned()))?;
+    let params = request.get("params").ok_or_else(|| {
+        RuntimeError::Failed("dynamic tool request is missing `params`".to_owned())
+    })?;
+    let matches_turn = params.get("threadId").and_then(Value::as_str) == Some(thread_id)
+        && params.get("turnId").and_then(Value::as_str) == Some(turn_id);
+    let namespace = params.get("namespace").and_then(Value::as_str);
+    let tool = params.get("tool").and_then(Value::as_str);
+    let result = if matches_turn && namespace == Some("canvas") && tool == Some("get_state") {
+        canvas_state_tool_result(root_dir).await
+    } else {
+        json!({
+            "contentItems": [{
+                "type": "inputText",
+                "text": "Unsupported or stale Helixflow dynamic tool call."
+            }],
+            "success": false
+        })
+    };
+    write_rpc(writer, &json!({ "id": request_id, "result": result })).await
+}
+
+async fn canvas_state_tool_result(root_dir: &std::path::Path) -> Value {
+    const MAX_CANVAS_STATE_BYTES: u64 = 256 * 1024;
+    let path = root_dir.join("ctx/canvas_state.json");
+    let read = async {
+        let metadata = tokio::fs::metadata(&path).await?;
+        if metadata.len() > MAX_CANVAS_STATE_BYTES {
+            return Err(std::io::Error::other("canvas state exceeds 256 KiB"));
+        }
+        let bytes = tokio::fs::read(&path).await?;
+        let value: Value = serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
+        serde_json::to_string(&value).map_err(std::io::Error::other)
+    }
+    .await;
+    match read {
+        Ok(text) => json!({
+            "contentItems": [{ "type": "inputText", "text": text }],
+            "success": true
+        }),
+        Err(error) => json!({
+            "contentItems": [{
+                "type": "inputText",
+                "text": format!("Canvas state is unavailable: {error}")
+            }],
+            "success": false
+        }),
     }
 }
 
@@ -361,9 +456,13 @@ fn completed_item_status(value: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use serde_json::json;
 
-    use super::{completed_item_status, required_string};
+    use super::{
+        canvas_dynamic_tools, canvas_state_tool_result, completed_item_status, required_string,
+    };
 
     #[test]
     fn parses_thread_identity_and_completed_items() {
@@ -378,6 +477,29 @@ mod tests {
             }))
             .as_deref(),
             Some("dynamicToolCall: canvas.get_state")
+        );
+    }
+
+    #[tokio::test]
+    async fn exposes_bounded_canvas_state_as_a_dynamic_tool() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        fs::create_dir(dir.path().join("ctx")).expect("ctx dir");
+        fs::write(
+            dir.path().join("ctx/canvas_state.json"),
+            r#"{ "workspace_id": "ws_1", "graph": { "node_count": 1 } }"#,
+        )
+        .expect("canvas state");
+
+        let tools = canvas_dynamic_tools(dir.path());
+        assert_eq!(tools[0]["name"], "canvas");
+        assert_eq!(tools[0]["tools"][0]["name"], "get_state");
+        let result = canvas_state_tool_result(dir.path()).await;
+        assert_eq!(result["success"], true);
+        assert!(
+            result["contentItems"][0]["text"]
+                .as_str()
+                .expect("text")
+                .contains("ws_1")
         );
     }
 }
