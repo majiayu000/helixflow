@@ -280,6 +280,7 @@ fn agent_turn_payload(turn: &AgentTurnRecord) -> Value {
         "id": turn.id,
         "conversationId": turn.conversation_id,
         "executionId": turn.execution_id,
+        "codexTurnId": turn.codex_turn_id,
         "mode": turn.mode,
         "status": turn.status,
         "reasonCode": turn.reason_code,

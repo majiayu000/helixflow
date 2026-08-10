@@ -20,6 +20,7 @@ pub struct AgentTurnRecord {
     pub workspace_id: String,
     pub user_message_id: Option<String>,
     pub execution_id: Option<String>,
+    pub codex_turn_id: Option<String>,
     pub mode: String,
     pub status: String,
     pub reason_code: Option<String>,
@@ -241,10 +242,35 @@ impl Store {
         })
     }
 
+    pub async fn attach_agent_turn_codex_identity(
+        &self,
+        turn_id: &str,
+        codex_turn_id: &str,
+    ) -> StoreResult<AgentTurnRecord> {
+        let updated = sqlx::query(
+            r#"
+            UPDATE agent_turns
+            SET codex_turn_id = ?
+            WHERE id = ? AND codex_turn_id IS NULL
+            "#,
+        )
+        .bind(codex_turn_id)
+        .bind(turn_id)
+        .execute(self.pool())
+        .await?;
+        let turn = self.agent_turn(turn_id).await?;
+        if updated.rows_affected() == 1 || turn.codex_turn_id.as_deref() == Some(codex_turn_id) {
+            return Ok(turn);
+        }
+        Err(StoreError::AgentContractObservationInvariant {
+            code: "CODEX_TURN_ID_CONFLICT",
+        })
+    }
+
     pub async fn agent_turn(&self, turn_id: &str) -> StoreResult<AgentTurnRecord> {
         Ok(sqlx::query_as(
             r#"
-            SELECT id, conversation_id, workspace_id, user_message_id, execution_id, mode,
+            SELECT id, conversation_id, workspace_id, user_message_id, execution_id, codex_turn_id, mode,
                    status, reason_code, started_at, completed_at
             FROM agent_turns
             WHERE id = ?
@@ -261,7 +287,7 @@ impl Store {
     ) -> StoreResult<Vec<AgentTurnRecord>> {
         Ok(sqlx::query_as(
             r#"
-            SELECT id, conversation_id, workspace_id, user_message_id, execution_id, mode,
+            SELECT id, conversation_id, workspace_id, user_message_id, execution_id, codex_turn_id, mode,
                    status, reason_code, started_at, completed_at
             FROM agent_turns
             WHERE conversation_id = ?
@@ -279,7 +305,7 @@ impl Store {
     ) -> StoreResult<Vec<AgentTurnRecord>> {
         Ok(sqlx::query_as(
             r#"
-            SELECT id, conversation_id, workspace_id, user_message_id, execution_id, mode,
+            SELECT id, conversation_id, workspace_id, user_message_id, execution_id, codex_turn_id, mode,
                    status, reason_code, started_at, completed_at
             FROM agent_turns
             WHERE workspace_id = ?
@@ -387,6 +413,26 @@ mod tests {
         assert!(
             store
                 .bind_conversation_codex_thread(&workspace.id, &conversation.id, "thr_2")
+                .await
+                .is_err()
+        );
+
+        let turn = store
+            .start_agent_turn(&workspace.id, &conversation.id, "chat")
+            .await
+            .expect("turn");
+        let bound_turn = store
+            .attach_agent_turn_codex_identity(&turn.id, "codex_turn_1")
+            .await
+            .expect("bind turn");
+        assert_eq!(bound_turn.codex_turn_id.as_deref(), Some("codex_turn_1"));
+        store
+            .attach_agent_turn_codex_identity(&turn.id, "codex_turn_1")
+            .await
+            .expect("same turn identity is idempotent");
+        assert!(
+            store
+                .attach_agent_turn_codex_identity(&turn.id, "codex_turn_2")
                 .await
                 .is_err()
         );

@@ -506,6 +506,7 @@ export const WorkbenchStateSchema = z.object({
           id: z.string(),
           conversationId: z.string(),
           executionId: z.string().nullable().optional(),
+          codexTurnId: z.string().nullable().optional(),
           mode: z.string(),
           status: z.enum(['running', 'succeeded', 'clarify', 'error', 'interrupted']),
           reasonCode: z.string().nullable().optional(),
