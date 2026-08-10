@@ -290,6 +290,8 @@ function applyAgentStatusEvent(state: WorkbenchState, event: RunEventEnvelope): 
     kind: agentMessageKind(event),
     text,
     time: event.server_time,
+    conversationId: stringData(event, 'conversation_id') ?? undefined,
+    turnId: stringData(event, 'turn_id') ?? undefined,
   };
   const found = state.chat.messages.some((item) => item.id === messageId);
 

@@ -663,6 +663,8 @@ describe('App', () => {
       ev: 'agent.status',
       data: {
         session_id: 'agent_session_1',
+        conversation_id: 'conv_1',
+        turn_id: 'turn_1',
         status: 'runtime.status',
         detail: { message: 'Drafting graph proposal' },
       },
@@ -674,6 +676,8 @@ describe('App', () => {
       role: 'agent',
       kind: 'agent_log:status',
       text: 'Drafting graph proposal',
+      conversationId: 'conv_1',
+      turnId: 'turn_1',
     });
   });
 
