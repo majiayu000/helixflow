@@ -154,7 +154,7 @@ fn creates_ctx_out_contract_without_provider_secret_values() {
     assert!(api_catalog.contains("\"capability\": \"text_to_video\""));
     assert!(model_catalog.contains("\"modelId\": \"bytedance/seedance-v1.5-pro\""));
     assert!(model_catalog.contains("\"capabilityId\": \"text_to_video\""));
-    assert!(!model_catalog.contains("bytedance.seedance-v1-5-pro.image-to-video"));
+    assert!(model_catalog.contains("bytedance.seedance-v1-5-pro.image-to-video"));
     assert_no_raw_auth_material(&workflow_catalog);
     assert_no_raw_auth_material(&runtime_catalog);
     assert_no_raw_auth_material(&api_catalog);

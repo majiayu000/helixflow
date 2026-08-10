@@ -232,15 +232,19 @@ fn policy_without_configured_default_is_ambiguous_even_for_one_candidate() {
 }
 
 #[test]
-fn capability_without_any_binding_reports_binding_not_found() {
+fn image_to_video_uses_the_seedance_default_binding() {
     let catalog = builtin_catalog();
     let resolver = CapabilityResolver::new(&catalog);
 
-    let err = resolver
+    let resolved = resolver
         .resolve(&policy("image_to_video"), &avail(&[("atlas", true)]))
-        .expect_err("no bindings in V1 seed");
+        .expect("image-to-video default");
 
-    assert_eq!(err.code(), "BINDING_NOT_FOUND");
+    assert_eq!(resolved.resolved_model_id, "bytedance/seedance-v1.5-pro");
+    assert_eq!(
+        resolved.binding_id,
+        "bytedance.seedance-v1-5-pro.image-to-video.atlas.v1"
+    );
 }
 
 #[test]
