@@ -38,6 +38,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const showAdvancedEditPanel = useMemo(() => advancedEditPanelEnabledFromUrl(), []);
   const [forceRerun, setForceRerun] = useState(false);
   const [selectedCanvasNodeIds, setSelectedCanvasNodeIds] = useState<string[]>([]);
+  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const status = useWorkbenchStore((store) => store.status);
   const error = useWorkbenchStore((store) => store.error);
   const connection = useWorkbenchStore((store) => store.connection);
@@ -57,6 +58,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const activeWorkspaceId = useWorkbenchStore((store) => store.activeWorkspaceId);
   const sendCanvasPresence = useWorkbenchStore((store) => store.sendCanvasPresence);
   const sendMessage = useWorkbenchStore((store) => store.sendMessage);
+  const createConversation = useWorkbenchStore((store) => store.createConversation);
   const uploadImage = useWorkbenchStore((store) => store.uploadImage);
   const submitCanvasCommentOp = useWorkbenchStore((store) => store.submitCanvasCommentOp);
   const applyProposal = useWorkbenchStore((store) => store.applyProposal);
@@ -114,7 +116,17 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
 
   useEffect(() => {
     setSelectedCanvasNodeIds([]);
+    setSelectedConversationId(null);
   }, [activeWorkspaceId, workspaceGeneration]);
+
+  useEffect(() => {
+    if (!activeState) return;
+    const conversations = activeState.chat.conversations ?? [];
+    if (selectedConversationId && conversations.some((item) => item.id === selectedConversationId)) {
+      return;
+    }
+    setSelectedConversationId(activeState.chat.activeConversationId ?? conversations[0]?.id ?? null);
+  }, [activeState, selectedConversationId]);
 
   useEffect(() => {
     if (!activeState?.workspace.id) return;
@@ -199,6 +211,17 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const versionHistoryCount = activeState.history.filter((item) => item.kind === 'version').length;
   const undoDisabled = navigationLocked || versionHistoryCount < 2;
   const showArtifactPreview = hasPreviewArtifact(activeState.outputs) && dirtyEditCount === 0;
+  const conversations = activeState.chat.conversations ?? [];
+  const activeConversationId =
+    selectedConversationId ?? activeState.chat.activeConversationId ?? conversations[0]?.id ?? null;
+  const conversationMessages = activeConversationId
+    ? activeState.chat.messages.filter(
+        (message) => !message.conversationId || message.conversationId === activeConversationId,
+      )
+    : activeState.chat.messages;
+  const conversationTurns = (activeState.chat.turns ?? []).filter(
+    (turn) => turn.conversationId === activeConversationId,
+  );
 
   return (
     <main className="wb">
@@ -208,7 +231,9 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
         connection={connection}
         exportDisabled={busy || !activeState.workspace.versionId}
         historyOpen={historyOpen}
-        onAgentRun={() => void runAction(() => sendMessage('运行当前 workflow'))}
+        onAgentRun={() =>
+          void runAction(() => sendMessage('运行当前 workflow', undefined, activeConversationId ?? undefined))
+        }
         onCommitEdits={() => void runAction(() => commitManualEdits())}
         onExport={exportCurrentWorkflow}
         onHistory={() => setHistoryOpen((open) => !open)}
@@ -235,7 +260,17 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
         <div className="chat-column">
           <ChatPane
             busy={navigationLocked}
-            messages={activeState.chat.messages}
+            messages={conversationMessages}
+            conversations={conversations}
+            turns={conversationTurns}
+            activeConversationId={activeConversationId}
+            onConversationChange={setSelectedConversationId}
+            onNewConversation={() =>
+              runAction(async () => {
+                const id = await createConversation();
+                setSelectedConversationId(id);
+              }, true)
+            }
             onApplyProposal={(id) => runAction(() => applyProposal(id))}
             onDismissProposal={(id) => runAction(() => dismissProposal(id))}
             onUploadImage={(file) => runAction(() => uploadImage(file))}
@@ -253,9 +288,12 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
             onDiscardEdits={discardManualEdits}
             onSend={(text) =>
               runAction(
-                () => sendMessage(text, {
-                  selection: { nodeIds: selectedCanvasNodeIds },
-                }),
+                () =>
+                  sendMessage(
+                    text,
+                    { selection: { nodeIds: selectedCanvasNodeIds } },
+                    activeConversationId ?? undefined,
+                  ),
                 true,
               )
             }

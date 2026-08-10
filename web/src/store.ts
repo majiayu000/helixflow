@@ -3,6 +3,7 @@ import {
   applyWorkspaceProposal,
   confirmWorkspaceRun,
   createManualWorkspaceProposal,
+  createWorkspaceConversation,
   createWorkspace,
   dismissWorkspaceProposal,
   exportWorkflowVersion,
@@ -267,7 +268,29 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
   },
   uploadImage: createUploadImageAction(set, get, requestScope),
-  sendMessage: async (text, canvasContext) => {
+  createConversation: async () => {
+    const state = get().state;
+    if (!state) throw new Error('workspace is not loaded');
+    const conversation = await createWorkspaceConversation(
+      state.workspace.id,
+      '新对话',
+      requestScope.signal(),
+    );
+    set((current) => ({
+      state: current.state
+        ? {
+            ...current.state,
+            chat: {
+              ...current.state.chat,
+              activeConversationId: conversation.id,
+              conversations: [conversation, ...(current.state.chat.conversations ?? [])],
+            },
+          }
+        : current.state,
+    }));
+    return conversation.id;
+  },
+  sendMessage: async (text, canvasContext, conversationId) => {
     const trimmed = text.trim();
     if (!trimmed) {
       return;
@@ -304,6 +327,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
           kind: 'text',
           text: trimmed,
           time: messageTime(),
+          conversationId: conversationId ?? state.chat.activeConversationId ?? undefined,
         },
       ]),
     });
@@ -314,6 +338,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
         canvasContext,
         userMessage: trimmed,
         graph: request.graph,
+        conversationId: conversationId ?? state.chat.activeConversationId ?? undefined,
       }, requestScope.signal());
       if (!requestScope.isActive(generation, request.workspaceId)) {
         actionGuard.fail('workspace changed while the message was sending');

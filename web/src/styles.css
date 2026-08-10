@@ -607,6 +607,37 @@ textarea:disabled {
   letter-spacing: 0.08em;
 }
 
+.conversation-bar {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.conversation-bar select {
+  min-width: 0;
+  flex: 1;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.conversation-new {
+  white-space: nowrap;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.assistant-bubble--terminal {
+  color: var(--muted);
+}
+
 .session-brief {
   border-bottom: 1px solid var(--border);
   color: var(--text-2);

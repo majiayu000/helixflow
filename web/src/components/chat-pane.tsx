@@ -3,6 +3,8 @@ import { Icon } from '../icons';
 import type { WorkbenchState } from '../types';
 
 type ChatMessage = WorkbenchState['chat']['messages'][number];
+type AgentTurn = NonNullable<WorkbenchState['chat']['turns']>[number];
+type Conversation = NonNullable<WorkbenchState['chat']['conversations']>[number];
 type PendingProposal = NonNullable<WorkbenchState['pendingProposal']>;
 type ChatEntry =
   | { type: 'message'; message: ChatMessage }
@@ -24,12 +26,17 @@ type ComposerKeyEvent = {
 
 type ChatPaneProps = {
   messages: ChatMessage[];
+  conversations?: Conversation[];
+  turns?: AgentTurn[];
+  activeConversationId?: string | null;
   pendingProposal: WorkbenchState['pendingProposal'];
   run: WorkbenchState['run'];
   busy: boolean;
   editSessionSummary: EditSessionSummary | null;
   selectedNodeIds?: string[];
   onSend: (text: string) => Promise<void>;
+  onConversationChange?: (conversationId: string) => void;
+  onNewConversation?: () => Promise<void>;
   onUploadImage?: (file: File) => Promise<void>;
   onCommitEdits: () => Promise<void>;
   onDiscardEdits: () => void;
@@ -39,12 +46,17 @@ type ChatPaneProps = {
 
 export function ChatPane({
   messages,
+  conversations = [],
+  turns = [],
+  activeConversationId,
   pendingProposal,
   run,
   busy,
   editSessionSummary,
   selectedNodeIds = [],
   onSend,
+  onConversationChange,
+  onNewConversation,
   onUploadImage,
   onCommitEdits,
   onDiscardEdits,
@@ -77,9 +89,33 @@ export function ChatPane({
   return (
     <aside className="wb-chat">
       <div className="chat-head">
-        <span>SESSION · CODEX</span>
+        <span>CONVERSATION · CODEX</span>
         <span className="sub">{busy ? 'busy · 执行中' : 'idle · 观察中'}</span>
       </div>
+      {conversations.length > 0 && (
+        <div className="conversation-bar">
+          <select
+            aria-label="conversation selector"
+            disabled={busy}
+            onChange={(event) => onConversationChange?.(event.target.value)}
+            value={activeConversationId ?? conversations[0].id}
+          >
+            {conversations.map((conversation) => (
+              <option key={conversation.id} value={conversation.id}>
+                {conversation.title} · {shortConversationId(conversation.id)}
+              </option>
+            ))}
+          </select>
+          <button
+            className="conversation-new"
+            disabled={busy}
+            onClick={() => void onNewConversation?.()}
+            type="button"
+          >
+            + 新对话
+          </button>
+        </div>
+      )}
       <div className="session-brief">
         你在手动改图 — 我不会打断。提交编辑后，我的下一个提案会基于它。
       </div>
@@ -91,7 +127,7 @@ export function ChatPane({
           onCommit={onCommitEdits}
           onDiscard={onDiscardEdits}
         />
-        <MessageTimeline messages={messages} />
+        <MessageTimeline messages={messages} turns={turns} />
         <RunErrorCard busy={busy} run={run} onRequestFix={onSend} />
         {pendingProposal && <ProposalMessage
           busy={busy}
@@ -484,7 +520,7 @@ function MessageRow({ message }: { message: ChatMessage }) {
   );
 }
 
-function MessageTimeline({ messages }: { messages: ChatMessage[] }) {
+function MessageTimeline({ messages, turns }: { messages: ChatMessage[]; turns: AgentTurn[] }) {
   const entries = chatEntries(messages);
   if (entries.length === 0) return null;
 
@@ -498,6 +534,7 @@ function MessageTimeline({ messages }: { messages: ChatMessage[] }) {
             key={entry.id}
             logs={entry.logs}
             message={entry.message}
+            turn={turnForEntry(entry, turns)}
           />
         ),
       )}
@@ -508,9 +545,11 @@ function MessageTimeline({ messages }: { messages: ChatMessage[] }) {
 function AssistantTurn({
   message,
   logs,
+  turn,
 }: {
   message?: ChatMessage;
   logs: ChatMessage[];
+  turn?: AgentTurn;
 }) {
   const isStatus = message ? isAgentStatusMessage(message) : false;
   return (
@@ -539,6 +578,10 @@ function AssistantTurn({
               <div className="msg-text">{message.text}</div>
             )}
           </div>
+        ) : turn && turn.status !== 'running' ? (
+          <div className="assistant-bubble assistant-bubble--terminal" data-testid="terminal-turn">
+            {terminalTurnText(turn)}
+          </div>
         ) : (
           <div className="assistant-bubble">
             <div className="status-line">
@@ -552,6 +595,25 @@ function AssistantTurn({
       </div>
     </div>
   );
+}
+
+function turnForEntry(
+  entry: Extract<ChatEntry, { type: 'assistantTurn' }>,
+  turns: AgentTurn[],
+): AgentTurn | undefined {
+  const turnId = entry.message?.turnId ?? entry.logs.find((log) => log.turnId)?.turnId;
+  return turnId ? turns.find((turn) => turn.id === turnId) : undefined;
+}
+
+function terminalTurnText(turn: AgentTurn): string {
+  if (turn.status === 'clarify') return `本轮等待澄清${turn.reasonCode ? ` · ${turn.reasonCode}` : ''}`;
+  if (turn.status === 'succeeded') return '本轮已完成，但没有生成可展示的回复。';
+  if (turn.status === 'interrupted') return '本轮已中断，可以重新发送。';
+  return `本轮执行失败${turn.reasonCode ? ` · ${turn.reasonCode}` : ''}`;
+}
+
+function shortConversationId(id: string): string {
+  return id.length > 12 ? id.slice(-8) : id;
 }
 
 function ToolCallGroup({ messages }: { messages: ChatMessage[] }) {
