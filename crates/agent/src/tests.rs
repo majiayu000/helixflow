@@ -704,6 +704,7 @@ case "$thread_request" in *'"method":"thread/start"'*|*'"method":"thread/resume"
 case "$thread_request" in *'"dynamicTools"'*) ;; *) printf '%s\n' '{"id":2,"error":{"message":"missing dynamic tools field"}}'; exit 31 ;; esac
 case "$thread_request" in *'"name":"canvas"'*) ;; *) printf '%s\n' '{"id":2,"error":{"message":"missing canvas namespace"}}'; exit 31 ;; esac
 case "$thread_request" in *'"name":"get_state"'*) ;; *) printf '%s\n' '{"id":2,"error":{"message":"missing get state tool"}}'; exit 31 ;; esac
+case "$thread_request" in *'"name":"submit_proposal"'*) ;; *) printf '%s\n' '{"id":2,"error":{"message":"missing submit proposal tool"}}'; exit 31 ;; esac
 printf '%s\n' '{"id":2,"result":{"thread":{"id":"thr_canvas","sessionId":"thr_canvas"}}}'
 IFS= read -r turn_request
 printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn_canvas","status":"inProgress","items":[],"error":null}}}'
@@ -713,8 +714,10 @@ case "$tool_response" in *'"id":40'*) ;; *) printf '%s\n' '{"method":"error","pa
 case "$tool_response" in *'workspace_id'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"missing workspace state"}}}'; exit 32 ;; esac
 case "$tool_response" in *'node_count'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"missing graph state"}}}'; exit 32 ;; esac
 case "$tool_response" in *'"success":true'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"tool response not successful"}}}'; exit 32 ;; esac
-mkdir -p out
-printf '%s\n' '{"base_version_id":"ver_1","kind":"modify","title":"Shorter video","summary":"Set duration to three seconds.","ops":[{"op":"set_param","id":"video","key":"duration_sec","prev":5,"value":3}]}' > out/proposal.json
+printf '%s\n' '{"id":41,"method":"item/tool/call","params":{"threadId":"thr_canvas","turnId":"turn_canvas","callId":"call_2","namespace":"canvas","tool":"submit_proposal","arguments":{"base_version_id":"ver_1","kind":"modify","title":"Shorter video","summary":"Set duration to three seconds.","ops":[{"op":"set_param","id":"video","key":"duration_sec","prev":5,"value":3}]}}}'
+IFS= read -r proposal_response
+case "$proposal_response" in *'"id":41'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"missing proposal response id"}}}'; exit 33 ;; esac
+case "$proposal_response" in *'"success":true'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"proposal was not captured"}}}'; exit 33 ;; esac
 printf '%s\n' '{"method":"item/completed","params":{"item":{"type":"dynamicToolCall","tool":"get_state","status":"completed","success":true}}}'
 printf '%s\n' '{"method":"turn/completed","params":{"turn":{"id":"turn_canvas","status":"completed","items":[],"error":null}}}'
 "#,
