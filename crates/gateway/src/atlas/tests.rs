@@ -287,7 +287,7 @@ async fn atlas_video_dispatch_returns_a_durable_handle_before_polling()
         ))
         .await
         .expect("dispatch");
-    server.await??;
+    let request_body = server.await??;
     let ProviderDispatch::Accepted(task) = dispatch else {
         panic!("video dispatch must return a durable handle");
     };
@@ -298,6 +298,7 @@ async fn atlas_video_dispatch_returns_a_durable_handle_before_polling()
         Some(format!("http://{addr}/api/v1/model/prediction/prediction_123").as_str())
     );
     assert!(task.result_url.is_none());
+    assert_eq!(request_body["resolution"], "720P");
     Ok(())
 }
 

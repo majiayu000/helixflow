@@ -309,11 +309,16 @@ impl AtlasProvider {
             .get("duration_sec")
             .and_then(Value::as_u64)
             .unwrap_or(5);
+        let default_resolution = if req.capability == "image_to_video" {
+            "720p"
+        } else {
+            "720P"
+        };
         let mut body = json!({
             "model": model,
             "prompt": prompt,
             "duration": duration,
-            "resolution": optional_string(&req.params, "resolution").unwrap_or_else(|| "720p".to_owned()),
+            "resolution": optional_string(&req.params, "resolution").unwrap_or_else(|| default_resolution.to_owned()),
             "enable_sync_mode": false
         });
         if req.capability == "image_to_video" {
