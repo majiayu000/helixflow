@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { connectWorkspaceEvents } from './api';
 import { ArtifactStage, hasPreviewArtifact } from './components/artifact-stage';
+import { CanvasErrorBoundary } from './components/canvas-error-boundary';
 import { ChatPane } from './components/chat-pane';
 import { DirtyNavigationDialog } from './components/dirty-navigation-dialog';
 import { GraphCanvas } from './components/graph-canvas';
@@ -304,28 +305,29 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
           />
         </div>
         <section className={showArtifactPreview ? 'wb-canvas wb-canvas--with-artifact' : 'wb-canvas'}>
-          <GraphCanvas
-            graph={previewState.graph}
-            canvasGraph={canvasGraph}
-            comments={canvas?.comments ?? []}
-            onCreateProposal={(input) => runAction(() => appendManualEdit(input), true)}
-            onCommentOp={(input) => runAction(() => submitCanvasCommentOp(input), true)}
-            onPresenceChange={(presence) => void sendCanvasPresence(presence)}
-            onRequestNodeProposal={(nodeId) =>
-              runAction(
-                () => sendMessage(`围绕选中节点 ${nodeId} 生成最小修改 proposal。`, {
-                  selection: { nodeIds: [nodeId] },
-                }),
-                true,
-              )
-            }
-            onSelectionChange={(nodeIds) => {
-              setSelectedCanvasNodeIds(nodeIds);
-              setCanvasSelection(nodeIds);
-            }}
-            onSetParam={(nodeId, key, value) => {
-              return runAction(
-                () => appendManualEdit(
+          <CanvasErrorBoundary resetKey={activeState.workspace.id}>
+            <GraphCanvas
+              graph={previewState.graph}
+              canvasGraph={canvasGraph}
+              comments={canvas?.comments ?? []}
+              onCreateProposal={(input) => runAction(() => appendManualEdit(input), true)}
+              onCommentOp={(input) => runAction(() => submitCanvasCommentOp(input), true)}
+              onPresenceChange={(presence) => void sendCanvasPresence(presence)}
+              onRequestNodeProposal={(nodeId) =>
+                runAction(
+                  () => sendMessage(`围绕选中节点 ${nodeId} 生成最小修改 proposal。`, {
+                    selection: { nodeIds: [nodeId] },
+                  }),
+                  true,
+                )
+              }
+              onSelectionChange={(nodeIds) => {
+                setSelectedCanvasNodeIds(nodeIds);
+                setCanvasSelection(nodeIds);
+              }}
+              onSetParam={(nodeId, key, value) => {
+                return runAction(
+                  () => appendManualEdit(
                     buildSetParamEditInput(
                       activeState.workspace.versionId,
                       previewState.workflowGraph,
@@ -334,18 +336,19 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
                       value,
                     ),
                   ),
-                true,
-              );
-            }}
-            onSelectOutput={(id) => void runAction(() => selectOutput(id))}
-            outputs={activeState.outputs}
-            pendingProposal={activeState.pendingProposal}
-            presenceByActor={presenceByActor}
-            run={uiState.run}
-            versionId={activeState.workspace.versionId}
-            workflowGraph={previewState.workflowGraph}
-            workspaceId={activeState.workspace.id}
-          />
+                  true,
+                );
+              }}
+              onSelectOutput={(id) => void runAction(() => selectOutput(id))}
+              outputs={activeState.outputs}
+              pendingProposal={activeState.pendingProposal}
+              presenceByActor={presenceByActor}
+              run={uiState.run}
+              versionId={activeState.workspace.versionId}
+              workflowGraph={previewState.workflowGraph}
+              workspaceId={activeState.workspace.id}
+            />
+          </CanvasErrorBoundary>
           {showArtifactPreview && (
             <div className="canvas-artifact-preview">
               <ArtifactStage outputs={activeState.outputs} />
