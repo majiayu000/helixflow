@@ -1002,6 +1002,20 @@ fn gh130_intent_contract_accepts_valid_intent() {
 }
 
 #[test]
+fn intent_prompt_prefers_the_bounded_submit_intent_tool() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut req = request(&dir);
+    req.use_intent_contract = true;
+
+    let session = create_session_contract(&req).expect("session");
+    let ctx = fs::read_to_string(session.ctx_dir.join("instructions.md")).expect("ctx");
+
+    assert_eq!(session.output_contract, OutputContract::IntentJson);
+    assert!(ctx.contains("canvas.submit_intent"));
+    assert!(!ctx.contains("canvas.submit_proposal"));
+}
+
+#[test]
 fn gh130_intent_contract_rejects_unknown_fields() {
     let dir = tempfile::tempdir().expect("temp dir");
     let session = create_session_contract(&request(&dir)).expect("session");
