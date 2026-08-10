@@ -97,6 +97,7 @@ fn creates_ctx_out_contract_without_provider_secret_values() {
 
     assert!(session.ctx_dir.join("graph.json").exists());
     assert!(session.ctx_dir.join("node_defs/catalog.json").exists());
+    assert!(session.ctx_dir.join("models/catalog.json").exists());
     assert!(
         session
             .ctx_dir
@@ -121,6 +122,7 @@ fn creates_ctx_out_contract_without_provider_secret_values() {
     assert!(ctx.contains("Bounded canvas ops"));
     assert!(ctx.contains("propose_layout"));
     assert!(ctx.contains("ctx/workflow_backends/catalog.json"));
+    assert!(ctx.contains("ctx/models/catalog.json"));
     assert!(ctx.contains("ctx/runtime_providers/catalog.json"));
     assert!(ctx.contains("ctx/api_connectors/catalog.json"));
     assert!(ctx.contains("\"base_version_id\""));
@@ -134,6 +136,8 @@ fn creates_ctx_out_contract_without_provider_secret_values() {
     let workflow_catalog =
         fs::read_to_string(session.ctx_dir.join("workflow_backends/catalog.json"))
             .expect("workflow backend catalog");
+    let model_catalog = fs::read_to_string(session.ctx_dir.join("models/catalog.json"))
+        .expect("model binding catalog");
     let runtime_catalog =
         fs::read_to_string(session.ctx_dir.join("runtime_providers/catalog.json"))
             .expect("runtime provider catalog");
@@ -142,9 +146,13 @@ fn creates_ctx_out_contract_without_provider_secret_values() {
     assert!(runtime_catalog.contains("\"id\": \"mock\""));
     assert!(runtime_catalog.contains("\"kind\": \"local_test\""));
     assert!(api_catalog.contains("\"capability\": \"text_to_video\""));
+    assert!(model_catalog.contains("\"modelId\": \"bytedance/seedance-v1.5-pro\""));
+    assert!(model_catalog.contains("\"capabilityId\": \"text_to_video\""));
+    assert!(!model_catalog.contains("bytedance.seedance-v1-5-pro.image-to-video"));
     assert_no_raw_auth_material(&workflow_catalog);
     assert_no_raw_auth_material(&runtime_catalog);
     assert_no_raw_auth_material(&api_catalog);
+    assert_no_raw_auth_material(&model_catalog);
 }
 
 fn assert_no_raw_auth_material(content: &str) {

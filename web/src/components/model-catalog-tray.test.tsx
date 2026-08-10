@@ -36,6 +36,7 @@ function modelCatalog(): ModelCatalog {
         mode: 'text_to_image',
         implementation: { apiConnector: { connectorId: 'atlas', operationId: 'op-a' } },
         bindingRevision: 'v1',
+        availability: 'enabled',
       },
       {
         bindingId: 'nano.fal.v1',
@@ -44,6 +45,7 @@ function modelCatalog(): ModelCatalog {
         mode: 'text_to_image',
         implementation: { apiConnector: { connectorId: 'fal', operationId: 'op-b' } },
         bindingRevision: 'v1',
+        availability: 'enabled',
       },
       {
         bindingId: 'seedance.atlas.v1',
@@ -52,6 +54,7 @@ function modelCatalog(): ModelCatalog {
         mode: 'text_to_video',
         implementation: { apiConnector: { connectorId: 'atlas', operationId: 'op-c' } },
         bindingRevision: 'v1',
+        availability: 'enabled',
       },
     ],
     defaultBindings: { text_to_image: 'nano.atlas.v1' },
@@ -91,6 +94,14 @@ describe('model catalog projections', () => {
     const nano = groups.find((group) => group.key === 'google/nano-banana-2');
     expect(nano?.title).toContain('Nano Banana 2');
     expect(nano?.entries.every((entry) => entry.capabilityId === 'text_to_image')).toBe(true);
+  });
+
+  it('does not expose disabled bindings as executable catalog entries', () => {
+    const catalog = modelCatalog();
+    catalog.bindings[2].availability = 'disabled';
+
+    expect(capabilityGroups(catalog).some((group) => group.key === 'text_to_video')).toBe(false);
+    expect(modelGroups(catalog).some((group) => group.key.includes('seedance'))).toBe(false);
   });
 
   it('renders both projections from the same facts', () => {

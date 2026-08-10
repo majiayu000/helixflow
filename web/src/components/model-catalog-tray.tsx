@@ -112,7 +112,11 @@ export function capabilityGroups(catalog: ModelCatalog): CatalogGroup[] {
   return catalog.capabilities
     .map((capability) => {
       const entries = catalog.bindings
-        .filter((binding) => binding.capabilityId === capability.capabilityId)
+        .filter(
+          (binding) =>
+            binding.availability === 'enabled' &&
+            binding.capabilityId === capability.capabilityId,
+        )
         .map((binding) => {
           const model = catalog.models.find((item) => item.modelId === binding.modelId);
           return {
@@ -133,7 +137,9 @@ export function modelGroups(catalog: ModelCatalog): CatalogGroup[] {
   return catalog.models
     .map((model) => {
       const entries = catalog.bindings
-        .filter((binding) => binding.modelId === model.modelId)
+        .filter(
+          (binding) => binding.availability === 'enabled' && binding.modelId === model.modelId,
+        )
         .map((binding) => {
           const capability = catalog.capabilities.find(
             (item) => item.capabilityId === binding.capabilityId,

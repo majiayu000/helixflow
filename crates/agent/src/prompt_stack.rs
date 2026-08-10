@@ -167,13 +167,13 @@ pub fn build_prompt_stack(request: &AgentSessionRequest) -> PromptStack {
             section(
                 PromptSectionKey::ResearchCommandContract,
                 "Research command contract",
-                "Read only the declared context files under `ctx/`: `graph.json`, `node_defs/catalog.json`, `workflow_backends/catalog.json`, `runtime_providers/catalog.json`, `api_connectors/catalog.json`, `canvas_state.json`, `canvas_ops.json`, and the selected skill. Do not inspect unrelated workspace files.",
+                "Read only the declared context files under `ctx/`: `graph.json`, `node_defs/catalog.json`, `models/catalog.json`, `workflow_backends/catalog.json`, `runtime_providers/catalog.json`, `api_connectors/catalog.json`, `canvas_state.json`, `canvas_ops.json`, and the selected skill. Do not inspect unrelated workspace files.",
                 false,
             ),
             section(
                 PromptSectionKey::WorkflowBackend,
                 "Workflow backend",
-                "Use `ctx/graph.json` as the current workflow state, `ctx/node_defs/catalog.json` as the authoritative node catalog, and `ctx/workflow_backends/catalog.json` as the backend boundary.",
+                "Use `ctx/graph.json` as the current workflow state, `ctx/node_defs/catalog.json` as the authoritative node catalog, `ctx/models/catalog.json` as the authoritative model-capability-binding catalog, and `ctx/workflow_backends/catalog.json` as the backend boundary. A model can execute a capability only when an enabled binding explicitly declares that exact pair.",
                 false,
             ),
             section(
@@ -314,8 +314,9 @@ fn intent_output_contract() -> &'static str {
 - Write an IntentPlan JSON, not a proposal and not a graph.
 - Top-level keys must be exactly: "intentVersion" (always "1"), "topology" ("linear" or "parallel"), "stages", "outputStageIds", optional "assumptions".
 - Each stage: {"stageId":"s1","capabilityId":"text_to_image","requestedModel":"Nano Banana","inputFrom":[],"params":{"prompt":"..."}}.
-- Valid capabilityId values come from `ctx/node_defs/catalog.json` capabilities (canonical ids: prompt_writer, text_to_image, image_edit, text_to_video, image_to_video, video_extend, upscale_image, upscale_video, image_analyze).
+- Valid capabilityId values come from `ctx/node_defs/catalog.json`. Before pairing a capability with a model, check `ctx/models/catalog.json`; only an enabled binding makes that exact pair executable.
 - "requestedModel": set ONLY when the user named a model; otherwise omit it and the backend applies the configured default. Never invent model names.
+- If the user names a model-capability pair with no enabled binding, preserve the requested model and capability in the intent. Never silently substitute another model or capability; the backend will return a structured clarification with available choices.
 - "inputFrom" references earlier stages only: [{"stageId":"s1","output":"image"}]. Use "linear" unless the user explicitly asked for parallel branches.
 - Stage ids are lowercase short labels (s1, s2, ...). Do not write node ids, edges, coordinates, binding ids, connector names, or credentials.
 - If a required input cannot come from the user's message or an earlier stage, still write the intent — the backend returns a structured clarification."#
