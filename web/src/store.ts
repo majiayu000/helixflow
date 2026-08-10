@@ -11,6 +11,7 @@ import {
   fetchWorkspaces,
   holdWorkspaceRun,
   interruptRun as interruptRunRequest,
+  interruptWorkspaceAgent,
   queueWorkspaceRun,
   restoreWorkspaceVersion,
   saveWorkspaceLayout,
@@ -441,6 +442,19 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
       }));
+    }
+  },
+  interruptAgent: async () => {
+    const state = get().state;
+    if (!state) throw new Error('workspace is not loaded');
+    try {
+      await interruptWorkspaceAgent(state.workspace.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'agent interrupt request failed';
+      set((current) => ({
+        state: current.state ? appendSystemError(current.state, message) : current.state,
+      }));
+      throw error;
     }
   },
   exportWorkflow: async () => {

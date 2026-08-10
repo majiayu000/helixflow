@@ -8,6 +8,7 @@ use helixflow_run::EventBus;
 use serde_json::{Value, json};
 
 mod agent_contract_observation;
+mod agent_turn_control;
 mod api_error;
 mod app_state;
 #[cfg(test)]
@@ -69,6 +70,7 @@ mod workspace_state_tests;
 mod ws;
 
 use agent_contract_observation::agent_contract_evidence;
+use agent_turn_control::interrupt_workspace_agent_turn;
 use app_state::AppState;
 use artifact_routes::{
     accept_output, artifact_content, download_output, preview_output, reject_output, select_output,
@@ -250,6 +252,10 @@ fn app(state: AppState) -> Router {
         .route(
             "/api/workspaces/{workspace_id}/messages",
             post(post_workspace_message),
+        )
+        .route(
+            "/api/workspaces/{workspace_id}/agent/interrupt",
+            post(interrupt_workspace_agent_turn),
         )
         .route(
             "/api/workspaces/{workspace_id}/uploads",

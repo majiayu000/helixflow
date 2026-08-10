@@ -409,6 +409,21 @@ export async function interruptRun(runId: string): Promise<RunConfirmationRespon
   return RunConfirmationResponseSchema.parse(body);
 }
 
+export async function interruptWorkspaceAgent(workspaceId: string): Promise<void> {
+  const response = await fetch(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/agent/interrupt`,
+    { method: 'POST' },
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(
+      body && typeof body.error === 'string'
+        ? body.error
+        : `agent interrupt request failed: ${response.status}`,
+    );
+  }
+}
+
 export async function exportWorkflowVersion(versionId: string): Promise<WorkflowGraph> {
   const response = await fetch(`/api/versions/${encodeURIComponent(versionId)}/export`);
   const body = await response.json();

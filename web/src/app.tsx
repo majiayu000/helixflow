@@ -70,6 +70,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const discardManualEdits = useWorkbenchStore((store) => store.discardManualEdits);
   const queueRun = useWorkbenchStore((store) => store.queueRun);
   const interruptRun = useWorkbenchStore((store) => store.interruptRun);
+  const interruptAgent = useWorkbenchStore((store) => store.interruptAgent);
   const exportWorkflow = useWorkbenchStore((store) => store.exportWorkflow);
   const undoVersion = useWorkbenchStore((store) => store.undoVersion);
   const restoreVersion = useWorkbenchStore((store) => store.restoreVersion);
@@ -271,6 +272,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
                 setSelectedConversationId(id);
               }, true)
             }
+            onInterrupt={interruptAgent}
             onApplyProposal={(id) => runAction(() => applyProposal(id))}
             onDismissProposal={(id) => runAction(() => dismissProposal(id))}
             onUploadImage={(file) => runAction(() => uploadImage(file))}

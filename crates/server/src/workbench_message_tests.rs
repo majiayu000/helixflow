@@ -14,6 +14,7 @@ use helixflow_graph::{PreparedProposal, WorkflowGraph};
 use helixflow_run::EventBus;
 use helixflow_store::{NewRun, NewRunStep, NewVersion, Store, VersionSource};
 
+use crate::agent_turn_control::interrupt_workspace_agent_turn;
 use crate::app_state::{AppState, WorkbenchAgent};
 use crate::graph_files::graph_hash;
 use crate::test_support::FailingWorkbenchAgent;
@@ -102,6 +103,55 @@ async fn failed_chat_persists_a_terminal_turn_and_visible_error_message() {
     assert_eq!(turn.status, "error");
     assert_eq!(turn.reason_code.as_deref(), Some("AGENT_RUNTIME_ERROR"));
     assert!(turn.completed_at.is_some());
+}
+
+#[tokio::test]
+async fn interrupting_active_chat_persists_an_interrupted_terminal_turn() {
+    let (mut state, workspace_id, version_id, _dir) = state_with_workspace().await;
+    let started = Arc::new(tokio::sync::Notify::new());
+    state.agent = Arc::new(HangingWorkbenchAgent {
+        started: started.clone(),
+    });
+
+    let request_state = state.clone();
+    let request_workspace_id = workspace_id.clone();
+    let request = tokio::spawn(async move {
+        post_workspace_message(
+            Path(request_workspace_id),
+            State(request_state),
+            Json(WorkspaceMessageRequest {
+                base_version_id: version_id,
+                user_message: "你好".to_owned(),
+                graph: sample_graph(),
+                canvas_context: None,
+                conversation_id: None,
+            }),
+        )
+        .await
+    });
+    started.notified().await;
+
+    let interrupted =
+        interrupt_workspace_agent_turn(Path(workspace_id.clone()), State(state.clone()))
+            .await
+            .expect("interrupt response")
+            .0;
+    assert_eq!(interrupted.status, "interrupt_requested");
+
+    let response = request
+        .await
+        .expect("request task")
+        .expect("terminal response")
+        .0;
+    assert_eq!(response.turn_status, "interrupted");
+    assert_eq!(response.messages[0].kind, "agent_interrupted");
+    let turn = state
+        .store
+        .agent_turn(&response.turn_id)
+        .await
+        .expect("turn");
+    assert_eq!(turn.status, "interrupted");
+    assert_eq!(turn.reason_code.as_deref(), Some("USER_INTERRUPTED"));
 }
 
 #[tokio::test]
@@ -700,6 +750,30 @@ impl WorkbenchAgent for FakeWorkbenchAgent {
 
 struct IntentWorkbenchAgent {
     intent: helixflow_compiler::IntentPlan,
+}
+
+struct HangingWorkbenchAgent {
+    started: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait]
+impl WorkbenchAgent for HangingWorkbenchAgent {
+    async fn answer_chat(
+        &self,
+        _request: AgentSessionRequest,
+    ) -> Result<ValidatedAgentReply, AgentError> {
+        self.started.notify_waiters();
+        std::future::pending().await
+    }
+
+    async fn propose_graph_change(
+        &self,
+        _request: AgentSessionRequest,
+    ) -> Result<ValidatedAgentProposal, AgentError> {
+        Err(AgentError::Runtime(
+            "graph change is not under test".to_owned(),
+        ))
+    }
 }
 
 #[async_trait]
