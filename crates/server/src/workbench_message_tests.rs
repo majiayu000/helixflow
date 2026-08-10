@@ -592,6 +592,7 @@ async fn post_message_routes_debug_with_latest_run_context() {
 fn auto_apply_proposal(base_version_id: &str, session_id: &str) -> ValidatedAgentProposal {
     ValidatedAgentProposal {
         session_id: session_id.to_owned(),
+        runtime_identity: None,
         agent_logs: Vec::new(),
         proposal: PreparedProposal {
             base_version_id: base_version_id.to_owned(),
@@ -689,6 +690,7 @@ impl WorkbenchAgent for FakeWorkbenchAgent {
     ) -> Result<ValidatedAgentReply, AgentError> {
         Ok(ValidatedAgentReply {
             session_id: format!("{}_fake", request.workspace_id),
+            runtime_identity: None,
             agent_logs: vec![AgentLogEntry {
                 kind: "agent_log:status".to_owned(),
                 text: "fake runtime status".to_owned(),
@@ -729,6 +731,7 @@ impl WorkbenchAgent for FakeWorkbenchAgent {
         }
         Ok(ValidatedAgentProposal {
             session_id: format!("{}_fake", request.workspace_id),
+            runtime_identity: None,
             agent_logs: vec![AgentLogEntry {
                 kind: "agent_log:status".to_owned(),
                 text: "fake proposal status".to_owned(),
@@ -801,6 +804,7 @@ impl WorkbenchAgent for IntentWorkbenchAgent {
         assert!(request.use_intent_contract, "flag must reach the request");
         Ok(helixflow_agent::ValidatedAgentIntent {
             session_id: format!("{}_intent", request.workspace_id),
+            runtime_identity: None,
             agent_logs: Vec::new(),
             intent: self.intent.clone(),
         })

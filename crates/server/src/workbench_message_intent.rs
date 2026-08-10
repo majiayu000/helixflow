@@ -169,6 +169,7 @@ pub(crate) async fn handle_intent_turn(
             };
             let proposal = ValidatedAgentProposal {
                 session_id: validated.session_id.clone(),
+                runtime_identity: validated.runtime_identity.clone(),
                 agent_logs: Vec::new(),
                 proposal: prepared,
             };
@@ -482,6 +483,7 @@ mod run_agent_fix_tests {
                 .expect("valid fix proposal");
             Ok(ValidatedAgentProposal {
                 session_id: format!("fix-{call}"),
+                runtime_identity: None,
                 agent_logs: Vec::new(),
                 proposal,
             })

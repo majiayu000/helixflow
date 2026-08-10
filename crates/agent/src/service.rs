@@ -103,6 +103,7 @@ where
                         );
                         return Ok(ValidatedAgentIntent {
                             session_id: run.session.id.clone(),
+                            runtime_identity: run.handle.identity().await,
                             agent_logs: run.agent_logs,
                             intent,
                         });
@@ -186,6 +187,7 @@ where
                             }),
                         );
                         proposal.agent_logs = run.agent_logs;
+                        proposal.runtime_identity = run.handle.identity().await;
                         self.emit_status(
                             &run.session.workspace_id,
                             &run.session.id,
@@ -273,6 +275,7 @@ where
         }
         let mut reply = read_validated_reply(&run.session)?;
         reply.agent_logs = run.agent_logs;
+        reply.runtime_identity = run.handle.identity().await;
         self.emit_status(
             &run.session.workspace_id,
             &run.session.id,

@@ -733,6 +733,7 @@ mod tests {
         ) -> Result<ValidatedAgentIntent, AgentError> {
             Ok(ValidatedAgentIntent {
                 session_id: format!("{}_intent", request.workspace_id),
+                runtime_identity: None,
                 agent_logs: Vec::new(),
                 intent: self.intent.clone(),
             })

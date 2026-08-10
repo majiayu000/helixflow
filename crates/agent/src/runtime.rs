@@ -11,7 +11,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
 use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot};
 
-use crate::{AgentSession, AgentSkill, OutputContract, TurnMode};
+use crate::{AgentRuntimeIdentity, AgentSession, AgentSkill, OutputContract, TurnMode};
 
 #[async_trait]
 pub trait AgentRuntime: Send + Sync {
@@ -31,6 +31,7 @@ pub struct RuntimeHandle {
     pub(crate) event_tx: mpsc::Sender<RuntimeEvent>,
     event_rx: Arc<AsyncMutex<mpsc::Receiver<RuntimeEvent>>>,
     cancel_tx: Arc<AsyncMutex<Option<oneshot::Sender<()>>>>,
+    identity: Arc<AsyncMutex<Option<AgentRuntimeIdentity>>>,
 }
 
 impl RuntimeHandle {
@@ -49,6 +50,7 @@ impl RuntimeHandle {
             event_tx,
             event_rx: Arc::new(AsyncMutex::new(event_rx)),
             cancel_tx: Arc::new(AsyncMutex::new(None)),
+            identity: Arc::new(AsyncMutex::new(None)),
         }
     }
 
@@ -58,6 +60,14 @@ impl RuntimeHandle {
 
     async fn install_cancel(&self, cancel_tx: oneshot::Sender<()>) {
         *self.cancel_tx.lock().await = Some(cancel_tx);
+    }
+
+    pub async fn set_identity(&self, thread_id: String, turn_id: String) {
+        *self.identity.lock().await = Some(AgentRuntimeIdentity { thread_id, turn_id });
+    }
+
+    pub async fn identity(&self) -> Option<AgentRuntimeIdentity> {
+        self.identity.lock().await.clone()
     }
 }
 

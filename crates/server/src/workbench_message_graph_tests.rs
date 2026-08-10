@@ -358,6 +358,7 @@ impl WorkbenchAgent for RecordingAgent {
         self.graphs.lock().await.push(request.graph);
         Ok(ValidatedAgentReply {
             session_id: "verified-message-session".to_owned(),
+            runtime_identity: None,
             agent_logs: Vec::new(),
             message: "verified reply".to_owned(),
         })

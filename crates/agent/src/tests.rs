@@ -539,6 +539,13 @@ async fn service_streams_agent_status_and_reads_runtime_proposal() {
         .expect("proposal");
 
     assert_eq!(proposal.proposal.title, "Shorter video");
+    assert_eq!(
+        proposal
+            .runtime_identity
+            .as_ref()
+            .map(|identity| (identity.thread_id.as_str(), identity.turn_id.as_str(),)),
+        Some(("thr_fake", "turn_fake")),
+    );
     assert!(
         proposal
             .agent_logs
@@ -577,6 +584,13 @@ async fn service_streams_agent_status_and_reads_chat_reply() {
         .expect("reply");
 
     assert_eq!(reply.message, "我是 Helixflow agent。");
+    assert_eq!(
+        reply
+            .runtime_identity
+            .as_ref()
+            .map(|identity| (identity.thread_id.as_str(), identity.turn_id.as_str(),)),
+        Some(("thr_fake", "turn_fake")),
+    );
     assert!(
         reply
             .agent_logs
@@ -696,6 +710,9 @@ impl AgentRuntime for FakeRuntime {
     }
 
     async fn send(&self, handle: &RuntimeHandle, _turn: AgentTurn) -> RuntimeResult<()> {
+        handle
+            .set_identity("thr_fake".to_owned(), "turn_fake".to_owned())
+            .await;
         match self.output {
             FakeOutput::Proposal => write_valid_proposal_to_path(&handle.out_dir),
             FakeOutput::Reply => write_reply_to_path(&handle.out_dir),
