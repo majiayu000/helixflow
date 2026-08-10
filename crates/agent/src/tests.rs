@@ -725,6 +725,7 @@ case "$thread_request" in *'"name":"submit_proposal"'*) ;; *) printf '%s\n' '{"i
 printf '%s\n' '{"id":2,"result":{"thread":{"id":"thr_canvas","sessionId":"thr_canvas"}}}'
 IFS= read -r turn_request
 printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn_canvas","status":"inProgress","items":[],"error":null}}}'
+printf '%s\n' '{"method":"item/started","params":{"threadId":"thr_canvas","turnId":"turn_canvas","startedAtMs":1,"item":{"type":"dynamicToolCall","tool":"canvas.get_state","status":"inProgress"}}}'
 printf '%s\n' '{"id":40,"method":"item/tool/call","params":{"threadId":"thr_canvas","turnId":"turn_canvas","callId":"call_1","namespace":"canvas","tool":"get_state","arguments":{}}}'
 IFS= read -r tool_response
 case "$tool_response" in *'"id":40'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"missing tool response id"}}}'; exit 32 ;; esac
@@ -735,7 +736,7 @@ printf '%s\n' '{"id":41,"method":"item/tool/call","params":{"threadId":"thr_canv
 IFS= read -r proposal_response
 case "$proposal_response" in *'"id":41'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"missing proposal response id"}}}'; exit 33 ;; esac
 case "$proposal_response" in *'"success":true'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"proposal was not captured"}}}'; exit 33 ;; esac
-printf '%s\n' '{"method":"item/completed","params":{"item":{"type":"dynamicToolCall","tool":"get_state","status":"completed","success":true}}}'
+printf '%s\n' '{"method":"item/completed","params":{"threadId":"thr_canvas","turnId":"turn_canvas","item":{"type":"dynamicToolCall","tool":"canvas.get_state","status":"completed","success":true}}}'
 printf '%s\n' '{"method":"turn/completed","params":{"turn":{"id":"turn_canvas","status":"completed","items":[],"error":null}}}'
 "#,
     )
@@ -753,6 +754,12 @@ printf '%s\n' '{"method":"turn/completed","params":{"turn":{"id":"turn_canvas","
     .expect("canvas tool proposal");
 
     assert_eq!(proposal.proposal.title, "Shorter video");
+    assert!(
+        proposal
+            .agent_logs
+            .iter()
+            .any(|log| log.text == "Calling tool: canvas.get_state")
+    );
     let identity = proposal.runtime_identity.expect("runtime identity");
     assert_eq!(identity.thread_id, "thr_canvas");
     assert_eq!(identity.turn_id, "turn_canvas");
