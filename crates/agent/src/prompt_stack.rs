@@ -203,7 +203,7 @@ pub fn build_prompt_stack(request: &AgentSessionRequest) -> PromptStack {
             section(
                 PromptSectionKey::CanvasOps,
                 "Bounded canvas ops",
-                canvas_ops_contract(mode),
+                canvas_ops_contract(mode, output_contract),
                 false,
             ),
         ]);
@@ -350,10 +350,20 @@ fn proposal_output_contract() -> &'static str {
 - Graph edges must use tuple arrays: "from":["node_id","port"], "to":["node_id","port"], and "edge_type"."#
 }
 
-fn canvas_ops_contract(mode: TurnMode) -> &'static str {
+fn canvas_ops_contract(mode: TurnMode, output_contract: OutputContract) -> &'static str {
     match mode {
         TurnMode::CreateWorkflow | TurnMode::ModifyWorkflow | TurnMode::DebugWorkflow => {
-            r#"Canvas ops contract:
+            if output_contract == OutputContract::IntentJson {
+                r#"Canvas ops contract:
+- Read compact canvas state from `ctx/canvas_state.json`.
+- Read allowed canvas ops from `ctx/canvas_ops.json`.
+- Prefer `canvas.get_state` to read current compact state and `canvas.submit_intent` to submit a high-level IntentPlan when those tools are available.
+- `read_state` means inspect only the declared compact graph state.
+- `read_selection` means inspect only `selection.node_ids`; an empty selection is valid.
+- Never write low-level node ids, edges, coordinates, binding ids, or connector names in the intent.
+- Never restore, save layout, call provider execution, or mutate graph state directly."#
+            } else {
+                r#"Canvas ops contract:
 - Read compact canvas state from `ctx/canvas_state.json`.
 - Read allowed canvas ops from `ctx/canvas_ops.json`.
 - Prefer `canvas.get_state` to read current compact state and `canvas.submit_proposal` to submit proposal ops when those tools are available.
@@ -362,6 +372,7 @@ fn canvas_ops_contract(mode: TurnMode) -> &'static str {
 - `propose_layout` must be expressed as `move_node` ops in `out/proposal.json`.
 - `propose_graph_ops` must be expressed as bounded proposal ops in `out/proposal.json`.
 - Never restore, save layout, call provider execution, or mutate graph state directly."#
+            }
         }
         TurnMode::RunRequest => {
             r#"Canvas ops contract:

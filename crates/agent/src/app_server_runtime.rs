@@ -343,11 +343,29 @@ fn canvas_dynamic_tools(
                 "additionalProperties": false
             }
         }));
+    } else if output_contract == Some(crate::OutputContract::IntentJson) {
+        tools.push(json!({
+            "type": "function",
+            "name": "submit_intent",
+            "description": "Submit a high-level workflow intent for deterministic backend compilation. This does not mutate the canvas.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["intentVersion", "topology", "stages", "outputStageIds"],
+                "properties": {
+                    "intentVersion": { "type": "string", "enum": ["1"] },
+                    "topology": { "type": "string", "enum": ["linear", "parallel"] },
+                    "stages": { "type": "array", "items": { "type": "object" } },
+                    "outputStageIds": { "type": "array", "items": { "type": "string" } },
+                    "assumptions": { "type": "array", "items": { "type": "string" } }
+                },
+                "additionalProperties": false
+            }
+        }));
     }
     vec![json!({
         "type": "namespace",
         "name": "canvas",
-        "description": "Read the current Helixflow canvas and submit validated change proposals.",
+        "description": "Read the current Helixflow canvas and submit bounded outputs for backend validation.",
         "tools": tools
     })]
 }
@@ -379,25 +397,58 @@ async fn respond_to_dynamic_tool_call<W: AsyncWrite + Unpin>(
         {
             submit_proposal_tool_result(out_dir, &params["arguments"]).await
         }
+        (true, Some("canvas"), Some("submit_intent"))
+            if output_contract == Some(crate::OutputContract::IntentJson) =>
+        {
+            submit_intent_tool_result(out_dir, &params["arguments"]).await
+        }
         _ => failed_tool_result("Unsupported or stale Helixflow dynamic tool call."),
     };
     write_rpc(writer, &json!({ "id": request_id, "result": result })).await
 }
 
 async fn submit_proposal_tool_result(out_dir: &std::path::Path, arguments: &Value) -> Value {
-    const MAX_PROPOSAL_BYTES: usize = 256 * 1024;
+    capture_json_output(
+        out_dir,
+        arguments,
+        "proposal.json",
+        "Proposal",
+        "Proposal captured for backend validation; it has not been applied.",
+    )
+    .await
+}
+
+async fn submit_intent_tool_result(out_dir: &std::path::Path, arguments: &Value) -> Value {
+    capture_json_output(
+        out_dir,
+        arguments,
+        "intent.json",
+        "Intent",
+        "Intent captured for deterministic backend compilation; it has not changed the canvas.",
+    )
+    .await
+}
+
+async fn capture_json_output(
+    out_dir: &std::path::Path,
+    arguments: &Value,
+    file_name: &str,
+    label: &str,
+    success_message: &str,
+) -> Value {
+    const MAX_OUTPUT_BYTES: usize = 256 * 1024;
     let bytes = match serde_json::to_vec(arguments) {
-        Ok(bytes) if arguments.is_object() && bytes.len() <= MAX_PROPOSAL_BYTES => bytes,
+        Ok(bytes) if arguments.is_object() && bytes.len() <= MAX_OUTPUT_BYTES => bytes,
         Ok(_) => {
-            return failed_tool_result(
-                "Proposal arguments must be an object no larger than 256 KiB.",
-            );
+            return failed_tool_result(&format!(
+                "{label} arguments must be an object no larger than 256 KiB."
+            ));
         }
         Err(error) => {
-            return failed_tool_result(&format!("Proposal arguments are invalid: {error}"));
+            return failed_tool_result(&format!("{label} arguments are invalid: {error}"));
         }
     };
-    let path = out_dir.join("proposal.json");
+    let path = out_dir.join(file_name);
     let write = async {
         let mut file = tokio::fs::OpenOptions::new()
             .write(true)
@@ -412,11 +463,11 @@ async fn submit_proposal_tool_result(out_dir: &std::path::Path, arguments: &Valu
         Ok(()) => json!({
             "contentItems": [{
                 "type": "inputText",
-                "text": "Proposal captured for backend validation; it has not been applied."
+                "text": success_message
             }],
             "success": true
         }),
-        Err(error) => failed_tool_result(&format!("Proposal could not be captured: {error}")),
+        Err(error) => failed_tool_result(&format!("{label} could not be captured: {error}")),
     }
 }
 
@@ -533,7 +584,7 @@ mod tests {
 
     use super::{
         canvas_dynamic_tools, canvas_state_tool_result, completed_item_status, required_string,
-        submit_proposal_tool_result,
+        submit_intent_tool_result, submit_proposal_tool_result,
     };
 
     #[test]
@@ -566,6 +617,9 @@ mod tests {
         assert_eq!(tools[0]["name"], "canvas");
         assert_eq!(tools[0]["tools"][0]["name"], "get_state");
         assert_eq!(tools[0]["tools"][1]["name"], "submit_proposal");
+        let intent_tools =
+            canvas_dynamic_tools(dir.path(), Some(crate::OutputContract::IntentJson));
+        assert_eq!(intent_tools[0]["tools"][1]["name"], "submit_intent");
         let result = canvas_state_tool_result(dir.path()).await;
         assert_eq!(result["success"], true);
         assert!(
@@ -597,5 +651,32 @@ mod tests {
         )
         .expect("proposal json");
         assert_eq!(captured, proposal);
+    }
+
+    #[tokio::test]
+    async fn captures_intents_without_mutating_the_canvas() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let out_dir = dir.path().join("out");
+        fs::create_dir(&out_dir).expect("out dir");
+        let intent = json!({
+            "intentVersion": "1",
+            "topology": "linear",
+            "stages": [{
+                "stageId": "s1",
+                "capabilityId": "text_to_image",
+                "inputFrom": [],
+                "params": { "prompt": "a paper fox" }
+            }],
+            "outputStageIds": ["s1"]
+        });
+
+        let result = submit_intent_tool_result(&out_dir, &intent).await;
+
+        assert_eq!(result["success"], true);
+        let captured: Value = serde_json::from_slice(
+            &fs::read(out_dir.join("intent.json")).expect("captured intent"),
+        )
+        .expect("intent json");
+        assert_eq!(captured, intent);
     }
 }
