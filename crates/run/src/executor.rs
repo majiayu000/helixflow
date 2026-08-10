@@ -393,6 +393,24 @@ where
                     &inputs,
                 )
                 .await?;
+                let mut params = step.params.clone();
+                if capability == "image_to_video" {
+                    let image = crate::input_materialize::materialize_image_input(
+                        &self.store,
+                        &self.artifact_root,
+                        &inputs,
+                        "image",
+                    )
+                    .await?;
+                    params
+                        .as_object_mut()
+                        .ok_or_else(|| {
+                            RunError::ArtifactPersistence(
+                                "provider params must be an object".to_owned(),
+                            )
+                        })?
+                        .insert("__helixflow_wired_image".to_owned(), Value::String(image));
+                }
                 let request = ProviderRequest {
                     provider: provider.clone(),
                     capability: capability.clone(),
@@ -400,7 +418,7 @@ where
                     run_id: run_id.to_owned(),
                     inputs: inputs.clone(),
                     input_texts,
-                    params: step.params.clone(),
+                    params,
                     resolved_model_id: step
                         .resolved
                         .as_ref()
