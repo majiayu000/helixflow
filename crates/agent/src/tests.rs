@@ -244,6 +244,9 @@ fn chat_contract_skips_graph_context_and_records_prompt_metadata() {
     assert!(ctx.contains("out/reply.json"));
     assert!(ctx.contains("Do not read `ctx/graph.json`"));
     assert!(ctx.contains("create, modify, run, or debug a workflow"));
+    assert!(ctx.contains("five built-in workflow skills"));
+    assert!(ctx.contains("Create Workflow"));
+    assert!(ctx.contains("External Codex skills or plugins"));
 
     let metadata: Value = serde_json::from_slice(
         &fs::read(session.root_dir.join("prompt_metadata.json")).expect("metadata"),

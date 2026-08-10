@@ -10,6 +10,7 @@ pub enum PromptSectionKey {
     ModeOverride,
     DaemonSystem,
     RuntimeTool,
+    CapabilityCatalog,
     ResearchCommandContract,
     RunContext,
     WorkflowBackend,
@@ -30,6 +31,7 @@ impl fmt::Display for PromptSectionKey {
             Self::ModeOverride => "mode_override",
             Self::DaemonSystem => "daemon_system",
             Self::RuntimeTool => "runtime_tool",
+            Self::CapabilityCatalog => "capability_catalog",
             Self::ResearchCommandContract => "research_command_contract",
             Self::RunContext => "run_context",
             Self::WorkflowBackend => "workflow_backend",
@@ -156,6 +158,12 @@ pub fn build_prompt_stack(request: &AgentSessionRequest) -> PromptStack {
             PromptSectionKey::RuntimeTool,
             "Runtime tool policy",
             runtime_tool_policy(mode),
+            false,
+        ),
+        section(
+            PromptSectionKey::CapabilityCatalog,
+            "Built-in capability catalog",
+            built_in_capability_catalog(),
             false,
         ),
         section(
@@ -378,6 +386,10 @@ fn runtime_tool_policy(mode: TurnMode) -> &'static str {
             "Read declared ctx files only if needed to validate run readiness. Do not call provider APIs."
         }
     }
+}
+
+fn built_in_capability_catalog() -> &'static str {
+    "Helixflow has five built-in workflow skills: Chat (answer questions about the workspace and product), Create Workflow (create a new catalog-valid workflow), Modify Workflow (make minimal changes to the current workflow), Debug Workflow (diagnose a failed run and propose a minimal fix), and Run Request (request execution of the current workflow through backend cost and confirmation gates). When the user asks which skills are available, list these exact capabilities and briefly describe them. External Codex skills or plugins are not Helixflow capabilities and are never loaded automatically."
 }
 
 fn system_behavior(mode: TurnMode) -> &'static str {
