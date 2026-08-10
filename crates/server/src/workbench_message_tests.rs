@@ -957,7 +957,7 @@ async fn intent_turn_missing_input_produces_clarify_message() {
 }
 
 #[tokio::test]
-async fn intent_turn_missing_model_binding_explains_catalog_gap() {
+async fn intent_turn_compiles_seedance_image_to_video_binding() {
     let intent = intent_plan(serde_json::json!({
         "intentVersion": "1",
         "topology": "linear",
@@ -985,7 +985,7 @@ async fn intent_turn_missing_model_binding_explains_catalog_gap() {
         Path(workspace_id.clone()),
         State(state.clone()),
         Json(WorkspaceMessageRequest {
-            base_version_id: version_id,
+            base_version_id: version_id.clone(),
             user_message: "用 Nano Banana 生图，再用 Seedance 做成视频 workflow".to_owned(),
             graph: sample_graph(),
             canvas_context: None,
@@ -993,21 +993,36 @@ async fn intent_turn_missing_model_binding_explains_catalog_gap() {
         }),
     )
     .await
-    .expect("missing binding is a clarification response")
+    .expect("seedance image-to-video response")
     .0;
 
-    assert_eq!(response.messages[0].kind, "clarify");
-    assert!(response.messages[0].text.contains("BINDING_NOT_FOUND"));
-    assert!(response.messages[0].text.contains("Seedance 1.5 Pro"));
-    assert!(response.messages[0].text.contains("Image To Video"));
-    assert!(response.messages[0].text.contains("没有自动替换模型或能力"));
-    assert!(response.messages[0].text.contains("Text To Video"));
-    assert!(
-        state
-            .store
-            .workspace_proposals(&workspace_id)
-            .await
-            .expect("proposals")
-            .is_empty()
-    );
+    assert_eq!(response.messages[0].kind, "proposal_applied");
+    let versions = state
+        .store
+        .versions_for_workspace(&workspace_id)
+        .await
+        .expect("versions");
+    let applied = versions
+        .iter()
+        .find(|version| version.id != version_id)
+        .expect("applied version");
+    let semantics: std::collections::BTreeMap<
+        String,
+        helixflow_graph::semantics::NodeSemanticsEntry,
+    > = serde_json::from_str(
+        applied
+            .semantics_json
+            .as_deref()
+            .expect("semantics persisted"),
+    )
+    .expect("semantics parse");
+    let seedance = semantics.get("s2").expect("seedance stage");
+    assert_eq!(seedance.capability_id, "image_to_video");
+    assert!(matches!(
+        seedance.implementation,
+        helixflow_registry::catalog::ImplementationSelection::Pinned {
+            ref requested_model_id,
+            ..
+        } if requested_model_id == "bytedance/seedance-v1.5-pro"
+    ));
 }

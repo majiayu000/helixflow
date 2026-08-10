@@ -105,7 +105,15 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
                 &["duration_sec"],
                 [
                     ("prompt", ParamSpec::string()),
-                    ("duration_sec", ParamSpec::integer_range(1, 10)),
+                    ("duration_sec", ParamSpec::integer_range(4, 12)),
+                    (
+                        "aspect_ratio",
+                        ParamSpec::string_enum(&["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]),
+                    ),
+                    ("resolution", ParamSpec::string_enum(&["720p", "480p"])),
+                    ("generate_audio", ParamSpec::boolean()),
+                    ("camera_fixed", ParamSpec::boolean()),
+                    ("seed", ParamSpec::integer()),
                 ],
             ),
         }),

@@ -121,6 +121,10 @@ impl ParamSpec {
         Self::new(ParamValueType::Integer)
     }
 
+    pub fn boolean() -> Self {
+        Self::new(ParamValueType::Boolean)
+    }
+
     pub fn integer_range(minimum: i64, maximum: i64) -> Self {
         Self {
             minimum: Some(minimum as f64),

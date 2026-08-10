@@ -4,8 +4,7 @@ use std::path::PathBuf;
 use helixflow_graph::{GraphService, ProposalOp, WorkflowGraph};
 use helixflow_registry::NodeRegistry;
 use helixflow_registry::catalog::{
-    BindingAvailability, CapabilityBinding, CatalogSnapshot, ImplementationTarget, ModelDefinition,
-    ModelLifecycle,
+    CapabilityBinding, CatalogSnapshot, ImplementationTarget, ModelDefinition, ModelLifecycle,
 };
 use helixflow_registry::catalog_seed::builtin_catalog;
 use helixflow_registry::resolver::ConnectorAvailability;
@@ -46,10 +45,8 @@ fn empty_graph() -> WorkflowGraph {
     }
 }
 
-/// The T3 golden catalog: the production seed plus two bindings added as
-/// pure data — GPT Image 2 for text_to_image and Seedance image_to_video.
-/// Proving the fixtures compile against this catalog without any code
-/// branches is the "new model = data only" acceptance criterion.
+/// The T3 golden catalog: the production seed plus GPT Image 2 as pure data.
+/// Seedance image-to-video is part of the production seed catalog.
 fn golden_catalog() -> CatalogSnapshot {
     let seed = builtin_catalog();
     let mut models = seed.models.clone();
@@ -75,44 +72,13 @@ fn golden_catalog() -> CatalogSnapshot {
         },
         ..nano_t2i.clone()
     });
-    let seedance_t2v = seed
-        .binding("bytedance.seedance-v1-5-pro.text-to-video.atlas.v1")
-        .expect("seed binding")
-        .clone();
-    bindings.push(CapabilityBinding {
-        binding_id: "bytedance.seedance-v1-5-pro.image-to-video.atlas.v1".to_owned(),
-        capability_id: "image_to_video".to_owned(),
-        mode: "image_to_video".to_owned(),
-        implementation: ImplementationTarget::ApiConnector {
-            connector_id: "atlas".to_owned(),
-            operation_id: "bytedance/seedance-v1.5-pro/image-to-video".to_owned(),
-        },
-        input_schema: helixflow_registry::ParamsSchema {
-            required: vec!["duration_sec".to_owned()],
-            properties: BTreeMap::from([
-                ("prompt".to_owned(), helixflow_registry::ParamSpec::string()),
-                (
-                    "duration_sec".to_owned(),
-                    helixflow_registry::ParamSpec::integer_range(1, 10),
-                ),
-            ]),
-            allow_unknown: false,
-        },
-        availability: BindingAvailability::Enabled,
-        ..seedance_t2v
-    });
-    let mut defaults = seed.default_bindings.clone();
-    defaults.insert(
-        "image_to_video".to_owned(),
-        "bytedance.seedance-v1-5-pro.image-to-video.atlas.v1".to_owned(),
-    );
     CatalogSnapshot::build(
         seed.capabilities.clone(),
         models,
         bindings,
         seed.connectors.clone(),
         seed.workflow_backends.clone(),
-        defaults,
+        seed.default_bindings.clone(),
     )
 }
 
@@ -172,7 +138,21 @@ fn golden_nano_banana_seedance_compiles_to_single_chain() {
 fn golden_seed_catalog_without_i2v_binding_clarifies_without_fallback() {
     // Fixture note: with no (image_to_video, seedance) binding the compiler
     // must clarify with BINDING_NOT_FOUND — never fall back to text_to_video.
-    let catalog = builtin_catalog();
+    let seed = builtin_catalog();
+    let mut defaults = seed.default_bindings.clone();
+    defaults.remove("image_to_video");
+    let catalog = CatalogSnapshot::build(
+        seed.capabilities.clone(),
+        seed.models.clone(),
+        seed.bindings
+            .iter()
+            .filter(|binding| binding.capability_id != "image_to_video")
+            .cloned()
+            .collect(),
+        seed.connectors.clone(),
+        seed.workflow_backends.clone(),
+        defaults,
+    );
     let outcome = compile_fixture("intent-nano-banana-seedance.json", &catalog)
         .expect("catalog gaps are user-actionable clarification outcomes");
     let CompileOutcome::Clarify(clarify) = outcome else {
