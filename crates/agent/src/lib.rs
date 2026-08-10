@@ -54,6 +54,8 @@ pub struct AgentSession {
     pub output_contract: OutputContract,
     pub prompt_metadata: PromptStackMetadata,
     pub codex_thread_id: Option<String>,
+    pub conversation_id: Option<String>,
+    pub durable_turn_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +64,10 @@ pub struct AgentSessionRequest {
     pub base_version_id: String,
     pub user_message: String,
     pub codex_thread_id: Option<String>,
+    /// Durable application identities used to scope live status events to the
+    /// conversation that owns this turn.
+    pub conversation_id: Option<String>,
+    pub durable_turn_id: Option<String>,
     /// Prior chat turns (oldest first) so agent replies can reference
     /// earlier context across requests (HF-013).
     pub history: Vec<AgentHistoryMessage>,
@@ -172,6 +178,8 @@ pub fn create_session_contract(request: &AgentSessionRequest) -> AgentResult<Age
             .output_contract_with(request.use_intent_contract),
         prompt_metadata,
         codex_thread_id: request.codex_thread_id.clone(),
+        conversation_id: request.conversation_id.clone(),
+        durable_turn_id: request.durable_turn_id.clone(),
     })
 }
 

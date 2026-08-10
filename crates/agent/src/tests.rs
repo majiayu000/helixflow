@@ -61,6 +61,8 @@ fn request(dir: &tempfile::TempDir) -> AgentSessionRequest {
         base_version_id: "ver_1".to_owned(),
         user_message: "make it shorter".to_owned(),
         codex_thread_id: None,
+        conversation_id: None,
+        durable_turn_id: None,
         history: Vec::new(),
         graph: sample_graph(),
         provider_catalog: RuntimeProvider::mock().catalog_snapshot(),
@@ -79,6 +81,8 @@ fn chat_request(dir: &tempfile::TempDir) -> AgentSessionRequest {
         base_version_id: "ver_1".to_owned(),
         user_message: "你好，你是谁？".to_owned(),
         codex_thread_id: None,
+        conversation_id: None,
+        durable_turn_id: None,
         history: Vec::new(),
         graph: sample_graph(),
         provider_catalog: RuntimeProvider::mock().catalog_snapshot(),
@@ -575,8 +579,8 @@ async fn service_streams_agent_status_and_reads_runtime_proposal() {
     while let Ok(event) = receiver.try_recv() {
         event_names.push(event.ev);
     }
-    assert!(event_names.iter().any(|event| event == "agent.status"));
-    assert!(event_names.iter().any(|event| event == "agent.status.end"));
+    assert!(event_names.iter().any(|event| *event == "agent.status"));
+    assert!(event_names.iter().any(|event| *event == "agent.status.end"));
 }
 
 #[tokio::test]
@@ -586,10 +590,10 @@ async fn service_streams_agent_status_and_reads_chat_reply() {
     let service = AgentService::new(FakeRuntime::reply(), events.clone());
     let mut receiver = events.subscribe();
 
-    let reply = service
-        .answer_chat(chat_request(&dir))
-        .await
-        .expect("reply");
+    let mut request = chat_request(&dir);
+    request.conversation_id = Some("conv_1".to_owned());
+    request.durable_turn_id = Some("turn_1".to_owned());
+    let reply = service.answer_chat(request).await.expect("reply");
 
     assert_eq!(reply.message, "我是 Helixflow agent。");
     assert_eq!(
@@ -612,12 +616,19 @@ async fn service_streams_agent_status_and_reads_chat_reply() {
             && !log.text.contains("你好，你是谁")
     }));
 
-    let mut event_names = Vec::new();
+    let mut streamed = Vec::new();
     while let Ok(event) = receiver.try_recv() {
-        event_names.push(event.ev);
+        streamed.push(event);
     }
-    assert!(event_names.iter().any(|event| event == "agent.status"));
-    assert!(event_names.iter().any(|event| event == "agent.status.end"));
+    let event_names = streamed
+        .iter()
+        .map(|event| event.ev.as_str())
+        .collect::<Vec<_>>();
+    assert!(event_names.iter().any(|event| *event == "agent.status"));
+    assert!(event_names.iter().any(|event| *event == "agent.status.end"));
+    assert!(streamed.iter().all(|event| {
+        event.data["conversation_id"] == "conv_1" && event.data["turn_id"] == "turn_1"
+    }));
 }
 
 #[tokio::test]

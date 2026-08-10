@@ -184,6 +184,8 @@ pub(crate) async fn post_workspace_message(
         base_version_id: version.id,
         user_message: input.user_message,
         codex_thread_id: conversation.codex_thread_id.clone(),
+        conversation_id: Some(conversation.id.clone()),
+        durable_turn_id: Some(durable_turn.id.clone()),
         history,
         graph,
         provider_catalog,

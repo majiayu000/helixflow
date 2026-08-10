@@ -95,8 +95,7 @@ where
                             }),
                         );
                         self.emit_status(
-                            &run.session.workspace_id,
-                            &run.session.id,
+                            &run.session,
                             run.seq,
                             "agent.status.end",
                             json!({ "intent_stages": intent.stages.len() }),
@@ -189,8 +188,7 @@ where
                         proposal.agent_logs = run.agent_logs;
                         proposal.runtime_identity = run.handle.identity().await;
                         self.emit_status(
-                            &run.session.workspace_id,
-                            &run.session.id,
+                            &run.session,
                             run.seq,
                             "agent.status.end",
                             json!({ "proposal_title": proposal.proposal.title }),
@@ -277,8 +275,7 @@ where
         reply.agent_logs = run.agent_logs;
         reply.runtime_identity = run.handle.identity().await;
         self.emit_status(
-            &run.session.workspace_id,
-            &run.session.id,
+            &run.session,
             run.seq,
             "agent.status.end",
             json!({ "message": reply.message }),
@@ -368,29 +365,16 @@ where
     }
 
     fn record_status(&self, run: &mut AgentRunState, status: &str, detail: Value) {
-        self.emit_status(
-            &run.session.workspace_id,
-            &run.session.id,
-            run.seq,
-            status,
-            detail.clone(),
-        );
+        self.emit_status(&run.session, run.seq, status, detail.clone());
         run.agent_logs.push(agent_log_entry(status, &detail));
         run.seq += 1;
     }
 
-    fn emit_status(
-        &self,
-        workspace_id: &str,
-        session_id: &str,
-        seq: i64,
-        status: &str,
-        detail: Value,
-    ) {
+    fn emit_status(&self, session: &AgentSession, seq: i64, status: &str, detail: Value) {
         let message_kind = agent_message_kind(status, &detail);
         if let Err(err) = self.events.publish(RunEventEnvelope {
-            workspace_id: workspace_id.to_owned(),
-            run_id: session_id.to_owned(),
+            workspace_id: session.workspace_id.clone(),
+            run_id: session.id.clone(),
             seq,
             server_time: event_server_time(),
             ev: if status == "agent.status.end" {
@@ -399,7 +383,9 @@ where
                 "agent.status".to_owned()
             },
             data: json!({
-                "session_id": session_id,
+                "session_id": session.id,
+                "conversation_id": session.conversation_id,
+                "turn_id": session.durable_turn_id,
                 "message_kind": message_kind,
                 "status": status,
                 "detail": detail

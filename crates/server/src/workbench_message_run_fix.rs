@@ -203,6 +203,8 @@ async fn execute_fix_attempt(
         user_message: "修复失败节点及其依赖闭包；不得改动无关节点、workspace 或 provider 设置。"
             .to_owned(),
         codex_thread_id: None,
+        conversation_id: None,
+        durable_turn_id: None,
         history: Vec::new(),
         graph: safe_graph_projection(&graph),
         provider_catalog: state.provider_catalog_for_workspace(&workspace),
