@@ -289,8 +289,17 @@ async fn run_app_server_turn(
                     "codex app-server turn {status}: {message}"
                 )));
             }
+            "item/started" => {
+                if notification_matches_turn(&value, &thread_id, &turn_id)
+                    && let Some(message) = started_item_status(&value)
+                {
+                    let _ = handle.event_tx.send(RuntimeEvent::Status { message }).await;
+                }
+            }
             "item/completed" => {
-                if let Some(message) = completed_item_status(&value) {
+                if notification_matches_turn(&value, &thread_id, &turn_id)
+                    && let Some(message) = completed_item_status(&value)
+                {
                     let _ = handle.event_tx.send(RuntimeEvent::Status { message }).await;
                 }
             }
@@ -592,19 +601,44 @@ fn required_string(value: &Value, pointer: &str) -> RuntimeResult<String> {
 fn completed_item_status(value: &Value) -> Option<String> {
     let item = value.pointer("/params/item")?;
     let item_type = item.get("type")?.as_str()?;
-    let summary = match item_type {
-        "agentMessage" => item.get("text").and_then(Value::as_str),
-        "commandExecution" => item.get("command").and_then(Value::as_str),
-        "mcpToolCall" | "dynamicToolCall" => item.get("tool").and_then(Value::as_str),
-        _ => None,
-    };
-    Some(match summary {
-        Some(summary) => format!(
-            "{item_type}: {}",
-            summary.chars().take(180).collect::<String>()
-        ),
-        None => item_type.to_owned(),
-    })
+    match item_type {
+        "reasoning" => Some("Workflow planning completed".to_owned()),
+        "agentMessage" => Some("Agent response ready".to_owned()),
+        "commandExecution" => Some("Restricted command completed".to_owned()),
+        "mcpToolCall" | "dynamicToolCall" => Some(format!(
+            "Tool completed: {}",
+            safe_tool_name(item.get("tool").and_then(Value::as_str))
+        )),
+        _ => Some("Agent step completed".to_owned()),
+    }
+}
+
+fn started_item_status(value: &Value) -> Option<String> {
+    let item = value.pointer("/params/item")?;
+    let item_type = item.get("type")?.as_str()?;
+    match item_type {
+        "reasoning" => Some("Planning workflow".to_owned()),
+        "agentMessage" => Some("Drafting Agent response".to_owned()),
+        "commandExecution" => Some("Running a restricted command".to_owned()),
+        "mcpToolCall" | "dynamicToolCall" => Some(format!(
+            "Calling tool: {}",
+            safe_tool_name(item.get("tool").and_then(Value::as_str))
+        )),
+        _ => Some("Agent step started".to_owned()),
+    }
+}
+
+fn safe_tool_name(tool: Option<&str>) -> String {
+    tool.unwrap_or("unknown")
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+        .take(96)
+        .collect()
+}
+
+fn notification_matches_turn(value: &Value, thread_id: &str, turn_id: &str) -> bool {
+    value.pointer("/params/threadId").and_then(Value::as_str) == Some(thread_id)
+        && value.pointer("/params/turnId").and_then(Value::as_str) == Some(turn_id)
 }
 
 #[cfg(test)]
@@ -615,8 +649,8 @@ mod tests {
 
     use super::{
         canvas_dynamic_tools, canvas_state_tool_result, completed_item_status,
-        request_run_tool_result, required_string, submit_intent_tool_result,
-        submit_proposal_tool_result,
+        notification_matches_turn, request_run_tool_result, required_string, started_item_status,
+        submit_intent_tool_result, submit_proposal_tool_result,
     };
 
     #[test]
@@ -631,8 +665,32 @@ mod tests {
                 "params": { "item": { "type": "dynamicToolCall", "tool": "canvas.get_state" } }
             }))
             .as_deref(),
-            Some("dynamicToolCall: canvas.get_state")
+            Some("Tool completed: canvas.get_state")
         );
+        assert_eq!(
+            started_item_status(&json!({
+                "params": { "item": { "type": "reasoning" } }
+            }))
+            .as_deref(),
+            Some("Planning workflow")
+        );
+        assert_eq!(
+            completed_item_status(&json!({
+                "params": {
+                    "item": {
+                        "type": "commandExecution",
+                        "command": "printenv SUPER_SECRET"
+                    }
+                }
+            }))
+            .as_deref(),
+            Some("Restricted command completed")
+        );
+        let active = json!({
+            "params": { "threadId": "thr_1", "turnId": "turn_1" }
+        });
+        assert!(notification_matches_turn(&active, "thr_1", "turn_1"));
+        assert!(!notification_matches_turn(&active, "thr_1", "turn_stale"));
     }
 
     #[tokio::test]
