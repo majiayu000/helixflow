@@ -179,6 +179,8 @@ pub(crate) async fn dismiss_workspace_proposal(
             text: Some(&format!("Dismissed proposal `{}`.", proposal.title)),
             ref_id: Some(&proposal.id),
             attachment_ids_json: None,
+            conversation_id: None,
+            turn_id: None,
         })
         .await
         .map_err(ApiError::store)?;

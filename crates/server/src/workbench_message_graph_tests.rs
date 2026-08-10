@@ -28,6 +28,7 @@ async fn verified_read_valid_ingress_sends_server_graph_to_agent() {
             user_message: "hello".to_owned(),
             graph: fixture.server_graph.clone(),
             canvas_context: None,
+            conversation_id: None,
         }),
     )
     .await
@@ -137,6 +138,7 @@ async fn assert_rejected_ingress(fault: IngressFault) {
             user_message: "run and modify this workflow".to_owned(),
             graph: client_graph,
             canvas_context: None,
+            conversation_id: None,
         }),
     )
     .await

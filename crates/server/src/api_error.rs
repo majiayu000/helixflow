@@ -1,5 +1,4 @@
 use axum::{Json, http::StatusCode, response::IntoResponse};
-use helixflow_agent::AgentError;
 use helixflow_run::RunError;
 use helixflow_store::StoreError;
 use serde_json::json;
@@ -111,14 +110,6 @@ impl ApiError {
         }
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: err.to_string(),
-            details: None,
-        }
-    }
-
-    pub(crate) fn agent(err: AgentError) -> Self {
-        Self {
-            status: StatusCode::BAD_GATEWAY,
             message: err.to_string(),
             details: None,
         }

@@ -16,6 +16,7 @@ use helixflow_store::{NewRun, NewRunStep, NewVersion, Store, VersionSource};
 
 use crate::app_state::{AppState, WorkbenchAgent};
 use crate::graph_files::graph_hash;
+use crate::test_support::FailingWorkbenchAgent;
 use crate::version_file_consistency::read_version_graph;
 use crate::workbench_message::*;
 use crate::workbench_message_proposals::{
@@ -34,6 +35,7 @@ async fn post_message_routes_chat_to_agent_runtime() {
             user_message: "你好".to_owned(),
             graph: sample_graph(),
             canvas_context: None,
+            conversation_id: None,
         }),
     )
     .await
@@ -70,6 +72,39 @@ async fn post_message_routes_chat_to_agent_runtime() {
 }
 
 #[tokio::test]
+async fn failed_chat_persists_a_terminal_turn_and_visible_error_message() {
+    let (mut state, workspace_id, version_id, _dir) = state_with_workspace().await;
+    state.agent = Arc::new(FailingWorkbenchAgent);
+
+    let response = post_workspace_message(
+        Path(workspace_id.clone()),
+        State(state.clone()),
+        Json(WorkspaceMessageRequest {
+            base_version_id: version_id,
+            user_message: "你好".to_owned(),
+            graph: sample_graph(),
+            canvas_context: None,
+            conversation_id: None,
+        }),
+    )
+    .await
+    .expect("terminal error response")
+    .0;
+
+    assert_eq!(response.turn_status, "error");
+    assert_eq!(response.messages[0].kind, "agent_error");
+    assert!(response.messages[0].text.contains("AGENT_RUNTIME_ERROR"));
+    let turn = state
+        .store
+        .agent_turn(&response.turn_id)
+        .await
+        .expect("persisted turn");
+    assert_eq!(turn.status, "error");
+    assert_eq!(turn.reason_code.as_deref(), Some("AGENT_RUNTIME_ERROR"));
+    assert!(turn.completed_at.is_some());
+}
+
+#[tokio::test]
 async fn post_message_auto_starts_free_run_request() {
     let (state, workspace_id, version_id, _dir) = state_with_workspace().await;
     let mut events = state.events.subscribe();
@@ -82,6 +117,7 @@ async fn post_message_auto_starts_free_run_request() {
             user_message: "运行当前 workflow".to_owned(),
             graph: sample_graph(),
             canvas_context: None,
+            conversation_id: None,
         }),
     )
     .await
@@ -135,6 +171,7 @@ async fn post_message_auto_applies_proposal_record() {
             user_message: "创建一个 workflow".to_owned(),
             graph: sample_graph(),
             canvas_context: None,
+            conversation_id: None,
         }),
     )
     .await
@@ -471,6 +508,7 @@ async fn post_message_routes_debug_with_latest_run_context() {
             user_message: "为什么失败了，帮我修复".to_owned(),
             graph: sample_graph(),
             canvas_context: None,
+            conversation_id: None,
         }),
     )
     .await
@@ -740,6 +778,7 @@ async fn intent_turn_compiles_and_persists_semantics() {
             user_message: "用 Nano Banana 创建一个生成图片的 workflow".to_owned(),
             graph: sample_graph(),
             canvas_context: None,
+            conversation_id: None,
         }),
     )
     .await
@@ -799,6 +838,7 @@ async fn intent_turn_missing_input_produces_clarify_message() {
             user_message: "创建一个生成图片的 workflow".to_owned(),
             graph: sample_graph(),
             canvas_context: None,
+            conversation_id: None,
         }),
     )
     .await
@@ -815,4 +855,60 @@ async fn intent_turn_missing_input_produces_clarify_message() {
         .await
         .expect("proposals");
     assert!(proposals.is_empty());
+}
+
+#[tokio::test]
+async fn intent_turn_missing_model_binding_explains_catalog_gap() {
+    let intent = intent_plan(serde_json::json!({
+        "intentVersion": "1",
+        "topology": "linear",
+        "stages": [
+            {
+                "stageId": "s1",
+                "capabilityId": "text_to_image",
+                "requestedModel": "Nano Banana",
+                "inputFrom": [],
+                "params": { "prompt": "一张产品图" }
+            },
+            {
+                "stageId": "s2",
+                "capabilityId": "image_to_video",
+                "requestedModel": "Seedance 2",
+                "inputFrom": [{ "stageId": "s1", "output": "image" }],
+                "params": {}
+            }
+        ],
+        "outputStageIds": ["s2"]
+    }));
+    let (state, workspace_id, version_id, _dir) = intent_state(intent).await;
+
+    let response = post_workspace_message(
+        Path(workspace_id.clone()),
+        State(state.clone()),
+        Json(WorkspaceMessageRequest {
+            base_version_id: version_id,
+            user_message: "用 Nano Banana 生图，再用 Seedance 做成视频 workflow".to_owned(),
+            graph: sample_graph(),
+            canvas_context: None,
+            conversation_id: None,
+        }),
+    )
+    .await
+    .expect("missing binding is a clarification response")
+    .0;
+
+    assert_eq!(response.messages[0].kind, "clarify");
+    assert!(response.messages[0].text.contains("BINDING_NOT_FOUND"));
+    assert!(response.messages[0].text.contains("Seedance 1.5 Pro"));
+    assert!(response.messages[0].text.contains("Image To Video"));
+    assert!(response.messages[0].text.contains("没有自动替换模型或能力"));
+    assert!(response.messages[0].text.contains("Text To Video"));
+    assert!(
+        state
+            .store
+            .workspace_proposals(&workspace_id)
+            .await
+            .expect("proposals")
+            .is_empty()
+    );
 }

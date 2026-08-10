@@ -319,9 +319,10 @@ async fn insert_message(
     sqlx::query(
         r#"
         INSERT INTO messages (
-            id, workspace_id, role, text, kind, ref_id, attachment_ids_json, created_at
+            id, workspace_id, role, text, kind, ref_id, attachment_ids_json,
+            conversation_id, turn_id, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, current_timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)
         "#,
     )
     .bind(id)
@@ -331,6 +332,8 @@ async fn insert_message(
     .bind(input.kind)
     .bind(input.ref_id)
     .bind(input.attachment_ids_json)
+    .bind(input.conversation_id)
+    .bind(input.turn_id)
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -342,7 +345,8 @@ async fn message_in_tx(
 ) -> StoreResult<MessageRecord> {
     Ok(sqlx::query_as(
         r#"
-        SELECT id, workspace_id, role, text, kind, ref_id, attachment_ids_json, created_at
+        SELECT id, workspace_id, role, text, kind, ref_id, attachment_ids_json,
+               conversation_id, turn_id, created_at
         FROM messages
         WHERE id = ?
         "#,

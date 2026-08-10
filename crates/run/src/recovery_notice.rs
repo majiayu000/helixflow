@@ -25,6 +25,8 @@ where
                 text: Some(message),
                 ref_id: Some(&ref_id),
                 attachment_ids_json: None,
+                conversation_id: None,
+                turn_id: None,
             })
             .await?;
         self.emit(
