@@ -62,6 +62,7 @@ impl AppState {
             AgentContractAttribution::from_env().map_err(AppStateError::Configuration)?;
         tokio::fs::create_dir_all(&data_dir).await?;
         let store = Store::open(&database_url).await?;
+        store.finalize_interrupted_agent_turns().await?;
         store
             .finalize_interrupted_agent_contract_observations()
             .await?;

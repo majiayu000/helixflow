@@ -242,6 +242,24 @@ impl Store {
         })
     }
 
+    /// A process-local runtime cannot resume an in-flight Helixflow turn after
+    /// a server restart. Close those durable rows before accepting new work so
+    /// clients never render an orphaned turn as running forever.
+    pub async fn finalize_interrupted_agent_turns(&self) -> StoreResult<u64> {
+        let updated = sqlx::query(
+            r#"
+            UPDATE agent_turns
+            SET status = 'interrupted',
+                reason_code = 'PROCESS_INTERRUPTED',
+                completed_at = current_timestamp
+            WHERE status = 'running'
+            "#,
+        )
+        .execute(self.pool())
+        .await?;
+        Ok(updated.rows_affected())
+    }
+
     pub async fn attach_agent_turn_codex_identity(
         &self,
         turn_id: &str,
@@ -436,5 +454,36 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn finalizes_orphaned_running_turns_after_restart() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Store::open(&format!(
+            "sqlite://{}",
+            dir.path().join("helixflow.sqlite").display()
+        ))
+        .await
+        .expect("store");
+        let workspace = store.create_workspace("Restart").await.expect("workspace");
+        let conversation = store
+            .create_conversation(&workspace.id, "Interrupted")
+            .await
+            .expect("conversation");
+        let turn = store
+            .start_agent_turn(&workspace.id, &conversation.id, "chat")
+            .await
+            .expect("turn");
+
+        assert_eq!(store.finalize_interrupted_agent_turns().await.unwrap(), 1);
+        assert_eq!(store.finalize_interrupted_agent_turns().await.unwrap(), 0);
+
+        let interrupted = store.agent_turn(&turn.id).await.expect("interrupted turn");
+        assert_eq!(interrupted.status, "interrupted");
+        assert_eq!(
+            interrupted.reason_code.as_deref(),
+            Some("PROCESS_INTERRUPTED")
+        );
+        assert!(interrupted.completed_at.is_some());
     }
 }
