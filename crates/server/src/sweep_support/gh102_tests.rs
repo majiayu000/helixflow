@@ -13,6 +13,7 @@ async fn invalid_threshold_fails_before_creating_run() {
             workspace_id: workspace_id.clone(),
             base_version_id: version_id,
             user_message: "运行当前 workflow".to_owned(),
+            codex_thread_id: None,
             history: Vec::new(),
             graph: tests::seed_graph(),
             provider_catalog: RuntimeProvider::mock().catalog_snapshot(),

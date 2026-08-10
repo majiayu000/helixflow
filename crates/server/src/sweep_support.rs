@@ -483,6 +483,7 @@ mod tests {
                 workspace_id,
                 base_version_id: version_id,
                 user_message: "为当前工作流设计 4 个不同 seed 的真实运行计划".to_owned(),
+                codex_thread_id: None,
                 history: Vec::new(),
                 graph: seed_graph(),
                 provider_catalog: RuntimeProvider::mock().catalog_snapshot(),

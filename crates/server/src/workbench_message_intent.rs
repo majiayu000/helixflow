@@ -16,7 +16,8 @@ use crate::api_error::ApiError;
 use crate::app_state::AppState;
 use crate::catalog_routes::connector_availability;
 use crate::workbench_message::{
-    ChatMessagePayload, WorkspaceMessageResponse, persist_agent_logs, terminal_error_response,
+    ChatMessagePayload, WorkspaceMessageResponse, persist_agent_logs,
+    persist_agent_runtime_identity, terminal_error_response,
 };
 use crate::workbench_message_proposals::persist_and_apply_agent_proposal_observed;
 
@@ -67,6 +68,35 @@ pub(crate) async fn handle_intent_turn(
             .await;
         }
     };
+    if persist_agent_runtime_identity(
+        state,
+        workspace_id,
+        conversation_id,
+        validated.runtime_identity.as_ref(),
+    )
+    .await
+    .is_err()
+    {
+        finalize_agent_contract_error(
+            state,
+            workspace_id,
+            turn,
+            "CODEX_THREAD_PERSISTENCE_ERROR",
+            Some(&validated.session_id),
+        )
+        .await
+        .map_err(ApiError::store)?;
+        return terminal_error_response(
+            state,
+            workspace_id,
+            conversation_id,
+            durable_turn_id,
+            mode,
+            "CODEX_THREAD_PERSISTENCE_ERROR",
+            Some(&validated.session_id),
+        )
+        .await;
+    }
     if let Err(_error) = persist_agent_logs(
         state,
         workspace_id,

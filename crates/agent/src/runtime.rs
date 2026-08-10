@@ -30,8 +30,9 @@ pub struct RuntimeHandle {
     pub out_dir: PathBuf,
     pub(crate) event_tx: mpsc::Sender<RuntimeEvent>,
     event_rx: Arc<AsyncMutex<mpsc::Receiver<RuntimeEvent>>>,
-    cancel_tx: Arc<AsyncMutex<Option<oneshot::Sender<()>>>>,
+    pub(crate) cancel_tx: Arc<AsyncMutex<Option<oneshot::Sender<()>>>>,
     identity: Arc<AsyncMutex<Option<AgentRuntimeIdentity>>>,
+    resume_thread_id: Arc<AsyncMutex<Option<String>>>,
 }
 
 impl RuntimeHandle {
@@ -51,14 +52,15 @@ impl RuntimeHandle {
             event_rx: Arc::new(AsyncMutex::new(event_rx)),
             cancel_tx: Arc::new(AsyncMutex::new(None)),
             identity: Arc::new(AsyncMutex::new(None)),
+            resume_thread_id: Arc::new(AsyncMutex::new(None)),
         }
     }
 
-    async fn next_event(&self) -> Option<RuntimeEvent> {
+    pub(crate) async fn next_event(&self) -> Option<RuntimeEvent> {
         self.event_rx.lock().await.recv().await
     }
 
-    async fn install_cancel(&self, cancel_tx: oneshot::Sender<()>) {
+    pub(crate) async fn install_cancel(&self, cancel_tx: oneshot::Sender<()>) {
         *self.cancel_tx.lock().await = Some(cancel_tx);
     }
 
@@ -68,6 +70,14 @@ impl RuntimeHandle {
 
     pub async fn identity(&self) -> Option<AgentRuntimeIdentity> {
         self.identity.lock().await.clone()
+    }
+
+    pub async fn set_resume_thread_id(&self, thread_id: Option<String>) {
+        *self.resume_thread_id.lock().await = thread_id;
+    }
+
+    pub async fn resume_thread_id(&self) -> Option<String> {
+        self.resume_thread_id.lock().await.clone()
     }
 }
 
@@ -122,27 +132,7 @@ impl CodexRuntime {
     }
 
     fn command_spec_for_turn(&self, root_dir: &Path, turn: AgentTurn) -> CommandSpec {
-        let context_hint = if turn.mode.uses_graph_context() {
-            "Read ctx/instructions.md plus declared graph/catalog files under ctx/."
-        } else {
-            "Read ctx/instructions.md only. Do not inspect graph/catalog files or the filesystem."
-        };
-        let prompt = format!(
-            "\
-{context_hint}
-Turn mode: {mode}
-Output contract: out/{output_file}
-Selected skill: {skill:?}
-User turn:
-{message}
-
-Write exactly one result file under out/. Do not print secrets or write outside out/.",
-            context_hint = context_hint,
-            mode = turn.mode,
-            output_file = turn.output_contract.file_name(),
-            skill = turn.skill,
-            message = turn.message
-        );
+        let prompt = codex_turn_prompt(&turn);
 
         CommandSpec {
             program: self.program.clone(),
@@ -164,6 +154,30 @@ Write exactly one result file under out/. Do not print secrets or write outside 
             env: safe_runtime_env(std::env::vars(), root_dir),
         }
     }
+}
+
+pub(crate) fn codex_turn_prompt(turn: &AgentTurn) -> String {
+    let context_hint = if turn.mode.uses_graph_context() {
+        "Read ctx/instructions.md plus declared graph/catalog files under ctx/."
+    } else {
+        "Read ctx/instructions.md only. Do not inspect graph/catalog files or the filesystem."
+    };
+    format!(
+        "\
+{context_hint}
+Turn mode: {mode}
+Output contract: out/{output_file}
+Selected skill: {skill:?}
+User turn:
+{message}
+
+Write exactly one result file under out/. Do not print secrets or write outside out/.",
+        context_hint = context_hint,
+        mode = turn.mode,
+        output_file = turn.output_contract.file_name(),
+        skill = turn.skill,
+        message = turn.message
+    )
 }
 
 #[async_trait]

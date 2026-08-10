@@ -5,7 +5,7 @@ use std::{error::Error, fmt};
 
 use async_trait::async_trait;
 use helixflow_agent::{
-    AgentError, AgentService, AgentSessionRequest, CodexRuntime, ValidatedAgentIntent,
+    AgentError, AgentService, AgentSessionRequest, CodexBackendRuntime, ValidatedAgentIntent,
     ValidatedAgentProposal, ValidatedAgentReply,
 };
 #[cfg(test)]
@@ -112,7 +112,7 @@ impl AppState {
     ) -> Self {
         let agent_sessions_dir = default_agent_sessions_dir();
         let agent = Arc::new(CodexWorkbenchAgent {
-            program: default_codex_program(),
+            runtime: configured_codex_runtime(default_codex_program()),
             events: events.clone(),
         });
         let runner = RunService::with_provider_events_and_artifact_root(
@@ -309,7 +309,7 @@ pub(crate) trait WorkbenchAgent: Send + Sync {
 }
 
 struct CodexWorkbenchAgent {
-    program: PathBuf,
+    runtime: CodexBackendRuntime,
     events: EventBus,
 }
 
@@ -319,7 +319,7 @@ impl WorkbenchAgent for CodexWorkbenchAgent {
         &self,
         request: AgentSessionRequest,
     ) -> Result<ValidatedAgentReply, AgentError> {
-        AgentService::new(CodexRuntime::new(self.program.clone()), self.events.clone())
+        AgentService::new(self.runtime.clone(), self.events.clone())
             .answer_chat(request)
             .await
     }
@@ -328,7 +328,7 @@ impl WorkbenchAgent for CodexWorkbenchAgent {
         &self,
         request: AgentSessionRequest,
     ) -> Result<ValidatedAgentProposal, AgentError> {
-        AgentService::new(CodexRuntime::new(self.program.clone()), self.events.clone())
+        AgentService::new(self.runtime.clone(), self.events.clone())
             .propose_graph_change(request)
             .await
     }
@@ -337,7 +337,7 @@ impl WorkbenchAgent for CodexWorkbenchAgent {
         &self,
         request: AgentSessionRequest,
     ) -> Result<ValidatedAgentIntent, AgentError> {
-        AgentService::new(CodexRuntime::new(self.program.clone()), self.events.clone())
+        AgentService::new(self.runtime.clone(), self.events.clone())
             .propose_intent(request)
             .await
     }
@@ -353,6 +353,15 @@ fn default_codex_program() -> PathBuf {
     std::env::var_os("HELIXFLOW_CODEX_BIN")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("codex"))
+}
+
+fn configured_codex_runtime(program: PathBuf) -> CodexBackendRuntime {
+    match std::env::var("HELIXFLOW_CODEX_RUNTIME") {
+        Ok(value) if value.trim().eq_ignore_ascii_case("exec") => {
+            CodexBackendRuntime::exec(program)
+        }
+        _ => CodexBackendRuntime::app_server(program),
+    }
 }
 
 fn default_provider_registry() -> ProviderRegistry {
