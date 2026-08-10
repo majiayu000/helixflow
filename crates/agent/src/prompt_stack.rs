@@ -348,6 +348,7 @@ fn canvas_ops_contract(mode: TurnMode) -> &'static str {
             r#"Canvas ops contract:
 - Read compact canvas state from `ctx/canvas_state.json`.
 - Read allowed canvas ops from `ctx/canvas_ops.json`.
+- Prefer `canvas.get_state` to read current compact state and `canvas.submit_proposal` to submit proposal ops when those tools are available.
 - `read_state` means inspect only the declared compact graph state.
 - `read_selection` means inspect only `selection.node_ids`; an empty selection is valid.
 - `propose_layout` must be expressed as `move_node` ops in `out/proposal.json`.

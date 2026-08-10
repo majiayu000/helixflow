@@ -33,6 +33,7 @@ pub struct RuntimeHandle {
     pub(crate) cancel_tx: Arc<AsyncMutex<Option<oneshot::Sender<()>>>>,
     identity: Arc<AsyncMutex<Option<AgentRuntimeIdentity>>>,
     resume_thread_id: Arc<AsyncMutex<Option<String>>>,
+    pub(crate) output_contract: Option<OutputContract>,
 }
 
 impl RuntimeHandle {
@@ -53,6 +54,7 @@ impl RuntimeHandle {
             cancel_tx: Arc::new(AsyncMutex::new(None)),
             identity: Arc::new(AsyncMutex::new(None)),
             resume_thread_id: Arc::new(AsyncMutex::new(None)),
+            output_contract: None,
         }
     }
 

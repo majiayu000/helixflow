@@ -88,7 +88,9 @@ impl AgentRuntime for CodexAppServerRuntime {
 
     async fn start(&self, session: AgentSession) -> RuntimeResult<RuntimeHandle> {
         let resume_thread_id = session.codex_thread_id.clone();
-        let handle = RuntimeHandle::new(self.id(), session.id, session.root_dir, session.out_dir);
+        let mut handle =
+            RuntimeHandle::new(self.id(), session.id, session.root_dir, session.out_dir);
+        handle.output_contract = Some(session.output_contract);
         handle.set_resume_thread_id(resume_thread_id).await;
         Ok(handle)
     }
@@ -184,7 +186,7 @@ async fn run_app_server_turn(
     )
     .await?;
 
-    let dynamic_tools = canvas_dynamic_tools(&handle.root_dir);
+    let dynamic_tools = canvas_dynamic_tools(&handle.root_dir, handle.output_contract);
     let thread_request = match handle.resume_thread_id().await {
         Some(thread_id) => json!({
             "method": "thread/resume",
@@ -254,6 +256,8 @@ async fn run_app_server_turn(
                     &mut stdin,
                     &value,
                     &handle.root_dir,
+                    &handle.out_dir,
+                    handle.output_contract,
                     &thread_id,
                     &turn_id,
                 )
@@ -303,24 +307,48 @@ async fn run_app_server_turn(
     }
 }
 
-fn canvas_dynamic_tools(root_dir: &std::path::Path) -> Vec<Value> {
+fn canvas_dynamic_tools(
+    root_dir: &std::path::Path,
+    output_contract: Option<crate::OutputContract>,
+) -> Vec<Value> {
     if !root_dir.join("ctx/canvas_state.json").is_file() {
         return Vec::new();
+    }
+    let mut tools = vec![json!({
+        "type": "function",
+        "name": "get_state",
+        "description": "Return the current compact graph, selection, version, and gate state.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+        }
+    })];
+    if output_contract == Some(crate::OutputContract::ProposalJson) {
+        tools.push(json!({
+            "type": "function",
+            "name": "submit_proposal",
+            "description": "Submit bounded graph operations for backend validation. This does not apply the proposal.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["base_version_id", "kind", "title", "summary", "ops"],
+                "properties": {
+                    "base_version_id": { "type": "string" },
+                    "kind": { "type": "string", "enum": ["create", "modify", "fix", "sweep"] },
+                    "title": { "type": "string" },
+                    "summary": { "type": "string" },
+                    "ops": { "type": "array", "items": { "type": "object" } },
+                    "message_id": { "type": "string" }
+                },
+                "additionalProperties": false
+            }
+        }));
     }
     vec![json!({
         "type": "namespace",
         "name": "canvas",
-        "description": "Read the current Helixflow workflow canvas.",
-        "tools": [{
-            "type": "function",
-            "name": "get_state",
-            "description": "Return the current compact graph, selection, version, and gate state.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false
-            }
-        }]
+        "description": "Read the current Helixflow canvas and submit validated change proposals.",
+        "tools": tools
     })]
 }
 
@@ -328,6 +356,8 @@ async fn respond_to_dynamic_tool_call<W: AsyncWrite + Unpin>(
     writer: &mut W,
     request: &Value,
     root_dir: &std::path::Path,
+    out_dir: &std::path::Path,
+    output_contract: Option<crate::OutputContract>,
     thread_id: &str,
     turn_id: &str,
 ) -> RuntimeResult<()> {
@@ -342,18 +372,59 @@ async fn respond_to_dynamic_tool_call<W: AsyncWrite + Unpin>(
         && params.get("turnId").and_then(Value::as_str) == Some(turn_id);
     let namespace = params.get("namespace").and_then(Value::as_str);
     let tool = params.get("tool").and_then(Value::as_str);
-    let result = if matches_turn && namespace == Some("canvas") && tool == Some("get_state") {
-        canvas_state_tool_result(root_dir).await
-    } else {
-        json!({
-            "contentItems": [{
-                "type": "inputText",
-                "text": "Unsupported or stale Helixflow dynamic tool call."
-            }],
-            "success": false
-        })
+    let result = match (matches_turn, namespace, tool) {
+        (true, Some("canvas"), Some("get_state")) => canvas_state_tool_result(root_dir).await,
+        (true, Some("canvas"), Some("submit_proposal"))
+            if output_contract == Some(crate::OutputContract::ProposalJson) =>
+        {
+            submit_proposal_tool_result(out_dir, &params["arguments"]).await
+        }
+        _ => failed_tool_result("Unsupported or stale Helixflow dynamic tool call."),
     };
     write_rpc(writer, &json!({ "id": request_id, "result": result })).await
+}
+
+async fn submit_proposal_tool_result(out_dir: &std::path::Path, arguments: &Value) -> Value {
+    const MAX_PROPOSAL_BYTES: usize = 256 * 1024;
+    let bytes = match serde_json::to_vec(arguments) {
+        Ok(bytes) if arguments.is_object() && bytes.len() <= MAX_PROPOSAL_BYTES => bytes,
+        Ok(_) => {
+            return failed_tool_result(
+                "Proposal arguments must be an object no larger than 256 KiB.",
+            );
+        }
+        Err(error) => {
+            return failed_tool_result(&format!("Proposal arguments are invalid: {error}"));
+        }
+    };
+    let path = out_dir.join("proposal.json");
+    let write = async {
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .await?;
+        file.write_all(&bytes).await?;
+        file.flush().await
+    }
+    .await;
+    match write {
+        Ok(()) => json!({
+            "contentItems": [{
+                "type": "inputText",
+                "text": "Proposal captured for backend validation; it has not been applied."
+            }],
+            "success": true
+        }),
+        Err(error) => failed_tool_result(&format!("Proposal could not be captured: {error}")),
+    }
+}
+
+fn failed_tool_result(message: &str) -> Value {
+    json!({
+        "contentItems": [{ "type": "inputText", "text": message }],
+        "success": false
+    })
 }
 
 async fn canvas_state_tool_result(root_dir: &std::path::Path) -> Value {
@@ -458,10 +529,11 @@ fn completed_item_status(value: &Value) -> Option<String> {
 mod tests {
     use std::fs;
 
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use super::{
         canvas_dynamic_tools, canvas_state_tool_result, completed_item_status, required_string,
+        submit_proposal_tool_result,
     };
 
     #[test]
@@ -490,9 +562,10 @@ mod tests {
         )
         .expect("canvas state");
 
-        let tools = canvas_dynamic_tools(dir.path());
+        let tools = canvas_dynamic_tools(dir.path(), Some(crate::OutputContract::ProposalJson));
         assert_eq!(tools[0]["name"], "canvas");
         assert_eq!(tools[0]["tools"][0]["name"], "get_state");
+        assert_eq!(tools[0]["tools"][1]["name"], "submit_proposal");
         let result = canvas_state_tool_result(dir.path()).await;
         assert_eq!(result["success"], true);
         assert!(
@@ -501,5 +574,28 @@ mod tests {
                 .expect("text")
                 .contains("ws_1")
         );
+    }
+
+    #[tokio::test]
+    async fn captures_proposals_without_applying_them() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let out_dir = dir.path().join("out");
+        fs::create_dir(&out_dir).expect("out dir");
+        let proposal = json!({
+            "base_version_id": "ver_1",
+            "kind": "modify",
+            "title": "Move node",
+            "summary": "Move one node.",
+            "ops": [{ "op": "move_node", "id": "video", "pos": [10, 20] }]
+        });
+
+        let result = submit_proposal_tool_result(&out_dir, &proposal).await;
+
+        assert_eq!(result["success"], true);
+        let captured: Value = serde_json::from_slice(
+            &fs::read(out_dir.join("proposal.json")).expect("captured proposal"),
+        )
+        .expect("proposal json");
+        assert_eq!(captured, proposal);
     }
 }
