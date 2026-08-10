@@ -72,6 +72,7 @@ pub(crate) async fn handle_intent_turn(
         state,
         workspace_id,
         conversation_id,
+        durable_turn_id,
         validated.runtime_identity.as_ref(),
     )
     .await

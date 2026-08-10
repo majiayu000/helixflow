@@ -223,6 +223,7 @@ pub(crate) async fn post_workspace_message(
                 &state,
                 &workspace_id,
                 &conversation.id,
+                &durable_turn.id,
                 reply.runtime_identity.as_ref(),
             )
             .await
@@ -341,6 +342,7 @@ pub(crate) async fn post_workspace_message(
                 &state,
                 &workspace_id,
                 &conversation.id,
+                &durable_turn.id,
                 proposal.runtime_identity.as_ref(),
             )
             .await
@@ -564,6 +566,7 @@ pub(crate) async fn persist_agent_runtime_identity(
     state: &AppState,
     workspace_id: &str,
     conversation_id: &str,
+    durable_turn_id: &str,
     identity: Option<&AgentRuntimeIdentity>,
 ) -> Result<(), ApiError> {
     let Some(identity) = identity else {
@@ -572,6 +575,11 @@ pub(crate) async fn persist_agent_runtime_identity(
     state
         .store
         .bind_conversation_codex_thread(workspace_id, conversation_id, &identity.thread_id)
+        .await
+        .map_err(ApiError::store)?;
+    state
+        .store
+        .attach_agent_turn_codex_identity(durable_turn_id, &identity.turn_id)
         .await
         .map_err(ApiError::store)?;
     Ok(())

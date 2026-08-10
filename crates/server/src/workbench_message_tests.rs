@@ -79,6 +79,12 @@ async fn post_message_routes_chat_to_agent_runtime() {
         conversations[0].codex_thread_id.as_deref(),
         Some("thr_fake")
     );
+    let durable_turn = state
+        .store
+        .agent_turn(&response.turn_id)
+        .await
+        .expect("durable turn");
+    assert_eq!(durable_turn.codex_turn_id.as_deref(), Some("turn_fake"));
 }
 
 #[tokio::test]
