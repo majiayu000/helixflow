@@ -96,6 +96,48 @@
   user-select: none;
 }
 
+.canvas-error {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  place-content: center;
+  justify-items: start;
+  gap: 10px;
+  padding: 32px;
+  background:
+    radial-gradient(circle at 50% 35%, color-mix(in srgb, var(--accent-soft) 35%, transparent), transparent 42%),
+    var(--surface-2);
+  color: var(--text);
+}
+
+.canvas-error__eyebrow {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+}
+
+.canvas-error h2,
+.canvas-error p {
+  margin: 0;
+}
+
+.canvas-error h2 {
+  font-size: 20px;
+}
+
+.canvas-error p {
+  max-width: 480px;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.canvas-error .btn {
+  margin-top: 6px;
+}
+
 .selection-rect {
   position: absolute;
   z-index: 4;
