@@ -4,7 +4,9 @@ use axum::{
     Json,
     extract::{Path, State},
 };
-use helixflow_agent::{AgentLogEntry, AgentSessionRequest, TurnMode, classify_turn_mode};
+use helixflow_agent::{
+    AgentLogEntry, AgentRuntimeIdentity, AgentSessionRequest, TurnMode, classify_turn_mode,
+};
 use helixflow_graph::{PreparedProposal, ProposalOp, WorkflowGraph};
 use helixflow_store::{
     AgentContractOutcome, MessageRecord, NewAgentContractObservation, NewMessage, RunRecord,
@@ -181,6 +183,7 @@ pub(crate) async fn post_workspace_message(
         workspace_id: workspace_id.clone(),
         base_version_id: version.id,
         user_message: input.user_message,
+        codex_thread_id: conversation.codex_thread_id.clone(),
         history,
         graph,
         provider_catalog,
@@ -216,6 +219,27 @@ pub(crate) async fn post_workspace_message(
                     .map(Json);
                 }
             };
+            if persist_agent_runtime_identity(
+                &state,
+                &workspace_id,
+                &conversation.id,
+                reply.runtime_identity.as_ref(),
+            )
+            .await
+            .is_err()
+            {
+                return terminal_error_response(
+                    &state,
+                    &workspace_id,
+                    &conversation.id,
+                    &durable_turn.id,
+                    classification.mode,
+                    "CODEX_THREAD_PERSISTENCE_ERROR",
+                    Some(&reply.session_id),
+                )
+                .await
+                .map(Json);
+            }
             let message = state
                 .store
                 .create_message(NewMessage {
@@ -313,6 +337,36 @@ pub(crate) async fn post_workspace_message(
                     .map(Json);
                 }
             };
+            if persist_agent_runtime_identity(
+                &state,
+                &workspace_id,
+                &conversation.id,
+                proposal.runtime_identity.as_ref(),
+            )
+            .await
+            .is_err()
+            {
+                finalize_agent_contract_error(
+                    &state,
+                    &workspace_id,
+                    turn,
+                    "CODEX_THREAD_PERSISTENCE_ERROR",
+                    Some(&proposal.session_id),
+                )
+                .await
+                .map_err(ApiError::store)?;
+                return terminal_error_response(
+                    &state,
+                    &workspace_id,
+                    &conversation.id,
+                    &durable_turn.id,
+                    classification.mode,
+                    "CODEX_THREAD_PERSISTENCE_ERROR",
+                    Some(&proposal.session_id),
+                )
+                .await
+                .map(Json);
+            }
             if let Err(_error) = persist_agent_logs(
                 &state,
                 &workspace_id,
@@ -503,6 +557,23 @@ pub(crate) async fn persist_agent_logs(
             .await
             .map_err(ApiError::store)?;
     }
+    Ok(())
+}
+
+pub(crate) async fn persist_agent_runtime_identity(
+    state: &AppState,
+    workspace_id: &str,
+    conversation_id: &str,
+    identity: Option<&AgentRuntimeIdentity>,
+) -> Result<(), ApiError> {
+    let Some(identity) = identity else {
+        return Ok(());
+    };
+    state
+        .store
+        .bind_conversation_codex_thread(workspace_id, conversation_id, &identity.thread_id)
+        .await
+        .map_err(ApiError::store)?;
     Ok(())
 }
 

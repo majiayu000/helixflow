@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
+mod app_server_runtime;
 mod canvas_ops;
 mod contract;
 mod prompt_stack;
@@ -17,6 +18,7 @@ mod runtime;
 mod service;
 mod turn_mode;
 
+pub use app_server_runtime::{CodexAppServerRuntime, CodexBackendRuntime};
 pub use canvas_ops::{CanvasGateState, CanvasOpsContext, CanvasOpsContract, CanvasSelection};
 pub use contract::{
     AgentLogEntry, AgentRuntimeIdentity, RunRequestAction, RunRequestOutput, ValidatedAgentIntent,
@@ -51,6 +53,7 @@ pub struct AgentSession {
     pub mode: TurnMode,
     pub output_contract: OutputContract,
     pub prompt_metadata: PromptStackMetadata,
+    pub codex_thread_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +61,7 @@ pub struct AgentSessionRequest {
     pub workspace_id: String,
     pub base_version_id: String,
     pub user_message: String,
+    pub codex_thread_id: Option<String>,
     /// Prior chat turns (oldest first) so agent replies can reference
     /// earlier context across requests (HF-013).
     pub history: Vec<AgentHistoryMessage>,
@@ -167,6 +171,7 @@ pub fn create_session_contract(request: &AgentSessionRequest) -> AgentResult<Age
             .mode
             .output_contract_with(request.use_intent_contract),
         prompt_metadata,
+        codex_thread_id: request.codex_thread_id.clone(),
     })
 }
 

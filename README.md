@@ -81,6 +81,7 @@ web/         # React workbench
 | `HELIXFLOW_DATA_DIR` | Durable data root (default `$HOME/.helixflow`; never process cwd). |
 | `HELIXFLOW_DATABASE_URL` | Database URL override (default SQLite inside the data root). |
 | `ATLAS_API_KEY` / `FAL_KEY` | Provider credentials. |
+| `HELIXFLOW_CODEX_RUNTIME` | Agent transport: `app-server` (default, persistent Codex threads) or `exec` rollback mode. |
 | `HELIXFLOW_AGENT_RUN_CONFIRMATION_THRESHOLD_USD` | Cost above which runs wait for confirmation (default 0). |
 | `HELIXFLOW_RUN_MAX_RETRIES` | Max derived retry runs after a failure (`0`–`10`, default `1`). |
 | `HELIXFLOW_MAX_PARALLEL_STEPS` | Concurrent execution step limit (`1`–`1024`; invalid values fail startup). |

@@ -111,6 +111,10 @@ const MAX_HISTORY_TURNS: usize = 20;
 const MAX_HISTORY_CHARS: usize = 1200;
 
 fn conversation_history_body(request: &AgentSessionRequest) -> String {
+    if request.codex_thread_id.is_some() {
+        return "Prior turns are managed by the resumed Codex thread; do not duplicate them from application history."
+            .to_owned();
+    }
     if request.history.is_empty() {
         return "No prior turns in this workspace conversation.".to_owned();
     }

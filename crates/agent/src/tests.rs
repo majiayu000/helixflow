@@ -60,6 +60,7 @@ fn request(dir: &tempfile::TempDir) -> AgentSessionRequest {
         workspace_id: "ws_1".to_owned(),
         base_version_id: "ver_1".to_owned(),
         user_message: "make it shorter".to_owned(),
+        codex_thread_id: None,
         history: Vec::new(),
         graph: sample_graph(),
         provider_catalog: RuntimeProvider::mock().catalog_snapshot(),
@@ -77,6 +78,7 @@ fn chat_request(dir: &tempfile::TempDir) -> AgentSessionRequest {
         workspace_id: "ws_1".to_owned(),
         base_version_id: "ver_1".to_owned(),
         user_message: "你好，你是谁？".to_owned(),
+        codex_thread_id: None,
         history: Vec::new(),
         graph: sample_graph(),
         provider_catalog: RuntimeProvider::mock().catalog_snapshot(),
@@ -626,6 +628,58 @@ async fn service_times_out_and_cancels_a_stuck_runtime_turn() {
 
     assert!(error.to_string().contains("timed out"));
     assert!(runtime.cancelled.load(Ordering::SeqCst));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn app_server_runtime_resumes_thread_and_propagates_turn_identity() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let program = dir.path().join("fake-codex-app-server");
+    fs::write(
+        &program,
+        r#"#!/bin/sh
+IFS= read -r initialize
+printf '%s\n' '{"id":1,"result":{"userAgent":"fake"}}'
+IFS= read -r initialized
+IFS= read -r thread_request
+case "$thread_request" in
+  *'"method":"thread/resume"'*'"threadId":"thr_existing"'*) ;;
+  *) exit 21 ;;
+esac
+printf '%s\n' '{"id":2,"result":{"thread":{"id":"thr_existing","sessionId":"thr_existing"}}}'
+IFS= read -r turn_request
+case "$turn_request" in
+  *'"method":"turn/start"'*'"threadId":"thr_existing"'*) ;;
+  *) exit 22 ;;
+esac
+mkdir -p out
+printf '%s\n' '{"message":"app server reply"}' > out/reply.json
+printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn_app","status":"inProgress","items":[],"error":null}}}'
+printf '%s\n' '{"method":"item/completed","params":{"item":{"type":"agentMessage","text":"done"}}}'
+printf '%s\n' '{"method":"turn/completed","params":{"turn":{"id":"turn_app","status":"completed","items":[],"error":null}}}'
+"#,
+    )
+    .expect("fake app-server");
+    let mut permissions = fs::metadata(&program).expect("metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&program, permissions).expect("executable");
+
+    let mut request = chat_request(&dir);
+    request.codex_thread_id = Some("thr_existing".to_owned());
+    let reply = AgentService::new(
+        crate::CodexAppServerRuntime::new(program),
+        EventBus::new(16),
+    )
+    .answer_chat(request)
+    .await
+    .expect("app-server reply");
+
+    assert_eq!(reply.message, "app server reply");
+    let identity = reply.runtime_identity.expect("runtime identity");
+    assert_eq!(identity.thread_id, "thr_existing");
+    assert_eq!(identity.turn_id, "turn_app");
 }
 
 fn write_valid_proposal(session: &AgentSession) {

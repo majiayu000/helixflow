@@ -112,6 +112,42 @@ impl Store {
         .await?)
     }
 
+    pub async fn bind_conversation_codex_thread(
+        &self,
+        workspace_id: &str,
+        conversation_id: &str,
+        codex_thread_id: &str,
+    ) -> StoreResult<ConversationRecord> {
+        let conversation = self.conversation(workspace_id, conversation_id).await?;
+        if let Some(existing) = conversation.codex_thread_id.as_deref() {
+            if existing == codex_thread_id {
+                return Ok(conversation);
+            }
+            return Err(StoreError::AgentContractObservationInvariant {
+                code: "CODEX_THREAD_ID_CONFLICT",
+            });
+        }
+        sqlx::query(
+            r#"
+            UPDATE conversations
+            SET codex_thread_id = ?, updated_at = current_timestamp
+            WHERE id = ? AND workspace_id = ? AND codex_thread_id IS NULL
+            "#,
+        )
+        .bind(codex_thread_id)
+        .bind(conversation_id)
+        .bind(workspace_id)
+        .execute(self.pool())
+        .await?;
+        let bound = self.conversation(workspace_id, conversation_id).await?;
+        if bound.codex_thread_id.as_deref() == Some(codex_thread_id) {
+            return Ok(bound);
+        }
+        Err(StoreError::AgentContractObservationInvariant {
+            code: "CODEX_THREAD_ID_CONFLICT",
+        })
+    }
+
     pub async fn start_agent_turn(
         &self,
         workspace_id: &str,
@@ -321,6 +357,38 @@ mod tests {
                 .await
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn binds_one_stable_codex_thread_per_conversation() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Store::open(&format!(
+            "sqlite://{}",
+            dir.path().join("helixflow.sqlite").display()
+        ))
+        .await
+        .expect("store");
+        let workspace = store.create_workspace("Threads").await.expect("workspace");
+        let conversation = store
+            .create_conversation(&workspace.id, "Thread")
+            .await
+            .expect("conversation");
+
+        let bound = store
+            .bind_conversation_codex_thread(&workspace.id, &conversation.id, "thr_1")
+            .await
+            .expect("bind");
+        assert_eq!(bound.codex_thread_id.as_deref(), Some("thr_1"));
+        store
+            .bind_conversation_codex_thread(&workspace.id, &conversation.id, "thr_1")
+            .await
+            .expect("same identity is idempotent");
+        assert!(
+            store
+                .bind_conversation_codex_thread(&workspace.id, &conversation.id, "thr_2")
+                .await
+                .is_err()
         );
     }
 }

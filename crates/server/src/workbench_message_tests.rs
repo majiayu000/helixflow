@@ -7,8 +7,8 @@ use axum::{
     extract::{Path, State},
 };
 use helixflow_agent::{
-    AgentError, AgentLogEntry, AgentSessionRequest, TurnMode, ValidatedAgentProposal,
-    ValidatedAgentReply,
+    AgentError, AgentLogEntry, AgentRuntimeIdentity, AgentSessionRequest, TurnMode,
+    ValidatedAgentProposal, ValidatedAgentReply,
 };
 use helixflow_graph::{PreparedProposal, WorkflowGraph};
 use helixflow_run::EventBus;
@@ -69,6 +69,15 @@ async fn post_message_routes_chat_to_agent_runtime() {
     assert_eq!(
         persisted[2].ref_id.as_deref(),
         Some(expected_session_id.as_str())
+    );
+    let conversations = state
+        .store
+        .workspace_conversations(&workspace_id)
+        .await
+        .expect("conversations");
+    assert_eq!(
+        conversations[0].codex_thread_id.as_deref(),
+        Some("thr_fake")
     );
 }
 
@@ -690,7 +699,10 @@ impl WorkbenchAgent for FakeWorkbenchAgent {
     ) -> Result<ValidatedAgentReply, AgentError> {
         Ok(ValidatedAgentReply {
             session_id: format!("{}_fake", request.workspace_id),
-            runtime_identity: None,
+            runtime_identity: Some(AgentRuntimeIdentity {
+                thread_id: "thr_fake".to_owned(),
+                turn_id: "turn_fake".to_owned(),
+            }),
             agent_logs: vec![AgentLogEntry {
                 kind: "agent_log:status".to_owned(),
                 text: "fake runtime status".to_owned(),
@@ -731,7 +743,10 @@ impl WorkbenchAgent for FakeWorkbenchAgent {
         }
         Ok(ValidatedAgentProposal {
             session_id: format!("{}_fake", request.workspace_id),
-            runtime_identity: None,
+            runtime_identity: Some(AgentRuntimeIdentity {
+                thread_id: "thr_fake".to_owned(),
+                turn_id: "turn_fake".to_owned(),
+            }),
             agent_logs: vec![AgentLogEntry {
                 kind: "agent_log:status".to_owned(),
                 text: "fake proposal status".to_owned(),
