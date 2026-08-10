@@ -27,6 +27,8 @@ fn user_message<'a>(workspace_id: &'a str, text: &'a str) -> NewMessage<'a> {
         text: Some(text),
         ref_id: None,
         attachment_ids_json: Some(r#"{"turnMode":"create_workflow"}"#),
+        conversation_id: None,
+        turn_id: None,
     }
 }
 
@@ -151,6 +153,8 @@ async fn clarification_message_and_terminal_observation_commit_together() {
                 text: Some("需要澄清 [MODEL_AMBIGUOUS]"),
                 ref_id: Some("agent_2"),
                 attachment_ids_json: None,
+                conversation_id: None,
+                turn_id: None,
             },
             CompleteAgentContractObservation {
                 observation_id: &started.observation.id,

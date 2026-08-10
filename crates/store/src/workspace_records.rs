@@ -11,6 +11,8 @@ pub struct NewMessage<'a> {
     pub text: Option<&'a str>,
     pub ref_id: Option<&'a str>,
     pub attachment_ids_json: Option<&'a str>,
+    pub conversation_id: Option<&'a str>,
+    pub turn_id: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, sqlx::FromRow)]
@@ -22,6 +24,8 @@ pub struct MessageRecord {
     pub kind: String,
     pub ref_id: Option<String>,
     pub attachment_ids_json: Option<String>,
+    pub conversation_id: Option<String>,
+    pub turn_id: Option<String>,
     pub created_at: String,
 }
 
@@ -96,9 +100,10 @@ impl Store {
         sqlx::query(
             r#"
             INSERT INTO messages (
-                id, workspace_id, role, text, kind, ref_id, attachment_ids_json, created_at
+                id, workspace_id, role, text, kind, ref_id, attachment_ids_json,
+                conversation_id, turn_id, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, current_timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)
             "#,
         )
         .bind(&id)
@@ -108,6 +113,8 @@ impl Store {
         .bind(input.kind)
         .bind(input.ref_id)
         .bind(input.attachment_ids_json)
+        .bind(input.conversation_id)
+        .bind(input.turn_id)
         .execute(self.pool())
         .await?;
 
@@ -122,9 +129,10 @@ impl Store {
         sqlx::query(
             r#"
             INSERT OR IGNORE INTO messages (
-                id, workspace_id, role, text, kind, ref_id, attachment_ids_json, created_at
+                id, workspace_id, role, text, kind, ref_id, attachment_ids_json,
+                conversation_id, turn_id, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, current_timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)
             "#,
         )
         .bind(id)
@@ -134,11 +142,14 @@ impl Store {
         .bind(input.kind)
         .bind(ref_id)
         .bind(input.attachment_ids_json)
+        .bind(input.conversation_id)
+        .bind(input.turn_id)
         .execute(self.pool())
         .await?;
         Ok(sqlx::query_as::<_, MessageRecord>(
             r#"
-            SELECT id, workspace_id, role, text, kind, ref_id, attachment_ids_json, created_at
+            SELECT id, workspace_id, role, text, kind, ref_id, attachment_ids_json,
+                   conversation_id, turn_id, created_at
             FROM messages
             WHERE workspace_id = ? AND kind = ? AND ref_id = ?
             "#,
@@ -153,7 +164,8 @@ impl Store {
     pub async fn message(&self, message_id: &str) -> StoreResult<MessageRecord> {
         Ok(sqlx::query_as::<_, MessageRecord>(
             r#"
-            SELECT id, workspace_id, role, text, kind, ref_id, attachment_ids_json, created_at
+            SELECT id, workspace_id, role, text, kind, ref_id, attachment_ids_json,
+                   conversation_id, turn_id, created_at
             FROM messages
             WHERE id = ?
             "#,
@@ -166,7 +178,8 @@ impl Store {
     pub async fn workspace_messages(&self, workspace_id: &str) -> StoreResult<Vec<MessageRecord>> {
         Ok(sqlx::query_as::<_, MessageRecord>(
             r#"
-            SELECT id, workspace_id, role, text, kind, ref_id, attachment_ids_json, created_at
+            SELECT id, workspace_id, role, text, kind, ref_id, attachment_ids_json,
+                   conversation_id, turn_id, created_at
             FROM messages
             WHERE workspace_id = ?
             ORDER BY created_at, id
@@ -175,6 +188,56 @@ impl Store {
         .bind(workspace_id)
         .fetch_all(self.pool())
         .await?)
+    }
+
+    pub async fn conversation_messages(
+        &self,
+        conversation_id: &str,
+    ) -> StoreResult<Vec<MessageRecord>> {
+        Ok(sqlx::query_as::<_, MessageRecord>(
+            r#"
+            SELECT id, workspace_id, role, text, kind, ref_id, attachment_ids_json,
+                   conversation_id, turn_id, created_at
+            FROM messages
+            WHERE conversation_id = ?
+            ORDER BY created_at, id
+            "#,
+        )
+        .bind(conversation_id)
+        .fetch_all(self.pool())
+        .await?)
+    }
+
+    pub async fn assign_message_context(
+        &self,
+        message_id: &str,
+        conversation_id: &str,
+        turn_id: Option<&str>,
+    ) -> StoreResult<MessageRecord> {
+        let updated = sqlx::query(
+            r#"
+            UPDATE messages
+            SET conversation_id = ?, turn_id = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(conversation_id)
+        .bind(turn_id)
+        .bind(message_id)
+        .execute(self.pool())
+        .await?;
+        if updated.rows_affected() != 1 {
+            return Err(super::StoreError::StatementInvariant {
+                operation: "assign_message_context",
+                expected_rows: 1,
+                actual_rows: updated.rows_affected(),
+            });
+        }
+        sqlx::query("UPDATE conversations SET updated_at = current_timestamp WHERE id = ?")
+            .bind(conversation_id)
+            .execute(self.pool())
+            .await?;
+        self.message(message_id).await
     }
 
     /// Real per-workspace message stats for list summaries (HF-026).
@@ -255,6 +318,8 @@ mod tests {
                 text: Some("Build a workflow"),
                 ref_id: None,
                 attachment_ids_json: None,
+                conversation_id: None,
+                turn_id: None,
             })
             .await
             .expect("create user message");
@@ -266,6 +331,8 @@ mod tests {
                 text: Some("Proposal ready"),
                 ref_id: Some("proposal_1"),
                 attachment_ids_json: Some("[]"),
+                conversation_id: None,
+                turn_id: None,
             })
             .await
             .expect("create agent message");

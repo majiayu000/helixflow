@@ -246,6 +246,8 @@ async fn persist_run_request_message(
             text: Some(text),
             ref_id: Some(run_id),
             attachment_ids_json: None,
+            conversation_id: None,
+            turn_id: None,
         })
         .await
         .map_err(ApiError::store)

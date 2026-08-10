@@ -91,7 +91,9 @@ use version_routes::{export_workflow_version, restore_workspace_version, undo_wo
 use workbench_message::post_workspace_message;
 use workspace_canvas::workspace_canvas;
 use workspace_events::workspace_events;
-use workspace_routes::{create_workspace, list_workspaces, set_workspace_provider};
+use workspace_routes::{
+    create_workspace, create_workspace_conversation, list_workspaces, set_workspace_provider,
+};
 use workspace_state::workspace_state;
 use ws::ws_handler;
 
@@ -217,6 +219,10 @@ fn app(state: AppState) -> Router {
             get(list_workspaces).post(create_workspace),
         )
         .route("/api/workspaces/{workspace_id}/state", get(workspace_state))
+        .route(
+            "/api/workspaces/{workspace_id}/conversations",
+            post(create_workspace_conversation),
+        )
         .route(
             "/api/workspaces/{workspace_id}/canvas",
             get(workspace_canvas),

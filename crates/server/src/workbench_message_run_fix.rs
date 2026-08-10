@@ -218,6 +218,8 @@ async fn execute_fix_attempt(
         &attempt.workspace_id,
         &proposal.session_id,
         &proposal.agent_logs,
+        None,
+        None,
     )
     .await
     .map_err(|error| fix_failure("FIX_AGENT_FAILED", error.message))?;

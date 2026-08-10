@@ -396,7 +396,8 @@ impl Store {
         .await?;
         let message = sqlx::query_as::<_, MessageRecord>(
             r#"
-            SELECT id, workspace_id, role, text, kind, ref_id, attachment_ids_json, created_at
+            SELECT id, workspace_id, role, text, kind, ref_id, attachment_ids_json,
+                   conversation_id, turn_id, created_at
             FROM messages
             WHERE id = ?
             "#,
@@ -593,7 +594,8 @@ impl Store {
         .await?;
         let message = sqlx::query_as::<_, MessageRecord>(
             r#"
-            SELECT id, workspace_id, role, text, kind, ref_id, attachment_ids_json, created_at
+            SELECT id, workspace_id, role, text, kind, ref_id, attachment_ids_json,
+                   conversation_id, turn_id, created_at
             FROM messages
             WHERE id = ?
             "#,

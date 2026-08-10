@@ -33,12 +33,17 @@ pub(crate) struct WorkspaceMessageRequest {
     pub(crate) user_message: String,
     pub(crate) graph: WorkflowGraph,
     #[serde(default)]
+    pub(crate) conversation_id: Option<String>,
+    #[serde(default)]
     pub(crate) canvas_context: Option<WorkspaceCanvasContext>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WorkspaceMessageResponse {
+    pub(crate) conversation_id: String,
+    pub(crate) turn_id: String,
+    pub(crate) turn_status: String,
     pub(crate) turn_mode: TurnMode,
     pub(crate) messages: Vec<ChatMessagePayload>,
     pub(crate) proposal: Option<ProposalPayload>,
@@ -56,6 +61,10 @@ pub(crate) struct ChatMessagePayload {
     pub(crate) time: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) turn_mode: Option<TurnMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) conversation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) turn_id: Option<String>,
 }
 
 pub(crate) async fn post_workspace_message(
@@ -67,6 +76,18 @@ pub(crate) async fn post_workspace_message(
         verified_message_graph(&state, &workspace_id, &input.base_version_id, &input.graph).await?;
     let classification = classify_turn_mode(&input.user_message, &graph)
         .map_err(|err| ApiError::bad_request(err.to_string()))?;
+    let conversation = match input.conversation_id.as_deref() {
+        Some(conversation_id) => state
+            .store
+            .conversation(&workspace_id, conversation_id)
+            .await
+            .map_err(ApiError::store)?,
+        None => state
+            .store
+            .ensure_workspace_conversation(&workspace_id)
+            .await
+            .map_err(ApiError::store)?,
+    };
     let canvas_context = prepare_agent_canvas_context(
         &state,
         &workspace_id,
@@ -80,7 +101,7 @@ pub(crate) async fn post_workspace_message(
     // before persisting the new user message so it is not duplicated.
     let history = state
         .store
-        .workspace_messages(&workspace_id)
+        .conversation_messages(&conversation.id)
         .await
         .map_err(ApiError::store)?
         .into_iter()
@@ -101,6 +122,15 @@ pub(crate) async fn post_workspace_message(
         .map_err(ApiError::store)?;
     let provider_catalog = state.provider_catalog_for_workspace(&workspace);
     let run_context = debug_run_context(&state, &workspace_id, classification.mode).await?;
+    let durable_turn = state
+        .store
+        .start_agent_turn(
+            &workspace_id,
+            &conversation.id,
+            &classification.mode.to_string(),
+        )
+        .await
+        .map_err(ApiError::store)?;
     let turn_metadata = turn_metadata_json(classification);
     let user_message = NewMessage {
         workspace_id: &workspace_id,
@@ -109,8 +139,10 @@ pub(crate) async fn post_workspace_message(
         text: Some(&input.user_message),
         ref_id: None,
         attachment_ids_json: Some(&turn_metadata),
+        conversation_id: Some(&conversation.id),
+        turn_id: Some(&durable_turn.id),
     };
-    let contract_turn = if matches!(
+    let (contract_turn, persisted_user_message_id) = if matches!(
         classification.mode,
         TurnMode::CreateWorkflow | TurnMode::ModifyWorkflow | TurnMode::DebugWorkflow
     ) {
@@ -125,15 +157,23 @@ pub(crate) async fn post_workspace_message(
             })
             .await
             .map_err(ApiError::store)?;
-        Some(AgentContractTurn::new(started.observation.id, mode))
+        (
+            Some(AgentContractTurn::new(started.observation.id, mode)),
+            started.message.id,
+        )
     } else {
-        state
+        let message = state
             .store
             .create_message(user_message)
             .await
             .map_err(ApiError::store)?;
-        None
+        (None, message.id)
     };
+    state
+        .store
+        .attach_turn_user_message(&durable_turn.id, &persisted_user_message_id)
+        .await
+        .map_err(ApiError::store)?;
     let use_intent_contract = state.use_intent_contract;
     let base_version_id = version.id.clone();
     let base_graph = graph.clone();
@@ -154,11 +194,23 @@ pub(crate) async fn post_workspace_message(
 
     match classification.mode {
         TurnMode::Chat => {
-            let reply = state
-                .agent
-                .answer_chat(request)
-                .await
-                .map_err(ApiError::agent)?;
+            let reply = match state.agent.answer_chat(request).await {
+                Ok(reply) => reply,
+                Err(error) => {
+                    let reason = agent_error_code(&error);
+                    return terminal_error_response(
+                        &state,
+                        &workspace_id,
+                        &conversation.id,
+                        &durable_turn.id,
+                        classification.mode,
+                        reason,
+                        None,
+                    )
+                    .await
+                    .map(Json);
+                }
+            };
             let message = state
                 .store
                 .create_message(NewMessage {
@@ -168,11 +220,43 @@ pub(crate) async fn post_workspace_message(
                     text: Some(&reply.message),
                     ref_id: Some(&reply.session_id),
                     attachment_ids_json: None,
+                    conversation_id: Some(&conversation.id),
+                    turn_id: Some(&durable_turn.id),
                 })
                 .await
                 .map_err(ApiError::store)?;
-            persist_agent_logs(&state, &workspace_id, &reply.session_id, &reply.agent_logs).await?;
+            if persist_agent_logs(
+                &state,
+                &workspace_id,
+                &reply.session_id,
+                &reply.agent_logs,
+                Some(&conversation.id),
+                Some(&durable_turn.id),
+            )
+            .await
+            .is_err()
+            {
+                return terminal_error_response(
+                    &state,
+                    &workspace_id,
+                    &conversation.id,
+                    &durable_turn.id,
+                    classification.mode,
+                    "AGENT_LOG_PERSISTENCE_ERROR",
+                    Some(&reply.session_id),
+                )
+                .await
+                .map(Json);
+            }
+            state
+                .store
+                .finalize_agent_turn(&durable_turn.id, "succeeded", None, Some(&reply.session_id))
+                .await
+                .map_err(ApiError::store)?;
             Ok(Json(WorkspaceMessageResponse {
+                conversation_id: conversation.id.clone(),
+                turn_id: durable_turn.id.clone(),
+                turn_status: "succeeded".to_owned(),
                 turn_mode: classification.mode,
                 messages: vec![ChatMessagePayload::from_record(message)],
                 proposal: None,
@@ -193,6 +277,8 @@ pub(crate) async fn post_workspace_message(
                     classification.mode,
                     request,
                     turn,
+                    &conversation.id,
+                    &durable_turn.id,
                 )
                 .await?;
                 return Ok(Json(response));
@@ -209,14 +295,26 @@ pub(crate) async fn post_workspace_message(
                     )
                     .await
                     .map_err(ApiError::store)?;
-                    return Err(ApiError::agent(error));
+                    return terminal_error_response(
+                        &state,
+                        &workspace_id,
+                        &conversation.id,
+                        &durable_turn.id,
+                        classification.mode,
+                        agent_error_code(&error),
+                        None,
+                    )
+                    .await
+                    .map(Json);
                 }
             };
-            if let Err(error) = persist_agent_logs(
+            if let Err(_error) = persist_agent_logs(
                 &state,
                 &workspace_id,
                 &proposal.session_id,
                 &proposal.agent_logs,
+                Some(&conversation.id),
+                Some(&durable_turn.id),
             )
             .await
             {
@@ -229,7 +327,17 @@ pub(crate) async fn post_workspace_message(
                 )
                 .await
                 .map_err(ApiError::store)?;
-                return Err(error);
+                return terminal_error_response(
+                    &state,
+                    &workspace_id,
+                    &conversation.id,
+                    &durable_turn.id,
+                    classification.mode,
+                    "AGENT_LOG_PERSISTENCE_ERROR",
+                    Some(&proposal.session_id),
+                )
+                .await
+                .map(Json);
             }
             let applied = persist_and_apply_agent_proposal_observed(
                 &state,
@@ -246,7 +354,7 @@ pub(crate) async fn post_workspace_message(
             .await;
             let message = match applied {
                 Ok(message) => message,
-                Err(error) => {
+                Err(_error) => {
                     finalize_agent_contract_error(
                         &state,
                         &workspace_id,
@@ -256,10 +364,38 @@ pub(crate) async fn post_workspace_message(
                     )
                     .await
                     .map_err(ApiError::store)?;
-                    return Err(error);
+                    return terminal_error_response(
+                        &state,
+                        &workspace_id,
+                        &conversation.id,
+                        &durable_turn.id,
+                        classification.mode,
+                        "PROPOSAL_APPLY_ERROR",
+                        Some(&proposal.session_id),
+                    )
+                    .await
+                    .map(Json);
                 }
             };
+            let message = state
+                .store
+                .assign_message_context(&message.id, &conversation.id, Some(&durable_turn.id))
+                .await
+                .map_err(ApiError::store)?;
+            state
+                .store
+                .finalize_agent_turn(
+                    &durable_turn.id,
+                    "succeeded",
+                    None,
+                    Some(&proposal.session_id),
+                )
+                .await
+                .map_err(ApiError::store)?;
             Ok(Json(WorkspaceMessageResponse {
+                conversation_id: conversation.id.clone(),
+                turn_id: durable_turn.id.clone(),
+                turn_status: "succeeded".to_owned(),
                 turn_mode: classification.mode,
                 messages: vec![ChatMessagePayload::from_record(message)],
                 proposal: None,
@@ -268,10 +404,42 @@ pub(crate) async fn post_workspace_message(
             }))
         }
         TurnMode::RunRequest => {
-            let run_request = handle_run_request(&state, request).await?;
+            let run_request = match handle_run_request(&state, request).await {
+                Ok(run_request) => run_request,
+                Err(_error) => {
+                    return terminal_error_response(
+                        &state,
+                        &workspace_id,
+                        &conversation.id,
+                        &durable_turn.id,
+                        classification.mode,
+                        "RUN_REQUEST_ERROR",
+                        None,
+                    )
+                    .await
+                    .map(Json);
+                }
+            };
+            let message = state
+                .store
+                .assign_message_context(
+                    &run_request.message.id,
+                    &conversation.id,
+                    Some(&durable_turn.id),
+                )
+                .await
+                .map_err(ApiError::store)?;
+            state
+                .store
+                .finalize_agent_turn(&durable_turn.id, "succeeded", None, None)
+                .await
+                .map_err(ApiError::store)?;
             Ok(Json(WorkspaceMessageResponse {
+                conversation_id: conversation.id.clone(),
+                turn_id: durable_turn.id.clone(),
+                turn_status: "succeeded".to_owned(),
                 turn_mode: classification.mode,
-                messages: vec![ChatMessagePayload::from_record(run_request.message)],
+                messages: vec![ChatMessagePayload::from_record(message)],
                 proposal: None,
                 run: Some(run_request.run),
                 pending_confirmation: run_request.pending_confirmation,
@@ -285,6 +453,8 @@ pub(crate) async fn persist_agent_logs(
     workspace_id: &str,
     session_id: &str,
     logs: &[AgentLogEntry],
+    conversation_id: Option<&str>,
+    turn_id: Option<&str>,
 ) -> Result<(), ApiError> {
     for log in logs {
         state
@@ -296,6 +466,8 @@ pub(crate) async fn persist_agent_logs(
                 text: Some(&log.text),
                 ref_id: Some(session_id),
                 attachment_ids_json: None,
+                conversation_id,
+                turn_id,
             })
             .await
             .map_err(ApiError::store)?;
@@ -313,8 +485,51 @@ impl ChatMessagePayload {
             text: record.text.unwrap_or_default(),
             time: record.created_at,
             turn_mode,
+            conversation_id: record.conversation_id,
+            turn_id: record.turn_id,
         }
     }
+}
+
+pub(crate) async fn terminal_error_response(
+    state: &AppState,
+    workspace_id: &str,
+    conversation_id: &str,
+    turn_id: &str,
+    turn_mode: TurnMode,
+    reason_code: &str,
+    execution_id: Option<&str>,
+) -> Result<WorkspaceMessageResponse, ApiError> {
+    let text = format!("Agent 执行失败 [{reason_code}]。本轮已结束，可以重试。");
+    let message = state
+        .store
+        .create_message(NewMessage {
+            workspace_id,
+            role: "agent",
+            kind: "agent_error",
+            text: Some(&text),
+            ref_id: execution_id,
+            attachment_ids_json: None,
+            conversation_id: Some(conversation_id),
+            turn_id: Some(turn_id),
+        })
+        .await
+        .map_err(ApiError::store)?;
+    state
+        .store
+        .finalize_agent_turn(turn_id, "error", Some(reason_code), execution_id)
+        .await
+        .map_err(ApiError::store)?;
+    Ok(WorkspaceMessageResponse {
+        conversation_id: conversation_id.to_owned(),
+        turn_id: turn_id.to_owned(),
+        turn_status: "error".to_owned(),
+        turn_mode,
+        messages: vec![ChatMessagePayload::from_record(message)],
+        proposal: None,
+        run: None,
+        pending_confirmation: None,
+    })
 }
 
 #[derive(Debug, Deserialize)]

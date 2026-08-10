@@ -12,6 +12,7 @@ mod agent_contract_observation_records;
 mod agent_contract_observation_records_tests;
 mod artifact_journal_records;
 mod canvas_comment_records;
+mod conversation_records;
 mod cost_ledger_idempotency;
 mod failed_run_records;
 #[cfg(test)]
@@ -61,6 +62,7 @@ mod workspace_records;
 pub use agent_contract_observation_records::*;
 pub use artifact_journal_records::*;
 pub use canvas_comment_records::*;
+pub use conversation_records::*;
 pub use node_cache_records::*;
 pub use proposal_records::*;
 pub use provider_task_records::*;
