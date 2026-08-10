@@ -169,13 +169,29 @@ fn golden_nano_banana_seedance_compiles_to_single_chain() {
 }
 
 #[test]
-fn golden_seed_catalog_without_i2v_binding_fails_closed() {
+fn golden_seed_catalog_without_i2v_binding_clarifies_without_fallback() {
     // Fixture note: with no (image_to_video, seedance) binding the compiler
-    // must fail with BINDING_NOT_FOUND — never fall back to text_to_video.
+    // must clarify with BINDING_NOT_FOUND — never fall back to text_to_video.
     let catalog = builtin_catalog();
-    let err = compile_fixture("intent-nano-banana-seedance.json", &catalog)
-        .expect_err("no i2v binding in seed");
-    assert_eq!(err.code(), "BINDING_NOT_FOUND");
+    let outcome = compile_fixture("intent-nano-banana-seedance.json", &catalog)
+        .expect("catalog gaps are user-actionable clarification outcomes");
+    let CompileOutcome::Clarify(clarify) = outcome else {
+        panic!("missing binding must not compile");
+    };
+    assert_eq!(clarify.reason_code, "BINDING_NOT_FOUND");
+    assert_eq!(clarify.missing_fields, ["s2.model"]);
+    assert_eq!(
+        clarify.safe_context["requestedModelId"],
+        "bytedance/seedance-v1.5-pro"
+    );
+    assert_eq!(
+        clarify.safe_context["availableModels"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        clarify.safe_context["requestedModelCapabilities"][0]["capabilityId"],
+        "text_to_video"
+    );
 }
 
 #[test]
@@ -261,11 +277,22 @@ fn golden_missing_image_input_clarifies() {
 }
 
 #[test]
-fn golden_model_capability_mismatch_is_hard_error() {
+fn golden_model_capability_mismatch_clarifies_with_alternatives() {
     let catalog = golden_catalog();
-    let err = compile_fixture("intent-model-mismatch.json", &catalog)
-        .expect_err("seedance cannot do text_to_image");
-    assert_eq!(err.code(), "BINDING_NOT_FOUND");
+    let outcome = compile_fixture("intent-model-mismatch.json", &catalog)
+        .expect("seedance mismatch is user-actionable");
+    let CompileOutcome::Clarify(clarify) = outcome else {
+        panic!("seedance cannot compile as text_to_image");
+    };
+    assert_eq!(clarify.reason_code, "BINDING_NOT_FOUND");
+    assert_eq!(clarify.missing_fields, ["s1.model"]);
+    assert!(
+        clarify.safe_context["availableModels"]
+            .as_array()
+            .is_some_and(|models| models
+                .iter()
+                .any(|model| model["modelId"] == "google/nano-banana-2"))
+    );
 }
 
 #[test]

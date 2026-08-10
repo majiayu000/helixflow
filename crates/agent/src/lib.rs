@@ -89,6 +89,7 @@ pub fn create_session_contract(request: &AgentSessionRequest) -> AgentResult<Age
     let tmp_dir = root_dir.join("tmp");
     let skills_dir = ctx_dir.join("skills");
     let node_defs_dir = ctx_dir.join("node_defs");
+    let model_catalog_dir = ctx_dir.join("models");
     let workflow_backends_dir = ctx_dir.join("workflow_backends");
     let runtime_providers_dir = ctx_dir.join("runtime_providers");
     let api_connectors_dir = ctx_dir.join("api_connectors");
@@ -104,6 +105,7 @@ pub fn create_session_contract(request: &AgentSessionRequest) -> AgentResult<Age
     if request.mode.uses_graph_context() {
         fs::create_dir_all(&skills_dir)?;
         fs::create_dir_all(&node_defs_dir)?;
+        fs::create_dir_all(&model_catalog_dir)?;
         fs::create_dir_all(&workflow_backends_dir)?;
         fs::create_dir_all(&runtime_providers_dir)?;
         fs::create_dir_all(&api_connectors_dir)?;
@@ -116,6 +118,10 @@ pub fn create_session_contract(request: &AgentSessionRequest) -> AgentResult<Age
         write_json(
             node_defs_dir.join("catalog.json"),
             &NodeRegistry::builtin().export_catalog(),
+        )?;
+        write_json(
+            model_catalog_dir.join("catalog.json"),
+            helixflow_run::shared_catalog(),
         )?;
         write_json(
             workflow_backends_dir.join("catalog.json"),
