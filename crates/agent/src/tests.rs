@@ -1,7 +1,11 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use helixflow_gateway::RuntimeProvider;
@@ -594,6 +598,22 @@ async fn service_streams_agent_status_and_reads_chat_reply() {
     assert!(event_names.iter().any(|event| event == "agent.status.end"));
 }
 
+#[tokio::test]
+async fn service_times_out_and_cancels_a_stuck_runtime_turn() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let runtime = HangingRuntime::default();
+    let service = AgentService::new(runtime.clone(), EventBus::new(16))
+        .with_turn_timeout(Duration::from_millis(10));
+
+    let error = service
+        .answer_chat(chat_request(&dir))
+        .await
+        .expect_err("stuck turn must time out");
+
+    assert!(error.to_string().contains("timed out"));
+    assert!(runtime.cancelled.load(Ordering::SeqCst));
+}
+
 fn write_valid_proposal(session: &AgentSession) {
     write_proposal(
         session,
@@ -687,6 +707,40 @@ impl AgentRuntime for FakeRuntime {
     }
 
     async fn cancel(&self, _handle: &RuntimeHandle) -> RuntimeResult<()> {
+        Ok(())
+    }
+}
+
+#[derive(Clone, Default)]
+struct HangingRuntime {
+    cancelled: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl AgentRuntime for HangingRuntime {
+    fn id(&self) -> &'static str {
+        "hanging"
+    }
+
+    async fn start(&self, session: AgentSession) -> RuntimeResult<RuntimeHandle> {
+        Ok(RuntimeHandle::new(
+            self.id(),
+            session.id,
+            session.root_dir,
+            session.out_dir,
+        ))
+    }
+
+    async fn send(&self, _handle: &RuntimeHandle, _turn: AgentTurn) -> RuntimeResult<()> {
+        Ok(())
+    }
+
+    async fn next_event(&self, _handle: &RuntimeHandle) -> Option<RuntimeEvent> {
+        std::future::pending().await
+    }
+
+    async fn cancel(&self, _handle: &RuntimeHandle) -> RuntimeResult<()> {
+        self.cancelled.store(true, Ordering::SeqCst);
         Ok(())
     }
 }

@@ -1,5 +1,6 @@
 use std::fs;
 use std::io::ErrorKind;
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use helixflow_run::{EventBus, RunEventEnvelope};
@@ -13,6 +14,7 @@ use crate::{
 };
 
 const DEFAULT_MAX_PROPOSAL_ROUNDS: usize = 3;
+const DEFAULT_TURN_TIMEOUT: Duration = Duration::from_secs(300);
 pub(crate) const MAX_PROPOSAL_ROUNDS: usize = 10;
 
 #[derive(Debug, Clone)]
@@ -20,6 +22,7 @@ pub struct AgentService<R> {
     runtime: R,
     events: EventBus,
     max_proposal_rounds: usize,
+    turn_timeout: Duration,
 }
 
 impl<R> AgentService<R>
@@ -31,11 +34,17 @@ where
             runtime,
             events,
             max_proposal_rounds: DEFAULT_MAX_PROPOSAL_ROUNDS,
+            turn_timeout: DEFAULT_TURN_TIMEOUT,
         }
     }
 
     pub fn with_max_proposal_rounds(mut self, max_proposal_rounds: usize) -> Self {
         self.max_proposal_rounds = max_proposal_rounds.clamp(1, MAX_PROPOSAL_ROUNDS);
+        self
+    }
+
+    pub fn with_turn_timeout(mut self, turn_timeout: Duration) -> Self {
+        self.turn_timeout = turn_timeout.max(Duration::from_millis(1));
         self
     }
 
@@ -313,24 +322,46 @@ where
             .map_err(|err| AgentError::Runtime(err.to_string()))?;
         self.record_status(run, "turn.sent", json!({}));
 
-        while let Some(event) = self.runtime.next_event(&run.handle).await {
-            match event {
-                RuntimeEvent::Status { message } => {
-                    self.record_status(run, "runtime.status", json!({ "message": message }));
+        let outcome = tokio::time::timeout(self.turn_timeout, async {
+            while let Some(event) = self.runtime.next_event(&run.handle).await {
+                match event {
+                    RuntimeEvent::Status { message } => {
+                        self.record_status(run, "runtime.status", json!({ "message": message }));
+                    }
+                    RuntimeEvent::Failed { message } => {
+                        self.record_status(
+                            run,
+                            "runtime.failed",
+                            json!({ "message": message.clone() }),
+                        );
+                        return TurnRunOutcome::RuntimeFailed(message);
+                    }
+                    RuntimeEvent::Finished => return TurnRunOutcome::Finished,
                 }
-                RuntimeEvent::Failed { message } => {
-                    self.record_status(
-                        run,
-                        "runtime.failed",
-                        json!({ "message": message.clone() }),
-                    );
-                    return Ok(TurnRunOutcome::RuntimeFailed(message));
-                }
-                RuntimeEvent::Finished => return Ok(TurnRunOutcome::Finished),
+            }
+            TurnRunOutcome::Finished
+        })
+        .await;
+
+        match outcome {
+            Ok(outcome) => Ok(outcome),
+            Err(_) => {
+                self.runtime
+                    .cancel(&run.handle)
+                    .await
+                    .map_err(|error| AgentError::Runtime(error.to_string()))?;
+                let message = format!(
+                    "agent turn timed out after {} seconds",
+                    self.turn_timeout.as_secs_f64()
+                );
+                self.record_status(
+                    run,
+                    "runtime.timeout",
+                    json!({ "message": message.clone() }),
+                );
+                Ok(TurnRunOutcome::RuntimeFailed(message))
             }
         }
-
-        Ok(TurnRunOutcome::Finished)
     }
 
     fn record_status(&self, run: &mut AgentRunState, status: &str, detail: Value) {
