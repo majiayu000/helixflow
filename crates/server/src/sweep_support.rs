@@ -631,6 +631,7 @@ mod tests {
         ) -> Result<ValidatedAgentProposal, AgentError> {
             Ok(ValidatedAgentProposal {
                 session_id: "noop".to_owned(),
+                runtime_identity: None,
                 agent_logs: vec![AgentLogEntry {
                     kind: "agent_log:status".to_owned(),
                     text: "noop".to_owned(),

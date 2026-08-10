@@ -274,6 +274,7 @@ async fn prepare_fix_proposal(
         return Ok((
             ValidatedAgentProposal {
                 session_id: proposed.session_id,
+                runtime_identity: proposed.runtime_identity,
                 agent_logs: proposed.agent_logs,
                 proposal: prepared,
             },
@@ -317,6 +318,7 @@ async fn prepare_fix_proposal(
             Ok((
                 ValidatedAgentProposal {
                     session_id: validated.session_id,
+                    runtime_identity: validated.runtime_identity,
                     agent_logs: validated.agent_logs,
                     proposal: prepared,
                 },

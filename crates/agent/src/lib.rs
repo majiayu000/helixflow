@@ -19,7 +19,7 @@ mod turn_mode;
 
 pub use canvas_ops::{CanvasGateState, CanvasOpsContext, CanvasOpsContract, CanvasSelection};
 pub use contract::{
-    AgentLogEntry, RunRequestAction, RunRequestOutput, ValidatedAgentIntent,
+    AgentLogEntry, AgentRuntimeIdentity, RunRequestAction, RunRequestOutput, ValidatedAgentIntent,
     ValidatedAgentProposal, ValidatedAgentReply, ValidatedRunRequest, read_validated_intent,
     read_validated_proposal, read_validated_reply, read_validated_run_request,
 };

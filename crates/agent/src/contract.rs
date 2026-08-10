@@ -10,6 +10,7 @@ use crate::{AgentError, AgentResult, AgentSession, read_output_file};
 #[derive(Debug, Clone)]
 pub struct ValidatedAgentProposal {
     pub session_id: String,
+    pub runtime_identity: Option<AgentRuntimeIdentity>,
     pub agent_logs: Vec<AgentLogEntry>,
     pub proposal: PreparedProposal,
 }
@@ -17,6 +18,7 @@ pub struct ValidatedAgentProposal {
 #[derive(Debug, Clone)]
 pub struct ValidatedAgentIntent {
     pub session_id: String,
+    pub runtime_identity: Option<AgentRuntimeIdentity>,
     pub agent_logs: Vec<AgentLogEntry>,
     pub intent: IntentPlan,
 }
@@ -24,6 +26,7 @@ pub struct ValidatedAgentIntent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedAgentReply {
     pub session_id: String,
+    pub runtime_identity: Option<AgentRuntimeIdentity>,
     pub agent_logs: Vec<AgentLogEntry>,
     pub message: String,
 }
@@ -39,6 +42,13 @@ pub struct ValidatedRunRequest {
 pub struct AgentLogEntry {
     pub kind: String,
     pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRuntimeIdentity {
+    pub thread_id: String,
+    pub turn_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -101,6 +111,7 @@ pub fn read_validated_proposal(
 
     Ok(ValidatedAgentProposal {
         session_id: session.id.clone(),
+        runtime_identity: None,
         agent_logs: Vec::new(),
         proposal,
     })
@@ -132,6 +143,7 @@ pub fn read_validated_reply(session: &AgentSession) -> AgentResult<ValidatedAgen
 
     Ok(ValidatedAgentReply {
         session_id: session.id.clone(),
+        runtime_identity: None,
         agent_logs: Vec::new(),
         message: output.message,
     })
