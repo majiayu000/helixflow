@@ -45,6 +45,12 @@ export function NodeLibrary({
       return;
     }
 
+    if (open && category === tool.category) {
+      setCategory('select');
+      setOpen(false);
+      return;
+    }
+
     setQuery('');
     setCategory(tool.category);
 
@@ -62,6 +68,13 @@ export function NodeLibrary({
     }
 
     setOpen(true);
+  };
+
+  const addFromTray = (definition: NodeDefinition) => {
+    if (disabled) return;
+    onAddNode(definition);
+    setCategory('select');
+    setOpen(false);
   };
 
   return (
@@ -118,8 +131,7 @@ export function NodeLibrary({
                   disabled={disabled}
                   draggable={!disabled}
                   key={definition.type}
-                  onDoubleClick={() => onAddNode(definition)}
-                  onClick={() => undefined}
+                  onClick={() => addFromTray(definition)}
                   onDragStart={(event) => {
                     event.dataTransfer.effectAllowed = 'copy';
                     event.dataTransfer.setData('application/x-helixflow-node-type', definition.type);
@@ -186,7 +198,7 @@ function FragmentedToolButton({
 function toolbarItems(categories: string[]): ToolbarItem[] {
   const available = new Set(categories);
   const items: ToolbarItem[] = [
-    { category: 'all', icon: 'play', key: 'node-menu', label: '打开节点库', primary: true },
+    { category: 'all', icon: 'layers', key: 'node-menu', label: '打开节点库', primary: true },
     { category: 'select', icon: 'hand', key: 'select', label: '选择画布' },
     { category: 'undo', disabled: true, icon: 'undo', key: 'undo', label: '撤销' },
     { category: 'redo', disabled: true, icon: 'redo', key: 'redo', label: '重做' },

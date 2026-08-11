@@ -119,7 +119,13 @@ export function CanvasCommentsPanel({
 
   if (!open) {
     return (
-      <button className="comment-toggle" onClick={() => setOpen(true)} type="button">
+      <button
+        aria-expanded="false"
+        className="comment-toggle"
+        onClick={() => setOpen(true)}
+        onPointerDown={(event) => event.stopPropagation()}
+        type="button"
+      >
         Comments <strong>{comments.length}</strong>
       </button>
     );

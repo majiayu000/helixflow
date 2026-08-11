@@ -34,7 +34,6 @@ export function TopBar({
   state,
   connection,
   historyOpen,
-  agentRunDisabled,
   exportDisabled,
   undoDisabled,
   runDisabled,
@@ -44,7 +43,6 @@ export function TopBar({
   busy,
   onHistory,
   onNewWorkspace,
-  onAgentRun,
   onCommitEdits,
   onExport,
   onUndo,
@@ -52,7 +50,6 @@ export function TopBar({
   onForceRerunChange,
   onQueue,
 }: TopBarProps) {
-  const nodeCount = state.graph.nodes.length;
   const selectedProviderId = state.providers.selectedProvider ?? state.providers.defaultProvider;
   const selectedProvider =
     state.providers.runtimeProviders.find(
@@ -60,8 +57,6 @@ export function TopBar({
     ) ??
     state.providers.runtimeProviders[0] ??
     null;
-  const providerOk = Boolean(selectedProvider?.enabled && selectedProvider.status === 'healthy');
-  const providerLabel = selectedProvider?.label ?? selectedProviderId;
   const providerMessage = selectedProvider?.message ?? providerStatusLabel(selectedProvider);
   const versionNumber = versionOrdinal(state);
   const dirtyEditCount = queueLockReason.kind === 'dirty_edits' ? queueLockReason.count : 0;
@@ -84,10 +79,8 @@ export function TopBar({
           <strong>{workspaceTitle(state.workspace.name)}</strong>
           <span>v{versionNumber}</span>
         </div>
-        {editing ? (
+        {editing && (
           <span className="edit-state edit-state--dirty">EDITING · {dirtyEditCount} CHANGES</span>
-        ) : (
-          <span className="edit-state">READY · v{versionNumber}</span>
         )}
         <button className="new-workspace-link" disabled={busy} onClick={onNewWorkspace}>
           + 新建
@@ -113,10 +106,6 @@ export function TopBar({
                 ))}
               </select>
             </span>
-            <span className="pill pill--ok">
-              <span className="led" />
-              {nodeCount} 节点
-            </span>
             {queueLockReason.kind !== 'none' && !running && (
               <span className="pill pill--warn">
                 <span className="led" />
@@ -126,10 +115,6 @@ export function TopBar({
             <span className={connection === 'live' ? 'pill pill--live' : 'pill pill--off'}>
               <span className="led" />
               Codex {connectionLabel(connection)}
-            </span>
-            <span className={providerOk ? 'pill pill--live' : 'pill pill--off'}>
-              <span className="led" />
-              {providerLabel} · {providerStatusLabel(selectedProvider)}
             </span>
           </div>
         )}
@@ -163,12 +148,6 @@ export function TopBar({
           <button className="btn btn--commit btn--sm" disabled={busy} onClick={onCommitEdits}>
             <Icon n="check" s={13} />
             提交编辑 → {nextVersionLabel}
-          </button>
-        )}
-        {!editing && (
-          <button className="btn btn--soft btn--sm top-agent-run" disabled={agentRunDisabled || busy} onClick={onAgentRun}>
-            <Icon n="spark" s={13} fill />
-            Agent 运行
           </button>
         )}
         {!editing && (

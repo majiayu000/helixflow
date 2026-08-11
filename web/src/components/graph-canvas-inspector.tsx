@@ -107,7 +107,6 @@ export function GraphInspector({
   );
   const [errors, setErrors] = useState<InspectorErrorMap>({});
   const [savingKey, setSavingKey] = useState<string | null>(null);
-  const [fieldScale, setFieldScale] = useState(1);
   const readonlyReason = !workflowNode
     ? '当前 workflow graph 不可用'
     : !definition
@@ -148,17 +147,11 @@ export function GraphInspector({
     }
   };
 
-  const nudgeFieldScale = (delta: number) => {
-    setFieldScale((current) => Math.min(1.16, Math.max(0.92, Number((current + delta).toFixed(2)))));
-  };
-
   const style = nodeInspectorStyle(
     node,
     view ?? { x: 0, y: 0, z: 1 },
     viewportSize ?? { width: 900, height: 640 },
   );
-  const detailsStyle = { '--inspector-field-scale': fieldScale } as CSSProperties;
-
   return (
     <div
       className="inspector p-inspector inspector-floating inspector-compact"
@@ -170,11 +163,11 @@ export function GraphInspector({
       </span>
       <div className="inspector-node-actions">
         <details className="inspector-edit-details">
-          <summary className="inspector-tool inspector-tool-icon" title="编辑参数">
+          <summary className="inspector-tool" title="编辑参数">
             <Icon n="sliders" s={14} />
-            <span className="selection-summary-accessible">编辑参数</span>
+            <span>参数</span>
           </summary>
-          <div className="inspector-details-panel" style={detailsStyle}>
+          <div className="inspector-details-panel">
             <div className="inspector-head">
               <div className="kicker">选中节点 · {node.id}</div>
               <div className="title">
@@ -223,12 +216,6 @@ export function GraphInspector({
             </div>
           </div>
         </details>
-        <button className="inspector-tool inspector-font-tool" onClick={() => nudgeFieldScale(-0.06)} type="button">
-          A-
-        </button>
-        <button className="inspector-tool inspector-font-tool" onClick={() => nudgeFieldScale(0.06)} type="button">
-          A+
-        </button>
         <button
           className="inspector-tool inspector-tool-primary"
           disabled={!onRequestProposal}
