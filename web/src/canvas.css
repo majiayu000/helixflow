@@ -7,6 +7,19 @@
   background: var(--surface-2);
 }
 
+.canvas-stage {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.canvas-stage > .p-canvas,
+.canvas-stage > .canvas-error {
+  min-width: 0;
+}
+
 .artifact-stage {
   display: flex;
   flex: 1;
