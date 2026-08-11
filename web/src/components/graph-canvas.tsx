@@ -43,7 +43,7 @@ import {
 import { CanvasMinimap } from './graph-canvas-minimap';
 import { WorkflowNode } from './graph-canvas-node';
 import { useCanvasNodeDragController } from './graph-canvas-node-drag-controller';
-import { CanvasGuides, EmptyCanvas, ZoomControls } from './graph-canvas-overlays';
+import { EmptyCanvas, ZoomControls } from './graph-canvas-overlays';
 import {
   buildComparableNodeMap,
   buildEdgeSignatureSet,
@@ -97,6 +97,7 @@ export function GraphCanvas({
   onSelectOutput,
   onSelectionChange,
   onSetParam,
+  onStartFromPrompt,
   outputs,
 }: GraphCanvasProps) {
   const canvasRef = useRef<HTMLElement | null>(null);
@@ -645,8 +646,9 @@ export function GraphCanvas({
           presenceByActor={presenceByActor}
         />
       </div>
-      <CanvasGuides nodes={displayNodes} selectedNodes={selectedNodes} view={view} viewportSize={viewportSize} />
-      {nodeCount === 0 && <EmptyCanvas />}
+      {nodeCount === 0 && (
+        <EmptyCanvas disabled={connectionDisabled} onPrompt={onStartFromPrompt} />
+      )}
       {selectionDrag && (
         <span
           className="selection-rect"

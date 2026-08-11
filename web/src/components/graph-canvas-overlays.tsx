@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react';
+import { useState, type CSSProperties, type FormEvent } from 'react';
 import { Icon } from '../icons';
 import type { GraphNodeState } from '../types';
 import {
@@ -8,15 +8,68 @@ import {
   type ViewportSize,
 } from './graph-canvas-navigation';
 
-export function EmptyCanvas() {
+const STARTER_PROMPTS = [
+  '把一张产品图生成 6 秒电影感运镜视频',
+  '根据一句创意生成分镜、画面和短视频',
+  '导入素材，自动搭建可复用的内容工作流',
+];
+
+export function EmptyCanvas({
+  disabled = false,
+  onPrompt,
+}: {
+  disabled?: boolean;
+  onPrompt?: (prompt: string) => void | Promise<void>;
+}) {
+  const [draft, setDraft] = useState('');
+
+  const submit = (event?: FormEvent) => {
+    event?.preventDefault();
+    const prompt = draft.trim();
+    if (!prompt || disabled || !onPrompt) return;
+    void onPrompt(prompt);
+    setDraft('');
+  };
+
   return (
-    <div className="empty-canvas">
-      <div className="empty-card">
-        <div className="empty-icon">
-          <Icon n="layers" s={22} />
+    <div className="empty-canvas" onPointerDown={(event) => event.stopPropagation()}>
+      <div className="empty-card empty-card--agent">
+        <div className="empty-kicker">
+          <span /> AGENT CANVAS
         </div>
-        <div className="empty-title">空白工作流</div>
-        <div className="empty-sub">先描述要设计的结果；需要自动化时再生成 workflow。</div>
+        <h1>描述结果，工作流随后出现</h1>
+        <p>从你想生成的内容开始。Agent 会选择模型、搭建节点，并把结果直接带回画布。</p>
+        <form className="empty-composer" onSubmit={submit}>
+          <textarea
+            aria-label="描述要生成的结果"
+            disabled={disabled || !onPrompt}
+            onChange={(event) => setDraft(event.currentTarget.value)}
+            placeholder="例如：用这张产品图生成 6 秒电影感推镜视频，保持包装文字清晰…"
+            rows={3}
+            value={draft}
+          />
+          <div className="empty-composer-foot">
+            <span>Agent 会先提出最小可执行方案</span>
+            <button disabled={disabled || !onPrompt || !draft.trim()} type="submit">
+              开始创建 <Icon n="arrowUp" s={13} />
+            </button>
+          </div>
+        </form>
+        <div className="empty-starters" aria-label="示例任务">
+          {STARTER_PROMPTS.map((prompt) => (
+            <button
+              disabled={disabled || !onPrompt}
+              key={prompt}
+              onClick={() => {
+                if (onPrompt && !disabled) void onPrompt(prompt);
+              }}
+              type="button"
+            >
+              <Icon n="spark" s={12} />
+              {prompt}
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );

@@ -211,7 +211,7 @@ describe('App', () => {
     expect(markup).toContain('helixflow');
     expect(markup).toContain('Test Workspace');
     expect(markup).toContain('对话');
-    expect(markup).toContain('2 节点');
+    expect(markup).not.toContain('2 节点');
     expect(markup).toContain('Mock Provider');
     expect(markup).toContain('本地测试');
     expect(markup).toContain('aria-label="展开底部面板"');

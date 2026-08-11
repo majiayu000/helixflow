@@ -83,6 +83,15 @@ export function WorkbenchShell({ panes, overlays }: WorkbenchShellProps) {
   const panelExpanded = compact
     ? compactOpenZone === 'panel'
     : document.zones.panel.visible;
+  const primaryInset = showPrimary && primaryExpanded ? primarySize + 24 : 14;
+  const secondaryInset = showSecondary && secondaryExpanded ? secondarySize + 24 : 14;
+  const panelInset = showPanel && panelExpanded ? panelSize + 24 : 14;
+  const shellStyle = {
+    '--workbench-primary-inset': `${primaryInset}px`,
+    '--workbench-secondary-inset': `${secondaryInset}px`,
+    '--workbench-panel-inset': `${panelInset}px`,
+    '--workbench-center-shift': `${(primaryInset - secondaryInset) / 2}px`,
+  } as CSSProperties;
 
   const beginDrag = (event: PointerEvent<HTMLDivElement>, containerId: string) => {
     if (event.button !== 0 || isInteractiveTarget(event.target) || compactWorkbench()) return;
@@ -152,7 +161,7 @@ export function WorkbenchShell({ panes, overlays }: WorkbenchShellProps) {
   };
 
   return (
-    <div className="workbench-shell" ref={rootRef}>
+    <div className="workbench-shell" ref={rootRef} style={shellStyle}>
       {showPrimary && (
         <div
           className={`workbench-drawer-layer workbench-drawer-layer--primary${primaryExpanded ? '' : ' is-collapsed'}`}
@@ -421,46 +430,47 @@ function WorkbenchViewContainer({
                   {binding.badge !== undefined && <span className="workbench-pane-badge">{binding.badge}</span>}
                 </button>
                 <div className="workbench-pane-actions">
-                  <button
-                    aria-label={`前移${definition.title}`}
-                    disabled={containerIndex === 0}
-                    onClick={() => dispatch({ type: 'container/reorder', containerId: container.id, index: containerIndex - 1 })}
-                    title="前移"
-                    type="button"
-                  >↑</button>
-                  <button
-                    aria-label={`后移${definition.title}`}
-                    disabled={containerIndex >= document.zones[container.zoneId].containerIds.length - 1}
-                    onClick={() => dispatch({ type: 'container/reorder', containerId: container.id, index: containerIndex + 1 })}
-                    title="后移"
-                    type="button"
-                  >↓</button>
-                  <label className="workbench-pane-move-label">
-                    <span className="sr-only">移动{definition.title}</span>
-                    <select
-                      aria-label={`移动${definition.title}`}
-                      onChange={(event) => {
-                        const toZoneId = event.currentTarget.value as WorkbenchZoneId;
-                        if (toZoneId) dispatch({ type: 'container/move', containerId: container.id, toZoneId });
-                        event.currentTarget.value = '';
-                      }}
-                      title="移动到"
-                      defaultValue=""
-                    >
-                      <option value="" disabled>移动</option>
-                      {definition.allowedZones.filter((id) => id !== container.zoneId).map((id) => (
-                        <option key={id} value={id}>{zoneLabel(id)}</option>
-                      ))}
-                    </select>
-                  </label>
-                  {definition.canHide && (
-                    <button
-                      aria-label={`隐藏${definition.title}`}
-                      onClick={() => dispatch({ type: 'pane/hide', paneId })}
-                      title="隐藏"
-                      type="button"
-                    >×</button>
-                  )}
+                  <details className="workbench-pane-menu">
+                    <summary aria-label={`${definition.title}更多操作`} title="更多操作">•••</summary>
+                    <div className="workbench-pane-menu-popover">
+                      <button
+                        aria-label={`前移${definition.title}`}
+                        disabled={containerIndex === 0}
+                        onClick={() => dispatch({ type: 'container/reorder', containerId: container.id, index: containerIndex - 1 })}
+                        type="button"
+                      >上移面板</button>
+                      <button
+                        aria-label={`后移${definition.title}`}
+                        disabled={containerIndex >= document.zones[container.zoneId].containerIds.length - 1}
+                        onClick={() => dispatch({ type: 'container/reorder', containerId: container.id, index: containerIndex + 1 })}
+                        type="button"
+                      >下移面板</button>
+                      <label className="workbench-pane-move-label">
+                        <span>移动到</span>
+                        <select
+                          aria-label={`移动${definition.title}`}
+                          onChange={(event) => {
+                            const toZoneId = event.currentTarget.value as WorkbenchZoneId;
+                            if (toZoneId) dispatch({ type: 'container/move', containerId: container.id, toZoneId });
+                            event.currentTarget.value = '';
+                          }}
+                          defaultValue=""
+                        >
+                          <option value="" disabled>选择区域</option>
+                          {definition.allowedZones.filter((id) => id !== container.zoneId).map((id) => (
+                            <option key={id} value={id}>{zoneLabel(id)}</option>
+                          ))}
+                        </select>
+                      </label>
+                      {definition.canHide && (
+                        <button
+                          aria-label={`隐藏${definition.title}`}
+                          onClick={() => dispatch({ type: 'pane/hide', paneId })}
+                          type="button"
+                        >隐藏面板</button>
+                      )}
+                    </div>
+                  </details>
                   {container.zoneId !== 'editor' && containerIndex === 0 && (
                     <button
                       aria-label={`收起${zoneLabel(container.zoneId)}`}

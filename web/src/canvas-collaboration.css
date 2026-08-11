@@ -1,7 +1,7 @@
 .comment-toggle {
   position: absolute;
-  left: 14px;
-  bottom: 58px;
+  left: var(--workbench-primary-inset, 14px);
+  bottom: calc(var(--workbench-panel-inset, 14px) + 44px);
   z-index: 6;
   height: 30px;
   display: inline-flex;
@@ -16,6 +16,7 @@
   font-weight: 800;
   box-shadow: var(--sh-sm);
   backdrop-filter: blur(14px);
+  transition: left 180ms ease, bottom 180ms ease;
 }
 
 .comment-toggle strong {
@@ -26,8 +27,8 @@
 
 .comment-panel {
   position: absolute;
-  left: 14px;
-  bottom: 58px;
+  left: var(--workbench-primary-inset, 14px);
+  bottom: calc(var(--workbench-panel-inset, 14px) + 44px);
   z-index: 6;
   width: min(318px, calc(100% - 28px));
   max-height: min(420px, calc(100% - 112px));
@@ -38,6 +39,7 @@
   border-radius: var(--r-md);
   background: var(--surface);
   box-shadow: var(--sh-md);
+  transition: left 180ms ease, bottom 180ms ease;
 }
 
 .comment-panel-head {

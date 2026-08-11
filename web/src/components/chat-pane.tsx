@@ -119,9 +119,11 @@ export function ChatPane({
           </button>
         </div>
       )}
-      <div className="session-brief">
-        你在手动改图 — 我不会打断。提交编辑后，我的下一个提案会基于它。
-      </div>
+      {editSessionSummary && (
+        <div className="session-brief">
+          正在编辑画布 · 提交后，Agent 会从这些变更继续。
+        </div>
+      )}
       <div className="chat-msgs chat-msgs--session" ref={scrollRef}>
         <EditSessionWorkspace
           busy={busy}

@@ -354,6 +354,12 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
                     true,
                   );
                 }}
+                onStartFromPrompt={(prompt) =>
+                  runAction(
+                    () => sendMessage(prompt, undefined, activeConversationId ?? undefined),
+                    true,
+                  )
+                }
                 onSelectOutput={(id) => void runAction(() => selectOutput(id))}
                 outputs={activeState.outputs}
                 pendingProposal={activeState.pendingProposal}

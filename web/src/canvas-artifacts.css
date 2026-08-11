@@ -6,7 +6,7 @@
 
 .node-artifact,
 .node-artifact-more {
-  min-height: 38px;
+  min-height: 56px;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -33,16 +33,18 @@
 
 .node-artifact-preview,
 .node-artifact-icon {
-  width: 32px;
-  height: 32px;
-  flex: 0 0 32px;
-  border-radius: 5px;
+  width: 50px;
+  height: 50px;
+  flex: 0 0 50px;
+  border-radius: 8px;
 }
 
 .node-artifact-preview {
   display: block;
   object-fit: cover;
-  background: var(--surface-3);
+  background:
+    radial-gradient(circle at 50% 42%, var(--accent-soft), transparent 48%),
+    repeating-linear-gradient(135deg, var(--surface-3) 0 8px, var(--surface-2) 8px 16px);
 }
 
 .node-artifact-icon {
@@ -67,7 +69,7 @@
 
 .node-artifact-copy strong {
   color: var(--text);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .node-artifact-copy small {
