@@ -11,7 +11,7 @@ use crate::artifact_path::PendingArtifact;
 use crate::artifact_remote::{
     RemotePolicy, checked_received_size, download_remote_artifact, is_public_address,
     next_redirect_url, parse_remote_url, validate_declared_size, validate_resolved_addresses,
-    validate_response_mime, with_total_timeout,
+    validate_resolved_addresses_for_url, validate_response_mime, with_total_timeout,
 };
 use crate::artifacts::validate_artifact_bytes;
 use crate::{RunError, RunResult};
@@ -85,6 +85,34 @@ fn artifact_remote_rejects_mixed_public_and_private_dns_results() {
     ];
     assert!(validate_resolved_addresses(&mixed).is_err());
     assert!(validate_resolved_addresses(&[]).is_err());
+}
+
+#[test]
+fn artifact_remote_allows_clash_fake_ip_only_for_atlas_tos_cdn() {
+    let fake_ip = [IpAddr::V4(Ipv4Addr::new(198, 18, 0, 5))];
+    let atlas = reqwest::Url::parse(
+        "https://ark-content-generation-ap-southeast-1.tos-ap-southeast-1.volces.com/video.mp4",
+    )
+    .unwrap();
+    let lookalike = reqwest::Url::parse(
+        "https://ark-content-generation-ap-southeast-1.tos-ap-southeast-1.volces.com.attacker.example/video.mp4",
+    )
+    .unwrap();
+    let arbitrary = reqwest::Url::parse("https://example.com/video.mp4").unwrap();
+    let literal = reqwest::Url::parse("https://198.18.0.5/video.mp4").unwrap();
+
+    assert!(validate_resolved_addresses_for_url(&atlas, &fake_ip).is_ok());
+    for rejected in [lookalike, arbitrary, literal] {
+        assert!(
+            validate_resolved_addresses_for_url(&rejected, &fake_ip).is_err(),
+            "{rejected}"
+        );
+    }
+    let mixed_private = [
+        IpAddr::V4(Ipv4Addr::new(198, 18, 0, 5)),
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+    ];
+    assert!(validate_resolved_addresses_for_url(&atlas, &mixed_private).is_err());
 }
 
 #[test]

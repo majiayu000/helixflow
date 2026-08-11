@@ -15,6 +15,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const TOTAL_TIMEOUT: Duration = Duration::from_secs(90);
 const MAX_REDIRECTS: usize = 5;
 const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
+const ATLAS_TOS_TUNNEL_SUFFIX: &str = ".tos-ap-southeast-1.volces.com";
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RemotePolicy {
@@ -218,7 +219,7 @@ async fn resolve_and_validate(url: &Url) -> RunResult<Vec<SocketAddr>> {
         .iter()
         .map(|address| address.ip())
         .collect::<Vec<_>>();
-    validate_resolved_addresses(&ips)?;
+    validate_resolved_addresses_for_url(url, &ips)?;
     Ok(addresses)
 }
 
@@ -244,6 +245,44 @@ pub(crate) fn validate_resolved_addresses(addresses: &[IpAddr]) -> RunResult<()>
         return Err(remote_error("remote artifact target is not allowed"));
     }
     Ok(())
+}
+
+/// Clash-style TUN DNS intentionally maps public names into 198.18.0.0/15.
+/// Keep the default SSRF policy fail-closed and permit that synthetic range
+/// only for Atlas' exact Volcengine TOS CDN suffix. Literal benchmark IPs,
+/// other hostnames, mixed private answers, and redirects remain rejected.
+pub(crate) fn validate_resolved_addresses_for_url(
+    url: &Url,
+    addresses: &[IpAddr],
+) -> RunResult<()> {
+    if validate_resolved_addresses(addresses).is_ok() {
+        return Ok(());
+    }
+    if addresses.is_empty() || !is_atlas_tos_tunnel_host(url) {
+        return Err(remote_error("remote artifact target is not allowed"));
+    }
+    if addresses.iter().all(|address| match address {
+        IpAddr::V4(address) => is_benchmark_tunnel_ipv4(*address),
+        IpAddr::V6(_) => false,
+    }) {
+        return Ok(());
+    }
+    Err(remote_error("remote artifact target is not allowed"))
+}
+
+fn is_atlas_tos_tunnel_host(url: &Url) -> bool {
+    let Some(url::Host::Domain(domain)) = url.host() else {
+        return false;
+    };
+    domain
+        .trim_end_matches('.')
+        .to_ascii_lowercase()
+        .ends_with(ATLAS_TOS_TUNNEL_SUFFIX)
+}
+
+fn is_benchmark_tunnel_ipv4(address: Ipv4Addr) -> bool {
+    let [a, b, _, _] = address.octets();
+    a == 198 && (b == 18 || b == 19)
 }
 
 pub(crate) fn is_public_address(address: IpAddr) -> bool {
