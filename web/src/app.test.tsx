@@ -1079,6 +1079,7 @@ describe('App', () => {
     // API instead of rendering the metadata summary inline.
     expect(markup).toContain('Loading artifact content');
     expect(markup).not.toContain('Artifact: Vertical teaser');
+    expect(markup).toContain('canvas-stage canvas-stage--with-artifact');
     expect(markup).toContain('canvas-grid');
     expect(markup).toContain('node-artifact--selected');
   });
@@ -1113,6 +1114,8 @@ describe('App', () => {
 
     expect(markup).not.toContain('artifact-stage');
     expect(markup).not.toContain('Artifact: Other preview');
+    expect(markup).toContain('class="canvas-stage"');
+    expect(markup).not.toContain('canvas-stage--with-artifact');
     expect(markup).toContain('canvas-grid');
   });
 
