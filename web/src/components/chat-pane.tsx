@@ -125,13 +125,15 @@ export function ChatPane({
         </div>
       )}
       <div className="chat-msgs chat-msgs--session" ref={scrollRef}>
-        <EditSessionWorkspace
-          busy={busy}
-          selectedNodeIds={selectedNodeIds}
-          summary={editSessionSummary}
-          onCommit={onCommitEdits}
-          onDiscard={onDiscardEdits}
-        />
+        {editSessionSummary && (
+          <EditSessionWorkspace
+            busy={busy}
+            selectedNodeIds={selectedNodeIds}
+            summary={editSessionSummary}
+            onCommit={onCommitEdits}
+            onDiscard={onDiscardEdits}
+          />
+        )}
         <MessageTimeline messages={messages} turns={turns} />
         <RunErrorCard busy={busy} run={run} onRequestFix={onSend} />
         {pendingProposal && <ProposalMessage
@@ -238,7 +240,7 @@ function EditSessionWorkspace({
   onCommit,
   onDiscard,
 }: {
-  summary: EditSessionSummary | null;
+  summary: EditSessionSummary;
   selectedNodeIds: string[];
   busy: boolean;
   onCommit: () => Promise<void>;
@@ -246,16 +248,12 @@ function EditSessionWorkspace({
 }) {
   return (
     <div className="edit-session-workspace">
-      {summary ? (
-        <EditSessionCard
-          busy={busy}
-          summary={summary}
-          onCommit={onCommit}
-          onDiscard={onDiscard}
-        />
-      ) : (
-        <EditSessionIdleCard />
-      )}
+      <EditSessionCard
+        busy={busy}
+        summary={summary}
+        onCommit={onCommit}
+        onDiscard={onDiscard}
+      />
       <div className="edit-session-request">
         围绕当前画布继续编辑；我会在你提交后再基于新版本工作。
       </div>
@@ -305,29 +303,6 @@ function EditSessionCard({
           提交编辑
         </button>
         <button className="btn btn--ghost btn--sm" disabled={busy} onClick={onDiscard}>
-          放弃
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function EditSessionIdleCard() {
-  return (
-    <div className="edit-session-card edit-session-card--idle">
-      <div className="edit-session-head">
-        <span>UNCOMMITTED · 等待编辑</span>
-        <em>idle</em>
-      </div>
-      <div className="edit-session-empty">
-        在画布移动节点、连线、改参数后，这里会列出待提交操作。
-      </div>
-      <div className="edit-session-actions">
-        <button className="btn btn--primary btn--sm" disabled>
-          <Icon n="check" s={13} />
-          提交编辑
-        </button>
-        <button className="btn btn--ghost btn--sm" disabled>
           放弃
         </button>
       </div>
