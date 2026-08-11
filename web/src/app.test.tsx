@@ -2027,7 +2027,8 @@ describe('GraphCanvas navigation', () => {
     expect(markup).toContain('Approved result after reload');
     expect(markup).toContain('comment-marker');
     expect(markup).toContain('node-artifact--selected');
-    expect(markup).toContain('node-artifact-preview');
+    expect(markup).toContain('node-artifact-icon');
+    expect(markup).not.toContain('<video');
     expect(markup).not.toContain('canvas-toolbar');
     expect(storyGraph.nodes.find((node) => node.id === 'canvas_video')?.position).toEqual({
       x: 520,

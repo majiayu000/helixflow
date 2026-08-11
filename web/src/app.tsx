@@ -354,7 +354,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
                     true,
                   );
                 }}
-                onSelectOutput={(id) => void runAction(() => openArtifactOutput(id))}
+                onSelectOutput={(id) => void runAction(() => selectOutput(id))}
                 outputs={activeState.outputs}
                 pendingProposal={activeState.pendingProposal}
                 presenceByActor={presenceByActor}
