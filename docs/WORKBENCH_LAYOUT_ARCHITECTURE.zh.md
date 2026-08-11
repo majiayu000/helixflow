@@ -22,7 +22,7 @@
 6. 失败可见：损坏或不兼容的 layout snapshot 必须产生 diagnostic 并恢复默认布局，不能静默生成半合法状态。
 7. 响应式降级由 renderer 决定：同一份 layout state 在窄屏变成 drawer/sheet，不由业务组件实现第二套移动逻辑。
 8. 画布优先：Editor 始终占满可用空间；左右 Sidebar 与 Panel 都以 drawer/tray 覆盖画布，开关前后不改变 Editor 几何尺寸。
-9. 结果归属节点：生成结果首先回填为节点内结果卡；点击结果卡才按需打开 Artifact Viewer，不保留常驻 Outputs 区域。
+9. 结果归属节点：生成结果首先回填为节点内结果卡；点击结果卡只选择结果，不隐式改变工作台 topology，Artifact Viewer 由“查看”入口显式打开。
 
 ### 2.1 P0 implementation evidence
 
@@ -94,7 +94,7 @@ secondarySidebar: artifact (hidden until useful)
 panel:           execution [run, outputs] (default collapsed)
 ```
 
-Sidebar 与 Panel 的 topology 仍是稳定 Zone，但 renderer 不再把它们当普通 flex row：左右栏展开为带 Sash 的浮动 drawer，Panel 展开为浮动 tray，收起后都只保留 launcher。这样仍可停靠、排序和持久化，又不会因辅助信息改变画布宽高。生成结果卡常驻其来源节点；Artifact Viewer 只在用户点击结果卡或显式打开时出现。
+Sidebar 与 Panel 的 topology 仍是稳定 Zone，但 renderer 不再把它们当普通 flex row：左右栏展开为带 Sash 的浮动 drawer，Panel 展开为浮动 tray，收起后都只保留 launcher。这样仍可停靠、排序和持久化，又不会因辅助信息改变画布宽高。生成结果卡常驻其来源节点；点击结果只更新 selection，Artifact Viewer 只在用户显式打开时出现。
 
 后续候选：
 

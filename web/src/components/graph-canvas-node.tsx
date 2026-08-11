@@ -227,15 +227,6 @@ export function WorkflowNode({
               >
                 {output.preview?.kind === 'image' ? (
                   <img alt="" className="node-artifact-preview" src={output.preview.content} />
-                ) : output.preview?.kind === 'video' ? (
-                  <video
-                    aria-hidden="true"
-                    className="node-artifact-preview"
-                    muted
-                    playsInline
-                    preload="metadata"
-                    src={output.preview.content}
-                  />
                 ) : (
                   <span className="node-artifact-icon"><Icon n={artifactIcon(output.kind)} s={12} /></span>
                 )}
