@@ -4,6 +4,26 @@ import { ChatPane } from './chat-pane';
 import type { WorkbenchState } from '../types';
 
 describe('ChatPane terminal agent turns', () => {
+  it('hides commit controls when there are no pending canvas edits', () => {
+    const markup = renderToStaticMarkup(
+      <ChatPane
+        busy={false}
+        editSessionSummary={null}
+        messages={[]}
+        onApplyProposal={async () => {}}
+        onCommitEdits={async () => {}}
+        onDiscardEdits={() => {}}
+        onDismissProposal={async () => {}}
+        onSend={async () => {}}
+        pendingProposal={null}
+        run={null}
+      />,
+    );
+
+    expect(markup).not.toContain('UNCOMMITTED');
+    expect(markup).not.toContain('提交编辑');
+  });
+
   it('offers a real interrupt action while the agent is busy', () => {
     const markup = renderToStaticMarkup(
       <ChatPane
