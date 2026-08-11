@@ -9,6 +9,8 @@ import { ManualProposalPanel } from './components/manual-proposal-panel';
 import { ConfirmModal, HistoryPanel, OutputsStrip, RunDock } from './components/run-panels';
 import { TopBar } from './components/top-bar';
 import { useWorkbenchStore } from './store';
+import { WorkbenchShell } from './workbench-layout/react/workbench-shell';
+import { useWorkbenchLayoutStore } from './workbench-layout/store';
 import {
   graphStateFromCanvasDocument,
   type ManualEditSession,
@@ -79,7 +81,12 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const acceptOutput = useWorkbenchStore((store) => store.acceptOutput);
   const rejectOutput = useWorkbenchStore((store) => store.rejectOutput);
   const selectProvider = useWorkbenchStore((store) => store.selectProvider);
+  const dispatchWorkbenchLayout = useWorkbenchLayoutStore((store) => store.dispatch);
   const activeState = initialState ?? state;
+  const openArtifactOutput = (outputId: string) => {
+    dispatchWorkbenchLayout({ type: 'pane/show', paneId: 'artifact' });
+    return selectOutput(outputId);
+  };
   const dirtyEditCount = editSession?.ops.length ?? 0;
   const {
     busy,
@@ -258,9 +265,12 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
         undoDisabled={undoDisabled}
       />
       {error && <div className="error-banner">{error}</div>}
-      <div className="wb-body">
-        <div className="chat-column">
-          <ChatPane
+      <WorkbenchShell
+        panes={{
+          chat: {
+            available: true,
+            content: (
+              <ChatPane
             busy={navigationLocked}
             messages={conversationMessages}
             conversations={conversations}
@@ -302,14 +312,16 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
             }
             pendingProposal={activeState.pendingProposal}
             run={activeState.run}
-          />
-        </div>
-        <section className="wb-canvas">
-          <div
-            className={showArtifactPreview ? 'canvas-stage canvas-stage--with-artifact' : 'canvas-stage'}
-          >
-            <CanvasErrorBoundary resetKey={activeState.workspace.id}>
-              <GraphCanvas
+              />
+            ),
+          },
+          canvas: {
+            available: true,
+            content: (
+              <section className="wb-canvas">
+                <div className="canvas-stage">
+                  <CanvasErrorBoundary resetKey={activeState.workspace.id}>
+                    <GraphCanvas
                 graph={previewState.graph}
                 canvasGraph={canvasGraph}
                 comments={canvas?.comments ?? []}
@@ -342,7 +354,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
                     true,
                   );
                 }}
-                onSelectOutput={(id) => void runAction(() => selectOutput(id))}
+                onSelectOutput={(id) => void runAction(() => openArtifactOutput(id))}
                 outputs={activeState.outputs}
                 pendingProposal={activeState.pendingProposal}
                 presenceByActor={presenceByActor}
@@ -350,52 +362,69 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
                 versionId={activeState.workspace.versionId}
                 workflowGraph={previewState.workflowGraph}
                 workspaceId={activeState.workspace.id}
+                    />
+                  </CanvasErrorBoundary>
+                </div>
+                {showAdvancedEditPanel && (
+                  <ManualProposalPanel
+                    busy={navigationLocked}
+                    state={previewState}
+                    onCreateProposal={(input) => runAction(() => appendManualEdit(input), true)}
+                  />
+                )}
+              </section>
+            ),
+          },
+          artifact: {
+            available: showArtifactPreview,
+            badge: activeState.outputs.length,
+            content: <ArtifactStage outputs={activeState.outputs} />,
+          },
+          run: {
+            available: Boolean(uiState.run.id || uiState.run.steps.length > 0),
+            badge: uiState.run.steps.length,
+            content: <RunDock run={uiState.run} />,
+          },
+          outputs: {
+            available: activeState.outputs.length > 0,
+            badge: activeState.outputs.length,
+            content: (
+              <OutputsStrip
+                busy={navigationLocked}
+                outputs={activeState.outputs}
+                onSelect={(id) => void runAction(() => openArtifactOutput(id))}
+                onAccept={(id) => void runAction(() => acceptOutput(id))}
+                onReject={(id, rerun) => void runAction(() => rejectOutput(id, rerun))}
               />
-            </CanvasErrorBoundary>
-            {showArtifactPreview && (
-              <div className="canvas-artifact-preview">
-                <ArtifactStage outputs={activeState.outputs} />
-              </div>
-            )}
-          </div>
-          {showAdvancedEditPanel && (
-            <ManualProposalPanel
+            ),
+          },
+        }}
+        overlays={(
+          <>
+            <HistoryPanel
               busy={navigationLocked}
-              state={previewState}
-              onCreateProposal={(input) => runAction(() => appendManualEdit(input), true)}
+              history={activeState.history}
+              currentWorkspaceId={activeState.workspace.id}
+              currentVersionId={activeState.workspace.versionId}
+              currentConnectorId={selectedProvider?.id ?? activeState.providers.defaultProvider}
+              migrationBlocked={dirtyEditCount > 0}
+              onClose={() => setHistoryOpen(false)}
+              onOpenWorkspace={(workspaceId) => requestNavigation({ kind: 'workspace', workspaceId })}
+              onRestoreVersion={(versionId) => requestNavigation({ kind: 'restore', versionId })}
+              onMigrationApplied={(nextState) => setInitialState(nextState)}
+              open={historyOpen}
+              workspaceListError={workspaceListError}
+              workspaces={workspaceList}
             />
-          )}
-          <HistoryPanel
-            busy={navigationLocked}
-            history={activeState.history}
-            currentWorkspaceId={activeState.workspace.id}
-            currentVersionId={activeState.workspace.versionId}
-            currentConnectorId={selectedProvider?.id ?? activeState.providers.defaultProvider}
-            migrationBlocked={dirtyEditCount > 0}
-            onClose={() => setHistoryOpen(false)}
-            onOpenWorkspace={(workspaceId) => requestNavigation({ kind: 'workspace', workspaceId })}
-            onRestoreVersion={(versionId) => requestNavigation({ kind: 'restore', versionId })}
-            onMigrationApplied={(nextState) => setInitialState(nextState)}
-            open={historyOpen}
-            workspaceListError={workspaceListError}
-            workspaces={workspaceList}
-          />
-          <ConfirmModal
-            busy={navigationLocked}
-            confirmation={activeState.pendingConfirmation}
-            onApprove={(id) => runAction(() => confirmRun(id))}
-            onHold={(id) => runAction(() => holdRun(id))}
-          />
-          <RunDock run={uiState.run} />
-          <OutputsStrip
-            busy={navigationLocked}
-            outputs={activeState.outputs}
-            onSelect={(id) => void runAction(() => selectOutput(id))}
-            onAccept={(id) => void runAction(() => acceptOutput(id))}
-            onReject={(id, rerun) => void runAction(() => rejectOutput(id, rerun))}
-          />
-        </section>
-      </div>
+            <ConfirmModal
+              busy={navigationLocked}
+              confirmation={activeState.pendingConfirmation}
+              onApprove={(id) => runAction(() => confirmRun(id))}
+              onHold={(id) => runAction(() => holdRun(id))}
+            />
+          </>
+        )}
+      />
       <DirtyNavigationDialog
         busy={busy || navigationBusy}
         target={pendingNavigation}

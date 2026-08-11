@@ -3,6 +3,7 @@
 @import "./canvas-collaboration.css";
 @import "./panels.css";
 @import "./chat-log.css";
+@import "./workbench-layout/workbench-layout.css";
 @import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Manrope:wght@500;600;700;800&family=Noto+Sans+SC:wght@400;500;700&family=Space+Grotesk:wght@500;600;700&display=swap");
 
 :root {
@@ -559,19 +560,6 @@ textarea:disabled {
   color: var(--red);
   padding: 8px 14px;
   font-size: 12.5px;
-}
-
-.wb-body {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-}
-
-.chat-column {
-  width: clamp(420px, 21vw, 580px);
-  min-width: 390px;
-  max-width: 580px;
-  flex: none;
 }
 
 .wb-chat {
@@ -1267,19 +1255,6 @@ textarea:disabled {
   .endpoint-box {
     width: 100%;
     flex-wrap: wrap;
-  }
-
-  .wb-body {
-    flex-direction: column;
-  }
-
-  .chat-column {
-    width: 100%;
-    max-width: none;
-    min-width: 0;
-    height: min(42vh, 420px);
-    min-height: 0;
-    flex: 0 0 min(42vh, 420px);
   }
 
   .wb-chat {

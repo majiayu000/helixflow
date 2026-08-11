@@ -214,8 +214,9 @@ describe('App', () => {
     expect(markup).toContain('2 节点');
     expect(markup).toContain('Mock Provider');
     expect(markup).toContain('本地测试');
-    expect(markup).toContain('运行中');
-    expect(markup).toContain('1 个真实 artifact');
+    expect(markup).toContain('aria-label="展开底部面板"');
+    expect(markup).not.toContain('运行中');
+    expect(markup).not.toContain('1 个真实 artifact');
     expect(markup).toContain('版本与运行历史');
     expect(markup).toContain('Agent requested run');
   });
@@ -1079,7 +1080,8 @@ describe('App', () => {
     // API instead of rendering the metadata summary inline.
     expect(markup).toContain('Loading artifact content');
     expect(markup).not.toContain('Artifact: Vertical teaser');
-    expect(markup).toContain('canvas-stage canvas-stage--with-artifact');
+    expect(markup).toContain('data-pane-id="artifact"');
+    expect(markup).toContain('data-workbench-zone="secondarySidebar"');
     expect(markup).toContain('canvas-grid');
     expect(markup).toContain('node-artifact--selected');
   });
@@ -2025,6 +2027,7 @@ describe('GraphCanvas navigation', () => {
     expect(markup).toContain('Approved result after reload');
     expect(markup).toContain('comment-marker');
     expect(markup).toContain('node-artifact--selected');
+    expect(markup).toContain('node-artifact-preview');
     expect(markup).not.toContain('canvas-toolbar');
     expect(storyGraph.nodes.find((node) => node.id === 'canvas_video')?.position).toEqual({
       x: 520,
