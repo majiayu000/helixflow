@@ -1,45 +1,80 @@
-.canvas-artifact-preview {
-  position: relative;
-  z-index: 4;
-  display: flex;
-  width: clamp(320px, 38%, 420px);
-  min-width: 300px;
-  flex: 0 0 clamp(320px, 38%, 420px);
-  padding: 12px 12px 12px 0;
-  pointer-events: auto;
-}
-
-.canvas-artifact-preview .artifact-stage {
-  overflow: hidden;
-  border: 1px solid var(--border-2);
-  border-radius: var(--r-md);
-  box-shadow: var(--sh-md);
-}
-
 .node-artifacts {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
   gap: 5px;
   margin: 7px 10px 1px;
 }
 
 .node-artifact,
 .node-artifact-more {
-  height: 24px;
+  min-height: 38px;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 8px;
   border: 1px solid var(--border-2);
   border-radius: var(--r-sm);
-  background: var(--surface);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
   color: var(--text-2);
-  padding: 0 7px;
+  padding: 3px;
   font-size: 11px;
   font-weight: 700;
 }
 
 .node-artifact {
+  width: 100%;
+  overflow: hidden;
   cursor: pointer;
+  text-align: left;
+}
+
+.node-artifact:hover {
+  border-color: var(--accent-line);
+  background: color-mix(in srgb, var(--surface-3) 88%, transparent);
+}
+
+.node-artifact-preview,
+.node-artifact-icon {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  border-radius: 5px;
+}
+
+.node-artifact-preview {
+  display: block;
+  object-fit: cover;
+  background: var(--surface-3);
+}
+
+.node-artifact-icon {
+  display: grid;
+  place-items: center;
+  background: var(--surface-3);
+  color: var(--accent);
+}
+
+.node-artifact-copy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.node-artifact-copy strong,
+.node-artifact-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-artifact-copy strong {
+  color: var(--text);
+  font-size: 10px;
+}
+
+.node-artifact-copy small {
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  text-transform: uppercase;
 }
 
 .node-artifact--selected {
@@ -49,14 +84,9 @@
 }
 
 .node-artifact-more {
+  min-height: 24px;
+  justify-self: start;
+  padding: 0 7px;
   color: var(--text-3);
   font-family: var(--font-mono);
-}
-
-@media (max-width: 980px) {
-  .canvas-artifact-preview {
-    width: clamp(280px, 36%, 360px);
-    min-width: 280px;
-    flex-basis: clamp(280px, 36%, 360px);
-  }
 }
