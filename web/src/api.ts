@@ -26,6 +26,7 @@ import {
   type WorkflowGraph,
   type WorkspaceSummary,
   type WorkspaceMessageResponse,
+  type TurnMode,
   type Conversation,
   type WorkbenchState,
 } from './types';
@@ -298,6 +299,7 @@ export async function sendWorkspaceMessage(
     graph: WorkflowGraph;
     canvasContext?: CanvasMessageContext;
     conversationId?: string;
+    turnMode?: TurnMode;
   },
   signal?: AbortSignal,
 ): Promise<WorkspaceMessageResponse> {

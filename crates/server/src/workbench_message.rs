@@ -6,6 +6,7 @@ use axum::{
 };
 use helixflow_agent::{
     AgentLogEntry, AgentRuntimeIdentity, AgentSessionRequest, TurnMode, classify_turn_mode,
+    explicit_turn_mode,
 };
 use helixflow_graph::{PreparedProposal, ProposalOp, WorkflowGraph};
 use helixflow_store::{
@@ -38,6 +39,10 @@ pub(crate) struct WorkspaceMessageRequest {
     pub(crate) conversation_id: Option<String>,
     #[serde(default)]
     pub(crate) canvas_context: Option<WorkspaceCanvasContext>,
+    /// A trusted UI surface can state its intent explicitly. The typed enum
+    /// keeps unknown values fail-closed and avoids keyword routing drift.
+    #[serde(default)]
+    pub(crate) turn_mode: Option<TurnMode>,
 }
 
 #[derive(Debug, Serialize)]
@@ -76,8 +81,16 @@ pub(crate) async fn post_workspace_message(
 ) -> Result<Json<WorkspaceMessageResponse>, ApiError> {
     let VerifiedMessageGraph { version, graph } =
         verified_message_graph(&state, &workspace_id, &input.base_version_id, &input.graph).await?;
-    let classification = classify_turn_mode(&input.user_message, &graph)
-        .map_err(|err| ApiError::bad_request(err.to_string()))?;
+    let classification = match input.turn_mode {
+        Some(mode) => {
+            if input.user_message.trim().is_empty() {
+                return Err(ApiError::bad_request("empty agent turn is not allowed"));
+            }
+            explicit_turn_mode(mode)
+        }
+        None => classify_turn_mode(&input.user_message, &graph)
+            .map_err(|err| ApiError::bad_request(err.to_string()))?,
+    };
     let conversation = match input.conversation_id.as_deref() {
         Some(conversation_id) => state
             .store

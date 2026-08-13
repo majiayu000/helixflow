@@ -10,6 +10,7 @@ import type {
   RunEventEnvelope,
   WorkbenchState,
   WorkflowGraph,
+  TurnMode,
 } from './types';
 
 export type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -46,6 +47,7 @@ export type WorkbenchStore = {
     text: string,
     canvasContext?: CanvasMessageContext,
     conversationId?: string,
+    turnMode?: TurnMode,
   ) => Promise<void>;
   createConversation: () => Promise<string>;
   uploadImage: (file: File) => Promise<void>;

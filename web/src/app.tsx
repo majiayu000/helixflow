@@ -355,7 +355,12 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
                 }}
                 onStartFromPrompt={(prompt) =>
                   runAction(
-                    () => sendMessage(prompt, undefined, activeConversationId ?? undefined),
+                    () => sendMessage(
+                      prompt,
+                      undefined,
+                      activeConversationId ?? undefined,
+                      'create_workflow',
+                    ),
                     true,
                   )
                 }

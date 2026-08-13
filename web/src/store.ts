@@ -312,7 +312,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }));
     return conversation.id;
   },
-  sendMessage: async (text, canvasContext, conversationId) => {
+  sendMessage: async (text, canvasContext, conversationId, turnMode) => {
     const trimmed = text.trim();
     if (!trimmed) {
       return;
@@ -361,6 +361,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
         userMessage: trimmed,
         graph: request.graph,
         conversationId: conversationId ?? state.chat.activeConversationId ?? undefined,
+        turnMode,
       }, requestScope.signal());
       if (!requestScope.isActive(generation, request.workspaceId)) {
         actionGuard.fail('workspace changed while the message was sending');

@@ -35,7 +35,7 @@ pub use runtime::{
 pub use service::AgentService;
 pub use turn_mode::{
     AgentSkill, OutputContract, TurnClassification, TurnMode, TurnModeSource, TurnRoutingError,
-    classify_turn_mode,
+    classify_turn_mode, explicit_turn_mode,
 };
 
 pub fn module_name() -> &'static str {

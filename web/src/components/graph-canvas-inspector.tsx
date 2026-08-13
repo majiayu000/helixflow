@@ -163,7 +163,12 @@ export function GraphInspector({
       </span>
       <div className="inspector-node-actions">
         <details className="inspector-edit-details">
-          <summary className="inspector-tool" title="编辑参数">
+          <summary
+            className="inspector-tool"
+            onClick={(event) => event.stopPropagation()}
+            onPointerDown={(event) => event.stopPropagation()}
+            title="编辑参数"
+          >
             <Icon n="sliders" s={14} />
             <span>参数</span>
           </summary>

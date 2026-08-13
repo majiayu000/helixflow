@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { canvasCapabilities } from './graph-canvas-capabilities';
-import { createCanvasEditActions } from './graph-canvas-edit-actions';
+import {
+  createCanvasEditActions,
+  nextAvailableNodePosition,
+} from './graph-canvas-edit-actions';
 import type { NodeDefinition, WorkbenchState, WorkflowGraph } from '../types';
 import {
   buildAddNodeProposalInput,
@@ -94,6 +97,16 @@ describe('graph canvas editing helpers', () => {
 
   it('generates deterministic unique ids from existing ids', () => {
     expect(uniqueNodeId(['node', 'node_2'], 'node')).toBe('node_3');
+  });
+
+  it('places repeated library additions in the nearest non-overlapping slot', () => {
+    const first = node('first', 'input.text', 'First', 'Input', 400, 300);
+    const second = node('second', 'input.text', 'Second', 'Input', 136, 160);
+
+    const position = nextAvailableNodePosition({ x: 400, y: 300 }, [first, second]);
+
+    expect(position).not.toEqual({ x: 400, y: 300 });
+    expect(position).toEqual({ x: 136, y: 440 });
   });
 
   it('does not dispatch add, delete, or paste mutations in view mode', async () => {

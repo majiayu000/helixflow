@@ -85,6 +85,14 @@ const ChatMessageSchema = z.object({
   turnId: z.string().nullish(),
 });
 
+export const TurnModeSchema = z.enum([
+  'chat',
+  'create_workflow',
+  'modify_workflow',
+  'debug_workflow',
+  'run_request',
+]);
+
 const CanvasSizeSchema = z.object({
   width: z.number(),
   height: z.number(),
@@ -539,7 +547,7 @@ export const WorkspaceMessageResponseSchema = z.object({
   conversationId: z.string().optional(),
   turnId: z.string().optional(),
   turnStatus: z.enum(['running', 'succeeded', 'clarify', 'error', 'interrupted']).optional(),
-  turnMode: z.enum(['chat', 'create_workflow', 'modify_workflow', 'debug_workflow', 'run_request']),
+  turnMode: TurnModeSchema,
   messages: z.array(ChatMessageSchema),
   proposal: ProposalSchema.nullable(),
   run: RunSchema.nullable().optional(),
@@ -596,6 +604,7 @@ export type NodeSizeUpdate = { id: string; width: number; height: number };
 export type ChatMessageKind = z.infer<typeof ChatMessageKindSchema>;
 export type WorkflowGraph = z.infer<typeof WorkflowGraphSchema>;
 export type WorkspaceMessageResponse = z.infer<typeof WorkspaceMessageResponseSchema>;
+export type TurnMode = z.infer<typeof TurnModeSchema>;
 export type Conversation = NonNullable<WorkbenchState['chat']['conversations']>[number];
 export type RunConfirmationResponse = z.infer<typeof RunConfirmationResponseSchema>;
 export type WorkspaceSummary = z.infer<typeof WorkspaceSummarySchema>;
