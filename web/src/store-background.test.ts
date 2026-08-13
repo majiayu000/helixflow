@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  CANVAS_PRESENCE_TTL_MS,
+  LOCAL_CANVAS_ACTOR,
+} from './canvas-presence';
 import { composerDraftAfterSubmit } from './components/chat-pane';
 import { useWorkbenchStore } from './store';
 import { jsonResponse, runEvent, waitUntil } from './test-utils';
@@ -22,6 +26,7 @@ describe('background run state reconciliation', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -430,6 +435,52 @@ describe('background run state reconciliation', () => {
     useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_b'));
 
     expect(useWorkbenchStore.getState().selectedCanvasNodeIds).toEqual([]);
+    expect(useWorkbenchStore.getState().presenceByActor).toEqual({});
+  });
+
+  it('does not store the current actor or its legacy echo as a collaborator', () => {
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
+
+    useWorkbenchStore.getState().applyCanvasPresence({
+      actor: LOCAL_CANVAS_ACTOR,
+      cursor: { x: 1, y: 2 },
+    });
+    useWorkbenchStore.getState().applyCanvasPresence({
+      actor: { actorId: 'local', displayName: 'Local user' },
+      cursor: { x: 3, y: 4 },
+    });
+
+    expect(useWorkbenchStore.getState().presenceByActor).toEqual({});
+  });
+
+  it('does not optimistically mirror outgoing presence into the collaborator store', async () => {
+    let resolvePresence!: (response: Response) => void;
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => {
+      resolvePresence = resolve;
+    })));
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
+
+    const sending = useWorkbenchStore.getState().sendCanvasPresence({
+      actor: LOCAL_CANVAS_ACTOR,
+      cursor: { x: 1, y: 2 },
+    });
+    expect(useWorkbenchStore.getState().presenceByActor).toEqual({});
+
+    resolvePresence(jsonResponse({ ok: true }));
+    await sending;
+    expect(useWorkbenchStore.getState().presenceByActor).toEqual({});
+  });
+
+  it('expires inactive collaborator presence', async () => {
+    vi.useFakeTimers();
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
+    useWorkbenchStore.getState().applyCanvasPresence({
+      actor: { actorId: 'remote', displayName: 'Remote' },
+      cursor: { x: 1, y: 2 },
+    });
+
+    expect(useWorkbenchStore.getState().presenceByActor).toHaveProperty('remote');
+    await vi.advanceTimersByTimeAsync(CANVAS_PRESENCE_TTL_MS);
     expect(useWorkbenchStore.getState().presenceByActor).toEqual({});
   });
 

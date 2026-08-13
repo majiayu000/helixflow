@@ -1,5 +1,9 @@
 import { create } from 'zustand';
 import {
+  CANVAS_PRESENCE_TTL_MS,
+  isLocalCanvasActor,
+} from './canvas-presence';
+import {
   applyWorkspaceProposal,
   confirmWorkspaceRun,
   createManualWorkspaceProposal,
@@ -59,10 +63,16 @@ export { applyRunEvent } from './store-events';
 
 export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
   const requestScope = new WorkspaceRequestScope();
+  const presenceExpiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   let snapshotRefresh: { generation: number; promise: Promise<void> } | null = null;
   let trailingSnapshotGeneration: number | null = null;
   const actionGuard = new WorkspaceActionGuard(requestScope);
+  const clearPresenceExpiryTimers = () => {
+    for (const timer of presenceExpiryTimers.values()) clearTimeout(timer);
+    presenceExpiryTimers.clear();
+  };
   const activateWorkspace = (workspaceId: string | null) => {
+    clearPresenceExpiryTimers();
     const activation = requestScope.begin(workspaceId);
     snapshotRefresh = null;
     trailingSnapshotGeneration = null;
@@ -212,24 +222,35 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
   },
   setCanvasSelection: (selectedCanvasNodeIds) => set({ selectedCanvasNodeIds }),
-  applyCanvasPresence: (presence) =>
+  applyCanvasPresence: (presence) => {
+    const actorId = presence.actor.actorId;
+    if (isLocalCanvasActor(actorId)) return;
+    const generation = requestScope.currentGeneration();
+    const workspaceId = requestScope.currentWorkspaceId();
+    const previousTimer = presenceExpiryTimers.get(actorId);
+    if (previousTimer) clearTimeout(previousTimer);
+    presenceExpiryTimers.set(actorId, setTimeout(() => {
+      presenceExpiryTimers.delete(actorId);
+      if (!requestScope.isActive(generation, workspaceId ?? undefined)) return;
+      set((current) => {
+        if (!(actorId in current.presenceByActor)) return {};
+        const presenceByActor = { ...current.presenceByActor };
+        delete presenceByActor[actorId];
+        return { presenceByActor };
+      });
+    }, CANVAS_PRESENCE_TTL_MS));
     set((current) => ({
       presenceByActor: {
         ...current.presenceByActor,
-        [presence.actor.actorId]: presence,
+        [actorId]: presence,
       },
-    })),
+    }));
+  },
   sendCanvasPresence: async (presence) => {
     const state = get().state;
     if (!state) return;
     const generation = requestScope.currentGeneration();
     if (!requestScope.isActive(generation, state.workspace.id)) return;
-    set((current) => ({
-      presenceByActor: {
-        ...current.presenceByActor,
-        [presence.actor.actorId]: presence,
-      },
-    }));
     try {
       await sendCanvasPresenceRequest(state.workspace.id, presence, requestScope.signal());
     } catch (error) {

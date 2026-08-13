@@ -199,6 +199,8 @@
 
 .collab-cursor {
   position: absolute;
+  top: 0;
+  left: 0;
   z-index: 7;
   display: inline-flex;
   align-items: center;
@@ -211,5 +213,6 @@
   font-size: 11px;
   font-weight: 700;
   pointer-events: none;
-  transform: translate(8px, 8px);
+  transition: transform 80ms linear;
+  will-change: transform;
 }

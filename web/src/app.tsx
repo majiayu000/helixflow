@@ -46,7 +46,6 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const error = useWorkbenchStore((store) => store.error);
   const connection = useWorkbenchStore((store) => store.connection);
   const canvas = useWorkbenchStore((store) => store.canvas);
-  const presenceByActor = useWorkbenchStore((store) => store.presenceByActor);
   const state = useWorkbenchStore((store) => store.state);
   const storeEditSession = useWorkbenchStore((store) => store.editSession);
   const editSession = initialEditSession ?? storeEditSession;
@@ -327,7 +326,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
                 comments={canvas?.comments ?? []}
                 onCreateProposal={(input) => runAction(() => appendManualEdit(input), true)}
                 onCommentOp={(input) => runAction(() => submitCanvasCommentOp(input), true)}
-                onPresenceChange={(presence) => void sendCanvasPresence(presence)}
+                onPresenceChange={sendCanvasPresence}
                 onRequestNodeProposal={(nodeId) =>
                   runAction(
                     () => sendMessage(`围绕选中节点 ${nodeId} 生成最小修改 proposal。`, {
@@ -363,7 +362,6 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
                 onSelectOutput={(id) => void runAction(() => selectOutput(id))}
                 outputs={activeState.outputs}
                 pendingProposal={activeState.pendingProposal}
-                presenceByActor={presenceByActor}
                 run={uiState.run}
                 versionId={activeState.workspace.versionId}
                 workflowGraph={previewState.workflowGraph}

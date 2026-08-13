@@ -21,7 +21,7 @@ export type GraphCanvasProps = {
   workflowGraph?: WorkbenchState['workflowGraph'];
   onCommentOp?: (input: CanvasCommentOpInput) => Promise<void>;
   onCreateProposal?: (input: ManualProposalInput) => Promise<void>;
-  onPresenceChange?: (presence: CanvasPresence) => void;
+  onPresenceChange?: (presence: CanvasPresence) => void | Promise<void>;
   onRequestNodeProposal?: (nodeId: string) => Promise<void>;
   onSelectOutput?: (outputId: string) => void;
   onSelectionChange?: (nodeIds: string[]) => void;
