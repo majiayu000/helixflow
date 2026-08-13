@@ -7,6 +7,12 @@ fn revision_is_deterministic_and_content_addressed() {
     let b = builtin_catalog();
     assert_eq!(a.catalog_revision, b.catalog_revision);
     assert!(a.catalog_revision.starts_with("sha256:"));
+    assert_eq!(a.catalog_revision.len(), "sha256:".len() + 64);
+    assert!(
+        a.catalog_revision["sha256:".len()..]
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase())
+    );
 
     let mut models = a.models.clone();
     models[0].display_name = "Renamed".to_owned();

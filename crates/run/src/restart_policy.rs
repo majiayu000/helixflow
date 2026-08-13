@@ -35,10 +35,15 @@ where
             return Ok(false);
         };
         let plan: ExecutionPlan = serde_json::from_str(plan_json)?;
-        let plan_fingerprint = format!("sha256:{:x}", Sha256::digest(serde_json::to_vec(&plan)?));
+        let plan_fingerprint = format!(
+            "sha256:{}",
+            hex::encode(Sha256::digest(serde_json::to_vec(&plan)?))
+        );
         let estimate_fingerprint = format!(
-            "sha256:{:x}",
-            Sha256::digest(run.estimate_json.as_deref().unwrap_or("").as_bytes())
+            "sha256:{}",
+            hex::encode(Sha256::digest(
+                run.estimate_json.as_deref().unwrap_or("").as_bytes()
+            ))
         );
         if intent.plan_fingerprint != plan_fingerprint
             || intent.estimate_fingerprint != estimate_fingerprint

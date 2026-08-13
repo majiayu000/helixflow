@@ -728,7 +728,7 @@ pub(crate) fn operation_fingerprint(
 
 fn hash_bytes(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
-    format!("sha256:{digest:x}")
+    format!("sha256:{}", hex::encode(digest))
 }
 
 fn operation_conflict(operation_id: &str) -> ApiError {

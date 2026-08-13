@@ -157,10 +157,10 @@ where
         estimate_json: Option<&str>,
     ) -> RunResult<()> {
         let plan_bytes = serde_json::to_vec(plan)?;
-        let plan_fingerprint = format!("sha256:{:x}", Sha256::digest(&plan_bytes));
+        let plan_fingerprint = format!("sha256:{}", hex::encode(Sha256::digest(&plan_bytes)));
         let estimate_fingerprint = format!(
-            "sha256:{:x}",
-            Sha256::digest(estimate_json.unwrap_or("").as_bytes())
+            "sha256:{}",
+            hex::encode(Sha256::digest(estimate_json.unwrap_or("").as_bytes()))
         );
         self.store
             .create_or_read_execution_intent(
@@ -668,7 +668,7 @@ where
             payload.meta = sanitize_metadata(&payload.meta);
         }
         let bytes = serde_json::to_vec(&safe_result)?;
-        let fingerprint = format!("sha256:{:x}", Sha256::digest(&bytes));
+        let fingerprint = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
         let relative = PathBuf::from("recovery_spool").join(format!("{}.json", task.id));
         let full_path = self.artifact_root.join(&relative);
         if let Some(parent) = full_path.parent() {

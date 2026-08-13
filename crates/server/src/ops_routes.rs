@@ -405,7 +405,7 @@ pub(crate) fn ops_idempotency_digest(
         hasher.update((value.len() as u64).to_be_bytes());
         hasher.update(value.as_bytes());
     }
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 async fn accepted_idempotent_version(

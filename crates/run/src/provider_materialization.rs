@@ -158,7 +158,7 @@ where
             .map_err(|_| {
                 RunError::ArtifactPersistence("recovery spool cannot be read".to_owned())
             })?;
-        let fingerprint = format!("sha256:{:x}", Sha256::digest(&bytes));
+        let fingerprint = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
         if task.result_fingerprint.as_deref() != Some(fingerprint.as_str()) {
             return Err(RunError::ArtifactPersistence(
                 "recovery spool fingerprint mismatch".to_owned(),
@@ -244,7 +244,7 @@ where
         payload: ArtifactPayload,
     ) -> RunResult<(ArtifactRecord, String)> {
         let payload_bytes = serde_json::to_vec(&payload)?;
-        let content_sha256 = format!("sha256:{:x}", Sha256::digest(&payload_bytes));
+        let content_sha256 = format!("sha256:{}", hex::encode(Sha256::digest(&payload_bytes)));
         let planned_path = recovery_artifact_relative_path(&content_sha256, &payload)?;
         let operation_key = format!("artifact:{}:{port}", task.id);
         let owner_id = artifact_journal_owner(&task.id);

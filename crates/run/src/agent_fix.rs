@@ -15,8 +15,10 @@ use super::{
 
 pub fn provider_catalog_fingerprint<P: Provider>(provider: &P, provider_id: &str) -> String {
     format!(
-        "sha256:{:x}",
-        Sha256::digest(provider.catalog_revision(provider_id).as_bytes())
+        "sha256:{}",
+        hex::encode(Sha256::digest(
+            provider.catalog_revision(provider_id).as_bytes()
+        ))
     )
 }
 

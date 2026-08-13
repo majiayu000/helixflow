@@ -157,7 +157,7 @@ pub(crate) async fn upload_workspace_image(
             });
         }
 
-        let sha256 = format!("sha256:{:x}", Sha256::digest(&bytes));
+        let sha256 = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
         let relative_string = relative.to_string_lossy().into_owned();
         let record = match state
             .store
