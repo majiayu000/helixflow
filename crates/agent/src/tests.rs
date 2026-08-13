@@ -587,8 +587,8 @@ async fn service_streams_agent_status_and_reads_runtime_proposal() {
     while let Ok(event) = receiver.try_recv() {
         event_names.push(event.ev);
     }
-    assert!(event_names.iter().any(|event| *event == "agent.status"));
-    assert!(event_names.iter().any(|event| *event == "agent.status.end"));
+    assert!(event_names.contains(&"agent.status".to_owned()));
+    assert!(event_names.contains(&"agent.status.end".to_owned()));
 }
 
 #[tokio::test]
@@ -632,8 +632,8 @@ async fn service_streams_agent_status_and_reads_chat_reply() {
         .iter()
         .map(|event| event.ev.as_str())
         .collect::<Vec<_>>();
-    assert!(event_names.iter().any(|event| *event == "agent.status"));
-    assert!(event_names.iter().any(|event| *event == "agent.status.end"));
+    assert!(event_names.contains(&"agent.status"));
+    assert!(event_names.contains(&"agent.status.end"));
     assert!(streamed.iter().all(|event| {
         event.data["conversation_id"] == "conv_1" && event.data["turn_id"] == "turn_1"
     }));

@@ -316,14 +316,11 @@ pub(crate) async fn post_workspace_message(
             if use_intent_contract {
                 let response = handle_intent_turn(
                     &state,
-                    &workspace_id,
                     &base_version_id,
                     &base_graph,
                     classification.mode,
                     request,
                     turn,
-                    &conversation.id,
-                    &durable_turn.id,
                 )
                 .await?;
                 return Ok(Json(response));

@@ -35,15 +35,24 @@ pub(crate) fn intent_contract_enabled() -> bool {
 
 pub(crate) async fn handle_intent_turn(
     state: &AppState,
-    workspace_id: &str,
     base_version_id: &str,
     base_graph: &WorkflowGraph,
     mode: TurnMode,
     request: AgentSessionRequest,
     turn: &AgentContractTurn,
-    conversation_id: &str,
-    durable_turn_id: &str,
 ) -> Result<WorkspaceMessageResponse, ApiError> {
+    let workspace_id = request.workspace_id.clone();
+    let conversation_id = request
+        .conversation_id
+        .clone()
+        .ok_or_else(|| ApiError::server_error("intent turn is missing a conversation id"))?;
+    let durable_turn_id = request
+        .durable_turn_id
+        .clone()
+        .ok_or_else(|| ApiError::server_error("intent turn is missing a durable turn id"))?;
+    let workspace_id = workspace_id.as_str();
+    let conversation_id = conversation_id.as_str();
+    let durable_turn_id = durable_turn_id.as_str();
     let validated = match state.agent.propose_intent(request).await {
         Ok(validated) => validated,
         Err(error) => {
