@@ -16,7 +16,7 @@ The branch stack is intentional:
 
 ```text
 origin/main
-  └─ agent/workbench-stack-20260813       # 26 recovered product commits, draft PR #187
+  └─ agent/workbench-stack-20260813       # 26 recovered product commits + CI fix, draft PR #187
        └─ agent/ui-reliability-hardening-20260813
             # presence stabilization + current UI reliability work, stacked draft PR
 ```
@@ -75,7 +75,9 @@ workstation checkout. They cover:
 
 The final recovered base commit is `653c15c` on
 `agent/workbench-stack-20260813`. Draft PR #187 tracks this scope and closes
-issue #185 when merged.
+issue #185 when merged. A follow-up CI-only commit, `b677266`, refactors an
+over-wide helper signature and satisfies the Rust 1.95 strict Clippy rules; it
+does not add product scope.
 
 The next commit, `29746a2`, stabilizes canvas presence updates and is kept in
 the child reliability draft.
@@ -203,23 +205,21 @@ Required browser retest:
 
 ## Verification at handoff time
 
-Passing:
+Passing from the final merged child worktree:
 
 ```text
+cargo fmt --all -- --check
 cargo check --workspace --locked
-cd web && npm run build
-cargo test -p helixflow-agent preserves_an_explicit_surface_mode_without_keyword_routing
-cargo test -p helixflow-server explicit_surface_mode_overrides_ambiguous_prompt_routing
-cd web && npm test -- --run \
-  src/components/graph-canvas-inspector.test.tsx \
-  src/components/graph-canvas-editing.test.ts \
-  src/app.test.tsx \
-  src/store-background.test.ts
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+(cd web && npm test)
+(cd web && npm run build)
+git diff --check
 ```
 
-The focused Web result was 4 files / 123 tests. Run the full Rust and Web
-suites again from the final pushed head; do not infer full-suite green from
-the focused result.
+Results at handoff time were 553 Rust unit tests and 32 Web test files / 244
+Web tests, all passing. The production Web build also passed. Re-run the full
+suite after cloning to prove the destination toolchain and checkout.
 
 ## Canonical QA tracker
 
@@ -289,8 +289,11 @@ bundle with the base, child, and pre-rebase recovery branches:
 
 ```text
 helixflow-continuation.bundle
-SHA-256 690f4175cb1b40572b635e23f471c5106da11cbc70fe2fe36372cf6b3ac8358b
 ```
+
+The bundle's final SHA-256 is recorded in the adjacent private `TRANSFER.md`.
+It is intentionally not embedded here because this file is itself contained
+inside the bundle.
 
 GitHub is the normal continuation path. Use the bundle only when the other
 computer cannot reach GitHub or as an additional recovery copy.
