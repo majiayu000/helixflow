@@ -441,7 +441,7 @@ impl Provider for AtlasProvider {
         }
         hasher.update([0]);
         hasher.update(self.config.api_key.as_bytes());
-        format!("sha256:{:x}", hasher.finalize())
+        format!("sha256:{}", hex::encode(hasher.finalize()))
     }
 
     fn dispatch_origin(&self, provider_id: &str) -> ProviderResultValue<String> {

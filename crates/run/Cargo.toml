@@ -10,6 +10,7 @@ helixflow-gateway.workspace = true
 helixflow-graph.workspace = true
 helixflow-registry.workspace = true
 helixflow-store.workspace = true
+hex.workspace = true
 mime.workspace = true
 reqwest.workspace = true
 serde.workspace = true

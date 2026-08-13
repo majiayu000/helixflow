@@ -208,7 +208,7 @@ impl CatalogSnapshot {
         content.catalog_revision = String::new();
         let bytes = serde_json::to_vec(&content).expect("catalog serializes");
         let digest = Sha256::digest(&bytes);
-        format!("sha256:{digest:x}")
+        format!("sha256:{}", hex::encode(digest))
     }
 
     pub fn capability(&self, capability_id: &str) -> Option<&CapabilityDefinition> {

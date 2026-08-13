@@ -449,14 +449,14 @@ fn prepare_comment_op(
 
 fn stable_comment_id(operation_id: &str) -> String {
     let digest = Sha256::digest(operation_id.as_bytes());
-    format!("comment_{digest:x}")
+    format!("comment_{}", hex::encode(digest))
 }
 
 fn comment_operation_fingerprint(op: &CanvasCommentOp) -> Result<String, ApiError> {
     let encoded = serde_json::to_vec(op)
         .map_err(|err| ApiError::server_error(format!("encode canvas comment operation: {err}")))?;
     let digest = Sha256::digest(encoded);
-    Ok(format!("sha256:{digest:x}"))
+    Ok(format!("sha256:{}", hex::encode(digest)))
 }
 
 fn comments_relative_path(workspace_id: &str) -> Result<PathBuf, ApiError> {
