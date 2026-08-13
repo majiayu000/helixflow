@@ -284,6 +284,17 @@ backup. Before moving hosts, stop product use, take one final SQLite online
 backup, verify its SHA-256 and integrity, then copy it separately with AirDrop,
 `scp`, or another private channel. Never upload the database to GitHub.
 
+The same private transfer directory also contains an optional offline Git
+bundle with the base, child, and pre-rebase recovery branches:
+
+```text
+helixflow-continuation.bundle
+SHA-256 690f4175cb1b40572b635e23f471c5106da11cbc70fe2fe36372cf6b3ac8358b
+```
+
+GitHub is the normal continuation path. Use the bundle only when the other
+computer cannot reach GitHub or as an additional recovery copy.
+
 Moving the canary to a different machine changes the deployment boundary.
 Record the new host/deployment and either explicitly approve continuity or
 start a new strict window; do not silently claim the old window continued.
