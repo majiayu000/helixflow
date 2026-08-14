@@ -125,6 +125,14 @@ impl AtlasProvider {
                         mime: "video/mp4".to_owned(),
                     },
                 ),
+                (
+                    "image_to_video".to_owned(),
+                    ProviderCapability {
+                        artifact_kind: ArtifactKind::Video,
+                        output_name: "video".to_owned(),
+                        mime: "video/mp4".to_owned(),
+                    },
+                ),
             ]),
         }
     }
@@ -280,7 +288,15 @@ impl AtlasProvider {
         &self,
         req: &ProviderRequest,
     ) -> ProviderResultValue<DurableProviderTask> {
-        let prompt = wired_or_param_string(req, "prompt", "prompt")?;
+        let prompt = if req.capability == "image_to_video" {
+            req.input_texts
+                .get("prompt")
+                .cloned()
+                .or_else(|| optional_string(&req.params, "prompt"))
+                .unwrap_or_default()
+        } else {
+            wired_or_param_string(req, "prompt", "prompt")?
+        };
         // GH130 T4: the model comes only from the run's resolved binding.
         let model = req
             .operation_id
@@ -293,16 +309,45 @@ impl AtlasProvider {
             .get("duration_sec")
             .and_then(Value::as_u64)
             .unwrap_or(5);
+        let default_resolution = if req.capability == "image_to_video" {
+            "720p"
+        } else {
+            "720P"
+        };
+        let mut body = json!({
+            "model": model,
+            "prompt": prompt,
+            "duration": duration,
+            "resolution": optional_string(&req.params, "resolution").unwrap_or_else(|| default_resolution.to_owned()),
+            "enable_sync_mode": false
+        });
+        if req.capability == "image_to_video" {
+            let image =
+                optional_string(&req.params, "__helixflow_wired_image").ok_or_else(|| {
+                    ProviderError::InvalidRequest(
+                        "image_to_video requires wired image input".to_owned(),
+                    )
+                })?;
+            body["image"] = Value::String(image);
+            body["generate_audio"] = req
+                .params
+                .get("generate_audio")
+                .cloned()
+                .unwrap_or(json!(true));
+            body["camera_fixed"] = req
+                .params
+                .get("camera_fixed")
+                .cloned()
+                .unwrap_or(json!(false));
+            body["seed"] = req.params.get("seed").cloned().unwrap_or(json!(-1));
+            if let Some(aspect_ratio) = optional_string(&req.params, "aspect_ratio") {
+                body["aspect_ratio"] = Value::String(aspect_ratio);
+            }
+        }
         let response = self
             .post_json(
                 format!("{}/api/v1/model/generateVideo", self.api_root()),
-                json!({
-                    "model": model,
-                    "prompt": prompt,
-                    "duration": duration,
-                    "resolution": optional_string(&req.params, "resolution").unwrap_or_else(|| "720P".to_owned()),
-                    "enable_sync_mode": false
-                }),
+                body,
             )
             .await?;
         let prediction_id = response
@@ -527,7 +572,7 @@ impl Provider for AtlasProvider {
         match req.capability.as_str() {
             "prompt_writer" => self.invoke_chat(req).await,
             "text_to_image" => self.invoke_image(req).await,
-            "text_to_video" => self.invoke_video(req).await,
+            "text_to_video" | "image_to_video" => self.invoke_video(req).await,
             capability => Err(ProviderError::UnsupportedCapability(capability.to_owned())),
         }
     }
@@ -542,7 +587,7 @@ impl Provider for AtlasProvider {
                 .invoke_image(req)
                 .await
                 .map(ProviderDispatch::Completed),
-            "text_to_video" => self
+            "text_to_video" | "image_to_video" => self
                 .dispatch_video(&req)
                 .await
                 .map(ProviderDispatch::Accepted),
@@ -557,7 +602,7 @@ impl Provider for AtlasProvider {
         req: &ProviderRequest,
     ) -> ProviderResultValue<ProviderResume> {
         self.ensure_provider(req)?;
-        if req.capability != "text_to_video" {
+        if !matches!(req.capability.as_str(), "text_to_video" | "image_to_video") {
             return Err(ProviderError::UnsupportedCapability(req.capability.clone()));
         }
         self.validate_recovery_task(task)?;

@@ -62,11 +62,26 @@ pub fn compile(
     catalog: &CatalogSnapshot,
     availability: &ConnectorAvailability,
 ) -> Result<CompileOutcome, CompileError> {
+    compile_for_connector(intent, current, service, catalog, availability, None)
+}
+
+/// Compile with an explicit workspace connector preference. This keeps
+/// deterministic catalog selection aligned with the provider used at run
+/// preflight instead of allowing another healthy connector to win.
+pub fn compile_for_connector(
+    intent: &IntentPlan,
+    current: &WorkflowGraph,
+    service: &GraphService,
+    catalog: &CatalogSnapshot,
+    availability: &ConnectorAvailability,
+    connector_preference: Option<&str>,
+) -> Result<CompileOutcome, CompileError> {
     intent.validate()?;
-    let built = match graph_builder::build(intent, service, catalog, availability)? {
-        Ok(built) => built,
-        Err(clarify) => return Ok(CompileOutcome::Clarify(clarify)),
-    };
+    let built =
+        match graph_builder::build(intent, service, catalog, availability, connector_preference)? {
+            Ok(built) => built,
+            Err(clarify) => return Ok(CompileOutcome::Clarify(clarify)),
+        };
 
     let ops = proposal_diff::diff(current, &built.target);
     Ok(CompileOutcome::Compiled(CompiledProposal {

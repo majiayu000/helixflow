@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { connectWorkspaceEvents } from './api';
 import { ArtifactStage, hasPreviewArtifact } from './components/artifact-stage';
+import { CanvasErrorBoundary } from './components/canvas-error-boundary';
 import { ChatPane } from './components/chat-pane';
 import { DirtyNavigationDialog } from './components/dirty-navigation-dialog';
 import { GraphCanvas } from './components/graph-canvas';
@@ -8,6 +9,8 @@ import { ManualProposalPanel } from './components/manual-proposal-panel';
 import { ConfirmModal, HistoryPanel, OutputsStrip, RunDock } from './components/run-panels';
 import { TopBar } from './components/top-bar';
 import { useWorkbenchStore } from './store';
+import { WorkbenchShell } from './workbench-layout/react/workbench-shell';
+import { useWorkbenchLayoutStore } from './workbench-layout/store';
 import {
   graphStateFromCanvasDocument,
   type ManualEditSession,
@@ -38,11 +41,11 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const showAdvancedEditPanel = useMemo(() => advancedEditPanelEnabledFromUrl(), []);
   const [forceRerun, setForceRerun] = useState(false);
   const [selectedCanvasNodeIds, setSelectedCanvasNodeIds] = useState<string[]>([]);
+  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const status = useWorkbenchStore((store) => store.status);
   const error = useWorkbenchStore((store) => store.error);
   const connection = useWorkbenchStore((store) => store.connection);
   const canvas = useWorkbenchStore((store) => store.canvas);
-  const presenceByActor = useWorkbenchStore((store) => store.presenceByActor);
   const state = useWorkbenchStore((store) => store.state);
   const storeEditSession = useWorkbenchStore((store) => store.editSession);
   const editSession = initialEditSession ?? storeEditSession;
@@ -57,6 +60,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const activeWorkspaceId = useWorkbenchStore((store) => store.activeWorkspaceId);
   const sendCanvasPresence = useWorkbenchStore((store) => store.sendCanvasPresence);
   const sendMessage = useWorkbenchStore((store) => store.sendMessage);
+  const createConversation = useWorkbenchStore((store) => store.createConversation);
   const uploadImage = useWorkbenchStore((store) => store.uploadImage);
   const submitCanvasCommentOp = useWorkbenchStore((store) => store.submitCanvasCommentOp);
   const applyProposal = useWorkbenchStore((store) => store.applyProposal);
@@ -68,6 +72,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const discardManualEdits = useWorkbenchStore((store) => store.discardManualEdits);
   const queueRun = useWorkbenchStore((store) => store.queueRun);
   const interruptRun = useWorkbenchStore((store) => store.interruptRun);
+  const interruptAgent = useWorkbenchStore((store) => store.interruptAgent);
   const exportWorkflow = useWorkbenchStore((store) => store.exportWorkflow);
   const undoVersion = useWorkbenchStore((store) => store.undoVersion);
   const restoreVersion = useWorkbenchStore((store) => store.restoreVersion);
@@ -75,7 +80,12 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const acceptOutput = useWorkbenchStore((store) => store.acceptOutput);
   const rejectOutput = useWorkbenchStore((store) => store.rejectOutput);
   const selectProvider = useWorkbenchStore((store) => store.selectProvider);
+  const dispatchWorkbenchLayout = useWorkbenchLayoutStore((store) => store.dispatch);
   const activeState = initialState ?? state;
+  const openArtifactOutput = (outputId: string) => {
+    dispatchWorkbenchLayout({ type: 'pane/show', paneId: 'artifact' });
+    return selectOutput(outputId);
+  };
   const dirtyEditCount = editSession?.ops.length ?? 0;
   const {
     busy,
@@ -114,7 +124,17 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
 
   useEffect(() => {
     setSelectedCanvasNodeIds([]);
+    setSelectedConversationId(null);
   }, [activeWorkspaceId, workspaceGeneration]);
+
+  useEffect(() => {
+    if (!activeState) return;
+    const conversations = activeState.chat.conversations ?? [];
+    if (selectedConversationId && conversations.some((item) => item.id === selectedConversationId)) {
+      return;
+    }
+    setSelectedConversationId(activeState.chat.activeConversationId ?? conversations[0]?.id ?? null);
+  }, [activeState, selectedConversationId]);
 
   useEffect(() => {
     if (!activeState?.workspace.id) return;
@@ -199,6 +219,17 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const versionHistoryCount = activeState.history.filter((item) => item.kind === 'version').length;
   const undoDisabled = navigationLocked || versionHistoryCount < 2;
   const showArtifactPreview = hasPreviewArtifact(activeState.outputs) && dirtyEditCount === 0;
+  const conversations = activeState.chat.conversations ?? [];
+  const activeConversationId =
+    selectedConversationId ?? activeState.chat.activeConversationId ?? conversations[0]?.id ?? null;
+  const conversationMessages = activeConversationId
+    ? activeState.chat.messages.filter(
+        (message) => !message.conversationId || message.conversationId === activeConversationId,
+      )
+    : activeState.chat.messages;
+  const conversationTurns = (activeState.chat.turns ?? []).filter(
+    (turn) => turn.conversationId === activeConversationId,
+  );
 
   return (
     <main className="wb">
@@ -208,7 +239,9 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
         connection={connection}
         exportDisabled={busy || !activeState.workspace.versionId}
         historyOpen={historyOpen}
-        onAgentRun={() => void runAction(() => sendMessage('运行当前 workflow'))}
+        onAgentRun={() =>
+          void runAction(() => sendMessage('运行当前 workflow', undefined, activeConversationId ?? undefined))
+        }
         onCommitEdits={() => void runAction(() => commitManualEdits())}
         onExport={exportCurrentWorkflow}
         onHistory={() => setHistoryOpen((open) => !open)}
@@ -231,11 +264,25 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
         undoDisabled={undoDisabled}
       />
       {error && <div className="error-banner">{error}</div>}
-      <div className="wb-body">
-        <div className="chat-column">
-          <ChatPane
+      <WorkbenchShell
+        panes={{
+          chat: {
+            available: true,
+            content: (
+              <ChatPane
             busy={navigationLocked}
-            messages={activeState.chat.messages}
+            messages={conversationMessages}
+            conversations={conversations}
+            turns={conversationTurns}
+            activeConversationId={activeConversationId}
+            onConversationChange={setSelectedConversationId}
+            onNewConversation={() =>
+              runAction(async () => {
+                const id = await createConversation();
+                setSelectedConversationId(id);
+              }, true)
+            }
+            onInterrupt={interruptAgent}
             onApplyProposal={(id) => runAction(() => applyProposal(id))}
             onDismissProposal={(id) => runAction(() => dismissProposal(id))}
             onUploadImage={(file) => runAction(() => uploadImage(file))}
@@ -253,102 +300,141 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
             onDiscardEdits={discardManualEdits}
             onSend={(text) =>
               runAction(
-                () => sendMessage(text, {
-                  selection: { nodeIds: selectedCanvasNodeIds },
-                }),
+                () =>
+                  sendMessage(
+                    text,
+                    { selection: { nodeIds: selectedCanvasNodeIds } },
+                    activeConversationId ?? undefined,
+                  ),
                 true,
               )
             }
             pendingProposal={activeState.pendingProposal}
             run={activeState.run}
-          />
-        </div>
-        <section className={showArtifactPreview ? 'wb-canvas wb-canvas--with-artifact' : 'wb-canvas'}>
-          <GraphCanvas
-            graph={previewState.graph}
-            canvasGraph={canvasGraph}
-            comments={canvas?.comments ?? []}
-            onCreateProposal={(input) => runAction(() => appendManualEdit(input), true)}
-            onCommentOp={(input) => runAction(() => submitCanvasCommentOp(input), true)}
-            onPresenceChange={(presence) => void sendCanvasPresence(presence)}
-            onRequestNodeProposal={(nodeId) =>
-              runAction(
-                () => sendMessage(`围绕选中节点 ${nodeId} 生成最小修改 proposal。`, {
-                  selection: { nodeIds: [nodeId] },
-                }),
-                true,
-              )
-            }
-            onSelectionChange={(nodeIds) => {
-              setSelectedCanvasNodeIds(nodeIds);
-              setCanvasSelection(nodeIds);
-            }}
-            onSetParam={(nodeId, key, value) => {
-              return runAction(
-                () => appendManualEdit(
-                    buildSetParamEditInput(
-                      activeState.workspace.versionId,
-                      previewState.workflowGraph,
-                      nodeId,
-                      key,
-                      value,
+              />
+            ),
+          },
+          canvas: {
+            available: true,
+            content: (
+              <section className="wb-canvas">
+                <div className="canvas-stage">
+                  <CanvasErrorBoundary resetKey={activeState.workspace.id}>
+                    <GraphCanvas
+                graph={previewState.graph}
+                canvasGraph={canvasGraph}
+                comments={canvas?.comments ?? []}
+                providers={previewState.providers}
+                onCreateProposal={(input) => runAction(() => appendManualEdit(input), true)}
+                onCommentOp={(input) => runAction(() => submitCanvasCommentOp(input), true)}
+                onPresenceChange={sendCanvasPresence}
+                onRequestNodeProposal={(nodeId) =>
+                  runAction(
+                    () => sendMessage(`围绕选中节点 ${nodeId} 生成最小修改 proposal。`, {
+                      selection: { nodeIds: [nodeId] },
+                    }),
+                    true,
+                  )
+                }
+                onSelectionChange={(nodeIds) => {
+                  setSelectedCanvasNodeIds(nodeIds);
+                  setCanvasSelection(nodeIds);
+                }}
+                onSetParam={(nodeId, key, value) => {
+                  return runAction(
+                    () => appendManualEdit(
+                      buildSetParamEditInput(
+                        activeState.workspace.versionId,
+                        previewState.workflowGraph,
+                        nodeId,
+                        key,
+                        value,
+                      ),
                     ),
-                  ),
-                true,
-              );
-            }}
-            onSelectOutput={(id) => void runAction(() => selectOutput(id))}
-            outputs={activeState.outputs}
-            pendingProposal={activeState.pendingProposal}
-            presenceByActor={presenceByActor}
-            run={uiState.run}
-            versionId={activeState.workspace.versionId}
-            workflowGraph={previewState.workflowGraph}
-            workspaceId={activeState.workspace.id}
-          />
-          {showArtifactPreview && (
-            <div className="canvas-artifact-preview">
-              <ArtifactStage outputs={activeState.outputs} />
-            </div>
-          )}
-          {showAdvancedEditPanel && (
-            <ManualProposalPanel
+                    true,
+                  );
+                }}
+                onStartFromPrompt={(prompt) =>
+                  runAction(
+                    () => sendMessage(
+                      prompt,
+                      undefined,
+                      activeConversationId ?? undefined,
+                      'create_workflow',
+                    ),
+                    true,
+                  )
+                }
+                onSelectOutput={(id) => void runAction(() => selectOutput(id))}
+                outputs={activeState.outputs}
+                pendingProposal={activeState.pendingProposal}
+                run={uiState.run}
+                versionId={activeState.workspace.versionId}
+                workflowGraph={previewState.workflowGraph}
+                workspaceId={activeState.workspace.id}
+                    />
+                  </CanvasErrorBoundary>
+                </div>
+                {showAdvancedEditPanel && (
+                  <ManualProposalPanel
+                    busy={navigationLocked}
+                    state={previewState}
+                    onCreateProposal={(input) => runAction(() => appendManualEdit(input), true)}
+                  />
+                )}
+              </section>
+            ),
+          },
+          artifact: {
+            available: showArtifactPreview,
+            badge: activeState.outputs.length,
+            content: <ArtifactStage outputs={activeState.outputs} />,
+          },
+          run: {
+            available: Boolean(uiState.run.id || uiState.run.steps.length > 0),
+            badge: uiState.run.steps.length,
+            content: <RunDock run={uiState.run} />,
+          },
+          outputs: {
+            available: activeState.outputs.length > 0,
+            badge: activeState.outputs.length,
+            content: (
+              <OutputsStrip
+                busy={navigationLocked}
+                outputs={activeState.outputs}
+                onSelect={(id) => void runAction(() => openArtifactOutput(id))}
+                onAccept={(id) => void runAction(() => acceptOutput(id))}
+                onReject={(id, rerun) => void runAction(() => rejectOutput(id, rerun))}
+              />
+            ),
+          },
+        }}
+        overlays={(
+          <>
+            <HistoryPanel
               busy={navigationLocked}
-              state={previewState}
-              onCreateProposal={(input) => runAction(() => appendManualEdit(input), true)}
+              history={activeState.history}
+              currentWorkspaceId={activeState.workspace.id}
+              currentVersionId={activeState.workspace.versionId}
+              currentConnectorId={selectedProvider?.id ?? activeState.providers.defaultProvider}
+              migrationBlocked={dirtyEditCount > 0}
+              onClose={() => setHistoryOpen(false)}
+              onOpenWorkspace={(workspaceId) => requestNavigation({ kind: 'workspace', workspaceId })}
+              onRestoreVersion={(versionId) => requestNavigation({ kind: 'restore', versionId })}
+              onMigrationApplied={(nextState) => setInitialState(nextState)}
+              open={historyOpen}
+              workspaceListError={workspaceListError}
+              workspaces={workspaceList}
             />
-          )}
-          <HistoryPanel
-            busy={navigationLocked}
-            history={activeState.history}
-            currentWorkspaceId={activeState.workspace.id}
-            currentVersionId={activeState.workspace.versionId}
-            currentConnectorId={selectedProvider?.id ?? activeState.providers.defaultProvider}
-            migrationBlocked={dirtyEditCount > 0}
-            onClose={() => setHistoryOpen(false)}
-            onOpenWorkspace={(workspaceId) => requestNavigation({ kind: 'workspace', workspaceId })}
-            onRestoreVersion={(versionId) => requestNavigation({ kind: 'restore', versionId })}
-            onMigrationApplied={(nextState) => setInitialState(nextState)}
-            open={historyOpen}
-            workspaceListError={workspaceListError}
-            workspaces={workspaceList}
-          />
-          <ConfirmModal
-            busy={navigationLocked}
-            confirmation={activeState.pendingConfirmation}
-            onApprove={(id) => runAction(() => confirmRun(id))}
-            onHold={(id) => runAction(() => holdRun(id))}
-          />
-          <RunDock run={uiState.run} />
-          <OutputsStrip
-            busy={navigationLocked}
-            outputs={activeState.outputs}
-            onSelect={(id) => void runAction(() => selectOutput(id))}
-            onAccept={(id) => void runAction(() => acceptOutput(id))}
-            onReject={(id, rerun) => void runAction(() => rejectOutput(id, rerun))}
-          />
-        </section>
-      </div>
+            <ConfirmModal
+              busy={navigationLocked}
+              confirmation={activeState.pendingConfirmation}
+              onApprove={(id) => runAction(() => confirmRun(id))}
+              onHold={(id) => runAction(() => holdRun(id))}
+            />
+          </>
+        )}
+      />
       <DirtyNavigationDialog
         busy={busy || navigationBusy}
         target={pendingNavigation}

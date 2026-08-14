@@ -298,6 +298,42 @@ fn bindings() -> Vec<CapabilityBinding> {
             availability: BindingAvailability::Enabled,
             binding_revision: "v1".to_owned(),
         },
+        CapabilityBinding {
+            binding_id: "bytedance.seedance-v1-5-pro.image-to-video.atlas.v1".to_owned(),
+            capability_id: "image_to_video".to_owned(),
+            model_id: "bytedance/seedance-v1.5-pro".to_owned(),
+            implementation: ImplementationTarget::ApiConnector {
+                connector_id: "atlas".to_owned(),
+                operation_id: "bytedance/seedance-v1.5-pro/image-to-video".to_owned(),
+            },
+            mode: "image_to_video".to_owned(),
+            input_schema: schema(
+                &["image", "duration_sec"],
+                [
+                    ("image", ParamSpec::string()),
+                    ("prompt", ParamSpec::string()),
+                    ("duration_sec", ParamSpec::integer_range(4, 12)),
+                    (
+                        "aspect_ratio",
+                        ParamSpec::string_enum(&["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]),
+                    ),
+                    ("resolution", ParamSpec::string_enum(&["720p", "480p"])),
+                    ("generate_audio", ParamSpec::boolean()),
+                    ("camera_fixed", ParamSpec::boolean()),
+                    ("seed", ParamSpec::integer()),
+                ],
+            ),
+            output_schema: schema(&[], [("video", ParamSpec::string())]),
+            defaults: json!({
+                "duration_sec": 5,
+                "resolution": "720p",
+                "generate_audio": true,
+                "camera_fixed": false,
+                "seed": -1
+            }),
+            availability: BindingAvailability::Enabled,
+            binding_revision: "v1".to_owned(),
+        },
     ]
 }
 
@@ -314,6 +350,10 @@ fn default_bindings() -> BTreeMap<String, String> {
         (
             "text_to_video".to_owned(),
             "bytedance.seedance-v1-5-pro.text-to-video.atlas.v1".to_owned(),
+        ),
+        (
+            "image_to_video".to_owned(),
+            "bytedance.seedance-v1-5-pro.image-to-video.atlas.v1".to_owned(),
         ),
     ])
 }

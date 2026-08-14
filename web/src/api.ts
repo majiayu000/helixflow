@@ -11,7 +11,6 @@ import {
   WorkspaceEventsSchema,
   WorkflowGraphSchema,
   WorkspaceSummarySchema,
-  WorkspaceMessageResponseSchema,
   WorkbenchStateSchema,
   NodeCatalogSchema,
   type CanvasDocument,
@@ -19,16 +18,16 @@ import {
   type CanvasPresence,
   type RunConfirmationResponse,
   type RunEventEnvelope,
-  type CanvasMessageContext,
   type LayoutPositionUpdate,
   type ManualProposalInput,
   type NodeCatalog,
   type WorkflowGraph,
   type WorkspaceSummary,
-  type WorkspaceMessageResponse,
   type WorkbenchState,
 } from './types';
 import { manualProposalWithIdempotency } from './workbench-edit-session';
+
+export { createWorkspaceConversation, sendWorkspaceMessage } from './api-workspace-message';
 
 export type ConnectionStatus = 'connecting' | 'live' | 'offline';
 
@@ -222,16 +221,26 @@ export async function fetchModelCatalog(signal?: AbortSignal): Promise<ModelCata
 }
 
 export async function resolveImplementation(
+  workspaceId: string | undefined,
   capabilityId: string,
   requestedModel?: string,
   signal?: AbortSignal,
 ): Promise<ImplementationResolution> {
-  const response = await fetch('/api/catalog/resolve', {
+  const path = workspaceId
+    ? `/api/workspaces/${encodeURIComponent(workspaceId)}/catalog/resolve`
+    : '/api/catalog/resolve';
+  const response = await fetch(
+    path,
+    {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ capabilityId, requestedModel: requestedModel ?? null }),
+    body: JSON.stringify({
+      capabilityId,
+      requestedModel: requestedModel ?? null,
+    }),
     signal,
-  });
+    },
+  );
   const body: unknown = await response.json().catch(() => null);
   if (response.ok) {
     return { status: 'resolved', resolved: ResolvedImplementationSchema.parse(body) };
@@ -287,34 +296,6 @@ export async function selectWorkspaceProvider(
   }
 
   return WorkbenchStateSchema.parse(body);
-}
-
-export async function sendWorkspaceMessage(
-  workspaceId: string,
-  input: {
-    baseVersionId: string;
-    userMessage: string;
-    graph: WorkflowGraph;
-    canvasContext?: CanvasMessageContext;
-  },
-  signal?: AbortSignal,
-): Promise<WorkspaceMessageResponse> {
-  const response = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/messages`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(input),
-    signal,
-  });
-  const body = await response.json();
-  if (!response.ok) {
-    const message =
-      body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
-        ? body.error
-        : `workspace message request failed: ${response.status}`;
-    throw new Error(message);
-  }
-
-  return WorkspaceMessageResponseSchema.parse(body);
 }
 
 export async function confirmWorkspaceRun(
@@ -374,6 +355,21 @@ export async function interruptRun(runId: string): Promise<RunConfirmationRespon
   }
 
   return RunConfirmationResponseSchema.parse(body);
+}
+
+export async function interruptWorkspaceAgent(workspaceId: string): Promise<void> {
+  const response = await fetch(
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/agent/interrupt`,
+    { method: 'POST' },
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(
+      body && typeof body.error === 'string'
+        ? body.error
+        : `agent interrupt request failed: ${response.status}`,
+    );
+  }
 }
 
 export async function exportWorkflowVersion(versionId: string): Promise<WorkflowGraph> {

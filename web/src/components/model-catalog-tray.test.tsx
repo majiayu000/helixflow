@@ -3,6 +3,37 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { ModelCatalogTray, capabilityGroups, modelGroups } from './model-catalog-tray';
 import type { ModelCatalog, NodeCatalog } from '../types';
 
+const mockProviders = {
+  defaultProvider: 'mock',
+  selectedProvider: 'mock',
+  runtimeProviders: [
+    {
+      id: 'mock',
+      label: 'Mock',
+      kind: 'mock',
+      enabled: true,
+      status: 'healthy',
+      capabilities: ['text_to_image', 'text_to_video'],
+    },
+  ],
+  workflowBackends: [],
+  apiConnectors: [],
+  capabilityReadiness: [
+    {
+      capabilityId: 'text_to_image',
+      providerId: 'mock',
+      runnable: true,
+      mode: 'direct' as const,
+    },
+    {
+      capabilityId: 'text_to_video',
+      providerId: 'mock',
+      runnable: true,
+      mode: 'direct' as const,
+    },
+  ],
+};
+
 function modelCatalog(): ModelCatalog {
   return {
     catalogRevision: 'sha256:test',
@@ -36,6 +67,7 @@ function modelCatalog(): ModelCatalog {
         mode: 'text_to_image',
         implementation: { apiConnector: { connectorId: 'atlas', operationId: 'op-a' } },
         bindingRevision: 'v1',
+        availability: 'enabled',
       },
       {
         bindingId: 'nano.fal.v1',
@@ -44,6 +76,7 @@ function modelCatalog(): ModelCatalog {
         mode: 'text_to_image',
         implementation: { apiConnector: { connectorId: 'fal', operationId: 'op-b' } },
         bindingRevision: 'v1',
+        availability: 'enabled',
       },
       {
         bindingId: 'seedance.atlas.v1',
@@ -52,6 +85,7 @@ function modelCatalog(): ModelCatalog {
         mode: 'text_to_video',
         implementation: { apiConnector: { connectorId: 'atlas', operationId: 'op-c' } },
         bindingRevision: 'v1',
+        availability: 'enabled',
       },
     ],
     defaultBindings: { text_to_image: 'nano.atlas.v1' },
@@ -91,6 +125,32 @@ describe('model catalog projections', () => {
     const nano = groups.find((group) => group.key === 'google/nano-banana-2');
     expect(nano?.title).toContain('Nano Banana 2');
     expect(nano?.entries.every((entry) => entry.capabilityId === 'text_to_image')).toBe(true);
+  });
+
+  it('does not expose disabled bindings as executable catalog entries', () => {
+    const catalog = modelCatalog();
+    catalog.bindings[2].availability = 'disabled';
+
+    expect(capabilityGroups(catalog).some((group) => group.key === 'text_to_video')).toBe(false);
+    expect(modelGroups(catalog).some((group) => group.key.includes('seedance'))).toBe(false);
+  });
+
+  it('does not expose Atlas/FAL bindings as executable for a direct Mock workspace', () => {
+    expect(capabilityGroups(modelCatalog(), mockProviders)).toEqual([]);
+    expect(modelGroups(modelCatalog(), mockProviders)).toEqual([]);
+
+    const markup = renderToStaticMarkup(
+      <ModelCatalogTray
+        disabled={false}
+        error={null}
+        modelCatalog={modelCatalog()}
+        nodeCatalog={nodeCatalog()}
+        onAddNode={() => undefined}
+        providers={mockProviders}
+      />,
+    );
+    expect(markup).toContain('当前 provider mock 没有可用的模型目录绑定');
+    expect(markup).not.toContain('Nano Banana 2');
   });
 
   it('renders both projections from the same facts', () => {

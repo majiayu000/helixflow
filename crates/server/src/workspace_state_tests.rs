@@ -28,6 +28,8 @@ async fn workspace_state_uses_store_records_and_graph_file() {
             text: Some("Build this"),
             ref_id: None,
             attachment_ids_json: Some(r#"{"turnMode":"modify_workflow"}"#),
+            conversation_id: None,
+            turn_id: None,
         })
         .await
         .expect("create message");

@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  CANVAS_PRESENCE_TTL_MS,
+  LOCAL_CANVAS_ACTOR,
+} from './canvas-presence';
 import { composerDraftAfterSubmit } from './components/chat-pane';
 import { useWorkbenchStore } from './store';
 import { jsonResponse, runEvent, waitUntil } from './test-utils';
@@ -22,6 +26,7 @@ describe('background run state reconciliation', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -147,12 +152,15 @@ describe('background run state reconciliation', () => {
     useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_b'));
     resolveMessage(
       jsonResponse({
+        turnId: 'turn_late_a',
+        turnStatus: 'succeeded',
         turnMode: 'chat',
         messages: [
           {
             id: 'msg_late_a',
             role: 'agent',
             kind: 'chat',
+            turnId: 'turn_late_a',
             text: 'late A response',
             time: 'unix:1',
           },
@@ -217,6 +225,89 @@ describe('background run state reconciliation', () => {
     });
   });
 
+  it('rejects a successful message response without a durable terminal turn', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          turnMode: 'chat',
+          messages: [],
+          proposal: null,
+        }),
+      ),
+    );
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
+
+    await expect(useWorkbenchStore.getState().sendMessage('hello')).rejects.toThrow(
+      'missing a durable terminal turn',
+    );
+    expect(useWorkbenchStore.getState().state?.chat.messages.at(-1)).toMatchObject({
+      role: 'system',
+      kind: 'run_failed',
+      text: 'workspace message response is missing a durable terminal turn',
+    });
+  });
+
+  it('rejects a terminal 2xx whose agent message belongs to another turn', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          turnId: 'turn_expected',
+          turnStatus: 'succeeded',
+          turnMode: 'chat',
+          messages: [
+            {
+              id: 'msg_wrong_turn',
+              role: 'agent',
+              kind: 'chat',
+              turnId: 'turn_other',
+              text: 'wrong turn',
+              time: 'unix:1',
+            },
+          ],
+          proposal: null,
+        }),
+      ),
+    );
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
+
+    await expect(useWorkbenchStore.getState().sendMessage('hello')).rejects.toThrow(
+      'missing a durable terminal turn',
+    );
+  });
+
+  it('renders a durable interrupted Agent response as a normal terminal message', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse({
+          turnId: 'turn_interrupted',
+          turnStatus: 'interrupted',
+          turnMode: 'chat',
+          messages: [
+            {
+              id: 'msg_interrupted',
+              role: 'agent',
+              kind: 'agent_interrupted',
+              turnId: 'turn_interrupted',
+              text: 'Agent 已停止。本轮已结束，可以重新发送。',
+              time: 'unix:2',
+            },
+          ],
+          proposal: null,
+        }),
+      ),
+    );
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
+
+    await expect(useWorkbenchStore.getState().sendMessage('stop me')).resolves.toBeUndefined();
+    expect(useWorkbenchStore.getState().state?.chat.messages.at(-1)).toMatchObject({
+      kind: 'agent_interrupted',
+      text: 'Agent 已停止。本轮已结束，可以重新发送。',
+    });
+  });
+
   it('rejects a stale proposal refresh without modifying B or clearing the draft', async () => {
     let resolveSnapshot!: (response: Response) => void;
     const snapshotResponse = new Promise<Response>((resolve) => {
@@ -225,11 +316,14 @@ describe('background run state reconciliation', () => {
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       if (String(input).endsWith('/messages')) {
         return Promise.resolve(jsonResponse({
+          turnId: 'turn_applied_a',
+          turnStatus: 'succeeded',
           turnMode: 'create_workflow',
           messages: [{
             id: 'msg_applied_a',
             role: 'agent',
             kind: 'proposal_applied',
+            turnId: 'turn_applied_a',
             text: 'applied A',
             time: 'unix:2',
           }],
@@ -430,6 +524,52 @@ describe('background run state reconciliation', () => {
     useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_b'));
 
     expect(useWorkbenchStore.getState().selectedCanvasNodeIds).toEqual([]);
+    expect(useWorkbenchStore.getState().presenceByActor).toEqual({});
+  });
+
+  it('does not store the current actor or its legacy echo as a collaborator', () => {
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
+
+    useWorkbenchStore.getState().applyCanvasPresence({
+      actor: LOCAL_CANVAS_ACTOR,
+      cursor: { x: 1, y: 2 },
+    });
+    useWorkbenchStore.getState().applyCanvasPresence({
+      actor: { actorId: 'local', displayName: 'Local user' },
+      cursor: { x: 3, y: 4 },
+    });
+
+    expect(useWorkbenchStore.getState().presenceByActor).toEqual({});
+  });
+
+  it('does not optimistically mirror outgoing presence into the collaborator store', async () => {
+    let resolvePresence!: (response: Response) => void;
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => {
+      resolvePresence = resolve;
+    })));
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
+
+    const sending = useWorkbenchStore.getState().sendCanvasPresence({
+      actor: LOCAL_CANVAS_ACTOR,
+      cursor: { x: 1, y: 2 },
+    });
+    expect(useWorkbenchStore.getState().presenceByActor).toEqual({});
+
+    resolvePresence(jsonResponse({ ok: true }));
+    await sending;
+    expect(useWorkbenchStore.getState().presenceByActor).toEqual({});
+  });
+
+  it('expires inactive collaborator presence', async () => {
+    vi.useFakeTimers();
+    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
+    useWorkbenchStore.getState().applyCanvasPresence({
+      actor: { actorId: 'remote', displayName: 'Remote' },
+      cursor: { x: 1, y: 2 },
+    });
+
+    expect(useWorkbenchStore.getState().presenceByActor).toHaveProperty('remote');
+    await vi.advanceTimersByTimeAsync(CANVAS_PRESENCE_TTL_MS);
     expect(useWorkbenchStore.getState().presenceByActor).toEqual({});
   });
 

@@ -100,7 +100,13 @@ export function WorkflowNode({
       }}
       onClick={(event) => event.stopPropagation()}
       onPointerCancel={onPointerCancel}
-      onPointerDown={onPointerDown}
+      onPointerDown={(event) => {
+        if (isNodeInteractiveTarget(event.target)) {
+          event.stopPropagation();
+          return;
+        }
+        onPointerDown(event);
+      }}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       role="group"
@@ -208,7 +214,7 @@ export function WorkflowNode({
         )}
         {artifactOutputs.length > 0 && (
           <div className="node-artifacts">
-            {artifactOutputs.slice(0, 3).map((output) => (
+            {artifactOutputs.slice(0, 1).map((output) => (
               <button
                 className={output.selected ? 'node-artifact node-artifact--selected' : 'node-artifact'}
                 key={output.id}
@@ -219,12 +225,19 @@ export function WorkflowNode({
                 title={output.meta || output.title}
                 type="button"
               >
-                <Icon n={artifactIcon(output.kind)} s={12} />
-                <span>{output.kind}</span>
+                {output.preview?.kind === 'image' ? (
+                  <img alt="" className="node-artifact-preview" src={output.preview.content} />
+                ) : (
+                  <span className="node-artifact-icon"><Icon n={artifactIcon(output.kind)} s={12} /></span>
+                )}
+                <span className="node-artifact-copy">
+                  <strong>{output.title}</strong>
+                  <small>{output.kind}</small>
+                </span>
               </button>
             ))}
-            {artifactOutputs.length > 3 && (
-              <span className="node-artifact-more">+{artifactOutputs.length - 3}</span>
+            {artifactOutputs.length > 1 && (
+              <span className="node-artifact-more">+{artifactOutputs.length - 1} 个结果</span>
             )}
           </div>
         )}
@@ -257,6 +270,13 @@ function primaryNodeTextParam(params: unknown): { key: string; value: string } |
   if (typeof value !== 'string' && typeof value !== 'number') return null;
   const text = String(value).trim();
   return text.length > 0 ? { key, value: text } : null;
+}
+
+function isNodeInteractiveTarget(target: EventTarget | null): boolean {
+  const candidate = target as (EventTarget & { closest?: (selector: string) => Element | null }) | null;
+  if (!candidate) return false;
+  return typeof candidate.closest === 'function' &&
+    Boolean(candidate.closest('button, input, textarea, select, a'));
 }
 
 function artifactIcon(kind: string): 'export' | 'image' | 'layers' | 'play' {

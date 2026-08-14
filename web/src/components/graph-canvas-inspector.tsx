@@ -4,6 +4,7 @@ import type {
   GraphNodeState,
   ImplementationResolution,
   NodeDefinition,
+  WorkbenchState,
   WorkflowGraph,
 } from '../types';
 import { graphNodeHeight, graphNodeWidth, type ViewState, type ViewportSize } from './graph-canvas-navigation';
@@ -12,6 +13,9 @@ import { categorySwatch } from './graph-canvas-rendering';
 type WorkflowNode = WorkflowGraph['nodes'][string];
 type ParamSpec = NodeDefinition['params_schema']['properties'][string];
 type InspectorErrorMap = Record<string, string | undefined>;
+type CapabilityReadiness = NonNullable<
+  WorkbenchState['providers']['capabilityReadiness']
+>[number];
 
 export type InspectorControlKind = 'text' | 'number' | 'select' | 'checkbox' | 'readonly';
 
@@ -21,9 +25,11 @@ export type InspectorControlKind = 'text' | 'number' | 'select' | 'checkbox' | '
 /// resolved implementation.
 function ImplementationSection({
   capability,
+  readiness,
   resolution,
 }: {
   capability: string;
+  readiness?: CapabilityReadiness | null;
   resolution: ImplementationResolution | null;
 }) {
   return (
@@ -32,7 +38,21 @@ function ImplementationSection({
         <span className="field-label">capability</span>
         <span className="field-input">{capability}</span>
       </div>
-      {!resolution && (
+      {readiness && (
+        <div className="field">
+          <span className="field-label">provider readiness</span>
+          <span className="field-input">
+            {readiness.providerId} · {readiness.runnable ? '可运行' : '不可运行'}
+          </span>
+        </div>
+      )}
+      {!resolution && readiness?.mode === 'direct' && readiness.runnable && (
+        <div className="field">
+          <span className="field-label">implementation</span>
+          <span className="field-input">direct provider</span>
+        </div>
+      )}
+      {!resolution && readiness?.mode !== 'direct' && (
         <div className="field">
           <span className="field-label">implementation</span>
           <span className="field-input">解析中…</span>
@@ -77,6 +97,7 @@ type GraphInspectorProps = {
   definition?: NodeDefinition;
   node: GraphNodeState;
   resolution?: ImplementationResolution | null;
+  readiness?: CapabilityReadiness | null;
   workflowNode?: WorkflowNode;
   onClose: () => void;
   onRequestProposal?: (nodeId: string) => Promise<void>;
@@ -96,6 +117,7 @@ export function GraphInspector({
   view,
   viewportSize,
   resolution,
+  readiness,
 }: GraphInspectorProps) {
   const paramObject = useMemo(() => paramsObject(workflowNode), [workflowNode]);
   const fields = useMemo(
@@ -107,7 +129,6 @@ export function GraphInspector({
   );
   const [errors, setErrors] = useState<InspectorErrorMap>({});
   const [savingKey, setSavingKey] = useState<string | null>(null);
-  const [fieldScale, setFieldScale] = useState(1);
   const readonlyReason = !workflowNode
     ? '当前 workflow graph 不可用'
     : !definition
@@ -148,17 +169,11 @@ export function GraphInspector({
     }
   };
 
-  const nudgeFieldScale = (delta: number) => {
-    setFieldScale((current) => Math.min(1.16, Math.max(0.92, Number((current + delta).toFixed(2)))));
-  };
-
   const style = nodeInspectorStyle(
     node,
     view ?? { x: 0, y: 0, z: 1 },
     viewportSize ?? { width: 900, height: 640 },
   );
-  const detailsStyle = { '--inspector-field-scale': fieldScale } as CSSProperties;
-
   return (
     <div
       className="inspector p-inspector inspector-floating inspector-compact"
@@ -170,11 +185,16 @@ export function GraphInspector({
       </span>
       <div className="inspector-node-actions">
         <details className="inspector-edit-details">
-          <summary className="inspector-tool inspector-tool-icon" title="编辑参数">
+          <summary
+            className="inspector-tool"
+            onClick={(event) => event.stopPropagation()}
+            onPointerDown={(event) => event.stopPropagation()}
+            title="编辑参数"
+          >
             <Icon n="sliders" s={14} />
-            <span className="selection-summary-accessible">编辑参数</span>
+            <span>参数</span>
           </summary>
-          <div className="inspector-details-panel" style={detailsStyle}>
+          <div className="inspector-details-panel">
             <div className="inspector-head">
               <div className="kicker">选中节点 · {node.id}</div>
               <div className="title">
@@ -198,6 +218,7 @@ export function GraphInspector({
               {definition?.capability && (
                 <ImplementationSection
                   capability={definition.capability}
+                  readiness={readiness}
                   resolution={resolution ?? null}
                 />
               )}
@@ -223,12 +244,6 @@ export function GraphInspector({
             </div>
           </div>
         </details>
-        <button className="inspector-tool inspector-font-tool" onClick={() => nudgeFieldScale(-0.06)} type="button">
-          A-
-        </button>
-        <button className="inspector-tool inspector-font-tool" onClick={() => nudgeFieldScale(0.06)} type="button">
-          A+
-        </button>
         <button
           className="inspector-tool inspector-tool-primary"
           disabled={!onRequestProposal}

@@ -1,4 +1,6 @@
 import { useMemo, useState } from 'react';
+import { isLocalCanvasActor, LOCAL_CANVAS_ACTOR } from '../canvas-presence';
+import { useWorkbenchStore } from '../store';
 import type {
   CanvasComment,
   CanvasCommentOpInput,
@@ -13,46 +15,72 @@ type PresenceByActor = Record<string, CanvasPresence>;
 
 type CanvasCollaborationWorldProps = {
   comments: CanvasComment[];
+  hiddenActorId?: string;
   nodes: GraphNodeState[];
   presenceByActor: PresenceByActor;
 };
 
+type ConnectedCanvasCollaborationWorldProps = Omit<
+  CanvasCollaborationWorldProps,
+  'hiddenActorId' | 'presenceByActor'
+>;
+
+export function ConnectedCanvasCollaborationWorld(
+  props: ConnectedCanvasCollaborationWorldProps,
+) {
+  const presenceByActor = useWorkbenchStore((store) => store.presenceByActor);
+  return (
+    <CanvasCollaborationWorld
+      {...props}
+      hiddenActorId={LOCAL_CANVAS_ACTOR.actorId}
+      presenceByActor={presenceByActor}
+    />
+  );
+}
+
 export function CanvasCollaborationWorld({
   comments,
+  hiddenActorId,
   nodes,
   presenceByActor,
 }: CanvasCollaborationWorldProps) {
   const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node] as const)), [nodes]);
   return (
     <>
-      {Object.values(presenceByActor).map((presence) => (
-        <div className="collab-presence" key={presence.actor.actorId}>
-          {presence.selection?.nodeIds.map((nodeId) => {
-            const node = nodeById.get(nodeId);
-            if (!node) return null;
-            return (
+      {Object.values(presenceByActor)
+        .filter((presence) =>
+          presence.actor.actorId !== hiddenActorId &&
+          !isLocalCanvasActor(presence.actor.actorId))
+        .map((presence) => (
+          <div className="collab-presence" key={presence.actor.actorId}>
+            {presence.selection?.nodeIds.map((nodeId) => {
+              const node = nodeById.get(nodeId);
+              if (!node) return null;
+              return (
+                <span
+                  className="collab-selection"
+                  key={nodeId}
+                  style={{
+                    height: graphNodeHeight(node) + 10,
+                    left: node.position.x - 5,
+                    top: node.position.y - 5,
+                    width: graphNodeWidth(node) + 10,
+                  }}
+                />
+              );
+            })}
+            {presence.cursor && (
               <span
-                className="collab-selection"
-                key={nodeId}
+                className="collab-cursor"
                 style={{
-                  height: graphNodeHeight(node) + 10,
-                  left: node.position.x - 5,
-                  top: node.position.y - 5,
-                  width: graphNodeWidth(node) + 10,
+                  transform: `translate3d(${presence.cursor.x + 8}px, ${presence.cursor.y + 8}px, 0)`,
                 }}
-              />
-            );
-          })}
-          {presence.cursor && (
-            <span
-              className="collab-cursor"
-              style={{ left: presence.cursor.x, top: presence.cursor.y }}
-            >
-              {presence.actor.displayName}
-            </span>
-          )}
-        </div>
-      ))}
+              >
+                {presence.actor.displayName}
+              </span>
+            )}
+          </div>
+        ))}
       {comments.map((comment) => {
         const point = commentPoint(comment, nodeById);
         if (!point) return null;
@@ -119,7 +147,13 @@ export function CanvasCommentsPanel({
 
   if (!open) {
     return (
-      <button className="comment-toggle" onClick={() => setOpen(true)} type="button">
+      <button
+        aria-expanded="false"
+        className="comment-toggle"
+        onClick={() => setOpen(true)}
+        onPointerDown={(event) => event.stopPropagation()}
+        type="button"
+      >
         Comments <strong>{comments.length}</strong>
       </button>
     );

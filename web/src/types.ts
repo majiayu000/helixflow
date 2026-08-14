@@ -33,6 +33,8 @@ const PrimaryChatMessageKindSchema = z.enum([
   'run_requested',
   'run_failed',
   'agent_status',
+  'agent_error',
+  'agent_interrupted',
 ]);
 
 const AgentLogMessageKindSchema = z.custom<`agent_log:${string}`>(
@@ -80,7 +82,17 @@ const ChatMessageSchema = z.object({
   turnMode: z
     .enum(['chat', 'create_workflow', 'modify_workflow', 'debug_workflow', 'run_request'])
     .optional(),
+  conversationId: z.string().nullish(),
+  turnId: z.string().nullish(),
 });
+
+export const TurnModeSchema = z.enum([
+  'chat',
+  'create_workflow',
+  'modify_workflow',
+  'debug_workflow',
+  'run_request',
+]);
 
 const CanvasSizeSchema = z.object({
   width: z.number(),
@@ -244,6 +256,15 @@ const ApiConnectorStatusSchema = z.object({
   status: z.string(),
 });
 
+const ProviderCapabilityReadinessSchema = z.object({
+  capabilityId: z.string(),
+  providerId: z.string(),
+  runnable: z.boolean(),
+  mode: z.enum(['catalog', 'direct']),
+  code: z.string().nullable().optional(),
+  message: z.string().nullable().optional(),
+});
+
 const ProvidersSchema = z
   .object({
     defaultProvider: z.string(),
@@ -251,6 +272,7 @@ const ProvidersSchema = z
     runtimeProviders: z.array(RuntimeProviderStatusSchema),
     workflowBackends: z.array(WorkflowBackendStatusSchema),
     apiConnectors: z.array(ApiConnectorStatusSchema),
+    capabilityReadiness: z.array(ProviderCapabilityReadinessSchema).optional(),
   })
   .default({
     defaultProvider: 'missing',
@@ -268,6 +290,7 @@ const ProvidersSchema = z
     ],
     workflowBackends: [],
     apiConnectors: [],
+    capabilityReadiness: [],
   })
   .transform((providers) => ({
     ...providers,
@@ -437,6 +460,7 @@ export const CatalogBindingSchema = z.object({
   mode: z.string(),
   implementation: CatalogImplementationSchema,
   bindingRevision: z.string(),
+  availability: z.enum(['enabled', 'disabled']),
 });
 
 export const ModelCatalogSchema = z.object({
@@ -484,6 +508,33 @@ export const WorkbenchStateSchema = z.object({
   }),
   providers: ProvidersSchema,
   chat: z.object({
+    activeConversationId: z.string().nullable().optional(),
+    conversations: z
+      .array(
+        z.object({
+          id: z.string(),
+          title: z.string(),
+          codexThreadId: z.string().nullable().optional(),
+          createdAt: z.string(),
+          updatedAt: z.string(),
+        }),
+      )
+      .optional(),
+    turns: z
+      .array(
+        z.object({
+          id: z.string(),
+          conversationId: z.string(),
+          executionId: z.string().nullable().optional(),
+          codexTurnId: z.string().nullable().optional(),
+          mode: z.string(),
+          status: z.enum(['running', 'succeeded', 'clarify', 'error', 'interrupted']),
+          reasonCode: z.string().nullable().optional(),
+          startedAt: z.string(),
+          completedAt: z.string().nullable().optional(),
+        }),
+      )
+      .optional(),
     messages: z.array(ChatMessageSchema),
   }),
   graph: GraphStateSchema,
@@ -505,7 +556,10 @@ export const WorkbenchStateSchema = z.object({
 });
 
 export const WorkspaceMessageResponseSchema = z.object({
-  turnMode: z.enum(['chat', 'create_workflow', 'modify_workflow', 'debug_workflow', 'run_request']),
+  conversationId: z.string().optional(),
+  turnId: z.string().optional(),
+  turnStatus: z.enum(['running', 'succeeded', 'clarify', 'error', 'interrupted']).optional(),
+  turnMode: TurnModeSchema,
   messages: z.array(ChatMessageSchema),
   proposal: ProposalSchema.nullable(),
   run: RunSchema.nullable().optional(),
@@ -562,6 +616,8 @@ export type NodeSizeUpdate = { id: string; width: number; height: number };
 export type ChatMessageKind = z.infer<typeof ChatMessageKindSchema>;
 export type WorkflowGraph = z.infer<typeof WorkflowGraphSchema>;
 export type WorkspaceMessageResponse = z.infer<typeof WorkspaceMessageResponseSchema>;
+export type TurnMode = z.infer<typeof TurnModeSchema>;
+export type Conversation = NonNullable<WorkbenchState['chat']['conversations']>[number];
 export type RunConfirmationResponse = z.infer<typeof RunConfirmationResponseSchema>;
 export type WorkspaceSummary = z.infer<typeof WorkspaceSummarySchema>;
 export type NodeCatalog = z.infer<typeof NodeCatalogSchema>;

@@ -40,6 +40,8 @@ async fn stale_agent_proposal_returns_conflict_without_pending_record() {
             user_message: "创建一个 workflow".to_owned(),
             graph: tests::sample_graph(),
             canvas_context: None,
+            conversation_id: None,
+            turn_mode: None,
         }),
     )
     .await

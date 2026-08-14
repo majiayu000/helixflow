@@ -5,8 +5,10 @@ use std::collections::BTreeMap;
 use helixflow_graph::semantics::NodeSemanticsEntry;
 use helixflow_graph::{GraphEdge, GraphNode, GraphService, WorkflowGraph, port_type_label};
 use helixflow_registry::PortType;
-use helixflow_registry::catalog::{CatalogSnapshot, ImplementationSelection};
-use helixflow_registry::resolver::{CapabilityResolver, ConnectorAvailability, ResolveRequest};
+use helixflow_registry::catalog::{BindingAvailability, CatalogSnapshot, ImplementationSelection};
+use helixflow_registry::resolver::{
+    CapabilityResolver, ConnectorAvailability, ResolveError, ResolveRequest,
+};
 use serde_json::{Map, Value};
 
 use crate::errors::{ClarifyFirst, CompileError};
@@ -41,6 +43,7 @@ pub(crate) fn build(
     service: &GraphService,
     catalog: &CatalogSnapshot,
     availability: &ConnectorAvailability,
+    connector_preference: Option<&str>,
 ) -> Result<Result<BuiltGraph, ClarifyFirst>, CompileError> {
     let resolver = CapabilityResolver::new(catalog);
     let registry = service.registry();
@@ -54,17 +57,29 @@ pub(crate) fn build(
 
     for (index, stage) in intent.stages.iter().enumerate() {
         // Step 2: resolve capability/model/binding. Recoverable resolver
-        // outcomes route to clarification; unknown model/capability/binding
-        // are hard errors (fixture intent-model-mismatch.json).
+        // outcomes route to clarification. A missing explicit binding remains
+        // fail-closed, but is a user-actionable catalog gap rather than an
+        // internal server error: never substitute another capability/model.
         let resolved = match resolver.resolve(
             &ResolveRequest {
                 capability_id: stage.capability_id.clone(),
                 requested_model: stage.requested_model.clone(),
-                connector_preference: None,
+                connector_preference: connector_preference.map(str::to_owned),
             },
             availability,
         ) {
             Ok(resolved) => resolved,
+            Err(ResolveError::BindingNotFound {
+                capability_id,
+                model_id,
+            }) => {
+                return Ok(Err(binding_not_found_clarification(
+                    stage,
+                    catalog,
+                    &capability_id,
+                    model_id.as_deref(),
+                )));
+            }
             Err(err) if err.recoverable() => {
                 return Ok(Err(ClarifyFirst::new(
                     err.code(),
@@ -317,6 +332,76 @@ pub(crate) fn build(
         layout_hints,
         diagnostics,
     }))
+}
+
+fn binding_not_found_clarification(
+    stage: &StageIntent,
+    catalog: &CatalogSnapshot,
+    capability_id: &str,
+    model_id: Option<&str>,
+) -> ClarifyFirst {
+    let capability_name = catalog
+        .capability(capability_id)
+        .map(|capability| capability.display_name.clone())
+        .unwrap_or_else(|| capability_id.to_owned());
+
+    let mut available_models: Vec<serde_json::Value> = catalog
+        .bindings_for_capability(capability_id)
+        .into_iter()
+        .filter(|binding| binding.availability == BindingAvailability::Enabled)
+        .filter_map(|binding| catalog.model(&binding.model_id))
+        .map(|model| {
+            serde_json::json!({
+                "modelId": model.model_id,
+                "displayName": model.display_name,
+            })
+        })
+        .collect();
+    available_models
+        .sort_by(|left, right| left["modelId"].as_str().cmp(&right["modelId"].as_str()));
+    available_models.dedup_by(|left, right| left["modelId"] == right["modelId"]);
+
+    let requested_model = model_id.and_then(|id| catalog.model(id));
+    let requested_model_capabilities: Vec<serde_json::Value> = model_id
+        .map(|id| {
+            let mut values: Vec<serde_json::Value> = catalog
+                .bindings
+                .iter()
+                .filter(|binding| {
+                    binding.model_id == id && binding.availability == BindingAvailability::Enabled
+                })
+                .filter_map(|binding| catalog.capability(&binding.capability_id))
+                .map(|capability| {
+                    serde_json::json!({
+                        "capabilityId": capability.capability_id,
+                        "displayName": capability.display_name,
+                    })
+                })
+                .collect();
+            values.sort_by(|left, right| {
+                left["capabilityId"]
+                    .as_str()
+                    .cmp(&right["capabilityId"].as_str())
+            });
+            values.dedup_by(|left, right| left["capabilityId"] == right["capabilityId"]);
+            values
+        })
+        .unwrap_or_default();
+
+    ClarifyFirst::new(
+        "BINDING_NOT_FOUND",
+        vec![format!("{}.model", stage.stage_id)],
+        serde_json::json!({
+            "stageId": stage.stage_id,
+            "capabilityId": capability_id,
+            "capabilityName": capability_name,
+            "requestedModelId": model_id,
+            "requestedModelName": requested_model.map(|model| model.display_name.as_str()),
+            "availableModels": available_models,
+            "requestedModelCapabilities": requested_model_capabilities,
+        }),
+        "请选择一个已验证支持该能力的模型，或先配置相应的 Provider binding",
+    )
 }
 
 /// Resolves the node type of an upstream stage without re-running binding

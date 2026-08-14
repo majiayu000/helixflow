@@ -552,6 +552,7 @@ async fn ordinary_agent_proposal_preserves_sidecar_only_semantics() {
     );
     let proposal = ValidatedAgentProposal {
         session_id: "agent-v2".to_owned(),
+        runtime_identity: None,
         agent_logs: Vec::new(),
         proposal: PreparedProposal {
             base_version_id: source.id,

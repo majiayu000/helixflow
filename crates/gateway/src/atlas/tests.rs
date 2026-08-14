@@ -130,6 +130,7 @@ fn request(capability: &str, params: Value) -> ProviderRequest {
     let operation_id = match capability {
         "prompt_writer" => "deepseek-ai/DeepSeek-V3-0324",
         "text_to_image" => "google/nano-banana-2/text-to-image",
+        "image_to_video" => "bytedance/seedance-v1.5-pro/image-to-video",
         _ => "bytedance/seedance-v1.5-pro/text-to-video-fast",
     };
     ProviderRequest {
@@ -143,6 +144,41 @@ fn request(capability: &str, params: Value) -> ProviderRequest {
         resolved_model_id: Some("resolved/model".to_owned()),
         operation_id: Some(operation_id.to_owned()),
     }
+}
+
+#[tokio::test]
+async fn atlas_image_to_video_dispatch_sends_the_wired_image()
+-> Result<(), Box<dyn std::error::Error>> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let server = capture_request_and_respond(listener, 200, r#"{"data":{"id":"prediction_i2v"}}"#);
+    let provider = AtlasProvider::new(ApiProviderConfig::atlas(
+        "test-key".to_owned(),
+        format!("http://{addr}/v1"),
+    ));
+
+    let dispatch = provider
+        .dispatch(request(
+            "image_to_video",
+            json!({
+                "prompt": "slow camera move",
+                "duration_sec": 5,
+                "__helixflow_wired_image": "data:image/png;base64,iVBORw0KGgo="
+            }),
+        ))
+        .await
+        .expect("dispatch");
+    let request_body = server.await??;
+
+    assert!(matches!(dispatch, ProviderDispatch::Accepted(_)));
+    assert_eq!(
+        request_body["model"],
+        "bytedance/seedance-v1.5-pro/image-to-video"
+    );
+    assert_eq!(request_body["image"], "data:image/png;base64,iVBORw0KGgo=");
+    assert_eq!(request_body["generate_audio"], true);
+    assert_eq!(request_body["resolution"], "720p");
+    Ok(())
 }
 
 fn unresolved_request(capability: &str, params: Value) -> ProviderRequest {
@@ -251,7 +287,7 @@ async fn atlas_video_dispatch_returns_a_durable_handle_before_polling()
         ))
         .await
         .expect("dispatch");
-    server.await??;
+    let request_body = server.await??;
     let ProviderDispatch::Accepted(task) = dispatch else {
         panic!("video dispatch must return a durable handle");
     };
@@ -262,6 +298,7 @@ async fn atlas_video_dispatch_returns_a_durable_handle_before_polling()
         Some(format!("http://{addr}/api/v1/model/prediction/prediction_123").as_str())
     );
     assert!(task.result_url.is_none());
+    assert_eq!(request_body["resolution"], "720P");
     Ok(())
 }
 

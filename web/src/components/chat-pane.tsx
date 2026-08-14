@@ -3,6 +3,8 @@ import { Icon } from '../icons';
 import type { WorkbenchState } from '../types';
 
 type ChatMessage = WorkbenchState['chat']['messages'][number];
+type AgentTurn = NonNullable<WorkbenchState['chat']['turns']>[number];
+type Conversation = NonNullable<WorkbenchState['chat']['conversations']>[number];
 type PendingProposal = NonNullable<WorkbenchState['pendingProposal']>;
 type ChatEntry =
   | { type: 'message'; message: ChatMessage }
@@ -24,12 +26,18 @@ type ComposerKeyEvent = {
 
 type ChatPaneProps = {
   messages: ChatMessage[];
+  conversations?: Conversation[];
+  turns?: AgentTurn[];
+  activeConversationId?: string | null;
   pendingProposal: WorkbenchState['pendingProposal'];
   run: WorkbenchState['run'];
   busy: boolean;
   editSessionSummary: EditSessionSummary | null;
   selectedNodeIds?: string[];
   onSend: (text: string) => Promise<void>;
+  onInterrupt?: () => Promise<void>;
+  onConversationChange?: (conversationId: string) => void;
+  onNewConversation?: () => Promise<void>;
   onUploadImage?: (file: File) => Promise<void>;
   onCommitEdits: () => Promise<void>;
   onDiscardEdits: () => void;
@@ -39,12 +47,18 @@ type ChatPaneProps = {
 
 export function ChatPane({
   messages,
+  conversations = [],
+  turns = [],
+  activeConversationId,
   pendingProposal,
   run,
   busy,
   editSessionSummary,
   selectedNodeIds = [],
   onSend,
+  onInterrupt,
+  onConversationChange,
+  onNewConversation,
   onUploadImage,
   onCommitEdits,
   onDiscardEdits,
@@ -52,6 +66,7 @@ export function ChatPane({
   onDismissProposal,
 }: ChatPaneProps) {
   const [draft, setDraft] = useState('');
+  const [interrupting, setInterrupting] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const isComposingRef = useRef(false);
@@ -77,21 +92,49 @@ export function ChatPane({
   return (
     <aside className="wb-chat">
       <div className="chat-head">
-        <span>SESSION · CODEX</span>
+        <span>CONVERSATION · CODEX</span>
         <span className="sub">{busy ? 'busy · 执行中' : 'idle · 观察中'}</span>
       </div>
-      <div className="session-brief">
-        你在手动改图 — 我不会打断。提交编辑后，我的下一个提案会基于它。
-      </div>
+      {conversations.length > 0 && (
+        <div className="conversation-bar">
+          <select
+            aria-label="conversation selector"
+            disabled={busy}
+            onChange={(event) => onConversationChange?.(event.target.value)}
+            value={activeConversationId ?? conversations[0].id}
+          >
+            {conversations.map((conversation) => (
+              <option key={conversation.id} value={conversation.id}>
+                {conversation.title} · {shortConversationId(conversation.id)}
+              </option>
+            ))}
+          </select>
+          <button
+            className="conversation-new"
+            disabled={busy}
+            onClick={() => void onNewConversation?.()}
+            type="button"
+          >
+            + 新对话
+          </button>
+        </div>
+      )}
+      {editSessionSummary && (
+        <div className="session-brief">
+          正在编辑画布 · 提交后，Agent 会从这些变更继续。
+        </div>
+      )}
       <div className="chat-msgs chat-msgs--session" ref={scrollRef}>
-        <EditSessionWorkspace
-          busy={busy}
-          selectedNodeIds={selectedNodeIds}
-          summary={editSessionSummary}
-          onCommit={onCommitEdits}
-          onDiscard={onDiscardEdits}
-        />
-        <MessageTimeline messages={messages} />
+        {editSessionSummary && (
+          <EditSessionWorkspace
+            busy={busy}
+            selectedNodeIds={selectedNodeIds}
+            summary={editSessionSummary}
+            onCommit={onCommitEdits}
+            onDiscard={onDiscardEdits}
+          />
+        )}
+        <MessageTimeline messages={messages} turns={turns} />
         <RunErrorCard busy={busy} run={run} onRequestFix={onSend} />
         {pendingProposal && <ProposalMessage
           busy={busy}
@@ -152,9 +195,23 @@ export function ChatPane({
             </div>
             <div className="right">
               <span className="kbd">Enter 发送 · Shift+Enter 换行</span>
-              <button className="btn btn--primary btn--sm" disabled={busy} onClick={() => submit()}>
-                <Icon n="arrowUp" s={13} />
-              </button>
+              {busy && onInterrupt ? (
+                <button
+                  className="btn btn--danger btn--sm"
+                  disabled={interrupting}
+                  onClick={() => {
+                    setInterrupting(true);
+                    void onInterrupt().finally(() => setInterrupting(false));
+                  }}
+                  type="button"
+                >
+                  {interrupting ? '停止中…' : '停止 Agent'}
+                </button>
+              ) : (
+                <button className="btn btn--primary btn--sm" disabled={busy} onClick={() => submit()}>
+                  <Icon n="arrowUp" s={13} />
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -183,7 +240,7 @@ function EditSessionWorkspace({
   onCommit,
   onDiscard,
 }: {
-  summary: EditSessionSummary | null;
+  summary: EditSessionSummary;
   selectedNodeIds: string[];
   busy: boolean;
   onCommit: () => Promise<void>;
@@ -191,16 +248,12 @@ function EditSessionWorkspace({
 }) {
   return (
     <div className="edit-session-workspace">
-      {summary ? (
-        <EditSessionCard
-          busy={busy}
-          summary={summary}
-          onCommit={onCommit}
-          onDiscard={onDiscard}
-        />
-      ) : (
-        <EditSessionIdleCard />
-      )}
+      <EditSessionCard
+        busy={busy}
+        summary={summary}
+        onCommit={onCommit}
+        onDiscard={onDiscard}
+      />
       <div className="edit-session-request">
         围绕当前画布继续编辑；我会在你提交后再基于新版本工作。
       </div>
@@ -250,29 +303,6 @@ function EditSessionCard({
           提交编辑
         </button>
         <button className="btn btn--ghost btn--sm" disabled={busy} onClick={onDiscard}>
-          放弃
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function EditSessionIdleCard() {
-  return (
-    <div className="edit-session-card edit-session-card--idle">
-      <div className="edit-session-head">
-        <span>UNCOMMITTED · 等待编辑</span>
-        <em>idle</em>
-      </div>
-      <div className="edit-session-empty">
-        在画布移动节点、连线、改参数后，这里会列出待提交操作。
-      </div>
-      <div className="edit-session-actions">
-        <button className="btn btn--primary btn--sm" disabled>
-          <Icon n="check" s={13} />
-          提交编辑
-        </button>
-        <button className="btn btn--ghost btn--sm" disabled>
           放弃
         </button>
       </div>
@@ -484,7 +514,7 @@ function MessageRow({ message }: { message: ChatMessage }) {
   );
 }
 
-function MessageTimeline({ messages }: { messages: ChatMessage[] }) {
+function MessageTimeline({ messages, turns }: { messages: ChatMessage[]; turns: AgentTurn[] }) {
   const entries = chatEntries(messages);
   if (entries.length === 0) return null;
 
@@ -498,6 +528,7 @@ function MessageTimeline({ messages }: { messages: ChatMessage[] }) {
             key={entry.id}
             logs={entry.logs}
             message={entry.message}
+            turn={turnForEntry(entry, turns)}
           />
         ),
       )}
@@ -508,9 +539,11 @@ function MessageTimeline({ messages }: { messages: ChatMessage[] }) {
 function AssistantTurn({
   message,
   logs,
+  turn,
 }: {
   message?: ChatMessage;
   logs: ChatMessage[];
+  turn?: AgentTurn;
 }) {
   const isStatus = message ? isAgentStatusMessage(message) : false;
   return (
@@ -539,6 +572,10 @@ function AssistantTurn({
               <div className="msg-text">{message.text}</div>
             )}
           </div>
+        ) : turn && turn.status !== 'running' ? (
+          <div className="assistant-bubble assistant-bubble--terminal" data-testid="terminal-turn">
+            {terminalTurnText(turn)}
+          </div>
         ) : (
           <div className="assistant-bubble">
             <div className="status-line">
@@ -552,6 +589,25 @@ function AssistantTurn({
       </div>
     </div>
   );
+}
+
+function turnForEntry(
+  entry: Extract<ChatEntry, { type: 'assistantTurn' }>,
+  turns: AgentTurn[],
+): AgentTurn | undefined {
+  const turnId = entry.message?.turnId ?? entry.logs.find((log) => log.turnId)?.turnId;
+  return turnId ? turns.find((turn) => turn.id === turnId) : undefined;
+}
+
+function terminalTurnText(turn: AgentTurn): string {
+  if (turn.status === 'clarify') return `本轮等待澄清${turn.reasonCode ? ` · ${turn.reasonCode}` : ''}`;
+  if (turn.status === 'succeeded') return '本轮已完成，但没有生成可展示的回复。';
+  if (turn.status === 'interrupted') return '本轮已中断，可以重新发送。';
+  return `本轮执行失败${turn.reasonCode ? ` · ${turn.reasonCode}` : ''}`;
+}
+
+function shortConversationId(id: string): string {
+  return id.length > 12 ? id.slice(-8) : id;
 }
 
 function ToolCallGroup({ messages }: { messages: ChatMessage[] }) {

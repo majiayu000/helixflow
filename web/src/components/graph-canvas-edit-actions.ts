@@ -14,6 +14,12 @@ import {
   buildSelectionClipboardText,
 } from './graph-canvas-editing';
 import type { Point } from './graph-canvas-selection';
+import {
+  GRAPH_NODE_MIN_HEIGHT,
+  GRAPH_NODE_WIDTH,
+  graphNodeHeight,
+  graphNodeWidth,
+} from './graph-canvas-navigation';
 
 type CanvasEditActionsInput = {
   capabilities: CanvasCapabilities;
@@ -41,7 +47,7 @@ export function createCanvasEditActions(input: CanvasEditActionsInput) {
       });
   };
 
-  const addNode = (definition: NodeDefinition, position = viewportCenterWorld()) => {
+  const addNode = (definition: NodeDefinition, position?: Point) => {
     if (!input.capabilities.paste) {
       input.setClipboardStatus('当前模式不允许添加节点');
       return;
@@ -51,7 +57,7 @@ export function createCanvasEditActions(input: CanvasEditActionsInput) {
         baseVersionId: input.versionId,
         definition,
         existingNodeIds: input.drawGraph.nodes.map((node) => node.id),
-        position,
+        position: position ?? nextAvailableNodePosition(viewportCenterWorld(), input.drawGraph.nodes),
       }),
       `已加入编辑会话：添加 ${definition.title}`,
       '添加节点失败',
@@ -117,4 +123,44 @@ export function createCanvasEditActions(input: CanvasEditActionsInput) {
   };
 
   return { addNode, copySelection, deleteSelection, pasteSelection };
+}
+
+const NODE_GAP = 24;
+
+/** Places library-added nodes near the viewport center without stacking them. */
+export function nextAvailableNodePosition(
+  origin: Point,
+  existingNodes: GraphNodeState[],
+): Point {
+  const stepX = GRAPH_NODE_WIDTH + NODE_GAP;
+  const stepY = GRAPH_NODE_MIN_HEIGHT + NODE_GAP;
+  const offsets: Point[] = [{ x: 0, y: 0 }];
+  for (let ring = 1; ring <= 12; ring += 1) {
+    for (let x = -ring; x <= ring; x += 1) {
+      offsets.push({ x: x * stepX, y: -ring * stepY });
+      offsets.push({ x: x * stepX, y: ring * stepY });
+    }
+    for (let y = -ring + 1; y < ring; y += 1) {
+      offsets.push({ x: -ring * stepX, y: y * stepY });
+      offsets.push({ x: ring * stepX, y: y * stepY });
+    }
+  }
+
+  return offsets
+    .map((offset) => ({ x: origin.x + offset.x, y: origin.y + offset.y }))
+    .find((candidate) => existingNodes.every((node) => !overlapsNode(candidate, node)))
+    ?? origin;
+}
+
+function overlapsNode(candidate: Point, node: GraphNodeState): boolean {
+  const candidateRight = candidate.x + GRAPH_NODE_WIDTH;
+  const candidateBottom = candidate.y + GRAPH_NODE_MIN_HEIGHT;
+  const nodeRight = node.position.x + graphNodeWidth(node);
+  const nodeBottom = node.position.y + graphNodeHeight(node);
+  return !(
+    candidateRight + NODE_GAP <= node.position.x
+    || candidate.x >= nodeRight + NODE_GAP
+    || candidateBottom + NODE_GAP <= node.position.y
+    || candidate.y >= nodeBottom + NODE_GAP
+  );
 }

@@ -1,4 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server';
+import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createManualWorkspaceProposal } from '../api';
 import type { GraphNodeState, NodeDefinition, WorkflowGraph } from '../types';
@@ -9,7 +10,11 @@ import {
 } from './graph-canvas-inspector';
 
 describe('GraphInspector', () => {
-  afterEach(() => {
+  let renderer: ReactTestRenderer | null = null;
+
+  afterEach(async () => {
+    if (renderer) await act(async () => renderer?.unmount());
+    renderer = null;
     vi.unstubAllGlobals();
   });
 
@@ -75,6 +80,31 @@ describe('GraphInspector', () => {
         ops: [{ op: 'set_param', id: 'video', key: 'duration_sec', value: 'slow' }],
       }),
     ).rejects.toThrow('invalid param (op 0)');
+  });
+
+  it('keeps parameter disclosure pointer events inside the inspector', async () => {
+    await act(async () => {
+      renderer = create(
+        <GraphInspector
+          definition={videoDefinition()}
+          node={videoNode()}
+          onClose={() => {}}
+          workflowNode={workflowNode()}
+        />,
+      );
+    });
+    if (!renderer) throw new Error('renderer was not created');
+    const summary = renderer.root.findByType('summary');
+    const pointerEvent = { stopPropagation: vi.fn() };
+    const clickEvent = { stopPropagation: vi.fn() };
+
+    await act(async () => {
+      summary.props.onPointerDown(pointerEvent);
+      summary.props.onClick(clickEvent);
+    });
+
+    expect(pointerEvent.stopPropagation).toHaveBeenCalledOnce();
+    expect(clickEvent.stopPropagation).toHaveBeenCalledOnce();
   });
 });
 

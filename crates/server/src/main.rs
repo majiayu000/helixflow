@@ -8,6 +8,7 @@ use helixflow_run::EventBus;
 use serde_json::{Value, json};
 
 mod agent_contract_observation;
+mod agent_turn_control;
 mod api_error;
 mod app_state;
 #[cfg(test)]
@@ -49,10 +50,14 @@ mod version_routes;
 mod version_semantics;
 mod workbench_message;
 mod workbench_message_canvas;
+mod workbench_message_debug;
 mod workbench_message_graph;
 #[cfg(test)]
 mod workbench_message_graph_tests;
 mod workbench_message_intent;
+mod workbench_message_intent_readiness;
+#[cfg(test)]
+mod workbench_message_intent_tests;
 mod workbench_message_metadata;
 mod workbench_message_proposals;
 mod workbench_message_run_fix;
@@ -69,6 +74,7 @@ mod workspace_state_tests;
 mod ws;
 
 use agent_contract_observation::agent_contract_evidence;
+use agent_turn_control::interrupt_workspace_agent_turn;
 use app_state::AppState;
 use artifact_routes::{
     accept_output, artifact_content, download_output, preview_output, reject_output, select_output,
@@ -77,7 +83,8 @@ use auth::{AuthConfig, require_auth, validate_bind_auth};
 use canvas_collaboration::{apply_canvas_comment_op, update_canvas_presence};
 use canvas_ticket::create_canvas_ticket;
 use catalog_routes::{
-    capability_models, catalog_snapshot, compile_intent, model_capabilities, resolve_implementation,
+    capability_models, catalog_snapshot, compile_intent, model_capabilities,
+    resolve_implementation, resolve_workspace_implementation,
 };
 use layout_routes::save_workspace_layout;
 use ops_routes::apply_workspace_ops;
@@ -91,7 +98,9 @@ use version_routes::{export_workflow_version, restore_workspace_version, undo_wo
 use workbench_message::post_workspace_message;
 use workspace_canvas::workspace_canvas;
 use workspace_events::workspace_events;
-use workspace_routes::{create_workspace, list_workspaces, set_workspace_provider};
+use workspace_routes::{
+    create_workspace, create_workspace_conversation, list_workspaces, set_workspace_provider,
+};
 use workspace_state::workspace_state;
 use ws::ws_handler;
 
@@ -211,12 +220,20 @@ fn app(state: AppState) -> Router {
             get(model_capabilities),
         )
         .route("/api/catalog/resolve", post(resolve_implementation))
+        .route(
+            "/api/workspaces/{workspace_id}/catalog/resolve",
+            post(resolve_workspace_implementation),
+        )
         .route("/api/workflows/compile-intent", post(compile_intent))
         .route(
             "/api/workspaces",
             get(list_workspaces).post(create_workspace),
         )
         .route("/api/workspaces/{workspace_id}/state", get(workspace_state))
+        .route(
+            "/api/workspaces/{workspace_id}/conversations",
+            post(create_workspace_conversation),
+        )
         .route(
             "/api/workspaces/{workspace_id}/canvas",
             get(workspace_canvas),
@@ -244,6 +261,10 @@ fn app(state: AppState) -> Router {
         .route(
             "/api/workspaces/{workspace_id}/messages",
             post(post_workspace_message),
+        )
+        .route(
+            "/api/workspaces/{workspace_id}/agent/interrupt",
+            post(interrupt_workspace_agent_turn),
         )
         .route(
             "/api/workspaces/{workspace_id}/uploads",

@@ -1,4 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server';
+import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { describe, expect, it } from 'vitest';
 import type { NodeCatalog, NodeDefinition } from '../types';
 import { NodeLibrary, filterNodeDefinitions } from './node-library';
@@ -30,6 +31,31 @@ describe('NodeLibrary', () => {
     expect(markup).toContain('title="文本节点"');
     expect(markup).toContain('title="视频节点"');
     expect(markup).toContain('disabled=""');
+  });
+
+  it('adds a tray item on a single click and returns to canvas selection', async () => {
+    const added: string[] = [];
+    let renderer: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <NodeLibrary
+          catalog={catalog()}
+          disabled={false}
+          error={null}
+          modelCatalog={null}
+          modelCatalogError={null}
+          onAddNode={(definition) => added.push(definition.type)}
+        />,
+      );
+    });
+
+    await act(async () => renderer!.root.findByProps({ title: '打开节点库' }).props.onClick());
+    const item = renderer!.root.findAllByProps({ className: 'node-library-item' })[0]!;
+    await act(async () => item.props.onClick());
+
+    expect(added).toEqual(['llm.prompt_writer']);
+    expect(renderer!.root.findAllByProps({ className: 'node-library-tray' })).toHaveLength(0);
+    await act(async () => renderer!.unmount());
   });
 });
 

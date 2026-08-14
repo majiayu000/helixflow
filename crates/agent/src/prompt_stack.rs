@@ -10,6 +10,7 @@ pub enum PromptSectionKey {
     ModeOverride,
     DaemonSystem,
     RuntimeTool,
+    CapabilityCatalog,
     ResearchCommandContract,
     RunContext,
     WorkflowBackend,
@@ -30,6 +31,7 @@ impl fmt::Display for PromptSectionKey {
             Self::ModeOverride => "mode_override",
             Self::DaemonSystem => "daemon_system",
             Self::RuntimeTool => "runtime_tool",
+            Self::CapabilityCatalog => "capability_catalog",
             Self::ResearchCommandContract => "research_command_contract",
             Self::RunContext => "run_context",
             Self::WorkflowBackend => "workflow_backend",
@@ -111,6 +113,10 @@ const MAX_HISTORY_TURNS: usize = 20;
 const MAX_HISTORY_CHARS: usize = 1200;
 
 fn conversation_history_body(request: &AgentSessionRequest) -> String {
+    if request.codex_thread_id.is_some() {
+        return "Prior turns are managed by the resumed Codex thread; do not duplicate them from application history."
+            .to_owned();
+    }
     if request.history.is_empty() {
         return "No prior turns in this workspace conversation.".to_owned();
     }
@@ -155,6 +161,12 @@ pub fn build_prompt_stack(request: &AgentSessionRequest) -> PromptStack {
             false,
         ),
         section(
+            PromptSectionKey::CapabilityCatalog,
+            "Built-in capability catalog",
+            built_in_capability_catalog(),
+            false,
+        ),
+        section(
             PromptSectionKey::RunContext,
             "Run context",
             run_context_body(request),
@@ -167,13 +179,13 @@ pub fn build_prompt_stack(request: &AgentSessionRequest) -> PromptStack {
             section(
                 PromptSectionKey::ResearchCommandContract,
                 "Research command contract",
-                "Read only the declared context files under `ctx/`: `graph.json`, `node_defs/catalog.json`, `workflow_backends/catalog.json`, `runtime_providers/catalog.json`, `api_connectors/catalog.json`, `canvas_state.json`, `canvas_ops.json`, and the selected skill. Do not inspect unrelated workspace files.",
+                "Read only the declared context files under `ctx/`: `graph.json`, `node_defs/catalog.json`, `models/catalog.json`, `workflow_backends/catalog.json`, `runtime_providers/catalog.json`, `api_connectors/catalog.json`, `canvas_state.json`, `canvas_ops.json`, and the selected skill. Do not inspect unrelated workspace files.",
                 false,
             ),
             section(
                 PromptSectionKey::WorkflowBackend,
                 "Workflow backend",
-                "Use `ctx/graph.json` as the current workflow state, `ctx/node_defs/catalog.json` as the authoritative node catalog, and `ctx/workflow_backends/catalog.json` as the backend boundary.",
+                "Use `ctx/graph.json` as the current workflow state, `ctx/node_defs/catalog.json` as the authoritative node catalog, `ctx/models/catalog.json` as the authoritative model-capability-binding catalog, and `ctx/workflow_backends/catalog.json` as the backend boundary. A model can execute a capability only when an enabled binding explicitly declares that exact pair.",
                 false,
             ),
             section(
@@ -191,7 +203,7 @@ pub fn build_prompt_stack(request: &AgentSessionRequest) -> PromptStack {
             section(
                 PromptSectionKey::CanvasOps,
                 "Bounded canvas ops",
-                canvas_ops_contract(mode),
+                canvas_ops_contract(mode, output_contract),
                 false,
             ),
         ]);
@@ -314,8 +326,9 @@ fn intent_output_contract() -> &'static str {
 - Write an IntentPlan JSON, not a proposal and not a graph.
 - Top-level keys must be exactly: "intentVersion" (always "1"), "topology" ("linear" or "parallel"), "stages", "outputStageIds", optional "assumptions".
 - Each stage: {"stageId":"s1","capabilityId":"text_to_image","requestedModel":"Nano Banana","inputFrom":[],"params":{"prompt":"..."}}.
-- Valid capabilityId values come from `ctx/node_defs/catalog.json` capabilities (canonical ids: prompt_writer, text_to_image, image_edit, text_to_video, image_to_video, video_extend, upscale_image, upscale_video, image_analyze).
+- Valid capabilityId values come from `ctx/node_defs/catalog.json`. Before pairing a capability with a model, check `ctx/models/catalog.json`; only an enabled binding makes that exact pair executable.
 - "requestedModel": set ONLY when the user named a model; otherwise omit it and the backend applies the configured default. Never invent model names.
+- If the user names a model-capability pair with no enabled binding, preserve the requested model and capability in the intent. Never silently substitute another model or capability; the backend will return a structured clarification with available choices.
 - "inputFrom" references earlier stages only: [{"stageId":"s1","output":"image"}]. Use "linear" unless the user explicitly asked for parallel branches.
 - Stage ids are lowercase short labels (s1, s2, ...). Do not write node ids, edges, coordinates, binding ids, connector names, or credentials.
 - If a required input cannot come from the user's message or an earlier stage, still write the intent — the backend returns a structured clarification."#
@@ -337,23 +350,36 @@ fn proposal_output_contract() -> &'static str {
 - Graph edges must use tuple arrays: "from":["node_id","port"], "to":["node_id","port"], and "edge_type"."#
 }
 
-fn canvas_ops_contract(mode: TurnMode) -> &'static str {
+fn canvas_ops_contract(mode: TurnMode, output_contract: OutputContract) -> &'static str {
     match mode {
         TurnMode::CreateWorkflow | TurnMode::ModifyWorkflow | TurnMode::DebugWorkflow => {
-            r#"Canvas ops contract:
+            if output_contract == OutputContract::IntentJson {
+                r#"Canvas ops contract:
 - Read compact canvas state from `ctx/canvas_state.json`.
 - Read allowed canvas ops from `ctx/canvas_ops.json`.
+- Prefer `canvas.get_state` to read current compact state and `canvas.submit_intent` to submit a high-level IntentPlan when those tools are available.
+- `read_state` means inspect only the declared compact graph state.
+- `read_selection` means inspect only `selection.node_ids`; an empty selection is valid.
+- Never write low-level node ids, edges, coordinates, binding ids, or connector names in the intent.
+- Never restore, save layout, call provider execution, or mutate graph state directly."#
+            } else {
+                r#"Canvas ops contract:
+- Read compact canvas state from `ctx/canvas_state.json`.
+- Read allowed canvas ops from `ctx/canvas_ops.json`.
+- Prefer `canvas.get_state` to read current compact state and `canvas.submit_proposal` to submit proposal ops when those tools are available.
 - `read_state` means inspect only the declared compact graph state.
 - `read_selection` means inspect only `selection.node_ids`; an empty selection is valid.
 - `propose_layout` must be expressed as `move_node` ops in `out/proposal.json`.
 - `propose_graph_ops` must be expressed as bounded proposal ops in `out/proposal.json`.
 - Never restore, save layout, call provider execution, or mutate graph state directly."#
+            }
         }
         TurnMode::RunRequest => {
             r#"Canvas ops contract:
 - Read compact canvas state from `ctx/canvas_state.json`.
 - `run_selected_workflow` is only a run request contract for the current workflow/version.
-- Write `out/run_request.json`; backend estimates cost and only creates pending confirmation when the run exceeds the configured threshold.
+- Prefer `canvas.request_run` to submit `{"action":"request_confirmation","summary":"..."}` when the tool is available; otherwise write `out/run_request.json`.
+- The backend estimates cost and only creates pending confirmation when the run exceeds the configured threshold.
 - Do not confirm runs, queue provider execution directly, or implement selected-subgraph execution."#
         }
         TurnMode::Chat => "Canvas ops are not available in chat mode.",
@@ -372,6 +398,10 @@ fn runtime_tool_policy(mode: TurnMode) -> &'static str {
             "Read declared ctx files only if needed to validate run readiness. Do not call provider APIs."
         }
     }
+}
+
+fn built_in_capability_catalog() -> &'static str {
+    "Helixflow has five built-in workflow skills: Chat (answer questions about the workspace and product), Create Workflow (create a new catalog-valid workflow), Modify Workflow (make minimal changes to the current workflow), Debug Workflow (diagnose a failed run and propose a minimal fix), and Run Request (request execution of the current workflow through backend cost and confirmation gates). When the user asks which skills are available, list these exact capabilities and briefly describe them. External Codex skills or plugins are not Helixflow capabilities and are never loaded automatically."
 }
 
 fn system_behavior(mode: TurnMode) -> &'static str {

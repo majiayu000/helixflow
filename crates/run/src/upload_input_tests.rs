@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use helixflow_gateway::MockProvider;
+use helixflow_gateway::{ArtifactRef, MockProvider};
 use helixflow_graph::{GraphNode, WorkflowGraph};
 use serde_json::json;
 
@@ -90,6 +90,22 @@ async fn input_image_resolves_upload_uri_to_persisted_file() {
     assert_eq!(image.storage_uri, upload_relative);
     assert_eq!(image.sha256.as_deref(), Some("sha256:test"));
     assert_eq!(image.mime.as_deref(), Some("image/png"));
+
+    let materialized = crate::input_materialize::materialize_image_input(
+        &store,
+        dir.path(),
+        &BTreeMap::from([(
+            "image".to_owned(),
+            ArtifactRef {
+                artifact_id: image.id.clone(),
+                storage_uri: image.storage_uri.clone(),
+            },
+        )]),
+        "image",
+    )
+    .await
+    .expect("materialize image");
+    assert!(materialized.starts_with("data:image/png;base64,"));
 }
 
 #[tokio::test]

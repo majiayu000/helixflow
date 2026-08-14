@@ -1,7 +1,11 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use helixflow_gateway::RuntimeProvider;
@@ -56,6 +60,9 @@ fn request(dir: &tempfile::TempDir) -> AgentSessionRequest {
         workspace_id: "ws_1".to_owned(),
         base_version_id: "ver_1".to_owned(),
         user_message: "make it shorter".to_owned(),
+        codex_thread_id: None,
+        conversation_id: None,
+        durable_turn_id: None,
         history: Vec::new(),
         graph: sample_graph(),
         provider_catalog: RuntimeProvider::mock().catalog_snapshot(),
@@ -73,6 +80,9 @@ fn chat_request(dir: &tempfile::TempDir) -> AgentSessionRequest {
         workspace_id: "ws_1".to_owned(),
         base_version_id: "ver_1".to_owned(),
         user_message: "你好，你是谁？".to_owned(),
+        codex_thread_id: None,
+        conversation_id: None,
+        durable_turn_id: None,
         history: Vec::new(),
         graph: sample_graph(),
         provider_catalog: RuntimeProvider::mock().catalog_snapshot(),
@@ -97,6 +107,7 @@ fn creates_ctx_out_contract_without_provider_secret_values() {
 
     assert!(session.ctx_dir.join("graph.json").exists());
     assert!(session.ctx_dir.join("node_defs/catalog.json").exists());
+    assert!(session.ctx_dir.join("models/catalog.json").exists());
     assert!(
         session
             .ctx_dir
@@ -121,6 +132,7 @@ fn creates_ctx_out_contract_without_provider_secret_values() {
     assert!(ctx.contains("Bounded canvas ops"));
     assert!(ctx.contains("propose_layout"));
     assert!(ctx.contains("ctx/workflow_backends/catalog.json"));
+    assert!(ctx.contains("ctx/models/catalog.json"));
     assert!(ctx.contains("ctx/runtime_providers/catalog.json"));
     assert!(ctx.contains("ctx/api_connectors/catalog.json"));
     assert!(ctx.contains("\"base_version_id\""));
@@ -134,6 +146,8 @@ fn creates_ctx_out_contract_without_provider_secret_values() {
     let workflow_catalog =
         fs::read_to_string(session.ctx_dir.join("workflow_backends/catalog.json"))
             .expect("workflow backend catalog");
+    let model_catalog = fs::read_to_string(session.ctx_dir.join("models/catalog.json"))
+        .expect("model binding catalog");
     let runtime_catalog =
         fs::read_to_string(session.ctx_dir.join("runtime_providers/catalog.json"))
             .expect("runtime provider catalog");
@@ -142,9 +156,13 @@ fn creates_ctx_out_contract_without_provider_secret_values() {
     assert!(runtime_catalog.contains("\"id\": \"mock\""));
     assert!(runtime_catalog.contains("\"kind\": \"local_test\""));
     assert!(api_catalog.contains("\"capability\": \"text_to_video\""));
+    assert!(model_catalog.contains("\"modelId\": \"bytedance/seedance-v1.5-pro\""));
+    assert!(model_catalog.contains("\"capabilityId\": \"text_to_video\""));
+    assert!(model_catalog.contains("bytedance.seedance-v1-5-pro.image-to-video"));
     assert_no_raw_auth_material(&workflow_catalog);
     assert_no_raw_auth_material(&runtime_catalog);
     assert_no_raw_auth_material(&api_catalog);
+    assert_no_raw_auth_material(&model_catalog);
 }
 
 fn assert_no_raw_auth_material(content: &str) {
@@ -230,6 +248,9 @@ fn chat_contract_skips_graph_context_and_records_prompt_metadata() {
     assert!(ctx.contains("out/reply.json"));
     assert!(ctx.contains("Do not read `ctx/graph.json`"));
     assert!(ctx.contains("create, modify, run, or debug a workflow"));
+    assert!(ctx.contains("five built-in workflow skills"));
+    assert!(ctx.contains("Create Workflow"));
+    assert!(ctx.contains("External Codex skills or plugins"));
 
     let metadata: Value = serde_json::from_slice(
         &fs::read(session.root_dir.join("prompt_metadata.json")).expect("metadata"),
@@ -261,6 +282,14 @@ fn classifies_run_requests_without_falling_back_to_workflow_change() {
     assert_eq!(fallback.mode, TurnMode::Chat);
     assert_eq!(fallback.source, TurnModeSource::AmbiguousFallback);
     assert!(classify_turn_mode("   ", &sample_graph()).is_err());
+}
+
+#[test]
+fn preserves_an_explicit_surface_mode_without_keyword_routing() {
+    let classification = explicit_turn_mode(TurnMode::CreateWorkflow);
+
+    assert_eq!(classification.mode, TurnMode::CreateWorkflow);
+    assert_eq!(classification.source, TurnModeSource::Explicit);
 }
 
 #[test]
@@ -490,6 +519,9 @@ fn rejects_blank_reply_and_run_request_summary() {
     run_request.mode = TurnMode::RunRequest;
     run_request.skill = AgentSkill::RunRequest;
     let run_session = create_session_contract(&run_request).expect("run session");
+    let run_ctx = fs::read_to_string(run_session.ctx_dir.join("instructions.md")).expect("ctx");
+    assert!(run_ctx.contains("canvas.request_run"));
+    assert!(run_ctx.contains("Do not confirm runs"));
     fs::write(
         run_session.out_dir.join("run_request.json"),
         br#"{"action":"request_confirmation","summary":""}"#,
@@ -527,6 +559,13 @@ async fn service_streams_agent_status_and_reads_runtime_proposal() {
         .expect("proposal");
 
     assert_eq!(proposal.proposal.title, "Shorter video");
+    assert_eq!(
+        proposal
+            .runtime_identity
+            .as_ref()
+            .map(|identity| (identity.thread_id.as_str(), identity.turn_id.as_str(),)),
+        Some(("thr_fake", "turn_fake")),
+    );
     assert!(
         proposal
             .agent_logs
@@ -548,8 +587,8 @@ async fn service_streams_agent_status_and_reads_runtime_proposal() {
     while let Ok(event) = receiver.try_recv() {
         event_names.push(event.ev);
     }
-    assert!(event_names.iter().any(|event| event == "agent.status"));
-    assert!(event_names.iter().any(|event| event == "agent.status.end"));
+    assert!(event_names.contains(&"agent.status".to_owned()));
+    assert!(event_names.contains(&"agent.status.end".to_owned()));
 }
 
 #[tokio::test]
@@ -559,12 +598,19 @@ async fn service_streams_agent_status_and_reads_chat_reply() {
     let service = AgentService::new(FakeRuntime::reply(), events.clone());
     let mut receiver = events.subscribe();
 
-    let reply = service
-        .answer_chat(chat_request(&dir))
-        .await
-        .expect("reply");
+    let mut request = chat_request(&dir);
+    request.conversation_id = Some("conv_1".to_owned());
+    request.durable_turn_id = Some("turn_1".to_owned());
+    let reply = service.answer_chat(request).await.expect("reply");
 
     assert_eq!(reply.message, "我是 Helixflow agent。");
+    assert_eq!(
+        reply
+            .runtime_identity
+            .as_ref()
+            .map(|identity| (identity.thread_id.as_str(), identity.turn_id.as_str(),)),
+        Some(("thr_fake", "turn_fake")),
+    );
     assert!(
         reply
             .agent_logs
@@ -578,12 +624,153 @@ async fn service_streams_agent_status_and_reads_chat_reply() {
             && !log.text.contains("你好，你是谁")
     }));
 
-    let mut event_names = Vec::new();
+    let mut streamed = Vec::new();
     while let Ok(event) = receiver.try_recv() {
-        event_names.push(event.ev);
+        streamed.push(event);
     }
-    assert!(event_names.iter().any(|event| event == "agent.status"));
-    assert!(event_names.iter().any(|event| event == "agent.status.end"));
+    let event_names = streamed
+        .iter()
+        .map(|event| event.ev.as_str())
+        .collect::<Vec<_>>();
+    assert!(event_names.contains(&"agent.status"));
+    assert!(event_names.contains(&"agent.status.end"));
+    assert!(streamed.iter().all(|event| {
+        event.data["conversation_id"] == "conv_1" && event.data["turn_id"] == "turn_1"
+    }));
+}
+
+#[tokio::test]
+async fn service_times_out_and_cancels_a_stuck_runtime_turn() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let runtime = HangingRuntime::default();
+    let service = AgentService::new(runtime.clone(), EventBus::new(16))
+        .with_turn_timeout(Duration::from_millis(10));
+
+    let error = service
+        .answer_chat(chat_request(&dir))
+        .await
+        .expect_err("stuck turn must time out");
+
+    assert!(error.to_string().contains("timed out"));
+    assert!(runtime.cancelled.load(Ordering::SeqCst));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn app_server_runtime_resumes_thread_and_propagates_turn_identity() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let program = dir.path().join("fake-codex-app-server");
+    fs::write(
+        &program,
+        r#"#!/bin/sh
+IFS= read -r initialize
+printf '%s\n' '{"id":1,"result":{"userAgent":"fake"}}'
+IFS= read -r initialized
+IFS= read -r thread_request
+case "$thread_request" in
+  *'"method":"thread/resume"'*'"threadId":"thr_existing"'*) ;;
+  *) exit 21 ;;
+esac
+printf '%s\n' '{"id":2,"result":{"thread":{"id":"thr_existing","sessionId":"thr_existing"}}}'
+IFS= read -r turn_request
+case "$turn_request" in
+  *'"method":"turn/start"'*'"threadId":"thr_existing"'*) ;;
+  *) exit 22 ;;
+esac
+mkdir -p out
+printf '%s\n' '{"message":"app server reply"}' > out/reply.json
+printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn_app","status":"inProgress","items":[],"error":null}}}'
+printf '%s\n' '{"method":"item/completed","params":{"item":{"type":"agentMessage","text":"done"}}}'
+printf '%s\n' '{"method":"turn/completed","params":{"turn":{"id":"turn_app","status":"completed","items":[],"error":null}}}'
+"#,
+    )
+    .expect("fake app-server");
+    let mut permissions = fs::metadata(&program).expect("metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&program, permissions).expect("executable");
+
+    let mut request = chat_request(&dir);
+    request.codex_thread_id = Some("thr_existing".to_owned());
+    let reply = AgentService::new(
+        crate::CodexAppServerRuntime::new(program),
+        EventBus::new(16),
+    )
+    .answer_chat(request)
+    .await
+    .expect("app-server reply");
+
+    assert_eq!(reply.message, "app server reply");
+    let identity = reply.runtime_identity.expect("runtime identity");
+    assert_eq!(identity.thread_id, "thr_existing");
+    assert_eq!(identity.turn_id, "turn_app");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn app_server_runtime_serves_canvas_state_dynamic_tool_calls() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let program = dir.path().join("fake-codex-canvas-tool");
+    fs::write(
+        &program,
+        r#"#!/bin/sh
+IFS= read -r initialize
+case "$initialize" in
+  *'"experimentalApi":true'*) ;;
+  *) printf '%s\n' '{"id":1,"error":{"message":"missing experimental capability"}}'; exit 30 ;;
+esac
+printf '%s\n' '{"id":1,"result":{"userAgent":"fake"}}'
+IFS= read -r initialized
+IFS= read -r thread_request
+case "$thread_request" in *'"method":"thread/start"'*|*'"method":"thread/resume"'*) ;; *) printf '%s\n' '{"id":2,"error":{"message":"missing thread request"}}'; exit 31 ;; esac
+case "$thread_request" in *'"dynamicTools"'*) ;; *) printf '%s\n' '{"id":2,"error":{"message":"missing dynamic tools field"}}'; exit 31 ;; esac
+case "$thread_request" in *'"name":"canvas"'*) ;; *) printf '%s\n' '{"id":2,"error":{"message":"missing canvas namespace"}}'; exit 31 ;; esac
+case "$thread_request" in *'"name":"get_state"'*) ;; *) printf '%s\n' '{"id":2,"error":{"message":"missing get state tool"}}'; exit 31 ;; esac
+case "$thread_request" in *'"name":"submit_proposal"'*) ;; *) printf '%s\n' '{"id":2,"error":{"message":"missing submit proposal tool"}}'; exit 31 ;; esac
+printf '%s\n' '{"id":2,"result":{"thread":{"id":"thr_canvas","sessionId":"thr_canvas"}}}'
+IFS= read -r turn_request
+printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn_canvas","status":"inProgress","items":[],"error":null}}}'
+printf '%s\n' '{"method":"item/started","params":{"threadId":"thr_canvas","turnId":"turn_canvas","startedAtMs":1,"item":{"type":"dynamicToolCall","tool":"canvas.get_state","status":"inProgress"}}}'
+printf '%s\n' '{"id":40,"method":"item/tool/call","params":{"threadId":"thr_canvas","turnId":"turn_canvas","callId":"call_1","namespace":"canvas","tool":"get_state","arguments":{}}}'
+IFS= read -r tool_response
+case "$tool_response" in *'"id":40'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"missing tool response id"}}}'; exit 32 ;; esac
+case "$tool_response" in *'workspace_id'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"missing workspace state"}}}'; exit 32 ;; esac
+case "$tool_response" in *'node_count'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"missing graph state"}}}'; exit 32 ;; esac
+case "$tool_response" in *'"success":true'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"tool response not successful"}}}'; exit 32 ;; esac
+printf '%s\n' '{"id":41,"method":"item/tool/call","params":{"threadId":"thr_canvas","turnId":"turn_canvas","callId":"call_2","namespace":"canvas","tool":"submit_proposal","arguments":{"base_version_id":"ver_1","kind":"modify","title":"Shorter video","summary":"Set duration to three seconds.","ops":[{"op":"set_param","id":"video","key":"duration_sec","prev":5,"value":3}]}}}'
+IFS= read -r proposal_response
+case "$proposal_response" in *'"id":41'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"missing proposal response id"}}}'; exit 33 ;; esac
+case "$proposal_response" in *'"success":true'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"proposal was not captured"}}}'; exit 33 ;; esac
+printf '%s\n' '{"method":"item/completed","params":{"threadId":"thr_canvas","turnId":"turn_canvas","item":{"type":"dynamicToolCall","tool":"canvas.get_state","status":"completed","success":true}}}'
+printf '%s\n' '{"method":"turn/completed","params":{"turn":{"id":"turn_canvas","status":"completed","items":[],"error":null}}}'
+"#,
+    )
+    .expect("fake app-server");
+    let mut permissions = fs::metadata(&program).expect("metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&program, permissions).expect("executable");
+
+    let proposal = AgentService::new(
+        crate::CodexAppServerRuntime::new(program),
+        EventBus::new(16),
+    )
+    .propose_graph_change(request(&dir))
+    .await
+    .expect("canvas tool proposal");
+
+    assert_eq!(proposal.proposal.title, "Shorter video");
+    assert!(
+        proposal
+            .agent_logs
+            .iter()
+            .any(|log| log.text == "Calling tool: canvas.get_state")
+    );
+    let identity = proposal.runtime_identity.expect("runtime identity");
+    assert_eq!(identity.thread_id, "thr_canvas");
+    assert_eq!(identity.turn_id, "turn_canvas");
 }
 
 fn write_valid_proposal(session: &AgentSession) {
@@ -668,6 +855,9 @@ impl AgentRuntime for FakeRuntime {
     }
 
     async fn send(&self, handle: &RuntimeHandle, _turn: AgentTurn) -> RuntimeResult<()> {
+        handle
+            .set_identity("thr_fake".to_owned(), "turn_fake".to_owned())
+            .await;
         match self.output {
             FakeOutput::Proposal => write_valid_proposal_to_path(&handle.out_dir),
             FakeOutput::Reply => write_reply_to_path(&handle.out_dir),
@@ -679,6 +869,40 @@ impl AgentRuntime for FakeRuntime {
     }
 
     async fn cancel(&self, _handle: &RuntimeHandle) -> RuntimeResult<()> {
+        Ok(())
+    }
+}
+
+#[derive(Clone, Default)]
+struct HangingRuntime {
+    cancelled: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl AgentRuntime for HangingRuntime {
+    fn id(&self) -> &'static str {
+        "hanging"
+    }
+
+    async fn start(&self, session: AgentSession) -> RuntimeResult<RuntimeHandle> {
+        Ok(RuntimeHandle::new(
+            self.id(),
+            session.id,
+            session.root_dir,
+            session.out_dir,
+        ))
+    }
+
+    async fn send(&self, _handle: &RuntimeHandle, _turn: AgentTurn) -> RuntimeResult<()> {
+        Ok(())
+    }
+
+    async fn next_event(&self, _handle: &RuntimeHandle) -> Option<RuntimeEvent> {
+        std::future::pending().await
+    }
+
+    async fn cancel(&self, _handle: &RuntimeHandle) -> RuntimeResult<()> {
+        self.cancelled.store(true, Ordering::SeqCst);
         Ok(())
     }
 }
@@ -804,6 +1028,20 @@ fn gh130_intent_contract_accepts_valid_intent() {
         intent.stages[0].requested_model.as_deref(),
         Some("Nano Banana")
     );
+}
+
+#[test]
+fn intent_prompt_prefers_the_bounded_submit_intent_tool() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut req = request(&dir);
+    req.use_intent_contract = true;
+
+    let session = create_session_contract(&req).expect("session");
+    let ctx = fs::read_to_string(session.ctx_dir.join("instructions.md")).expect("ctx");
+
+    assert_eq!(session.output_contract, OutputContract::IntentJson);
+    assert!(ctx.contains("canvas.submit_intent"));
+    assert!(!ctx.contains("canvas.submit_proposal"));
 }
 
 #[test]

@@ -138,6 +138,7 @@ impl std::error::Error for TurnRoutingError {}
 pub enum TurnModeSource {
     Keyword,
     AmbiguousFallback,
+    Explicit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,6 +186,16 @@ fn keyword(mode: TurnMode) -> TurnClassification {
     TurnClassification {
         mode,
         source: TurnModeSource::Keyword,
+    }
+}
+
+/// Uses an explicit UI surface intent instead of guessing from message text.
+/// The server only calls this after deserializing a known [`TurnMode`], so an
+/// unsupported override is rejected at the HTTP boundary.
+pub fn explicit_turn_mode(mode: TurnMode) -> TurnClassification {
+    TurnClassification {
+        mode,
+        source: TurnModeSource::Explicit,
     }
 }
 

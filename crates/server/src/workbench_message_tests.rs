@@ -7,15 +7,17 @@ use axum::{
     extract::{Path, State},
 };
 use helixflow_agent::{
-    AgentError, AgentLogEntry, AgentSessionRequest, TurnMode, ValidatedAgentProposal,
-    ValidatedAgentReply,
+    AgentError, AgentLogEntry, AgentRuntimeIdentity, AgentSessionRequest, TurnMode,
+    ValidatedAgentProposal, ValidatedAgentReply,
 };
 use helixflow_graph::{PreparedProposal, WorkflowGraph};
 use helixflow_run::EventBus;
 use helixflow_store::{NewRun, NewRunStep, NewVersion, Store, VersionSource};
 
+use crate::agent_turn_control::interrupt_workspace_agent_turn;
 use crate::app_state::{AppState, WorkbenchAgent};
 use crate::graph_files::graph_hash;
+use crate::test_support::FailingWorkbenchAgent;
 use crate::version_file_consistency::read_version_graph;
 use crate::workbench_message::*;
 use crate::workbench_message_proposals::{
@@ -34,6 +36,8 @@ async fn post_message_routes_chat_to_agent_runtime() {
             user_message: "你好".to_owned(),
             graph: sample_graph(),
             canvas_context: None,
+            conversation_id: None,
+            turn_mode: None,
         }),
     )
     .await
@@ -67,6 +71,137 @@ async fn post_message_routes_chat_to_agent_runtime() {
         persisted[2].ref_id.as_deref(),
         Some(expected_session_id.as_str())
     );
+    let conversations = state
+        .store
+        .workspace_conversations(&workspace_id)
+        .await
+        .expect("conversations");
+    assert_eq!(
+        conversations[0].codex_thread_id.as_deref(),
+        Some("thr_fake")
+    );
+    let durable_turn = state
+        .store
+        .agent_turn(&response.turn_id)
+        .await
+        .expect("durable turn");
+    assert_eq!(durable_turn.codex_turn_id.as_deref(), Some("turn_fake"));
+}
+
+#[tokio::test]
+async fn explicit_surface_mode_overrides_ambiguous_prompt_routing() {
+    let (state, workspace_id, version_id, _dir) = state_with_workspace().await;
+
+    let response = post_workspace_message(
+        Path(workspace_id.clone()),
+        State(state.clone()),
+        Json(WorkspaceMessageRequest {
+            base_version_id: version_id,
+            user_message: "夏夜森林中的萤火虫".to_owned(),
+            graph: sample_graph(),
+            canvas_context: None,
+            conversation_id: None,
+            turn_mode: Some(TurnMode::CreateWorkflow),
+        }),
+    )
+    .await
+    .expect("explicit create response")
+    .0;
+
+    assert_eq!(response.turn_mode, TurnMode::CreateWorkflow);
+    let persisted = state
+        .store
+        .workspace_messages(&workspace_id)
+        .await
+        .expect("messages");
+    assert_eq!(
+        persisted[0].attachment_ids_json.as_deref(),
+        Some(r#"{"turnMode":"create_workflow","turnModeSource":"explicit"}"#)
+    );
+}
+
+#[tokio::test]
+async fn failed_chat_persists_a_terminal_turn_and_visible_error_message() {
+    let (mut state, workspace_id, version_id, _dir) = state_with_workspace().await;
+    state.agent = Arc::new(FailingWorkbenchAgent);
+
+    let response = post_workspace_message(
+        Path(workspace_id.clone()),
+        State(state.clone()),
+        Json(WorkspaceMessageRequest {
+            base_version_id: version_id,
+            user_message: "你好".to_owned(),
+            graph: sample_graph(),
+            canvas_context: None,
+            conversation_id: None,
+            turn_mode: None,
+        }),
+    )
+    .await
+    .expect("terminal error response")
+    .0;
+
+    assert_eq!(response.turn_status, "error");
+    assert_eq!(response.messages[0].kind, "agent_error");
+    assert!(response.messages[0].text.contains("AGENT_RUNTIME_ERROR"));
+    let turn = state
+        .store
+        .agent_turn(&response.turn_id)
+        .await
+        .expect("persisted turn");
+    assert_eq!(turn.status, "error");
+    assert_eq!(turn.reason_code.as_deref(), Some("AGENT_RUNTIME_ERROR"));
+    assert!(turn.completed_at.is_some());
+}
+
+#[tokio::test]
+async fn interrupting_active_chat_persists_an_interrupted_terminal_turn() {
+    let (mut state, workspace_id, version_id, _dir) = state_with_workspace().await;
+    let started = Arc::new(tokio::sync::Notify::new());
+    state.agent = Arc::new(HangingWorkbenchAgent {
+        started: started.clone(),
+    });
+
+    let request_state = state.clone();
+    let request_workspace_id = workspace_id.clone();
+    let request = tokio::spawn(async move {
+        post_workspace_message(
+            Path(request_workspace_id),
+            State(request_state),
+            Json(WorkspaceMessageRequest {
+                base_version_id: version_id,
+                user_message: "你好".to_owned(),
+                graph: sample_graph(),
+                canvas_context: None,
+                conversation_id: None,
+                turn_mode: None,
+            }),
+        )
+        .await
+    });
+    started.notified().await;
+
+    let interrupted =
+        interrupt_workspace_agent_turn(Path(workspace_id.clone()), State(state.clone()))
+            .await
+            .expect("interrupt response")
+            .0;
+    assert_eq!(interrupted.status, "interrupt_requested");
+
+    let response = request
+        .await
+        .expect("request task")
+        .expect("terminal response")
+        .0;
+    assert_eq!(response.turn_status, "interrupted");
+    assert_eq!(response.messages[0].kind, "agent_interrupted");
+    let turn = state
+        .store
+        .agent_turn(&response.turn_id)
+        .await
+        .expect("turn");
+    assert_eq!(turn.status, "interrupted");
+    assert_eq!(turn.reason_code.as_deref(), Some("USER_INTERRUPTED"));
 }
 
 #[tokio::test]
@@ -82,6 +217,8 @@ async fn post_message_auto_starts_free_run_request() {
             user_message: "运行当前 workflow".to_owned(),
             graph: sample_graph(),
             canvas_context: None,
+            conversation_id: None,
+            turn_mode: None,
         }),
     )
     .await
@@ -135,6 +272,8 @@ async fn post_message_auto_applies_proposal_record() {
             user_message: "创建一个 workflow".to_owned(),
             graph: sample_graph(),
             canvas_context: None,
+            conversation_id: None,
+            turn_mode: None,
         }),
     )
     .await
@@ -142,6 +281,20 @@ async fn post_message_auto_applies_proposal_record() {
     .0;
 
     assert_eq!(response.turn_mode, TurnMode::CreateWorkflow);
+    assert_eq!(response.turn_status, "succeeded");
+    assert_eq!(
+        response.messages[0].turn_id.as_deref(),
+        Some(response.turn_id.as_str())
+    );
+    assert_eq!(
+        state
+            .store
+            .agent_turn(&response.turn_id)
+            .await
+            .expect("terminal turn")
+            .status,
+        "succeeded"
+    );
     assert_eq!(response.proposal, None);
     assert_eq!(response.run, None);
     assert_eq!(response.pending_confirmation, None);
@@ -471,6 +624,8 @@ async fn post_message_routes_debug_with_latest_run_context() {
             user_message: "为什么失败了，帮我修复".to_owned(),
             graph: sample_graph(),
             canvas_context: None,
+            conversation_id: None,
+            turn_mode: None,
         }),
     )
     .await
@@ -504,6 +659,7 @@ async fn post_message_routes_debug_with_latest_run_context() {
 fn auto_apply_proposal(base_version_id: &str, session_id: &str) -> ValidatedAgentProposal {
     ValidatedAgentProposal {
         session_id: session_id.to_owned(),
+        runtime_identity: None,
         agent_logs: Vec::new(),
         proposal: PreparedProposal {
             base_version_id: base_version_id.to_owned(),
@@ -601,6 +757,10 @@ impl WorkbenchAgent for FakeWorkbenchAgent {
     ) -> Result<ValidatedAgentReply, AgentError> {
         Ok(ValidatedAgentReply {
             session_id: format!("{}_fake", request.workspace_id),
+            runtime_identity: Some(AgentRuntimeIdentity {
+                thread_id: "thr_fake".to_owned(),
+                turn_id: "turn_fake".to_owned(),
+            }),
             agent_logs: vec![AgentLogEntry {
                 kind: "agent_log:status".to_owned(),
                 text: "fake runtime status".to_owned(),
@@ -641,6 +801,10 @@ impl WorkbenchAgent for FakeWorkbenchAgent {
         }
         Ok(ValidatedAgentProposal {
             session_id: format!("{}_fake", request.workspace_id),
+            runtime_identity: Some(AgentRuntimeIdentity {
+                thread_id: "thr_fake".to_owned(),
+                turn_id: "turn_fake".to_owned(),
+            }),
             agent_logs: vec![AgentLogEntry {
                 kind: "agent_log:status".to_owned(),
                 text: "fake proposal status".to_owned(),
@@ -662,6 +826,30 @@ impl WorkbenchAgent for FakeWorkbenchAgent {
 
 struct IntentWorkbenchAgent {
     intent: helixflow_compiler::IntentPlan,
+}
+
+struct HangingWorkbenchAgent {
+    started: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait]
+impl WorkbenchAgent for HangingWorkbenchAgent {
+    async fn answer_chat(
+        &self,
+        _request: AgentSessionRequest,
+    ) -> Result<ValidatedAgentReply, AgentError> {
+        self.started.notify_waiters();
+        std::future::pending().await
+    }
+
+    async fn propose_graph_change(
+        &self,
+        _request: AgentSessionRequest,
+    ) -> Result<ValidatedAgentProposal, AgentError> {
+        Err(AgentError::Runtime(
+            "graph change is not under test".to_owned(),
+        ))
+    }
 }
 
 #[async_trait]
@@ -689,6 +877,7 @@ impl WorkbenchAgent for IntentWorkbenchAgent {
         assert!(request.use_intent_contract, "flag must reach the request");
         Ok(helixflow_agent::ValidatedAgentIntent {
             session_id: format!("{}_intent", request.workspace_id),
+            runtime_identity: None,
             agent_logs: Vec::new(),
             intent: self.intent.clone(),
         })
@@ -740,6 +929,8 @@ async fn intent_turn_compiles_and_persists_semantics() {
             user_message: "用 Nano Banana 创建一个生成图片的 workflow".to_owned(),
             graph: sample_graph(),
             canvas_context: None,
+            conversation_id: None,
+            turn_mode: None,
         }),
     )
     .await
@@ -799,6 +990,8 @@ async fn intent_turn_missing_input_produces_clarify_message() {
             user_message: "创建一个生成图片的 workflow".to_owned(),
             graph: sample_graph(),
             canvas_context: None,
+            conversation_id: None,
+            turn_mode: None,
         }),
     )
     .await
@@ -815,4 +1008,76 @@ async fn intent_turn_missing_input_produces_clarify_message() {
         .await
         .expect("proposals");
     assert!(proposals.is_empty());
+}
+
+#[tokio::test]
+async fn intent_turn_compiles_seedance_image_to_video_binding() {
+    let intent = intent_plan(serde_json::json!({
+        "intentVersion": "1",
+        "topology": "linear",
+        "stages": [
+            {
+                "stageId": "s1",
+                "capabilityId": "text_to_image",
+                "requestedModel": "Nano Banana",
+                "inputFrom": [],
+                "params": { "prompt": "一张产品图" }
+            },
+            {
+                "stageId": "s2",
+                "capabilityId": "image_to_video",
+                "requestedModel": "Seedance 2",
+                "inputFrom": [{ "stageId": "s1", "output": "image" }],
+                "params": {}
+            }
+        ],
+        "outputStageIds": ["s2"]
+    }));
+    let (state, workspace_id, version_id, _dir) = intent_state(intent).await;
+
+    let response = post_workspace_message(
+        Path(workspace_id.clone()),
+        State(state.clone()),
+        Json(WorkspaceMessageRequest {
+            base_version_id: version_id.clone(),
+            user_message: "用 Nano Banana 生图，再用 Seedance 做成视频 workflow".to_owned(),
+            graph: sample_graph(),
+            canvas_context: None,
+            conversation_id: None,
+            turn_mode: None,
+        }),
+    )
+    .await
+    .expect("seedance image-to-video response")
+    .0;
+
+    assert_eq!(response.messages[0].kind, "proposal_applied");
+    let versions = state
+        .store
+        .versions_for_workspace(&workspace_id)
+        .await
+        .expect("versions");
+    let applied = versions
+        .iter()
+        .find(|version| version.id != version_id)
+        .expect("applied version");
+    let semantics: std::collections::BTreeMap<
+        String,
+        helixflow_graph::semantics::NodeSemanticsEntry,
+    > = serde_json::from_str(
+        applied
+            .semantics_json
+            .as_deref()
+            .expect("semantics persisted"),
+    )
+    .expect("semantics parse");
+    let seedance = semantics.get("s2").expect("seedance stage");
+    assert_eq!(seedance.capability_id, "image_to_video");
+    assert!(matches!(
+        seedance.implementation,
+        helixflow_registry::catalog::ImplementationSelection::Pinned {
+            ref requested_model_id,
+            ..
+        } if requested_model_id == "bytedance/seedance-v1.5-pro"
+    ));
 }

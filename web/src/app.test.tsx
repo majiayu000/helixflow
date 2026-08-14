@@ -211,11 +211,12 @@ describe('App', () => {
     expect(markup).toContain('helixflow');
     expect(markup).toContain('Test Workspace');
     expect(markup).toContain('对话');
-    expect(markup).toContain('2 节点');
+    expect(markup).not.toContain('2 节点');
     expect(markup).toContain('Mock Provider');
     expect(markup).toContain('本地测试');
-    expect(markup).toContain('运行中');
-    expect(markup).toContain('1 个真实 artifact');
+    expect(markup).toContain('aria-label="展开底部面板"');
+    expect(markup).not.toContain('运行中');
+    expect(markup).not.toContain('1 个真实 artifact');
     expect(markup).toContain('版本与运行历史');
     expect(markup).toContain('Agent requested run');
   });
@@ -663,6 +664,8 @@ describe('App', () => {
       ev: 'agent.status',
       data: {
         session_id: 'agent_session_1',
+        conversation_id: 'conv_1',
+        turn_id: 'turn_1',
         status: 'runtime.status',
         detail: { message: 'Drafting graph proposal' },
       },
@@ -674,6 +677,8 @@ describe('App', () => {
       role: 'agent',
       kind: 'agent_log:status',
       text: 'Drafting graph proposal',
+      conversationId: 'conv_1',
+      turnId: 'turn_1',
     });
   });
 
@@ -772,12 +777,15 @@ describe('App', () => {
       vi.fn(async () => {
         return new Response(
           JSON.stringify({
+            turnId: 'turn_chat_1',
+            turnStatus: 'succeeded',
             turnMode: 'chat',
             messages: [
               {
                 id: 'msg_agent_1',
                 role: 'agent',
                 kind: 'chat',
+                turnId: 'turn_chat_1',
                 text: '我是 Helixflow agent。',
                 time: 'unix:1',
               },
@@ -845,12 +853,15 @@ describe('App', () => {
       vi.fn(async () => {
         return new Response(
           JSON.stringify({
+            turnId: 'turn_run_1',
+            turnStatus: 'succeeded',
             turnMode: 'run_request',
             messages: [
               {
                 id: 'msg_agent_run',
                 role: 'agent',
                 kind: 'run_requested',
+                turnId: 'turn_run_1',
                 text: 'Run run_1 is waiting for confirmation.',
                 time: 'unix:1',
               },
@@ -1075,6 +1086,8 @@ describe('App', () => {
     // API instead of rendering the metadata summary inline.
     expect(markup).toContain('Loading artifact content');
     expect(markup).not.toContain('Artifact: Vertical teaser');
+    expect(markup).toContain('data-pane-id="artifact"');
+    expect(markup).toContain('data-workbench-zone="secondarySidebar"');
     expect(markup).toContain('canvas-grid');
     expect(markup).toContain('node-artifact--selected');
   });
@@ -1109,6 +1122,8 @@ describe('App', () => {
 
     expect(markup).not.toContain('artifact-stage');
     expect(markup).not.toContain('Artifact: Other preview');
+    expect(markup).toContain('class="canvas-stage"');
+    expect(markup).not.toContain('canvas-stage--with-artifact');
     expect(markup).toContain('canvas-grid');
   });
 
@@ -1381,8 +1396,19 @@ describe('App', () => {
       'fetch',
       vi.fn(async () => {
         return jsonResponse({
+          turnId: 'turn_run_new',
+          turnStatus: 'succeeded',
           turnMode: 'run_request',
-          messages: [],
+          messages: [
+            {
+              id: 'msg_run_new',
+              role: 'agent',
+              kind: 'run_requested',
+              turnId: 'turn_run_new',
+              text: 'Run started.',
+              time: 'unix:1',
+            },
+          ],
           proposal: null,
           run: {
             id: 'run_new',
@@ -1425,12 +1451,15 @@ describe('App', () => {
       'fetch',
       vi.fn(async () => {
         return jsonResponse({
+          turnId: 'turn_proposal_1',
+          turnStatus: 'succeeded',
           turnMode: 'create_workflow',
           messages: [
             {
               id: 'msg_agent_proposal',
               role: 'agent',
               kind: 'proposal_pending',
+              turnId: 'turn_proposal_1',
               text: 'Set duration to four seconds.',
               time: 'unix:1',
             },
@@ -1453,11 +1482,14 @@ describe('App', () => {
       id: 'msg_agent_applied',
       role: 'agent' as const,
       kind: 'proposal_applied' as const,
+      turnId: 'turn_applied_1',
       text: 'Applied as a new version.',
       time: 'unix:2',
     };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({
+        turnId: 'turn_applied_1',
+        turnStatus: 'succeeded',
         turnMode: 'create_workflow',
         messages: [appliedMessage],
         proposal: null,
@@ -2018,6 +2050,8 @@ describe('GraphCanvas navigation', () => {
     expect(markup).toContain('Approved result after reload');
     expect(markup).toContain('comment-marker');
     expect(markup).toContain('node-artifact--selected');
+    expect(markup).toContain('node-artifact-icon');
+    expect(markup).not.toContain('<video');
     expect(markup).not.toContain('canvas-toolbar');
     expect(storyGraph.nodes.find((node) => node.id === 'canvas_video')?.position).toEqual({
       x: 520,

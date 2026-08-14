@@ -246,6 +246,8 @@ async fn persist_run_request_message(
             text: Some(text),
             ref_id: Some(run_id),
             attachment_ids_json: None,
+            conversation_id: None,
+            turn_id: None,
         })
         .await
         .map_err(ApiError::store)
@@ -481,6 +483,9 @@ mod tests {
                 workspace_id,
                 base_version_id: version_id,
                 user_message: "为当前工作流设计 4 个不同 seed 的真实运行计划".to_owned(),
+                codex_thread_id: None,
+                conversation_id: None,
+                durable_turn_id: None,
                 history: Vec::new(),
                 graph: seed_graph(),
                 provider_catalog: RuntimeProvider::mock().catalog_snapshot(),
@@ -629,6 +634,7 @@ mod tests {
         ) -> Result<ValidatedAgentProposal, AgentError> {
             Ok(ValidatedAgentProposal {
                 session_id: "noop".to_owned(),
+                runtime_identity: None,
                 agent_logs: vec![AgentLogEntry {
                     kind: "agent_log:status".to_owned(),
                     text: "noop".to_owned(),

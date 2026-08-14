@@ -6,14 +6,15 @@ use helixflow_agent::TurnMode;
 use helixflow_graph::{ProposalOp, WorkflowGraph};
 use helixflow_registry::NodeRegistry;
 use helixflow_store::{
-    ArtifactRecord, CostLedgerRecord, MessageRecord, ProposalRecord, RunRecord, RunStepRecord,
-    VersionRecord, WorkspaceRecord,
+    AgentTurnRecord, ArtifactRecord, ConversationRecord, CostLedgerRecord, MessageRecord,
+    ProposalRecord, RunRecord, RunStepRecord, VersionRecord, WorkspaceRecord,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
+use crate::capability_preflight::provider_capability_readiness;
 use crate::graph_files::{blank_graph, read_graph_file, read_json_file};
 use crate::version_file_consistency::read_version_graph;
 use crate::workbench_payload::{
@@ -50,6 +51,21 @@ pub(crate) async fn workspace_state_value(
             .map_err(|error| ApiError::server_error(error.to_string()))?,
         None => blank_graph(),
     };
+    state
+        .store
+        .ensure_workspace_conversation(workspace_id)
+        .await
+        .map_err(ApiError::store)?;
+    let conversations = state
+        .store
+        .workspace_conversations(workspace_id)
+        .await
+        .map_err(ApiError::store)?;
+    let turns = state
+        .store
+        .workspace_agent_turns(workspace_id)
+        .await
+        .map_err(ApiError::store)?;
     let messages = state
         .store
         .workspace_messages(workspace_id)
@@ -103,6 +119,8 @@ pub(crate) async fn workspace_state_value(
         &workspace,
         &graph,
         &messages,
+        &conversations,
+        &turns,
         &proposals,
         pending_proposal,
         &versions,
@@ -156,6 +174,8 @@ fn workspace_state_payload(
     workspace: &WorkspaceRecord,
     graph: &WorkflowGraph,
     messages: &[MessageRecord],
+    conversations: &[ConversationRecord],
+    turns: &[AgentTurnRecord],
     proposals: &[ProposalRecord],
     pending_proposal: Option<ProposalPayload>,
     versions: &[VersionRecord],
@@ -186,6 +206,9 @@ fn workspace_state_payload(
         },
         "providers": providers,
         "chat": {
+            "activeConversationId": conversations.first().map(|conversation| &conversation.id),
+            "conversations": conversations.iter().map(conversation_payload).collect::<Vec<_>>(),
+            "turns": turns.iter().map(agent_turn_payload).collect::<Vec<_>>(),
             "messages": messages.iter().map(chat_message_payload).collect::<Vec<_>>(),
         },
         "graph": graph_payload(graph, &step_by_node, &registry, selected_provider),
@@ -203,6 +226,20 @@ fn provider_state_value(state: &AppState, workspace: &WorkspaceRecord) -> Result
     let mut providers = serde_json::to_value(state.provider_catalog_for_workspace(workspace))
         .map_err(|err| ApiError::server_error(err.to_string()))?;
     providers["selectedProvider"] = json!(selected_provider);
+    let registry = NodeRegistry::builtin();
+    let capabilities = registry
+        .export_catalog()
+        .nodes
+        .into_iter()
+        .filter_map(|definition| definition.capability)
+        .collect::<std::collections::BTreeSet<_>>();
+    providers["capabilityReadiness"] = serde_json::to_value(
+        capabilities
+            .iter()
+            .map(|capability| provider_capability_readiness(state, &selected_provider, capability))
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|err| ApiError::server_error(err.to_string()))?;
     Ok(providers)
 }
 
@@ -234,11 +271,37 @@ fn chat_message_payload(message: &MessageRecord) -> Value {
         "kind": message.kind,
         "text": message.text.clone().unwrap_or_default(),
         "time": message.created_at,
+        "conversationId": message.conversation_id,
+        "turnId": message.turn_id,
     });
     if let Some(turn_mode) = message_turn_mode(message) {
         payload["turnMode"] = json!(turn_mode);
     }
     payload
+}
+
+fn conversation_payload(conversation: &ConversationRecord) -> Value {
+    json!({
+        "id": conversation.id,
+        "title": conversation.title,
+        "codexThreadId": conversation.codex_thread_id,
+        "createdAt": conversation.created_at,
+        "updatedAt": conversation.updated_at,
+    })
+}
+
+fn agent_turn_payload(turn: &AgentTurnRecord) -> Value {
+    json!({
+        "id": turn.id,
+        "conversationId": turn.conversation_id,
+        "executionId": turn.execution_id,
+        "codexTurnId": turn.codex_turn_id,
+        "mode": turn.mode,
+        "status": turn.status,
+        "reasonCode": turn.reason_code,
+        "startedAt": turn.started_at,
+        "completedAt": turn.completed_at,
+    })
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -359,7 +422,7 @@ fn error_summary_from_json(value: &Value) -> Option<String> {
     None
 }
 
-fn first_line(value: &str) -> &str {
+pub(crate) fn first_line(value: &str) -> &str {
     value.lines().next().unwrap_or(value)
 }
 

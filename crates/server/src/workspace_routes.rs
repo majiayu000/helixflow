@@ -3,8 +3,8 @@ use axum::{
     extract::{Path, State},
 };
 use helixflow_store::{
-    CreateWorkspaceWithInitialVersion, InitializedWorkspace, ReservedWorkspaceIdentity, StoreError,
-    VersionSource, WorkspaceRecord,
+    ConversationRecord, CreateWorkspaceWithInitialVersion, InitializedWorkspace,
+    ReservedWorkspaceIdentity, StoreError, VersionSource, WorkspaceRecord,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -27,6 +27,23 @@ pub(crate) struct CreateWorkspaceRequest {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SetWorkspaceProviderRequest {
     provider_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CreateConversationRequest {
+    title: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ConversationPayload {
+    id: String,
+    workspace_id: String,
+    title: String,
+    codex_thread_id: Option<String>,
+    created_at: String,
+    updated_at: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -67,6 +84,38 @@ pub(crate) async fn create_workspace(
     Ok(Json(
         workspace_summary(&state, &initialized.workspace).await?,
     ))
+}
+
+pub(crate) async fn create_workspace_conversation(
+    Path(workspace_id): Path<String>,
+    State(state): State<AppState>,
+    Json(input): Json<CreateConversationRequest>,
+) -> Result<Json<ConversationPayload>, ApiError> {
+    let title = input
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("新对话");
+    let conversation = state
+        .store
+        .create_conversation(&workspace_id, title)
+        .await
+        .map_err(ApiError::store)?;
+    Ok(Json(ConversationPayload::from(conversation)))
+}
+
+impl From<ConversationRecord> for ConversationPayload {
+    fn from(record: ConversationRecord) -> Self {
+        Self {
+            id: record.id,
+            workspace_id: record.workspace_id,
+            title: record.title,
+            codex_thread_id: record.codex_thread_id,
+            created_at: record.created_at,
+            updated_at: record.updated_at,
+        }
+    }
 }
 
 pub(crate) async fn set_workspace_provider(

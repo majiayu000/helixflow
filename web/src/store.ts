@@ -1,8 +1,13 @@
 import { create } from 'zustand';
 import {
+  CANVAS_PRESENCE_TTL_MS,
+  isLocalCanvasActor,
+} from './canvas-presence';
+import {
   applyWorkspaceProposal,
   confirmWorkspaceRun,
   createManualWorkspaceProposal,
+  createWorkspaceConversation,
   createWorkspace,
   dismissWorkspaceProposal,
   exportWorkflowVersion,
@@ -10,6 +15,7 @@ import {
   fetchWorkspaces,
   holdWorkspaceRun,
   interruptRun as interruptRunRequest,
+  interruptWorkspaceAgent,
   queueWorkspaceRun,
   restoreWorkspaceVersion,
   saveWorkspaceLayout,
@@ -57,10 +63,16 @@ export { applyRunEvent } from './store-events';
 
 export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
   const requestScope = new WorkspaceRequestScope();
+  const presenceExpiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   let snapshotRefresh: { generation: number; promise: Promise<void> } | null = null;
   let trailingSnapshotGeneration: number | null = null;
   const actionGuard = new WorkspaceActionGuard(requestScope);
+  const clearPresenceExpiryTimers = () => {
+    for (const timer of presenceExpiryTimers.values()) clearTimeout(timer);
+    presenceExpiryTimers.clear();
+  };
   const activateWorkspace = (workspaceId: string | null) => {
+    clearPresenceExpiryTimers();
     const activation = requestScope.begin(workspaceId);
     snapshotRefresh = null;
     trailingSnapshotGeneration = null;
@@ -210,24 +222,35 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
   },
   setCanvasSelection: (selectedCanvasNodeIds) => set({ selectedCanvasNodeIds }),
-  applyCanvasPresence: (presence) =>
+  applyCanvasPresence: (presence) => {
+    const actorId = presence.actor.actorId;
+    if (isLocalCanvasActor(actorId)) return;
+    const generation = requestScope.currentGeneration();
+    const workspaceId = requestScope.currentWorkspaceId();
+    const previousTimer = presenceExpiryTimers.get(actorId);
+    if (previousTimer) clearTimeout(previousTimer);
+    presenceExpiryTimers.set(actorId, setTimeout(() => {
+      presenceExpiryTimers.delete(actorId);
+      if (!requestScope.isActive(generation, workspaceId ?? undefined)) return;
+      set((current) => {
+        if (!(actorId in current.presenceByActor)) return {};
+        const presenceByActor = { ...current.presenceByActor };
+        delete presenceByActor[actorId];
+        return { presenceByActor };
+      });
+    }, CANVAS_PRESENCE_TTL_MS));
     set((current) => ({
       presenceByActor: {
         ...current.presenceByActor,
-        [presence.actor.actorId]: presence,
+        [actorId]: presence,
       },
-    })),
+    }));
+  },
   sendCanvasPresence: async (presence) => {
     const state = get().state;
     if (!state) return;
     const generation = requestScope.currentGeneration();
     if (!requestScope.isActive(generation, state.workspace.id)) return;
-    set((current) => ({
-      presenceByActor: {
-        ...current.presenceByActor,
-        [presence.actor.actorId]: presence,
-      },
-    }));
     try {
       await sendCanvasPresenceRequest(state.workspace.id, presence, requestScope.signal());
     } catch (error) {
@@ -267,7 +290,29 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
   },
   uploadImage: createUploadImageAction(set, get, requestScope),
-  sendMessage: async (text, canvasContext) => {
+  createConversation: async () => {
+    const state = get().state;
+    if (!state) throw new Error('workspace is not loaded');
+    const conversation = await createWorkspaceConversation(
+      state.workspace.id,
+      '新对话',
+      requestScope.signal(),
+    );
+    set((current) => ({
+      state: current.state
+        ? {
+            ...current.state,
+            chat: {
+              ...current.state.chat,
+              activeConversationId: conversation.id,
+              conversations: [conversation, ...(current.state.chat.conversations ?? [])],
+            },
+          }
+        : current.state,
+    }));
+    return conversation.id;
+  },
+  sendMessage: async (text, canvasContext, conversationId, turnMode) => {
     const trimmed = text.trim();
     if (!trimmed) {
       return;
@@ -304,6 +349,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
           kind: 'text',
           text: trimmed,
           time: messageTime(),
+          conversationId: conversationId ?? state.chat.activeConversationId ?? undefined,
         },
       ]),
     });
@@ -314,6 +360,8 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
         canvasContext,
         userMessage: trimmed,
         graph: request.graph,
+        conversationId: conversationId ?? state.chat.activeConversationId ?? undefined,
+        turnMode,
       }, requestScope.signal());
       if (!requestScope.isActive(generation, request.workspaceId)) {
         actionGuard.fail('workspace changed while the message was sending');
@@ -416,6 +464,19 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       set((current) => ({
         state: current.state ? appendSystemError(current.state, message) : current.state,
       }));
+    }
+  },
+  interruptAgent: async () => {
+    const state = get().state;
+    if (!state) throw new Error('workspace is not loaded');
+    try {
+      await interruptWorkspaceAgent(state.workspace.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'agent interrupt request failed';
+      set((current) => ({
+        state: current.state ? appendSystemError(current.state, message) : current.state,
+      }));
+      throw error;
     }
   },
   exportWorkflow: async () => {

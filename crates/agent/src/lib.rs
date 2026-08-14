@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
+mod app_server_runtime;
 mod canvas_ops;
 mod contract;
 mod prompt_stack;
@@ -17,9 +18,10 @@ mod runtime;
 mod service;
 mod turn_mode;
 
+pub use app_server_runtime::{CodexAppServerRuntime, CodexBackendRuntime};
 pub use canvas_ops::{CanvasGateState, CanvasOpsContext, CanvasOpsContract, CanvasSelection};
 pub use contract::{
-    AgentLogEntry, RunRequestAction, RunRequestOutput, ValidatedAgentIntent,
+    AgentLogEntry, AgentRuntimeIdentity, RunRequestAction, RunRequestOutput, ValidatedAgentIntent,
     ValidatedAgentProposal, ValidatedAgentReply, ValidatedRunRequest, read_validated_intent,
     read_validated_proposal, read_validated_reply, read_validated_run_request,
 };
@@ -33,7 +35,7 @@ pub use runtime::{
 pub use service::AgentService;
 pub use turn_mode::{
     AgentSkill, OutputContract, TurnClassification, TurnMode, TurnModeSource, TurnRoutingError,
-    classify_turn_mode,
+    classify_turn_mode, explicit_turn_mode,
 };
 
 pub fn module_name() -> &'static str {
@@ -51,6 +53,9 @@ pub struct AgentSession {
     pub mode: TurnMode,
     pub output_contract: OutputContract,
     pub prompt_metadata: PromptStackMetadata,
+    pub codex_thread_id: Option<String>,
+    pub conversation_id: Option<String>,
+    pub durable_turn_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +63,11 @@ pub struct AgentSessionRequest {
     pub workspace_id: String,
     pub base_version_id: String,
     pub user_message: String,
+    pub codex_thread_id: Option<String>,
+    /// Durable application identities used to scope live status events to the
+    /// conversation that owns this turn.
+    pub conversation_id: Option<String>,
+    pub durable_turn_id: Option<String>,
     /// Prior chat turns (oldest first) so agent replies can reference
     /// earlier context across requests (HF-013).
     pub history: Vec<AgentHistoryMessage>,
@@ -89,6 +99,7 @@ pub fn create_session_contract(request: &AgentSessionRequest) -> AgentResult<Age
     let tmp_dir = root_dir.join("tmp");
     let skills_dir = ctx_dir.join("skills");
     let node_defs_dir = ctx_dir.join("node_defs");
+    let model_catalog_dir = ctx_dir.join("models");
     let workflow_backends_dir = ctx_dir.join("workflow_backends");
     let runtime_providers_dir = ctx_dir.join("runtime_providers");
     let api_connectors_dir = ctx_dir.join("api_connectors");
@@ -104,6 +115,7 @@ pub fn create_session_contract(request: &AgentSessionRequest) -> AgentResult<Age
     if request.mode.uses_graph_context() {
         fs::create_dir_all(&skills_dir)?;
         fs::create_dir_all(&node_defs_dir)?;
+        fs::create_dir_all(&model_catalog_dir)?;
         fs::create_dir_all(&workflow_backends_dir)?;
         fs::create_dir_all(&runtime_providers_dir)?;
         fs::create_dir_all(&api_connectors_dir)?;
@@ -116,6 +128,10 @@ pub fn create_session_contract(request: &AgentSessionRequest) -> AgentResult<Age
         write_json(
             node_defs_dir.join("catalog.json"),
             &NodeRegistry::builtin().export_catalog(),
+        )?;
+        write_json(
+            model_catalog_dir.join("catalog.json"),
+            helixflow_run::shared_catalog(),
         )?;
         write_json(
             workflow_backends_dir.join("catalog.json"),
@@ -161,6 +177,9 @@ pub fn create_session_contract(request: &AgentSessionRequest) -> AgentResult<Age
             .mode
             .output_contract_with(request.use_intent_contract),
         prompt_metadata,
+        codex_thread_id: request.codex_thread_id.clone(),
+        conversation_id: request.conversation_id.clone(),
+        durable_turn_id: request.durable_turn_id.clone(),
     })
 }
 

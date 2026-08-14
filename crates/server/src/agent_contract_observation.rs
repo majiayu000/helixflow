@@ -471,6 +471,8 @@ mod tests {
                 user_message: "创建一个 workflow".to_owned(),
                 graph: sample_graph(),
                 canvas_context: None,
+                conversation_id: None,
+                turn_mode: None,
             }),
         )
         .await
@@ -504,14 +506,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_runtime_error_is_persisted_before_api_error_returns() {
+    async fn agent_runtime_error_is_persisted_before_terminal_response_returns() {
         let (mut state, workspace_id, version_id, _dir) = state_with_workspace().await;
         state.agent = Arc::new(FailingGraphAgent);
 
-        let error = post_graph_edit(state.clone(), workspace_id.clone(), version_id)
+        post_graph_edit(state.clone(), workspace_id.clone(), version_id)
             .await
-            .expect_err("agent error");
-        assert_eq!(error.status, axum::http::StatusCode::BAD_GATEWAY);
+            .expect("terminal agent error response");
 
         let rows = observations(&state, &workspace_id).await;
         assert_eq!(rows.len(), 1);
@@ -581,12 +582,9 @@ mod tests {
             state.use_intent_contract = true;
             state.provider_registry = configured_atlas_registry();
 
-            let result = post_graph_edit(state.clone(), workspace_id.clone(), version_id).await;
-            if expected_outcome == "error" {
-                assert!(result.is_err());
-            } else {
-                result.expect("non-error intent outcome");
-            }
+            post_graph_edit(state.clone(), workspace_id.clone(), version_id)
+                .await
+                .expect("intent outcome returns a durable terminal response");
             let rows = observations(&state, &workspace_id).await;
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0].contract_mode, "intent");
@@ -606,6 +604,8 @@ mod tests {
                 user_message: "你好".to_owned(),
                 graph: sample_graph(),
                 canvas_context: None,
+                conversation_id: None,
+                turn_mode: None,
             }),
         )
         .await
@@ -735,6 +735,7 @@ mod tests {
         ) -> Result<ValidatedAgentIntent, AgentError> {
             Ok(ValidatedAgentIntent {
                 session_id: format!("{}_intent", request.workspace_id),
+                runtime_identity: None,
                 agent_logs: Vec::new(),
                 intent: self.intent.clone(),
             })
