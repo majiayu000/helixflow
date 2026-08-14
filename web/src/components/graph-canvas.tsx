@@ -10,12 +10,18 @@ import {
 } from 'react';
 import { fetchModelCatalog, fetchNodeCatalog, resolveImplementation } from '../api';
 import { portColor } from '../icons';
-import type { ImplementationResolution, ModelCatalog, NodeCatalog } from '../types';
+import {
+  CANVAS_PRESENCE_HEARTBEAT_MS,
+  CANVAS_PRESENCE_INTERVAL_MS,
+  LOCAL_CANVAS_ACTOR,
+} from '../canvas-presence';
+import type { CanvasPresence, ImplementationResolution, ModelCatalog, NodeCatalog } from '../types';
 import { connectionPath } from './graph-canvas-connections';
 import { useCanvasConnectionController } from './graph-canvas-connection-controller';
 import {
   CanvasCollaborationWorld,
   CanvasCommentsPanel,
+  ConnectedCanvasCollaborationWorld,
 } from './graph-canvas-collaboration';
 import { outputsByCanvasNode } from './graph-canvas-artifacts';
 import { canvasCapabilities } from './graph-canvas-capabilities';
@@ -73,6 +79,7 @@ import type {
 } from './graph-canvas-types';
 import { NodeLibrary } from './node-library';
 import { createLatestFrameScheduler } from './latest-frame-scheduler';
+import { createLatestAsyncPublisher } from './latest-async-publisher';
 
 export { DEFAULT_GRAPH_VIEW, GRAPH_CANVAS_VIEW_STORAGE_PREFIX, clampZoom,
   computeMinimapLayout, loadGraphCanvasView, minimapViewportRect, normalizeView,
@@ -87,7 +94,8 @@ export function GraphCanvas({
   canvasGraph,
   comments = [],
   pendingProposal,
-  presenceByActor = {},
+  presenceByActor,
+  providers,
   run,
   workflowGraph,
   onCommentOp,
@@ -101,6 +109,12 @@ export function GraphCanvas({
   outputs,
 }: GraphCanvasProps) {
   const canvasRef = useRef<HTMLElement | null>(null);
+  const canvasRectRef = useRef<{
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  } | null>(null);
   const [view, setView] = useState<ViewState>(DEFAULT_GRAPH_VIEW);
   const [viewportSize, setViewportSize] = useState<ViewportSize>({ width: 900, height: 640 });
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -114,12 +128,20 @@ export function GraphCanvas({
   const [selectionDrag, setSelectionDrag] = useState<SelectionDragState | null>(null);
   const [clipboardStatus, setClipboardStatus] = useState<string | null>(null);
   const localCursorRef = useRef<Point | null>(null);
-  const presenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onPresenceChangeRef = useRef(onPresenceChange);
+  const selectedIdListRef = useRef<string[]>([]);
+  const viewRef = useRef<ViewState>(DEFAULT_GRAPH_VIEW);
   const drag = useRef<DragState | null>(null);
   const [panScheduler] = useState(() =>
     createLatestFrameScheduler<{ x: number; y: number }>((next) => {
       setView((current) => ({ ...current, ...next }));
     }),
+  );
+  const [presencePublisher] = useState(() =>
+    createLatestAsyncPublisher<CanvasPresence>(
+      (presence) => onPresenceChangeRef.current?.(presence),
+      CANVAS_PRESENCE_INTERVAL_MS,
+    ),
   );
   const suppressNextClick = useRef(false);
   const sourceGraph = canvasGraph ?? graph;
@@ -149,6 +171,9 @@ export function GraphCanvas({
   const selectedCapability = selectedNode
     ? (definitionByType.get(selectedNode.nodeType)?.capability ?? null)
     : null;
+  const selectedReadiness = providers?.capabilityReadiness?.find(
+    (item) => item.capabilityId === selectedCapability,
+  );
 
   useEffect(() => {
     return () => panScheduler.cancel();
@@ -159,9 +184,27 @@ export function GraphCanvas({
       setResolution(null);
       return;
     }
+    if (selectedReadiness && !selectedReadiness.runnable) {
+      setResolution({
+        status: 'unresolvable',
+        code: selectedReadiness.code ?? 'PROVIDER_UNAVAILABLE',
+        message: selectedReadiness.message ?? '当前 provider 不可运行该能力',
+        recoverable: true,
+      });
+      return;
+    }
+    if (selectedReadiness?.mode === 'direct') {
+      setResolution(null);
+      return;
+    }
     const controller = new AbortController();
     setResolution(null);
-    resolveImplementation(selectedCapability, undefined, controller.signal)
+    resolveImplementation(
+      providers?.capabilityReadiness ? workspaceId : undefined,
+      selectedCapability,
+      undefined,
+      controller.signal,
+    )
       .then((outcome) => {
         if (!controller.signal.aborted) setResolution(outcome);
       })
@@ -178,12 +221,15 @@ export function GraphCanvas({
     return () => {
       controller.abort();
     };
-  }, [selectedCapability]);
+  }, [providers?.selectedProvider, selectedCapability, selectedReadiness, workspaceId]);
   const selectedNodes = useMemo(
     () => displayNodes.filter((node) => selectedIds.has(node.id)),
     [displayNodes, selectedIds],
   );
   const selectedIdList = useMemo(() => [...selectedIds], [selectedIds]);
+  onPresenceChangeRef.current = onPresenceChange;
+  selectedIdListRef.current = selectedIdList;
+  viewRef.current = view;
   const nodeCount = displayNodes.length;
   const minimapLayout = useMemo(
     () => computeMinimapLayout(displayNodes, { width: MINIMAP_WIDTH, height: MINIMAP_HEIGHT }),
@@ -199,16 +245,24 @@ export function GraphCanvas({
     viewportSize,
     workflowGraph,
   });
+  const cacheCanvasRect = useCallback((element: HTMLElement | null = canvasRef.current) => {
+    const rect = element?.getBoundingClientRect();
+    if (!rect) return null;
+    const cached = { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+    canvasRectRef.current = cached;
+    return cached;
+  }, []);
   const worldPointFromClient = useCallback(
     (clientX: number, clientY: number): Point => {
-      const rect = canvasRef.current?.getBoundingClientRect();
+      const rect = canvasRectRef.current ?? cacheCanvasRect();
       if (!rect) return { x: 0, y: 0 };
+      const currentView = viewRef.current;
       return {
-        x: (clientX - rect.left - view.x) / view.z,
-        y: (clientY - rect.top - view.y) / view.z,
+        x: (clientX - rect.left - currentView.x) / currentView.z,
+        y: (clientY - rect.top - currentView.y) / currentView.z,
       };
     },
-    [view.x, view.y, view.z],
+    [cacheCanvasRect],
   );
   const connection = useCanvasConnectionController({
     canConnect: capabilities.connect,
@@ -248,21 +302,17 @@ export function GraphCanvas({
     versionId,
     viewZoom: view.z,
   });
-  const schedulePresence = useCallback(() => {
-    if (!onPresenceChange) return;
-    if (presenceTimerRef.current !== null) {
-      clearTimeout(presenceTimerRef.current);
-    }
-    presenceTimerRef.current = setTimeout(() => {
-      presenceTimerRef.current = null;
-      onPresenceChange({
-        actor: { actorId: 'local', displayName: 'Local user' },
-        cursor: localCursorRef.current,
-        selection: { nodeIds: selectedIdList, edgeIds: [] },
-        viewport: { x: view.x, y: view.y, zoom: view.z },
-      });
-    }, 180);
-  }, [onPresenceChange, selectedIdList, view.x, view.y, view.z]);
+  const schedulePresence = useCallback((immediate = false) => {
+    if (!onPresenceChangeRef.current) return;
+    const currentView = viewRef.current;
+    presencePublisher.schedule({
+      actor: LOCAL_CANVAS_ACTOR,
+      cursor: localCursorRef.current,
+      selection: { nodeIds: selectedIdListRef.current, edgeIds: [] },
+      viewport: { x: currentView.x, y: currentView.y, zoom: currentView.z },
+    });
+    if (immediate) presencePublisher.flush();
+  }, [presencePublisher]);
 
   useEffect(() => {
     panScheduler.cancel();
@@ -298,30 +348,36 @@ export function GraphCanvas({
 
   useEffect(() => {
     schedulePresence();
+  }, [schedulePresence, selectedIdList, view.x, view.y, view.z]);
+
+  useEffect(() => {
+    const heartbeat = setInterval(schedulePresence, CANVAS_PRESENCE_HEARTBEAT_MS);
     return () => {
-      if (presenceTimerRef.current !== null) {
-        clearTimeout(presenceTimerRef.current);
-        presenceTimerRef.current = null;
-      }
+      clearInterval(heartbeat);
+      presencePublisher.cancel();
     };
-  }, [schedulePresence]);
+  }, [presencePublisher, schedulePresence, workspaceId]);
 
   useEffect(() => {
     const current = canvasRef.current;
     if (!current) return;
 
     const updateSize = () => {
-      const rect = current.getBoundingClientRect();
+      const rect = cacheCanvasRect(current);
+      if (!rect) return;
       if (rect.width > 0 && rect.height > 0) {
         setViewportSize({ width: rect.width, height: rect.height });
       }
     };
     updateSize();
-    if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(updateSize);
-    observer.observe(current);
-    return () => observer.disconnect();
-  }, []);
+    if (typeof window !== 'undefined') window.addEventListener('scroll', updateSize, true);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateSize);
+    observer?.observe(current);
+    return () => {
+      observer?.disconnect();
+      if (typeof window !== 'undefined') window.removeEventListener('scroll', updateSize, true);
+    };
+  }, [cacheCanvasRect]);
 
   useEffect(() => {
     const timer = setTimeout(() => saveGraphCanvasView(workspaceId, view), 180);
@@ -413,7 +469,8 @@ export function GraphCanvas({
   };
 
   const canvasLocalPoint = (event: PointerEvent<HTMLElement>): Point => {
-    const rect = event.currentTarget.getBoundingClientRect();
+    const rect = canvasRectRef.current ?? cacheCanvasRect(event.currentTarget);
+    if (!rect) return { x: 0, y: 0 };
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
   };
 
@@ -478,6 +535,9 @@ export function GraphCanvas({
         setClipboardStatus(null);
       }}
       onKeyDown={handleKeyDown}
+      onPointerEnter={(event) => {
+        cacheCanvasRect(event.currentTarget);
+      }}
       onDragOver={(event) => {
         if (!connectionDisabled && event.dataTransfer.types.includes('application/x-helixflow-node-type')) {
           event.preventDefault();
@@ -493,6 +553,7 @@ export function GraphCanvas({
       }}
       onPointerDown={(event) => {
         if (event.button !== 0) return;
+        cacheCanvasRect(event.currentTarget);
         event.currentTarget.setPointerCapture(event.pointerId);
         event.currentTarget.focus();
         if (shouldStartSelectionDrag(event)) {
@@ -517,7 +578,8 @@ export function GraphCanvas({
         };
       }}
       onPointerMove={(event) => {
-        localCursorRef.current = worldPointFromClient(event.clientX, event.clientY);
+        const worldPoint = worldPointFromClient(event.clientX, event.clientY);
+        localCursorRef.current = worldPoint;
         schedulePresence();
         if (connection.drag?.pointerId === event.pointerId) {
           if (!capabilities.connect) {
@@ -530,7 +592,7 @@ export function GraphCanvas({
             current
               ? {
                   ...current,
-                  currentPoint: worldPointFromClient(event.clientX, event.clientY),
+                  currentPoint: worldPoint,
                 }
               : current,
           );
@@ -548,6 +610,10 @@ export function GraphCanvas({
         const nextX = currentDrag.ox + event.clientX - currentDrag.sx;
         const nextY = currentDrag.oy + event.clientY - currentDrag.sy;
         panScheduler.schedule({ x: nextX, y: nextY });
+      }}
+      onPointerLeave={() => {
+        localCursorRef.current = null;
+        schedulePresence(true);
       }}
       onPointerCancel={(event) => {
         if (connection.cancel(event)) return;
@@ -568,6 +634,7 @@ export function GraphCanvas({
         error={catalogError}
         modelCatalog={modelCatalog}
         modelCatalogError={modelCatalogError}
+        providers={providers}
         onAddNode={editActions.addNode}
       />
       <CanvasStatusToast
@@ -640,11 +707,16 @@ export function GraphCanvas({
             onResizePointerUp={stopNodeResize}
           />
         ))}
-        <CanvasCollaborationWorld
-          comments={comments}
-          nodes={displayNodes}
-          presenceByActor={presenceByActor}
-        />
+        {presenceByActor ? (
+          <CanvasCollaborationWorld
+            comments={comments}
+            hiddenActorId={LOCAL_CANVAS_ACTOR.actorId}
+            nodes={displayNodes}
+            presenceByActor={presenceByActor}
+          />
+        ) : (
+          <ConnectedCanvasCollaborationWorld comments={comments} nodes={displayNodes} />
+        )}
       </div>
       {nodeCount === 0 && (
         <EmptyCanvas disabled={connectionDisabled} onPrompt={onStartFromPrompt} />
@@ -680,6 +752,7 @@ export function GraphCanvas({
           definition={definitionByType.get(selectedNode.nodeType)}
           node={selectedNode}
           resolution={resolution}
+          readiness={selectedReadiness}
           onClose={() => setSelectedIds(new Set())}
           onRequestProposal={capabilities.move ? onRequestNodeProposal : undefined}
           onSetParam={capabilities.move ? onSetParam : undefined}

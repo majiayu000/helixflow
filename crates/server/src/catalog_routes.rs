@@ -99,6 +99,30 @@ pub(crate) async fn resolve_implementation(
     Ok(Json(resolved))
 }
 
+pub(crate) async fn resolve_workspace_implementation(
+    Path(workspace_id): Path<String>,
+    State(state): State<AppState>,
+    Json(mut request): Json<ResolveRequest>,
+) -> Result<Json<ResolvedImplementation>, ApiError> {
+    let workspace = state
+        .store
+        .workspace(&workspace_id)
+        .await
+        .map_err(ApiError::store)?;
+    let selected_provider = state.selected_provider_for_workspace(&workspace);
+    request.connector_preference = Some(selected_provider.clone());
+    let catalog = shared_catalog();
+    let availability = connector_availability(
+        &state
+            .provider_registry
+            .catalog_snapshot_for_selected(Some(&selected_provider)),
+    );
+    let resolved = CapabilityResolver::new(catalog)
+        .resolve(&request, &availability)
+        .map_err(|err| catalog_error(&err))?;
+    Ok(Json(resolved))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct CompileIntentRequest {

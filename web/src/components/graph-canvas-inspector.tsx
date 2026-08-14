@@ -4,6 +4,7 @@ import type {
   GraphNodeState,
   ImplementationResolution,
   NodeDefinition,
+  WorkbenchState,
   WorkflowGraph,
 } from '../types';
 import { graphNodeHeight, graphNodeWidth, type ViewState, type ViewportSize } from './graph-canvas-navigation';
@@ -12,6 +13,9 @@ import { categorySwatch } from './graph-canvas-rendering';
 type WorkflowNode = WorkflowGraph['nodes'][string];
 type ParamSpec = NodeDefinition['params_schema']['properties'][string];
 type InspectorErrorMap = Record<string, string | undefined>;
+type CapabilityReadiness = NonNullable<
+  WorkbenchState['providers']['capabilityReadiness']
+>[number];
 
 export type InspectorControlKind = 'text' | 'number' | 'select' | 'checkbox' | 'readonly';
 
@@ -21,9 +25,11 @@ export type InspectorControlKind = 'text' | 'number' | 'select' | 'checkbox' | '
 /// resolved implementation.
 function ImplementationSection({
   capability,
+  readiness,
   resolution,
 }: {
   capability: string;
+  readiness?: CapabilityReadiness | null;
   resolution: ImplementationResolution | null;
 }) {
   return (
@@ -32,7 +38,21 @@ function ImplementationSection({
         <span className="field-label">capability</span>
         <span className="field-input">{capability}</span>
       </div>
-      {!resolution && (
+      {readiness && (
+        <div className="field">
+          <span className="field-label">provider readiness</span>
+          <span className="field-input">
+            {readiness.providerId} · {readiness.runnable ? '可运行' : '不可运行'}
+          </span>
+        </div>
+      )}
+      {!resolution && readiness?.mode === 'direct' && readiness.runnable && (
+        <div className="field">
+          <span className="field-label">implementation</span>
+          <span className="field-input">direct provider</span>
+        </div>
+      )}
+      {!resolution && readiness?.mode !== 'direct' && (
         <div className="field">
           <span className="field-label">implementation</span>
           <span className="field-input">解析中…</span>
@@ -77,6 +97,7 @@ type GraphInspectorProps = {
   definition?: NodeDefinition;
   node: GraphNodeState;
   resolution?: ImplementationResolution | null;
+  readiness?: CapabilityReadiness | null;
   workflowNode?: WorkflowNode;
   onClose: () => void;
   onRequestProposal?: (nodeId: string) => Promise<void>;
@@ -96,6 +117,7 @@ export function GraphInspector({
   view,
   viewportSize,
   resolution,
+  readiness,
 }: GraphInspectorProps) {
   const paramObject = useMemo(() => paramsObject(workflowNode), [workflowNode]);
   const fields = useMemo(
@@ -163,7 +185,12 @@ export function GraphInspector({
       </span>
       <div className="inspector-node-actions">
         <details className="inspector-edit-details">
-          <summary className="inspector-tool" title="编辑参数">
+          <summary
+            className="inspector-tool"
+            onClick={(event) => event.stopPropagation()}
+            onPointerDown={(event) => event.stopPropagation()}
+            title="编辑参数"
+          >
             <Icon n="sliders" s={14} />
             <span>参数</span>
           </summary>
@@ -191,6 +218,7 @@ export function GraphInspector({
               {definition?.capability && (
                 <ImplementationSection
                   capability={definition.capability}
+                  readiness={readiness}
                   resolution={resolution ?? null}
                 />
               )}

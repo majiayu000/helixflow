@@ -102,6 +102,54 @@ async fn resolve_fails_closed_when_no_catalog_connector_is_healthy() {
 }
 
 #[tokio::test]
+async fn workspace_resolution_uses_the_selected_provider_not_catalog_default() {
+    let (_dir, mut state) = mock_state().await;
+    let workspace = state
+        .store
+        .create_workspace("FAL workspace")
+        .await
+        .expect("workspace");
+    state
+        .store
+        .set_workspace_runtime_provider(&workspace.id, Some("fal"))
+        .await
+        .expect("select fal");
+    let atlas = RuntimeProvider::Atlas(helixflow_gateway::AtlasProvider::new(
+        helixflow_gateway::ApiProviderConfig::atlas(
+            "test-key".to_owned(),
+            "https://atlas.invalid/v1".to_owned(),
+        ),
+    ));
+    let fal = RuntimeProvider::Fal(helixflow_gateway::FalProvider::new(
+        helixflow_gateway::FalProviderConfig::new(
+            "test-key".to_owned(),
+            "https://fal.invalid".to_owned(),
+        ),
+    ));
+    state.provider_registry = helixflow_gateway::ProviderRegistry::new("atlas", vec![atlas, fal]);
+
+    let Json(resolved) = resolve_workspace_implementation(
+        Path(workspace.id),
+        State(state),
+        Json(ResolveRequest {
+            capability_id: "text_to_image".to_owned(),
+            requested_model: Some("Nano Banana".to_owned()),
+            connector_preference: Some("atlas".to_owned()),
+        }),
+    )
+    .await
+    .expect("resolve selected provider");
+
+    assert!(matches!(
+        resolved.target,
+        helixflow_registry::catalog::ImplementationTarget::ApiConnector {
+            ref connector_id,
+            ..
+        } if connector_id == "fal"
+    ));
+}
+
+#[tokio::test]
 async fn connector_availability_maps_health_fail_closed() {
     let (_dir, state) = mock_state().await;
     let availability = connector_availability(&state.provider_registry.catalog_snapshot());

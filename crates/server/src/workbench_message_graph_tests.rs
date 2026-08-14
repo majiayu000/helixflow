@@ -29,6 +29,7 @@ async fn verified_read_valid_ingress_sends_server_graph_to_agent() {
             graph: fixture.server_graph.clone(),
             canvas_context: None,
             conversation_id: None,
+            turn_mode: None,
         }),
     )
     .await
@@ -139,6 +140,7 @@ async fn assert_rejected_ingress(fault: IngressFault) {
             graph: client_graph,
             canvas_context: None,
             conversation_id: None,
+            turn_mode: None,
         }),
     )
     .await

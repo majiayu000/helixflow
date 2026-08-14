@@ -112,12 +112,21 @@ impl Store {
         &self,
         input: NewAgentContractObservation<'_>,
     ) -> StoreResult<StartedAgentContractObservation> {
+        let observation_id = new_id("aco");
+        self.create_graph_edit_message_with_observation_id(input, &observation_id)
+            .await
+    }
+
+    pub async fn create_graph_edit_message_with_observation_id(
+        &self,
+        input: NewAgentContractObservation<'_>,
+        observation_id: &str,
+    ) -> StoreResult<StartedAgentContractObservation> {
         validate_user_message(&input.user_message)?;
         validate_optional_identity("INVALID_RELEASE_ID", input.release_id, 64)?;
         validate_optional_identity("INVALID_BUILD_REVISION", input.build_revision, 128)?;
 
         let message_id = new_id("msg");
-        let observation_id = new_id("aco");
         let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
         insert_message(&mut tx, &message_id, &input.user_message).await?;
         sqlx::query(
@@ -129,7 +138,7 @@ impl Store {
             VALUES (?, ?, ?, ?, 'started', ?, ?, current_timestamp)
             "#,
         )
-        .bind(&observation_id)
+        .bind(observation_id)
         .bind(input.user_message.workspace_id)
         .bind(&message_id)
         .bind(input.contract_mode.as_str())
@@ -139,7 +148,7 @@ impl Store {
         .await?;
 
         let message = message_in_tx(&mut tx, &message_id).await?;
-        let observation = observation_in_tx(&mut tx, &observation_id).await?;
+        let observation = observation_in_tx(&mut tx, observation_id).await?;
         tx.commit().await?;
         Ok(StartedAgentContractObservation {
             message,

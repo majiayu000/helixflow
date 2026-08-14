@@ -777,12 +777,15 @@ describe('App', () => {
       vi.fn(async () => {
         return new Response(
           JSON.stringify({
+            turnId: 'turn_chat_1',
+            turnStatus: 'succeeded',
             turnMode: 'chat',
             messages: [
               {
                 id: 'msg_agent_1',
                 role: 'agent',
                 kind: 'chat',
+                turnId: 'turn_chat_1',
                 text: '我是 Helixflow agent。',
                 time: 'unix:1',
               },
@@ -850,12 +853,15 @@ describe('App', () => {
       vi.fn(async () => {
         return new Response(
           JSON.stringify({
+            turnId: 'turn_run_1',
+            turnStatus: 'succeeded',
             turnMode: 'run_request',
             messages: [
               {
                 id: 'msg_agent_run',
                 role: 'agent',
                 kind: 'run_requested',
+                turnId: 'turn_run_1',
                 text: 'Run run_1 is waiting for confirmation.',
                 time: 'unix:1',
               },
@@ -1390,8 +1396,19 @@ describe('App', () => {
       'fetch',
       vi.fn(async () => {
         return jsonResponse({
+          turnId: 'turn_run_new',
+          turnStatus: 'succeeded',
           turnMode: 'run_request',
-          messages: [],
+          messages: [
+            {
+              id: 'msg_run_new',
+              role: 'agent',
+              kind: 'run_requested',
+              turnId: 'turn_run_new',
+              text: 'Run started.',
+              time: 'unix:1',
+            },
+          ],
           proposal: null,
           run: {
             id: 'run_new',
@@ -1434,12 +1451,15 @@ describe('App', () => {
       'fetch',
       vi.fn(async () => {
         return jsonResponse({
+          turnId: 'turn_proposal_1',
+          turnStatus: 'succeeded',
           turnMode: 'create_workflow',
           messages: [
             {
               id: 'msg_agent_proposal',
               role: 'agent',
               kind: 'proposal_pending',
+              turnId: 'turn_proposal_1',
               text: 'Set duration to four seconds.',
               time: 'unix:1',
             },
@@ -1462,11 +1482,14 @@ describe('App', () => {
       id: 'msg_agent_applied',
       role: 'agent' as const,
       kind: 'proposal_applied' as const,
+      turnId: 'turn_applied_1',
       text: 'Applied as a new version.',
       time: 'unix:2',
     };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({
+        turnId: 'turn_applied_1',
+        turnStatus: 'succeeded',
         turnMode: 'create_workflow',
         messages: [appliedMessage],
         proposal: null,

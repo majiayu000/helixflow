@@ -43,6 +43,7 @@ pub(crate) fn build(
     service: &GraphService,
     catalog: &CatalogSnapshot,
     availability: &ConnectorAvailability,
+    connector_preference: Option<&str>,
 ) -> Result<Result<BuiltGraph, ClarifyFirst>, CompileError> {
     let resolver = CapabilityResolver::new(catalog);
     let registry = service.registry();
@@ -63,7 +64,7 @@ pub(crate) fn build(
             &ResolveRequest {
                 capability_id: stage.capability_id.clone(),
                 requested_model: stage.requested_model.clone(),
-                connector_preference: None,
+                connector_preference: connector_preference.map(str::to_owned),
             },
             availability,
         ) {

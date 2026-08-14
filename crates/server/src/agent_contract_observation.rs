@@ -472,6 +472,7 @@ mod tests {
                 graph: sample_graph(),
                 canvas_context: None,
                 conversation_id: None,
+                turn_mode: None,
             }),
         )
         .await
@@ -604,6 +605,7 @@ mod tests {
                 graph: sample_graph(),
                 canvas_context: None,
                 conversation_id: None,
+                turn_mode: None,
             }),
         )
         .await

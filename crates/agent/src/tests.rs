@@ -285,6 +285,14 @@ fn classifies_run_requests_without_falling_back_to_workflow_change() {
 }
 
 #[test]
+fn preserves_an_explicit_surface_mode_without_keyword_routing() {
+    let classification = explicit_turn_mode(TurnMode::CreateWorkflow);
+
+    assert_eq!(classification.mode, TurnMode::CreateWorkflow);
+    assert_eq!(classification.source, TurnModeSource::Explicit);
+}
+
+#[test]
 fn classifies_modify_requests_before_broad_workflow_creation() {
     assert_eq!(
         classify_turn_mode("modify workflow duration", &sample_graph())

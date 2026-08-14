@@ -22,6 +22,7 @@ async fn post_message_routes_ambiguous_text_to_chat() {
             graph: sample_graph(),
             canvas_context: None,
             conversation_id: None,
+            turn_mode: None,
         }),
     )
     .await
@@ -64,6 +65,7 @@ async fn post_message_rejects_empty_text() {
             graph: sample_graph(),
             canvas_context: None,
             conversation_id: None,
+            turn_mode: None,
         }),
     )
     .await

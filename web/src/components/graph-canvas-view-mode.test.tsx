@@ -166,6 +166,7 @@ describe('GraphCanvas view-mode integration', () => {
       await flushActions();
     });
     const renderCount = onRender.mock.calls.length;
+    onPresenceChange.mockClear();
 
     await act(async () => {
       section().props.onPointerMove(pointerEvent());
@@ -178,6 +179,21 @@ describe('GraphCanvas view-mode integration', () => {
       x: expect.any(Number),
       y: expect.any(Number),
     });
+  });
+
+  it('clears the shared cursor when the pointer leaves the canvas', async () => {
+    const onPresenceChange = vi.fn<(presence: CanvasPresence) => void>();
+    renderer = await renderCanvas(true, onPresenceChange);
+    onPresenceChange.mockClear();
+
+    await act(async () => {
+      section().props.onPointerMove(pointerEvent());
+      section().props.onPointerLeave();
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    });
+
+    expect(onPresenceChange).toHaveBeenCalledTimes(1);
+    expect(onPresenceChange.mock.calls[0]?.[0].cursor).toBeNull();
   });
 
   it('keeps an edit-mode connection rejection visible through the extracted controller', async () => {
@@ -221,10 +237,13 @@ describe('GraphCanvas view-mode integration', () => {
     expect(statusToastText()).toBe('connection failed');
   });
 
-  async function renderCanvas(editable: boolean): Promise<ReactTestRenderer> {
+  async function renderCanvas(
+    editable: boolean,
+    onPresenceChange?: (presence: CanvasPresence) => void,
+  ): Promise<ReactTestRenderer> {
     let next!: ReactTestRenderer;
     await act(async () => {
-      next = create(canvasElement(editable));
+      next = create(canvasElement(editable, onPresenceChange));
       await flushActions();
     });
     return next;

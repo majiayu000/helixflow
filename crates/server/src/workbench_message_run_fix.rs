@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use helixflow_agent::{AgentSessionRequest, AgentSkill, TurnMode, ValidatedAgentProposal};
-use helixflow_compiler::{CompileOutcome, compile};
+use helixflow_compiler::{CompileOutcome, compile_for_connector};
 use helixflow_gateway::Provider;
 use helixflow_graph::{GraphService, ProposalDraft, ProposalKind, WorkflowGraph};
 use helixflow_registry::NodeRegistry;
@@ -9,12 +9,12 @@ use helixflow_store::{RunFixAttemptRecord, RunFixClaim, RunFixSnapshot};
 
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
-use crate::catalog_routes::connector_availability;
 use crate::version_file_consistency::read_version_graph;
 use crate::workbench_message::{
     ensure_fix_scope, format_exact_debug_run_context, persist_agent_logs, safe_error_summary,
     safe_graph_projection,
 };
+use crate::workbench_message_intent_readiness::intent_compile_readiness;
 use crate::workbench_message_proposals::persist_and_apply_run_fix_proposal;
 
 pub(crate) async fn run_agent_fix_worker(state: AppState) {
@@ -215,7 +215,9 @@ async fn execute_fix_attempt(
         canvas_context: None,
         use_intent_contract: state.use_intent_contract,
     };
-    let (proposal, semantics_json) = prepare_fix_proposal(state, request, &graph).await?;
+    let selected_provider = state.selected_provider_for_workspace(&workspace);
+    let (proposal, semantics_json) =
+        prepare_fix_proposal(state, request, &graph, &selected_provider).await?;
     persist_agent_logs(
         state,
         &attempt.workspace_id,
@@ -248,6 +250,7 @@ async fn prepare_fix_proposal(
     state: &AppState,
     request: AgentSessionRequest,
     graph: &WorkflowGraph,
+    selected_provider: &str,
 ) -> Result<(ValidatedAgentProposal, Option<String>), (&'static str, Option<String>)> {
     let base_version_id = request.base_version_id.clone();
     if !state.use_intent_contract {
@@ -290,13 +293,15 @@ async fn prepare_fix_proposal(
         .await
         .map_err(|error| fix_failure("FIX_AGENT_FAILED", error.to_string()))?;
     let service = GraphService::new(NodeRegistry::builtin());
-    let availability = connector_availability(&state.provider_registry.catalog_snapshot());
-    match compile(
+    let readiness = intent_compile_readiness(state, selected_provider, &validated.intent)
+        .map_err(|code| fix_failure("FIX_PROVIDER_UNAVAILABLE", code))?;
+    match compile_for_connector(
         &validated.intent,
         graph,
         &service,
         helixflow_run::shared_catalog(),
-        &availability,
+        &readiness.availability,
+        readiness.connector_preference.as_deref(),
     )
     .map_err(|error| fix_failure("FIX_PROPOSAL_INVALID", error.to_string()))?
     {

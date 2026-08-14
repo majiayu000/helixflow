@@ -37,6 +37,7 @@ async fn post_message_routes_chat_to_agent_runtime() {
             graph: sample_graph(),
             canvas_context: None,
             conversation_id: None,
+            turn_mode: None,
         }),
     )
     .await
@@ -88,6 +89,38 @@ async fn post_message_routes_chat_to_agent_runtime() {
 }
 
 #[tokio::test]
+async fn explicit_surface_mode_overrides_ambiguous_prompt_routing() {
+    let (state, workspace_id, version_id, _dir) = state_with_workspace().await;
+
+    let response = post_workspace_message(
+        Path(workspace_id.clone()),
+        State(state.clone()),
+        Json(WorkspaceMessageRequest {
+            base_version_id: version_id,
+            user_message: "夏夜森林中的萤火虫".to_owned(),
+            graph: sample_graph(),
+            canvas_context: None,
+            conversation_id: None,
+            turn_mode: Some(TurnMode::CreateWorkflow),
+        }),
+    )
+    .await
+    .expect("explicit create response")
+    .0;
+
+    assert_eq!(response.turn_mode, TurnMode::CreateWorkflow);
+    let persisted = state
+        .store
+        .workspace_messages(&workspace_id)
+        .await
+        .expect("messages");
+    assert_eq!(
+        persisted[0].attachment_ids_json.as_deref(),
+        Some(r#"{"turnMode":"create_workflow","turnModeSource":"explicit"}"#)
+    );
+}
+
+#[tokio::test]
 async fn failed_chat_persists_a_terminal_turn_and_visible_error_message() {
     let (mut state, workspace_id, version_id, _dir) = state_with_workspace().await;
     state.agent = Arc::new(FailingWorkbenchAgent);
@@ -101,6 +134,7 @@ async fn failed_chat_persists_a_terminal_turn_and_visible_error_message() {
             graph: sample_graph(),
             canvas_context: None,
             conversation_id: None,
+            turn_mode: None,
         }),
     )
     .await
@@ -140,6 +174,7 @@ async fn interrupting_active_chat_persists_an_interrupted_terminal_turn() {
                 graph: sample_graph(),
                 canvas_context: None,
                 conversation_id: None,
+                turn_mode: None,
             }),
         )
         .await
@@ -183,6 +218,7 @@ async fn post_message_auto_starts_free_run_request() {
             graph: sample_graph(),
             canvas_context: None,
             conversation_id: None,
+            turn_mode: None,
         }),
     )
     .await
@@ -237,6 +273,7 @@ async fn post_message_auto_applies_proposal_record() {
             graph: sample_graph(),
             canvas_context: None,
             conversation_id: None,
+            turn_mode: None,
         }),
     )
     .await
@@ -244,6 +281,20 @@ async fn post_message_auto_applies_proposal_record() {
     .0;
 
     assert_eq!(response.turn_mode, TurnMode::CreateWorkflow);
+    assert_eq!(response.turn_status, "succeeded");
+    assert_eq!(
+        response.messages[0].turn_id.as_deref(),
+        Some(response.turn_id.as_str())
+    );
+    assert_eq!(
+        state
+            .store
+            .agent_turn(&response.turn_id)
+            .await
+            .expect("terminal turn")
+            .status,
+        "succeeded"
+    );
     assert_eq!(response.proposal, None);
     assert_eq!(response.run, None);
     assert_eq!(response.pending_confirmation, None);
@@ -574,6 +625,7 @@ async fn post_message_routes_debug_with_latest_run_context() {
             graph: sample_graph(),
             canvas_context: None,
             conversation_id: None,
+            turn_mode: None,
         }),
     )
     .await
@@ -878,6 +930,7 @@ async fn intent_turn_compiles_and_persists_semantics() {
             graph: sample_graph(),
             canvas_context: None,
             conversation_id: None,
+            turn_mode: None,
         }),
     )
     .await
@@ -938,6 +991,7 @@ async fn intent_turn_missing_input_produces_clarify_message() {
             graph: sample_graph(),
             canvas_context: None,
             conversation_id: None,
+            turn_mode: None,
         }),
     )
     .await
@@ -990,6 +1044,7 @@ async fn intent_turn_compiles_seedance_image_to_video_binding() {
             graph: sample_graph(),
             canvas_context: None,
             conversation_id: None,
+            turn_mode: None,
         }),
     )
     .await
