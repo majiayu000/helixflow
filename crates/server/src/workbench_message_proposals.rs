@@ -72,13 +72,21 @@ pub(crate) async fn persist_and_apply_agent_proposal(
             semantics_json,
             None,
             None,
+            None,
         )
         .await
     }
     #[cfg(not(test))]
     {
-        persist_and_apply_agent_proposal_inner(state, workspace_id, proposal, semantics_json, None)
-            .await
+        persist_and_apply_agent_proposal_inner(
+            state,
+            workspace_id,
+            proposal,
+            semantics_json,
+            None,
+            None,
+        )
+        .await
     }
 }
 
@@ -88,6 +96,8 @@ pub(crate) async fn persist_and_apply_agent_proposal_observed(
     proposal: &ValidatedAgentProposal,
     semantics_json: Option<&str>,
     completion: CompleteAgentContractObservation<'_>,
+    conversation_id: &str,
+    turn_id: &str,
 ) -> Result<MessageRecord, ApiError> {
     #[cfg(test)]
     {
@@ -97,6 +107,7 @@ pub(crate) async fn persist_and_apply_agent_proposal_observed(
             proposal,
             semantics_json,
             Some(completion),
+            Some((conversation_id, turn_id)),
             None,
         )
         .await
@@ -109,6 +120,7 @@ pub(crate) async fn persist_and_apply_agent_proposal_observed(
             proposal,
             semantics_json,
             Some(completion),
+            Some((conversation_id, turn_id)),
         )
         .await
     }
@@ -121,8 +133,16 @@ pub(crate) async fn persist_and_apply_agent_proposal_with_hook(
     proposal: &ValidatedAgentProposal,
     hook: &AutoApplyCommitHook,
 ) -> Result<MessageRecord, ApiError> {
-    persist_and_apply_agent_proposal_inner(state, workspace_id, proposal, None, None, Some(hook))
-        .await
+    persist_and_apply_agent_proposal_inner(
+        state,
+        workspace_id,
+        proposal,
+        None,
+        None,
+        None,
+        Some(hook),
+    )
+    .await
 }
 
 async fn persist_and_apply_agent_proposal_inner(
@@ -131,6 +151,7 @@ async fn persist_and_apply_agent_proposal_inner(
     proposal: &ValidatedAgentProposal,
     semantics_json: Option<&str>,
     observation_completion: Option<CompleteAgentContractObservation<'_>>,
+    turn_context: Option<(&str, &str)>,
     #[cfg(test)] commit_hook: Option<&AutoApplyCommitHook>,
 ) -> Result<MessageRecord, ApiError> {
     let workspace = state
@@ -205,7 +226,20 @@ async fn persist_and_apply_agent_proposal_inner(
         Some(completion) => {
             state
                 .store
-                .auto_apply_proposal_version_with_observation(auto_apply, completion)
+                .auto_apply_proposal_version_with_observation_and_turn(
+                    auto_apply,
+                    completion,
+                    turn_context
+                        .map(|(conversation_id, _)| conversation_id)
+                        .ok_or_else(|| {
+                            ApiError::server_error(
+                                "observed proposal is missing conversation context",
+                            )
+                        })?,
+                    turn_context.map(|(_, turn_id)| turn_id).ok_or_else(|| {
+                        ApiError::server_error("observed proposal is missing turn context")
+                    })?,
+                )
                 .await
         }
         None => state.store.auto_apply_proposal_version(auto_apply).await,

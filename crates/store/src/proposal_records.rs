@@ -413,7 +413,8 @@ impl Store {
         &self,
         input: AutoApplyProposalVersionRecord<'_>,
     ) -> StoreResult<AutoApplyProposalVersionResult> {
-        self.auto_apply_proposal_version_inner(input, None).await
+        self.auto_apply_proposal_version_inner(input, None, None)
+            .await
     }
 
     pub async fn auto_apply_proposal_version_with_observation(
@@ -421,14 +422,30 @@ impl Store {
         input: AutoApplyProposalVersionRecord<'_>,
         completion: CompleteAgentContractObservation<'_>,
     ) -> StoreResult<AutoApplyProposalVersionResult> {
-        self.auto_apply_proposal_version_inner(input, Some(completion))
+        self.auto_apply_proposal_version_inner(input, Some(completion), None)
             .await
+    }
+
+    pub async fn auto_apply_proposal_version_with_observation_and_turn(
+        &self,
+        input: AutoApplyProposalVersionRecord<'_>,
+        completion: CompleteAgentContractObservation<'_>,
+        conversation_id: &str,
+        turn_id: &str,
+    ) -> StoreResult<AutoApplyProposalVersionResult> {
+        self.auto_apply_proposal_version_inner(
+            input,
+            Some(completion),
+            Some((conversation_id, turn_id)),
+        )
+        .await
     }
 
     async fn auto_apply_proposal_version_inner(
         &self,
         input: AutoApplyProposalVersionRecord<'_>,
         completion: Option<CompleteAgentContractObservation<'_>>,
+        turn_context: Option<(&str, &str)>,
     ) -> StoreResult<AutoApplyProposalVersionResult> {
         let proposal_id = new_id("proposal");
         let version_id = new_id("ver");
@@ -522,9 +539,10 @@ impl Store {
         let message_insert = sqlx::query(
             r#"
             INSERT INTO messages (
-                id, workspace_id, role, text, kind, ref_id, attachment_ids_json, created_at
+                id, workspace_id, role, text, kind, ref_id, attachment_ids_json,
+                conversation_id, turn_id, created_at
             )
-            VALUES (?, ?, 'agent', ?, 'proposal_applied', ?, ?, current_timestamp)
+            VALUES (?, ?, 'agent', ?, 'proposal_applied', ?, ?, ?, ?, current_timestamp)
             "#,
         )
         .bind(&message_id)
@@ -532,6 +550,8 @@ impl Store {
         .bind(input.message_text)
         .bind(&proposal_id)
         .bind(&message_attachment_ids_json)
+        .bind(turn_context.map(|(conversation_id, _)| conversation_id))
+        .bind(turn_context.map(|(_, turn_id)| turn_id))
         .execute(&mut *tx)
         .await?;
         require_one_write(
@@ -567,6 +587,33 @@ impl Store {
         )?;
         if let Some(completion) = completion.as_ref() {
             complete_observation_in_tx(&mut tx, completion).await?;
+        }
+        if let Some((conversation_id, turn_id)) = turn_context {
+            let execution_id = completion
+                .as_ref()
+                .and_then(|completion| completion.session_id);
+            let turn_update = sqlx::query(
+                r#"
+                UPDATE agent_turns
+                SET status = 'succeeded', reason_code = NULL, execution_id = ?,
+                    completed_at = current_timestamp
+                WHERE id = ? AND workspace_id = ? AND conversation_id = ? AND status = 'running'
+                "#,
+            )
+            .bind(execution_id)
+            .bind(turn_id)
+            .bind(input.proposal.workspace_id)
+            .bind(conversation_id)
+            .execute(&mut *tx)
+            .await?;
+            require_one_write(
+                "finalize_auto_applied_agent_turn",
+                turn_update.rows_affected(),
+            )?;
+            sqlx::query("UPDATE conversations SET updated_at = current_timestamp WHERE id = ?")
+                .bind(conversation_id)
+                .execute(&mut *tx)
+                .await?;
         }
 
         let proposal = sqlx::query_as::<_, ProposalRecord>(

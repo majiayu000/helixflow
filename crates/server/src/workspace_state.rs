@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
+use crate::capability_preflight::provider_capability_readiness;
 use crate::graph_files::{blank_graph, read_graph_file, read_json_file};
 use crate::version_file_consistency::read_version_graph;
 use crate::workbench_payload::{
@@ -225,6 +226,20 @@ fn provider_state_value(state: &AppState, workspace: &WorkspaceRecord) -> Result
     let mut providers = serde_json::to_value(state.provider_catalog_for_workspace(workspace))
         .map_err(|err| ApiError::server_error(err.to_string()))?;
     providers["selectedProvider"] = json!(selected_provider);
+    let registry = NodeRegistry::builtin();
+    let capabilities = registry
+        .export_catalog()
+        .nodes
+        .into_iter()
+        .filter_map(|definition| definition.capability)
+        .collect::<std::collections::BTreeSet<_>>();
+    providers["capabilityReadiness"] = serde_json::to_value(
+        capabilities
+            .iter()
+            .map(|capability| provider_capability_readiness(state, &selected_provider, capability))
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|err| ApiError::server_error(err.to_string()))?;
     Ok(providers)
 }
 
@@ -407,7 +422,7 @@ fn error_summary_from_json(value: &Value) -> Option<String> {
     None
 }
 
-fn first_line(value: &str) -> &str {
+pub(crate) fn first_line(value: &str) -> &str {
     value.lines().next().unwrap_or(value)
 }
 

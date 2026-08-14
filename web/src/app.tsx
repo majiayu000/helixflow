@@ -324,6 +324,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
                 graph={previewState.graph}
                 canvasGraph={canvasGraph}
                 comments={canvas?.comments ?? []}
+                providers={previewState.providers}
                 onCreateProposal={(input) => runAction(() => appendManualEdit(input), true)}
                 onCommentOp={(input) => runAction(() => submitCanvasCommentOp(input), true)}
                 onPresenceChange={sendCanvasPresence}

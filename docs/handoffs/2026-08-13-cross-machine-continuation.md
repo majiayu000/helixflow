@@ -104,10 +104,10 @@ The child branch contains the following implemented work:
    - preserves explicit drag/drop coordinates;
    - includes deterministic helper coverage.
 
-This tranche is tracked by issue #186. The draft remains intentionally open
-because the P0 items below are not implemented yet.
+This tranche is tracked by issue #186. Both retained P0 items were completed
+and browser-regressed on 2026-08-15.
 
-## Remaining P0 work
+## Completed P0 work
 
 ### P0-A: cancellation-safe durable Agent terminalization
 
@@ -115,7 +115,7 @@ Reproduction evidence showed an Agent output file could exist while the HTTP
 request disappeared, leaving the durable turn permanently `running` and the
 UI silent.
 
-The continuation should implement an atomic Store operation that:
+The implementation now provides an atomic Store settlement that:
 
 - updates a turn only when it is still `running`;
 - writes one user-visible terminal error/interrupted message in the same
@@ -126,9 +126,10 @@ The continuation should implement an atomic Store operation that:
 - is covered by a test that aborts a hanging request after persistence and
   waits for the durable terminal state.
 
-The Web client should additionally reject a successful response with no
-terminal state or messages and show a retryable error instead of returning to
-idle silently.
+The Web client also rejects a successful response with no terminal state or
+messages. Browser regression exposed and fixed the missing
+`agent_interrupted` Web message kind; interrupted turns now render the durable
+“Agent 已停止” message instead of a schema error.
 
 Relevant files:
 
@@ -148,11 +149,16 @@ provider:
 - the same graph could run successfully through Mock;
 - the model tray still emphasized Atlas/FAL catalog entries.
 
-Do not fix this with a front-end-only label override. Provider health, catalog
-resolution, Intent compilation, Inspector readiness, model-tray availability,
-and run preflight should consume one server-derived result. Production
-connectors must remain fail-closed, and the explicit Mock double opt-in must
-remain intact.
+Provider health, workspace-scoped catalog resolution, Intent compilation,
+Inspector readiness, model-tray availability, and run preflight now consume
+the same server-derived provider/capability readiness. Production connectors
+remain fail-closed, and the explicit Mock double opt-in remains intact.
+
+The 2026-08-15 regression used a fresh isolated data directory with explicit
+Mock. It proved that Atlas can be healthy in the same process without its
+catalog entries appearing executable in a Mock workspace, that an interrupted
+request persists and displays a terminal message, and that fresh product-origin
+console errors are empty.
 
 Likely code map:
 
@@ -165,8 +171,9 @@ Likely code map:
 - `web/src/components/graph-canvas-inspector.tsx`
 - `web/src/components/model-catalog-tray.tsx`
 
-Add integration coverage proving the displayed readiness agrees with the
-actual selected-provider run outcome.
+Integration coverage also proves that a FAL-selected workspace resolves the
+FAL binding even when Atlas is the catalog default, while direct Mock
+capabilities agree with run preflight.
 
 ## High-value P1 queue
 
@@ -187,12 +194,12 @@ the P0 state contracts are stable.
 - `docs/handoffs/helixflow-ui-ux-audit-2026-08-13.md`
 - `docs/handoffs/assets/helixflow-ui-ux-audit-2026-08-13/`
 
-The directory contains 31 browser screenshots across desktop, 900 px, and
-390 px views. The report was captured before the current fixes, so it is the
-baseline for before/after regression. Create a new dated screenshot set; do
-not overwrite the baseline.
+The directory contains the original 31 browser screenshots across desktop,
+900 px, and 390 px views. The 2026-08-15 post-fix session repeated and captured
+the same three viewport classes plus the 390 px expanded Chat state without
+overwriting that baseline.
 
-Required browser retest:
+Completed browser retest:
 
 1. fresh isolated data directory and explicit Mock provider;
 2. ordinary creative prompt through the central canvas entry;
@@ -201,7 +208,7 @@ Required browser retest:
 5. new conversation followed by a deliberately interrupted request;
 6. provider/catalog/Inspector/run agreement;
 7. desktop, 900 px, and 390 px screenshots;
-8. browser console check for product-origin errors.
+8. browser console check for product-origin errors (fresh tab: none).
 
 ## Verification at handoff time
 

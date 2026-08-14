@@ -281,6 +281,20 @@ async fn post_message_auto_applies_proposal_record() {
     .0;
 
     assert_eq!(response.turn_mode, TurnMode::CreateWorkflow);
+    assert_eq!(response.turn_status, "succeeded");
+    assert_eq!(
+        response.messages[0].turn_id.as_deref(),
+        Some(response.turn_id.as_str())
+    );
+    assert_eq!(
+        state
+            .store
+            .agent_turn(&response.turn_id)
+            .await
+            .expect("terminal turn")
+            .status,
+        "succeeded"
+    );
     assert_eq!(response.proposal, None);
     assert_eq!(response.run, None);
     assert_eq!(response.pending_confirmation, None);

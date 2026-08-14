@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Icon, Port, type IconName } from '../icons';
-import type { ModelCatalog, NodeCatalog, NodeDefinition } from '../types';
+import type { ModelCatalog, NodeCatalog, NodeDefinition, WorkbenchState } from '../types';
 import { ModelCatalogTray } from './model-catalog-tray';
 
 type NodeLibraryProps = {
@@ -9,6 +9,7 @@ type NodeLibraryProps = {
   modelCatalogError: string | null;
   error: string | null;
   disabled: boolean;
+  providers?: WorkbenchState['providers'];
   onAddNode: (definition: NodeDefinition) => void;
 };
 
@@ -18,6 +19,7 @@ export function NodeLibrary({
   modelCatalogError,
   error,
   disabled,
+  providers,
   onAddNode,
 }: NodeLibraryProps) {
   const [query, setQuery] = useState('');
@@ -104,6 +106,7 @@ export function NodeLibrary({
               modelCatalog={modelCatalog}
               nodeCatalog={catalog}
               onAddNode={onAddNode}
+              providers={providers}
             />
           )}
           {category !== 'models' && (

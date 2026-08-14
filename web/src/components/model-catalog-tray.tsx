@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react';
-import type { ModelCatalog, NodeCatalog, NodeDefinition } from '../types';
+import type { ModelCatalog, NodeCatalog, NodeDefinition, WorkbenchState } from '../types';
 
 type ModelCatalogTrayProps = {
   modelCatalog: ModelCatalog | null;
   nodeCatalog: NodeCatalog | null;
   error: string | null;
   disabled: boolean;
+  providers?: WorkbenchState['providers'];
   onAddNode: (definition: NodeDefinition) => void;
 };
 
@@ -20,6 +21,7 @@ export function ModelCatalogTray({
   nodeCatalog,
   error,
   disabled,
+  providers,
   onAddNode,
 }: ModelCatalogTrayProps) {
   const [view, setView] = useState<CatalogView>('byCapability');
@@ -42,8 +44,8 @@ export function ModelCatalogTray({
 
   const groups =
     view === 'byCapability'
-      ? capabilityGroups(modelCatalog)
-      : modelGroups(modelCatalog);
+      ? capabilityGroups(modelCatalog, providers)
+      : modelGroups(modelCatalog, providers);
 
   return (
     <div className="model-catalog" data-view={view}>
@@ -68,7 +70,13 @@ export function ModelCatalogTray({
         </button>
       </div>
       <div className="node-library-list">
-        {groups.length === 0 && <div className="node-library-empty">目录为空</div>}
+        {groups.length === 0 && (
+          <div className="node-library-empty">
+            {providers
+              ? `当前 provider ${providers.selectedProvider} 没有可用的模型目录绑定`
+              : '目录为空'}
+          </div>
+        )}
         {groups.map((group) => (
           <div className="model-catalog-group" key={group.key}>
             <div className="model-catalog-group-title">{group.title}</div>
@@ -108,14 +116,17 @@ type CatalogEntry = {
 
 type CatalogGroup = { key: string; title: string; entries: CatalogEntry[] };
 
-export function capabilityGroups(catalog: ModelCatalog): CatalogGroup[] {
+export function capabilityGroups(
+  catalog: ModelCatalog,
+  providers?: WorkbenchState['providers'],
+): CatalogGroup[] {
   return catalog.capabilities
     .map((capability) => {
       const entries = catalog.bindings
         .filter(
           (binding) =>
             binding.availability === 'enabled' &&
-            binding.capabilityId === capability.capabilityId,
+            binding.capabilityId === capability.capabilityId && bindingReady(binding, providers),
         )
         .map((binding) => {
           const model = catalog.models.find((item) => item.modelId === binding.modelId);
@@ -133,12 +144,18 @@ export function capabilityGroups(catalog: ModelCatalog): CatalogGroup[] {
     .filter((group) => group.entries.length > 0);
 }
 
-export function modelGroups(catalog: ModelCatalog): CatalogGroup[] {
+export function modelGroups(
+  catalog: ModelCatalog,
+  providers?: WorkbenchState['providers'],
+): CatalogGroup[] {
   return catalog.models
     .map((model) => {
       const entries = catalog.bindings
         .filter(
-          (binding) => binding.availability === 'enabled' && binding.modelId === model.modelId,
+          (binding) =>
+            binding.availability === 'enabled' &&
+            binding.modelId === model.modelId &&
+            bindingReady(binding, providers),
         )
         .map((binding) => {
           const capability = catalog.capabilities.find(
@@ -156,6 +173,21 @@ export function modelGroups(catalog: ModelCatalog): CatalogGroup[] {
       return { key: model.modelId, title: `${model.displayName} (${model.vendor})`, entries };
     })
     .filter((group) => group.entries.length > 0);
+}
+
+function bindingReady(
+  binding: ModelCatalog['bindings'][number],
+  providers?: WorkbenchState['providers'],
+): boolean {
+  if (!providers?.capabilityReadiness) return true;
+  const readiness = providers.capabilityReadiness?.find(
+    (item) => item.capabilityId === binding.capabilityId,
+  );
+  if (!readiness?.runnable || readiness.mode !== 'catalog') return false;
+  if ('apiConnector' in binding.implementation) {
+    return binding.implementation.apiConnector.connectorId === providers.selectedProvider;
+  }
+  return false;
 }
 
 function connectorLabel(binding: ModelCatalog['bindings'][number]): string {

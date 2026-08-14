@@ -95,6 +95,7 @@ export function GraphCanvas({
   comments = [],
   pendingProposal,
   presenceByActor,
+  providers,
   run,
   workflowGraph,
   onCommentOp,
@@ -170,6 +171,9 @@ export function GraphCanvas({
   const selectedCapability = selectedNode
     ? (definitionByType.get(selectedNode.nodeType)?.capability ?? null)
     : null;
+  const selectedReadiness = providers?.capabilityReadiness?.find(
+    (item) => item.capabilityId === selectedCapability,
+  );
 
   useEffect(() => {
     return () => panScheduler.cancel();
@@ -180,9 +184,27 @@ export function GraphCanvas({
       setResolution(null);
       return;
     }
+    if (selectedReadiness && !selectedReadiness.runnable) {
+      setResolution({
+        status: 'unresolvable',
+        code: selectedReadiness.code ?? 'PROVIDER_UNAVAILABLE',
+        message: selectedReadiness.message ?? '当前 provider 不可运行该能力',
+        recoverable: true,
+      });
+      return;
+    }
+    if (selectedReadiness?.mode === 'direct') {
+      setResolution(null);
+      return;
+    }
     const controller = new AbortController();
     setResolution(null);
-    resolveImplementation(selectedCapability, undefined, controller.signal)
+    resolveImplementation(
+      providers?.capabilityReadiness ? workspaceId : undefined,
+      selectedCapability,
+      undefined,
+      controller.signal,
+    )
       .then((outcome) => {
         if (!controller.signal.aborted) setResolution(outcome);
       })
@@ -199,7 +221,7 @@ export function GraphCanvas({
     return () => {
       controller.abort();
     };
-  }, [selectedCapability]);
+  }, [providers?.selectedProvider, selectedCapability, selectedReadiness, workspaceId]);
   const selectedNodes = useMemo(
     () => displayNodes.filter((node) => selectedIds.has(node.id)),
     [displayNodes, selectedIds],
@@ -612,6 +634,7 @@ export function GraphCanvas({
         error={catalogError}
         modelCatalog={modelCatalog}
         modelCatalogError={modelCatalogError}
+        providers={providers}
         onAddNode={editActions.addNode}
       />
       <CanvasStatusToast
@@ -729,6 +752,7 @@ export function GraphCanvas({
           definition={definitionByType.get(selectedNode.nodeType)}
           node={selectedNode}
           resolution={resolution}
+          readiness={selectedReadiness}
           onClose={() => setSelectedIds(new Set())}
           onRequestProposal={capabilities.move ? onRequestNodeProposal : undefined}
           onSetParam={capabilities.move ? onSetParam : undefined}

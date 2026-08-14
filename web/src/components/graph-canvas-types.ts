@@ -19,6 +19,7 @@ export type GraphCanvasProps = {
   presenceByActor?: Record<string, CanvasPresence>;
   run: NonNullable<WorkbenchState['run']>;
   workflowGraph?: WorkbenchState['workflowGraph'];
+  providers?: WorkbenchState['providers'];
   onCommentOp?: (input: CanvasCommentOpInput) => Promise<void>;
   onCreateProposal?: (input: ManualProposalInput) => Promise<void>;
   onPresenceChange?: (presence: CanvasPresence) => void | Promise<void>;
