@@ -9,11 +9,6 @@ type PendingProposal = NonNullable<WorkbenchState['pendingProposal']>;
 type ChatEntry =
   | { type: 'message'; message: ChatMessage }
   | { type: 'assistantTurn'; id: string; message?: ChatMessage; logs: ChatMessage[] };
-type EditSessionSummary = {
-  baseVersionId: string;
-  count: number;
-  items: string[];
-};
 type ComposerKeyEvent = {
   key: string;
   shiftKey: boolean;
@@ -32,15 +27,12 @@ type ChatPaneProps = {
   pendingProposal: WorkbenchState['pendingProposal'];
   run: WorkbenchState['run'];
   busy: boolean;
-  editSessionSummary: EditSessionSummary | null;
   selectedNodeIds?: string[];
   onSend: (text: string) => Promise<void>;
   onInterrupt?: () => Promise<void>;
   onConversationChange?: (conversationId: string) => void;
   onNewConversation?: () => Promise<void>;
   onUploadImage?: (file: File) => Promise<void>;
-  onCommitEdits: () => Promise<void>;
-  onDiscardEdits: () => void;
   onApplyProposal: (proposalId: string) => Promise<void>;
   onDismissProposal: (proposalId: string) => Promise<void>;
 };
@@ -53,15 +45,12 @@ export function ChatPane({
   pendingProposal,
   run,
   busy,
-  editSessionSummary,
   selectedNodeIds = [],
   onSend,
   onInterrupt,
   onConversationChange,
   onNewConversation,
   onUploadImage,
-  onCommitEdits,
-  onDiscardEdits,
   onApplyProposal,
   onDismissProposal,
 }: ChatPaneProps) {
@@ -119,21 +108,7 @@ export function ChatPane({
           </button>
         </div>
       )}
-      {editSessionSummary && (
-        <div className="session-brief">
-          正在编辑画布 · 提交后，Agent 会从这些变更继续。
-        </div>
-      )}
-      <div className="chat-msgs chat-msgs--session" ref={scrollRef}>
-        {editSessionSummary && (
-          <EditSessionWorkspace
-            busy={busy}
-            selectedNodeIds={selectedNodeIds}
-            summary={editSessionSummary}
-            onCommit={onCommitEdits}
-            onDiscard={onDiscardEdits}
-          />
-        )}
+      <div className="chat-msgs" ref={scrollRef}>
         <MessageTimeline messages={messages} turns={turns} />
         <RunErrorCard busy={busy} run={run} onRequestFix={onSend} />
         {pendingProposal && <ProposalMessage
@@ -233,83 +208,6 @@ export async function composerDraftAfterSubmit(
   }
 }
 
-function EditSessionWorkspace({
-  summary,
-  selectedNodeIds,
-  busy,
-  onCommit,
-  onDiscard,
-}: {
-  summary: EditSessionSummary;
-  selectedNodeIds: string[];
-  busy: boolean;
-  onCommit: () => Promise<void>;
-  onDiscard: () => void;
-}) {
-  return (
-    <div className="edit-session-workspace">
-      <EditSessionCard
-        busy={busy}
-        summary={summary}
-        onCommit={onCommit}
-        onDiscard={onDiscard}
-      />
-      <div className="edit-session-request">
-        围绕当前画布继续编辑；我会在你提交后再基于新版本工作。
-      </div>
-      <div className="edit-session-note">
-        好 — 会围绕
-        <span>{selectedNodeIds.length > 0 ? selectedNodeIds.join(' + ') : '当前工作流'}</span>
-        的内容改写，结果回填到节点对话框。
-      </div>
-      <div className="edit-session-chips">
-        <span>@选中 {selectedNodeIds.length > 0 ? selectedNodeIds.join(', ') : '无'}</span>
-        <span>含上游 ×{Math.max(1, selectedNodeIds.length || 1)}</span>
-      </div>
-    </div>
-  );
-}
-
-function EditSessionCard({
-  summary,
-  busy,
-  onCommit,
-  onDiscard,
-}: {
-  summary: EditSessionSummary;
-  busy: boolean;
-  onCommit: () => Promise<void>;
-  onDiscard: () => void;
-}) {
-  return (
-    <div className="edit-session-card">
-      <div className="edit-session-head">
-        <span>UNCOMMITTED · 手动编辑</span>
-        <em>{summary.baseVersionId}</em>
-      </div>
-      <div className="edit-session-list">
-        {summary.items.map((item, index) => (
-          <span className="edit-op-row" key={`${index}-${item}`}>
-            <b className={`edit-op-sign edit-op-sign--${editOpTone(item)}`}>
-              {editOpSign(item)}
-            </b>
-            {item}
-          </span>
-        ))}
-      </div>
-      <div className="edit-session-actions">
-        <button className="btn btn--primary btn--sm" disabled={busy} onClick={() => void onCommit()}>
-          <Icon n="check" s={13} />
-          提交编辑
-        </button>
-        <button className="btn btn--ghost btn--sm" disabled={busy} onClick={onDiscard}>
-          放弃
-        </button>
-      </div>
-    </div>
-  );
-}
-
 function RunErrorCard({
   run,
   busy,
@@ -362,19 +260,6 @@ function RunErrorCard({
       )}
     </div>
   );
-}
-
-function editOpSign(item: string): '+' | '~' | '-' {
-  if (/^(Add|Connect)/.test(item)) return '+';
-  if (/^(Remove|Disconnect)/.test(item)) return '-';
-  return '~';
-}
-
-function editOpTone(item: string): 'add' | 'upd' | 'del' {
-  const sign = editOpSign(item);
-  if (sign === '+') return 'add';
-  if (sign === '-') return 'del';
-  return 'upd';
 }
 
 export function shouldSubmitComposerKey(event: ComposerKeyEvent, isComposing = false): boolean {

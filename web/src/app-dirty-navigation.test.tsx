@@ -1,7 +1,6 @@
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './app';
-import { DirtyNavigationDialog } from './components/dirty-navigation-dialog';
 import { HistoryPanel } from './components/run-panels';
 import { TopBar } from './components/top-bar';
 import { useWorkbenchStore } from './store';
@@ -40,52 +39,7 @@ describe('App dirty navigation integration', () => {
     vi.unstubAllGlobals();
   });
 
-  it('routes workspace, create, undo, and restore through one pending dialog', async () => {
-    renderer = await renderDirtyApp();
-    const topBar = renderer.root.findByType(TopBar);
-    const history = renderer.root.findByType(HistoryPanel);
-    expect(history.props.migrationBlocked).toBe(true);
-
-    await expectTarget(() => topBar.props.onNewWorkspace(), { kind: 'create_workspace' });
-    await expectTarget(() => topBar.props.onUndo(), { kind: 'undo' });
-    await expectTarget(() => history.props.onOpenWorkspace('ws_b'), {
-      kind: 'workspace',
-      workspaceId: 'ws_b',
-    });
-    await expectTarget(() => history.props.onRestoreVersion('ver_old'), {
-      kind: 'restore',
-      versionId: 'ver_old',
-    });
-  });
-
-  it('ignores a second navigation while a decision is pending and preserves edits on cancel', async () => {
-    renderer = await renderDirtyApp();
-    const topBar = renderer.root.findByType(TopBar);
-
-    await act(async () => topBar.props.onUndo());
-    await act(async () => topBar.props.onNewWorkspace());
-    expect(dialog().props.target).toEqual({ kind: 'undo' });
-
-    await act(async () => dialog().props.onDecision('cancel'));
-    expect(dialog().props.target).toBeNull();
-    expect(useWorkbenchStore.getState().editSession).toEqual(dirtySession());
-  });
-
-  it('discards before workspace navigation', async () => {
-    renderer = await renderDirtyApp();
-    const history = renderer.root.findByType(HistoryPanel);
-
-    await act(async () => history.props.onOpenWorkspace('ws_b'));
-    await act(async () => {
-      dialog().props.onDecision('discard');
-      await flushActions();
-    });
-
-    expect(dialog().props.target).toBeNull();
-    expect(useWorkbenchStore.getState().editSession).toBeNull();
-  });
-
-  it('commits before undo and keeps the dialog plus edits when commit fails', async () => {
+  it('saves leftover canvas edits before undo instead of asking to commit', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/events')) return jsonResponse({ events: [] });
@@ -98,9 +52,8 @@ describe('App dirty navigation integration', () => {
     renderer = await renderDirtyApp();
     const topBar = renderer.root.findByType(TopBar);
 
-    await act(async () => topBar.props.onUndo());
     await act(async () => {
-      dialog().props.onDecision('commit');
+      topBar.props.onUndo();
       await flushActions();
     });
 
@@ -108,10 +61,35 @@ describe('App dirty navigation integration', () => {
       '/api/workspaces/ws_a/versions/ops',
       '/api/workspaces/ws_a/versions/undo',
     ]));
-    expect(dialog().props.target).toBeNull();
     expect(useWorkbenchStore.getState().editSession).toBeNull();
+    expect(useWorkbenchStore.getState().state?.workspace.versionId).toBe('ver_undo');
+  });
 
-    const failingFetch = vi.fn(async (input: RequestInfo | URL) => {
+  it('saves leftover canvas edits before switching workspace', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/events')) return jsonResponse({ events: [] });
+      if (url === '/api/workspaces') return jsonResponse([]);
+      if (url.endsWith('/versions/ops')) return jsonResponse(stateForVersion('ver_committed'));
+      return new Response('{}', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderer = await renderDirtyApp();
+    const history = renderer.root.findByType(HistoryPanel);
+
+    expect(history.props.migrationBlocked).toBe(true);
+    await act(async () => {
+      history.props.onOpenWorkspace('ws_b');
+      await flushActions();
+    });
+
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === '/api/workspaces/ws_a/versions/ops'))
+      .toBe(true);
+    expect(useWorkbenchStore.getState().editSession).toBeNull();
+  });
+
+  it('stays on the current workspace when leftover edits fail to save', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/events')) return jsonResponse({ events: [] });
       if (url === '/api/workspaces') return jsonResponse([]);
@@ -123,21 +101,19 @@ describe('App dirty navigation integration', () => {
       }
       return new Response('{}', { status: 404 });
     });
-    vi.stubGlobal('fetch', failingFetch);
-    await act(async () => useWorkbenchStore.setState({
-      state: stateForVersion('ver_a'),
-      editSession: dirtySession(),
-    }));
-    await act(async () => topBar.props.onUndo());
+    vi.stubGlobal('fetch', fetchMock);
+    renderer = await renderDirtyApp();
+    const topBar = renderer.root.findByType(TopBar);
+
     await act(async () => {
-      dialog().props.onDecision('commit');
+      topBar.props.onUndo();
       await flushActions();
     });
 
-    expect(dialog().props.target).toEqual({ kind: 'undo' });
-    expect(useWorkbenchStore.getState().editSession).toEqual(dirtySession());
-    expect(failingFetch.mock.calls.some(([input]) => String(input).endsWith('/versions/undo')))
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith('/versions/undo')))
       .toBe(false);
+    expect(useWorkbenchStore.getState().state?.workspace.versionId).toBe('ver_a');
+    expect(useWorkbenchStore.getState().editSession).toBeNull();
   });
 
   async function renderDirtyApp(): Promise<ReactTestRenderer> {
@@ -146,19 +122,11 @@ describe('App dirty navigation integration', () => {
       next = create(<App initialState={stateForVersion('ver_a')} />);
       await flushActions();
     });
-    await act(async () => useWorkbenchStore.setState({ editSession: dirtySession() }));
+    await act(async () => useWorkbenchStore.setState({
+      state: stateForVersion('ver_a'),
+      editSession: dirtySession(),
+    }));
     return next;
-  }
-
-  async function expectTarget(trigger: () => void, target: unknown) {
-    await act(async () => trigger());
-    expect(dialog().props.target).toEqual(target);
-    await act(async () => dialog().props.onDecision('cancel'));
-  }
-
-  function dialog() {
-    if (!renderer) throw new Error('renderer is not mounted');
-    return renderer.root.findByType(DirtyNavigationDialog);
   }
 });
 

@@ -56,6 +56,7 @@ import {
   snapshotReady,
 } from './workspace-snapshot';
 import type { WorkbenchStore } from './store-types';
+import type { ManualEditSession } from './types';
 import { createUploadImageAction } from './store-upload';
 import { WorkspaceActionGuard, WorkspaceChangedError } from './workspace-action-guard';
 
@@ -67,11 +68,84 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
   let snapshotRefresh: { generation: number; promise: Promise<void> } | null = null;
   let trailingSnapshotGeneration: number | null = null;
   const actionGuard = new WorkspaceActionGuard(requestScope);
+  let persistChain = Promise.resolve();
+  const enqueuePersist = (work: () => Promise<void>): Promise<void> => {
+    const run = persistChain.then(work, work);
+    persistChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  };
+  const persistCapturedSession = async (
+    workspaceId: string,
+    editSession: ManualEditSession,
+  ) => {
+    actionGuard.assertActive(workspaceId, 'saving canvas edits');
+    const workspaceState = get().state;
+    if (!workspaceState || workspaceState.workspace.id !== workspaceId) {
+      actionGuard.fail('workspace changed while saving canvas edits');
+      throw new WorkspaceChangedError('workspace changed while saving canvas edits');
+    }
+    if (editSession.baseVersionId !== workspaceState.workspace.versionId) {
+      const message = '画布已更新到新版本，请再试一次刚才的改动。';
+      set((current) => ({
+        editSession: current.state?.workspace.id === workspaceId ? null : current.editSession,
+        state: current.state?.workspace.id === workspaceId
+          ? appendSystemError(current.state, message)
+          : current.state,
+      }));
+      throw new Error(message);
+    }
+
+    try {
+      const next = await actionGuard.run(workspaceId, 'saving canvas edits', () =>
+        createManualWorkspaceProposal(
+          workspaceId,
+          manualEditInputFromSession(editSession),
+        ));
+      set((current) =>
+        current.state?.workspace.id === workspaceId
+          ? { state: next, status: 'ready', error: null, editSession: null }
+          : {},
+      );
+    } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
+      const normalized =
+        error instanceof Error ? error : new Error('canvas edit request failed');
+      set((current) => ({
+        editSession: current.state?.workspace.id === workspaceId ? null : current.editSession,
+        state: current.state?.workspace.id === workspaceId
+          ? appendSystemError(current.state, normalized.message)
+          : current.state,
+      }));
+      throw normalized;
+    }
+  };
+  const persistEditSession = async () => {
+    const state = get().state;
+    const editSession = get().editSession;
+    if (!state || !hasDirtyEdits(editSession)) {
+      return;
+    }
+    await persistCapturedSession(state.workspace.id, editSession);
+  };
+  const flushManualEdits = () => {
+    const state = get().state;
+    const editSession = get().editSession;
+    if (!state || !hasDirtyEdits(editSession)) {
+      return Promise.resolve();
+    }
+    const workspaceId = state.workspace.id;
+    actionGuard.assertActive(workspaceId, 'saving canvas edits');
+    return persistCapturedSession(workspaceId, editSession);
+  };
   const clearPresenceExpiryTimers = () => {
     for (const timer of presenceExpiryTimers.values()) clearTimeout(timer);
     presenceExpiryTimers.clear();
   };
   const activateWorkspace = (workspaceId: string | null) => {
+    persistChain = Promise.resolve();
     clearPresenceExpiryTimers();
     const activation = requestScope.begin(workspaceId);
     snapshotRefresh = null;
@@ -332,24 +406,27 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       throw new WorkspaceChangedError('workspace changed before the message could be sent');
     }
     if (hasDirtyEdits(get().editSession)) {
-      const message = '请先提交或放弃手动编辑后再发送 Agent 请求。';
-      set((current) => ({
-        state: current.state
-          ? appendSystemError(current.state, message)
-          : current.state,
-      }));
-      throw new Error(message);
+      await flushManualEdits();
     }
+    const flushed = get().state;
+    if (!flushed) {
+      return;
+    }
+    if (!requestScope.isActive(generation, request.workspaceId)) {
+      throw new WorkspaceChangedError('workspace changed before the message could be sent');
+    }
+    request.baseVersionId = flushed.workspace.versionId;
+    request.graph = workflowGraphFromState(flushed);
 
     set({
-      state: appendChatMessages(state, [
+      state: appendChatMessages(flushed, [
         {
           id: `msg_user_${Date.now()}`,
           role: 'user',
           kind: 'text',
           text: trimmed,
           time: messageTime(),
-          conversationId: conversationId ?? state.chat.activeConversationId ?? undefined,
+          conversationId: conversationId ?? flushed.chat.activeConversationId ?? undefined,
         },
       ]),
     });
@@ -360,7 +437,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
         canvasContext,
         userMessage: trimmed,
         graph: request.graph,
-        conversationId: conversationId ?? state.chat.activeConversationId ?? undefined,
+        conversationId: conversationId ?? flushed.chat.activeConversationId ?? undefined,
         turnMode,
       }, requestScope.signal());
       if (!requestScope.isActive(generation, request.workspaceId)) {
@@ -423,17 +500,22 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     }
     actionGuard.assertActive(state.workspace.id, 'queueing the run');
     if (hasDirtyEdits(get().editSession)) {
-      set((current) => ({
-        state: current.state
-          ? appendSystemError(current.state, '请先提交或放弃手动编辑后再运行 Queue。')
-          : current.state,
-      }));
+      try {
+        await flushManualEdits();
+      } catch (error) {
+        if (error instanceof WorkspaceChangedError) throw error;
+        return;
+      }
+    }
+    const flushed = get().state;
+    if (!flushed) {
       return;
     }
+    actionGuard.assertActive(flushed.workspace.id, 'queueing the run');
 
     try {
-      const response = await actionGuard.run(state.workspace.id, 'queueing the run', () =>
-        queueWorkspaceRun(state.workspace.id, options));
+      const response = await actionGuard.run(flushed.workspace.id, 'queueing the run', () =>
+        queueWorkspaceRun(flushed.workspace.id, options));
       set((current) => ({
         state: current.state ? applyRunConfirmation(current.state, response) : current.state,
       }));
@@ -672,53 +754,39 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       throw new Error(message);
     }
 
-    try {
-      const editSession = appendManualEditInput(
-        get().editSession,
-        state.workspace.versionId,
-        input,
-      );
-      set({ editSession });
-    } catch (error) {
-      const normalized =
-        error instanceof Error ? error : new Error('manual edit request failed');
-      set((current) => ({
-        state: current.state ? appendSystemError(current.state, normalized.message) : current.state,
-      }));
-      throw normalized;
-    }
+    await enqueuePersist(async () => {
+      const current = get().state;
+      if (!current) {
+        return;
+      }
+      if (current.pendingProposal) {
+        const message = '请先应用或忽略待审核 proposal 后再编辑。';
+        set((latest) => ({
+          state: latest.state ? appendSystemError(latest.state, message) : latest.state,
+        }));
+        throw new Error(message);
+      }
+      try {
+        const editSession = appendManualEditInput(
+          get().editSession,
+          current.workspace.versionId,
+          input,
+        );
+        set({ editSession });
+      } catch (error) {
+        const normalized =
+          error instanceof Error ? error : new Error('canvas edit request failed');
+        set((latest) => ({
+          editSession: null,
+          state: latest.state ? appendSystemError(latest.state, normalized.message) : latest.state,
+        }));
+        throw normalized;
+      }
+      await persistEditSession();
+    });
   },
   commitManualEdits: async () => {
-    const state = get().state;
-    const editSession = get().editSession;
-    if (!state || !hasDirtyEdits(editSession)) {
-      return;
-    }
-    actionGuard.assertActive(state.workspace.id, 'committing manual edits');
-    if (editSession.baseVersionId !== state.workspace.versionId) {
-      const message = '手动编辑基于旧版本，请刷新后重试。';
-      set((current) => ({
-        state: current.state ? appendSystemError(current.state, message) : current.state,
-      }));
-      throw new Error(message);
-    }
-
-    try {
-      const next = await actionGuard.run(state.workspace.id, 'committing manual edits', () =>
-        createManualWorkspaceProposal(
-          state.workspace.id,
-          manualEditInputFromSession(editSession),
-        ));
-      set({ state: next, status: 'ready', error: null, editSession: null });
-    } catch (error) {
-      if (error instanceof WorkspaceChangedError) throw error;
-      const normalized =
-        error instanceof Error ? error : new Error('manual edit request failed');
-      set((current) => ({
-        state: current.state ? appendSystemError(current.state, normalized.message) : current.state,
-      }));
-      throw normalized;
-    }
+    await flushManualEdits();
   },
   discardManualEdits: () => set({ editSession: null }),
   confirmRun: async (runId) => {

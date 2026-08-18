@@ -2,8 +2,6 @@ import { useCallback, useEffect, useState } from 'react';
 import { fetchWorkspaces } from './api';
 import {
   planNavigationRequest,
-  resolveDirtyNavigation,
-  type DirtyNavigationDecision,
   type PendingNavigation,
 } from './dirty-navigation';
 import { useWorkbenchStore } from './store';
@@ -15,8 +13,6 @@ type WorkbenchNavigationInput = {
   activeState: WorkbenchState | null;
   commitManualEdits: NavigationAction;
   createWorkspace: NavigationAction;
-  dirtyEditCount: number;
-  discardManualEdits: () => void;
   exportWorkflow: () => Promise<WorkbenchState['workflowGraph'] | null>;
   initialWorkspaceId: string | null;
   restoreVersion: (versionId: string) => Promise<unknown>;
@@ -27,8 +23,6 @@ export function useWorkbenchNavigation({
   activeState,
   commitManualEdits,
   createWorkspace,
-  dirtyEditCount,
-  discardManualEdits,
   exportWorkflow,
   initialWorkspaceId,
   restoreVersion,
@@ -37,7 +31,6 @@ export function useWorkbenchNavigation({
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(initialWorkspaceId);
   const [busy, setBusy] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [pendingNavigation, setPendingNavigation] = useState<PendingNavigation | null>(null);
   const [navigationBusy, setNavigationBusy] = useState(false);
   const [workspaceList, setWorkspaceList] = useState<WorkspaceSummary[]>([]);
   const [workspaceListError, setWorkspaceListError] = useState<string | null>(null);
@@ -103,47 +96,31 @@ export function useWorkbenchNavigation({
     [createWorkspace, restoreVersion, runAction, undoVersion],
   );
 
-  const navigationLocked = busy || navigationBusy || Boolean(pendingNavigation);
+  const navigationLocked = busy || navigationBusy;
 
   const requestNavigation = useCallback(
     (target: PendingNavigation) => {
       if (!activeState) return;
       const plan = planNavigationRequest({
-        hasDirtyEdits: dirtyEditCount > 0,
+        hasDirtyEdits: false,
         isCurrentWorkspace:
           target.kind === 'workspace' && target.workspaceId === activeState.workspace.id,
         locked: navigationLocked,
       });
       if (plan === 'ignore') return;
-      if (plan === 'prompt') {
-        setPendingNavigation(target);
-        return;
-      }
-      void performNavigation(target).catch(() => undefined);
-    },
-    [activeState, dirtyEditCount, navigationLocked, performNavigation],
-  );
-
-  const decideDirtyNavigation = useCallback(
-    (decision: DirtyNavigationDecision) => {
-      const target = pendingNavigation;
-      if (!target || navigationBusy) return;
-      if (decision === 'cancel') {
-        setPendingNavigation(null);
-        return;
-      }
       setNavigationBusy(true);
-      void resolveDirtyNavigation(decision, {
-        commit: () => runAction(async () => void (await commitManualEdits()), true),
-        discard: discardManualEdits,
-        isDirty: () => Boolean(useWorkbenchStore.getState().editSession?.ops.length),
-        navigate: () => performNavigation(target),
-      })
-        .then(() => setPendingNavigation(null))
-        .catch(() => undefined)
-        .finally(() => setNavigationBusy(false));
+      void (async () => {
+        try {
+          await commitManualEdits();
+          await performNavigation(target);
+        } catch {
+          // persist already recorded the failure; stay on the current workspace
+        } finally {
+          setNavigationBusy(false);
+        }
+      })();
     },
-    [commitManualEdits, discardManualEdits, navigationBusy, pendingNavigation, performNavigation, runAction],
+    [activeState, commitManualEdits, navigationLocked, performNavigation],
   );
 
   const exportCurrentWorkflow = useCallback(() => {
@@ -164,12 +141,10 @@ export function useWorkbenchNavigation({
 
   return {
     busy,
-    decideDirtyNavigation,
     exportCurrentWorkflow,
     historyOpen,
     navigationBusy,
     navigationLocked,
-    pendingNavigation,
     refreshWorkspaces,
     requestNavigation,
     runAction,

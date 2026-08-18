@@ -115,7 +115,7 @@ export function useNodeResizeController({
         void onCreateProposal(editInput)
           .then(() => {
             setDraftSizes({});
-            setConnectionStatus(`已加入编辑会话 · ${updates.length} 个 resize`);
+            setConnectionStatus(`已调整 ${updates.length} 个节点大小`);
           })
           .catch((error) => {
             setConnectionStatus(error instanceof Error ? error.message : '调整节点大小失败');

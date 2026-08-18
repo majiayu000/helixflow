@@ -3,7 +3,6 @@ import { connectWorkspaceEvents } from './api';
 import { ArtifactStage, hasPreviewArtifact } from './components/artifact-stage';
 import { CanvasErrorBoundary } from './components/canvas-error-boundary';
 import { ChatPane } from './components/chat-pane';
-import { DirtyNavigationDialog } from './components/dirty-navigation-dialog';
 import { GraphCanvas } from './components/graph-canvas';
 import { ManualProposalPanel } from './components/manual-proposal-panel';
 import { ConfirmModal, HistoryPanel, OutputsStrip, RunDock } from './components/run-panels';
@@ -20,7 +19,6 @@ import { useWorkbenchNavigation, workspaceIdFromUrl } from './use-workbench-navi
 import {
   buildSetParamEditInput,
   deriveQueueLockReason,
-  manualEditSummary,
   previewWorkbenchStateWithManualEdits,
 } from './workbench-edit-session';
 
@@ -69,7 +67,6 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const holdRun = useWorkbenchStore((store) => store.holdRun);
   const appendManualEdit = useWorkbenchStore((store) => store.appendManualEdit);
   const commitManualEdits = useWorkbenchStore((store) => store.commitManualEdits);
-  const discardManualEdits = useWorkbenchStore((store) => store.discardManualEdits);
   const queueRun = useWorkbenchStore((store) => store.queueRun);
   const interruptRun = useWorkbenchStore((store) => store.interruptRun);
   const interruptAgent = useWorkbenchStore((store) => store.interruptAgent);
@@ -89,12 +86,10 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const dirtyEditCount = editSession?.ops.length ?? 0;
   const {
     busy,
-    decideDirtyNavigation,
     exportCurrentWorkflow,
     historyOpen,
     navigationBusy,
     navigationLocked,
-    pendingNavigation,
     refreshWorkspaces,
     requestNavigation,
     runAction,
@@ -106,8 +101,6 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
     activeState,
     commitManualEdits,
     createWorkspace: createWorkspaceAction,
-    dirtyEditCount,
-    discardManualEdits,
     exportWorkflow,
     initialWorkspaceId,
     restoreVersion,
@@ -180,10 +173,6 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
       ? graphStateFromCanvasDocument(canvas, activeState.graph)
       : undefined;
   const uiState = stateForUi(previewState);
-  const editSummary =
-    editSession && editSession.baseVersionId === activeState.workspace.versionId
-      ? manualEditSummary(editSession)
-      : [];
   const activeRun = Boolean(
     activeState.run &&
       (activeState.run.status === 'queued' ||
@@ -207,7 +196,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const queueLockReason = deriveQueueLockReason({
     activeRun,
     busy,
-    dirtyEditCount,
+    dirtyEditCount: 0,
     graphNodeCount: previewState.graph.nodes.length,
     hasProviderNodes,
     pendingConfirmation: Boolean(activeState.pendingConfirmation),
@@ -242,7 +231,6 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
         onAgentRun={() =>
           void runAction(() => sendMessage('运行当前 workflow', undefined, activeConversationId ?? undefined))
         }
-        onCommitEdits={() => void runAction(() => commitManualEdits())}
         onExport={exportCurrentWorkflow}
         onHistory={() => setHistoryOpen((open) => !open)}
         onNewWorkspace={() => requestNavigation({ kind: 'create_workspace' })}
@@ -286,18 +274,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
             onApplyProposal={(id) => runAction(() => applyProposal(id))}
             onDismissProposal={(id) => runAction(() => dismissProposal(id))}
             onUploadImage={(file) => runAction(() => uploadImage(file))}
-            editSessionSummary={
-              dirtyEditCount > 0
-                ? {
-                    baseVersionId: editSession?.baseVersionId ?? activeState.workspace.versionId,
-                    count: dirtyEditCount,
-                    items: editSummary,
-                  }
-                : null
-            }
             selectedNodeIds={selectedCanvasNodeIds}
-            onCommitEdits={() => runAction(() => commitManualEdits())}
-            onDiscardEdits={discardManualEdits}
             onSend={(text) =>
               runAction(
                 () =>
@@ -434,11 +411,6 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
             />
           </>
         )}
-      />
-      <DirtyNavigationDialog
-        busy={busy || navigationBusy}
-        target={pendingNavigation}
-        onDecision={decideDirtyNavigation}
       />
     </main>
   );
