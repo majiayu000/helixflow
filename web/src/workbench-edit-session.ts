@@ -28,12 +28,16 @@ export function appendManualEditInput(
   input: ManualProposalInput,
   now = new Date().toISOString(),
 ): ManualEditSession {
-  if (input.baseVersionId !== baseVersionId) {
-    throw new Error(`manual edit base ${input.baseVersionId} is not current version ${baseVersionId}`);
-  }
   if (input.ops.length === 0) {
     throw new Error('manual edit input must contain at least one op');
   }
+  const ops = input.baseVersionId === baseVersionId
+    ? input.ops
+    : input.ops.map((op) => {
+        if (op.op !== 'set_param') return op;
+        const { prev: _stalePrev, ...rebased } = op;
+        return rebased;
+      });
 
   const current =
     session?.baseVersionId === baseVersionId
@@ -48,7 +52,7 @@ export function appendManualEditInput(
 
   return {
     ...current,
-    ops: [...current.ops, ...input.ops],
+    ops: [...current.ops, ...ops],
   };
 }
 

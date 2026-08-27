@@ -114,11 +114,13 @@ export function useNodeResizeController({
       if (editInput && onCreateProposal && !pendingProposal) {
         void onCreateProposal(editInput)
           .then(() => {
-            setDraftSizes({});
             setConnectionStatus(`已调整 ${updates.length} 个节点大小`);
           })
           .catch((error) => {
             setConnectionStatus(error instanceof Error ? error.message : '调整节点大小失败');
+          })
+          .finally(() => {
+            setDraftSizes({});
           });
       } else {
         setDraftSizes({});

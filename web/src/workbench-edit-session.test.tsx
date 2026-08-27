@@ -187,6 +187,51 @@ describe('manual edit session workbench flow', () => {
     expect(useWorkbenchStore.getState().state?.workspace.versionId).toBe('ver_manual_3');
   });
 
+  it('rebases an edit queued while the preceding canvas version is saving', async () => {
+    let resolveFirst!: (response: Response) => void;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (fetchMock.mock.calls.length === 1) {
+        return new Promise<Response>((resolve) => {
+          resolveFirst = resolve;
+        });
+      }
+      const body = JSON.parse(String(init?.body ?? '{}')) as {
+        baseVersionId?: string;
+        ops?: Array<{ op: string; prev?: unknown; value?: unknown }>;
+      };
+      expect(body).toMatchObject({
+        baseVersionId: 'ver_manual_2',
+        ops: [{ op: 'set_param', value: 6 }],
+      });
+      expect(body.ops?.[0]).not.toHaveProperty('prev');
+      return jsonResponse({
+        ...state,
+        workspace: { ...state.workspace, versionId: 'ver_manual_3' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    useWorkbenchStore.getState().setInitialState(state);
+
+    const first = useWorkbenchStore.getState().appendManualEdit({
+      baseVersionId: 'ver_test_1',
+      ops: [{ op: 'set_param', id: 'video', key: 'duration_sec', prev: 4, value: 5 }],
+    });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const second = useWorkbenchStore.getState().appendManualEdit({
+      baseVersionId: 'ver_test_1',
+      ops: [{ op: 'set_param', id: 'video', key: 'duration_sec', prev: 4, value: 6 }],
+    });
+
+    resolveFirst(jsonResponse({
+      ...state,
+      workspace: { ...state.workspace, versionId: 'ver_manual_2' },
+    }));
+
+    await Promise.all([first, second]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(useWorkbenchStore.getState().state?.workspace.versionId).toBe('ver_manual_3');
+  });
+
   it('drops stale leftover edits instead of writing them onto a newer version', async () => {
     vi.stubGlobal('fetch', vi.fn());
     useWorkbenchStore.getState().setInitialState(state);
