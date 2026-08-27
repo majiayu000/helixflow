@@ -117,7 +117,7 @@ export function useCanvasConnectionController({
 
     void onCreateProposal?.(proposal)
       .then(() =>
-        setStatus(existingEdge ? '已加入编辑会话：替换连线' : '已加入编辑会话：连接端口'),
+        setStatus(existingEdge ? '已替换连线' : '已连接端口'),
       )
       .catch((error) => {
         setStatus(error instanceof Error ? error.message : '连线提交失败');
@@ -132,7 +132,7 @@ export function useCanvasConnectionController({
       label: `断开 ${edge.from.nodeId}.${edge.from.port} -> ${edge.to.nodeId}.${edge.to.port}`,
       ops: [edgeToRemoveOp(edge)],
     })
-      .then(() => setStatus('已加入编辑会话：断开连线'))
+      .then(() => setStatus('已断开连线'))
       .catch((error) => {
         setStatus(error instanceof Error ? error.message : '断线提交失败');
       });

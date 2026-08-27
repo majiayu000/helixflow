@@ -8,11 +8,8 @@ describe('ChatPane terminal agent turns', () => {
     const markup = renderToStaticMarkup(
       <ChatPane
         busy={false}
-        editSessionSummary={null}
         messages={[]}
         onApplyProposal={async () => {}}
-        onCommitEdits={async () => {}}
-        onDiscardEdits={() => {}}
         onDismissProposal={async () => {}}
         onSend={async () => {}}
         pendingProposal={null}
@@ -31,11 +28,8 @@ describe('ChatPane terminal agent turns', () => {
         pendingProposal={null}
         run={null}
         busy
-        editSessionSummary={null}
         onSend={async () => {}}
         onInterrupt={async () => {}}
-        onCommitEdits={async () => {}}
-        onDiscardEdits={() => {}}
         onApplyProposal={async () => {}}
         onDismissProposal={async () => {}}
       />,
@@ -84,10 +78,7 @@ describe('ChatPane terminal agent turns', () => {
         pendingProposal={null}
         run={null}
         busy={false}
-        editSessionSummary={null}
         onSend={async () => {}}
-        onCommitEdits={async () => {}}
-        onDiscardEdits={() => {}}
         onApplyProposal={async () => {}}
         onDismissProposal={async () => {}}
       />,

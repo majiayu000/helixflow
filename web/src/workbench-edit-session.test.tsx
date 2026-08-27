@@ -110,7 +110,7 @@ describe('manual edit session workbench flow', () => {
     vi.restoreAllMocks();
   });
 
-  it('keeps manual edits uncommitted until the user commits the edit session', async () => {
+  it('persists canvas edits immediately as a new version', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
@@ -133,12 +133,6 @@ describe('manual edit session workbench flow', () => {
       ops: [{ op: 'set_param', id: 'video', key: 'duration_sec', value: 3 }],
     });
 
-    expect(fetch).not.toHaveBeenCalled();
-    expect(useWorkbenchStore.getState().editSession?.ops).toHaveLength(1);
-    expect(useWorkbenchStore.getState().state?.workspace.versionId).toBe('ver_test_1');
-
-    await useWorkbenchStore.getState().commitManualEdits();
-
     const fetchMock = vi.mocked(fetch);
     expect(fetchMock).toHaveBeenCalledWith('/api/workspaces/ws_test/versions/ops', {
       method: 'POST',
@@ -155,27 +149,90 @@ describe('manual edit session workbench flow', () => {
     expect(useWorkbenchStore.getState().state?.workspace.versionId).toBe('ver_manual_2');
   });
 
-  it('reuses one idempotency key for retries within the same edit session', async () => {
-    vi.stubGlobal('fetch', vi.fn());
+  it('writes sequential canvas edits as separate versions', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input, init) => {
+        const body = JSON.parse(String(init?.body ?? '{}')) as { ops?: Array<{ op: string }> };
+        const versionId = body.ops?.[0]?.op === 'move_node' ? 'ver_manual_2' : 'ver_manual_3';
+        return jsonResponse({
+          ...state,
+          workspace: { ...state.workspace, versionId },
+        });
+      }),
+    );
     useWorkbenchStore.getState().setInitialState(state);
 
     await useWorkbenchStore.getState().appendManualEdit({
       baseVersionId: 'ver_test_1',
       ops: [{ op: 'move_node', id: 'video', pos: [620, 210] }],
     });
-    const firstKey = useWorkbenchStore.getState().editSession?.idempotencyKey;
+    const firstKey = JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body)).idempotencyKey as string;
 
+    useWorkbenchStore.setState({
+      state: {
+        ...state,
+        workspace: { ...state.workspace, versionId: 'ver_manual_2' },
+      },
+    });
     await useWorkbenchStore.getState().appendManualEdit({
-      baseVersionId: 'ver_test_1',
+      baseVersionId: 'ver_manual_2',
       ops: [{ op: 'add_edge', from: ['text', 'text'], to: ['video', 'prompt'], edge_type: 'text' }],
     });
 
-    const editSession = useWorkbenchStore.getState().editSession;
-    expect(editSession?.idempotencyKey).toBe(firstKey);
-    expect(editSession?.ops).toHaveLength(2);
+    const secondKey = JSON.parse(String(vi.mocked(fetch).mock.calls[1][1]?.body)).idempotencyKey as string;
+    expect(vi.mocked(fetch).mock.calls).toHaveLength(2);
+    expect(secondKey).not.toBe(firstKey);
+    expect(useWorkbenchStore.getState().editSession).toBeNull();
+    expect(useWorkbenchStore.getState().state?.workspace.versionId).toBe('ver_manual_3');
   });
 
-  it('preserves dirty ops when commit rejects a stale base version', async () => {
+  it('rebases an edit queued while the preceding canvas version is saving', async () => {
+    let resolveFirst!: (response: Response) => void;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (fetchMock.mock.calls.length === 1) {
+        return new Promise<Response>((resolve) => {
+          resolveFirst = resolve;
+        });
+      }
+      const body = JSON.parse(String(init?.body ?? '{}')) as {
+        baseVersionId?: string;
+        ops?: Array<{ op: string; prev?: unknown; value?: unknown }>;
+      };
+      expect(body).toMatchObject({
+        baseVersionId: 'ver_manual_2',
+        ops: [{ op: 'set_param', value: 6 }],
+      });
+      expect(body.ops?.[0]).not.toHaveProperty('prev');
+      return jsonResponse({
+        ...state,
+        workspace: { ...state.workspace, versionId: 'ver_manual_3' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    useWorkbenchStore.getState().setInitialState(state);
+
+    const first = useWorkbenchStore.getState().appendManualEdit({
+      baseVersionId: 'ver_test_1',
+      ops: [{ op: 'set_param', id: 'video', key: 'duration_sec', prev: 4, value: 5 }],
+    });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const second = useWorkbenchStore.getState().appendManualEdit({
+      baseVersionId: 'ver_test_1',
+      ops: [{ op: 'set_param', id: 'video', key: 'duration_sec', prev: 4, value: 6 }],
+    });
+
+    resolveFirst(jsonResponse({
+      ...state,
+      workspace: { ...state.workspace, versionId: 'ver_manual_2' },
+    }));
+
+    await Promise.all([first, second]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(useWorkbenchStore.getState().state?.workspace.versionId).toBe('ver_manual_3');
+  });
+
+  it('drops stale leftover edits instead of writing them onto a newer version', async () => {
     vi.stubGlobal('fetch', vi.fn());
     useWorkbenchStore.getState().setInitialState(state);
     const editSession = {
@@ -188,23 +245,27 @@ describe('manual edit session workbench flow', () => {
     useWorkbenchStore.setState({ editSession });
 
     await expect(useWorkbenchStore.getState().commitManualEdits()).rejects.toThrow(
-      '手动编辑基于旧版本',
+      '画布已更新到新版本',
     );
 
     expect(fetch).not.toHaveBeenCalled();
-    expect(useWorkbenchStore.getState().editSession).toEqual(editSession);
+    expect(useWorkbenchStore.getState().editSession).toBeNull();
     expect(useWorkbenchStore.getState().state?.chat.messages.at(-1)?.text).toContain(
-      '手动编辑基于旧版本',
+      '画布已更新到新版本',
     );
   });
 
-  it('discards manual edits without writing a new version', async () => {
+  it('discards leftover local preview without writing a new version', async () => {
     vi.stubGlobal('fetch', vi.fn());
     useWorkbenchStore.getState().setInitialState(state);
-
-    await useWorkbenchStore.getState().appendManualEdit({
-      baseVersionId: 'ver_test_1',
-      ops: [{ op: 'move_node', id: 'video', pos: [620, 210] }],
+    useWorkbenchStore.setState({
+      editSession: {
+        baseVersionId: 'ver_test_1',
+        idempotencyKey: 'canvas_op_preview',
+        source: 'user',
+        startedAt: '2026-07-11T00:00:00Z',
+        ops: [{ op: 'move_node', id: 'video', pos: [620, 210] }],
+      },
     });
     useWorkbenchStore.getState().discardManualEdits();
 
@@ -216,12 +277,59 @@ describe('manual edit session workbench flow', () => {
     });
   });
 
-  it('locks queue and agent requests while manual edits are dirty', async () => {
-    vi.stubGlobal('fetch', vi.fn());
+  it('flushes leftover canvas edits before queue and agent requests', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/versions/ops')) {
+        return jsonResponse({
+          ...state,
+          workspace: { ...state.workspace, versionId: 'ver_manual_2' },
+        });
+      }
+      if (url.endsWith('/runs')) {
+        return jsonResponse({
+          run: {
+            id: 'run_1',
+            label: 'Run',
+            status: 'queued',
+            steps: [],
+            cost: { estimate: 0, actual: 0, currency: 'USD' },
+          },
+          outputs: [],
+          pendingConfirmation: null,
+        });
+      }
+      if (url.endsWith('/messages')) {
+        return jsonResponse({
+          conversationId: 'conv_1',
+          turnId: 'turn_1',
+          turnStatus: 'succeeded',
+          turnMode: 'chat',
+          messages: [
+            {
+              id: 'msg_agent',
+              role: 'agent',
+              kind: 'chat',
+              text: 'ok',
+              time: '2026-07-11T00:00:00Z',
+              turnId: 'turn_1',
+            },
+          ],
+          proposal: null,
+        });
+      }
+      return new Response('{}', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
     useWorkbenchStore.getState().setInitialState(state);
-    await useWorkbenchStore.getState().appendManualEdit({
-      baseVersionId: 'ver_test_1',
-      ops: [{ op: 'move_node', id: 'video', pos: [620, 210] }],
+    useWorkbenchStore.setState({
+      editSession: {
+        baseVersionId: 'ver_test_1',
+        idempotencyKey: 'canvas_op_leftover',
+        source: 'user',
+        startedAt: '2026-07-11T00:00:00Z',
+        ops: [{ op: 'move_node', id: 'video', pos: [620, 210] }],
+      },
     });
 
     await useWorkbenchStore.getState().queueRun();
@@ -229,15 +337,19 @@ describe('manual edit session workbench flow', () => {
       composerDraftAfterSubmit('运行当前 workflow', '运行当前 workflow', (text) =>
         useWorkbenchStore.getState().sendMessage(text),
       ),
-    ).resolves.toBe('运行当前 workflow');
+    ).resolves.toBe('');
 
-    expect(fetch).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual(expect.arrayContaining([
+      '/api/workspaces/ws_test/versions/ops',
+      '/api/workspaces/ws_test/runs',
+      '/api/workspaces/ws_test/messages',
+    ]));
+    expect(useWorkbenchStore.getState().editSession).toBeNull();
     const messages = useWorkbenchStore.getState().state?.chat.messages ?? [];
-    expect(messages.at(-2)?.text).toContain('请先提交或放弃手动编辑后再运行 Queue');
-    expect(messages.at(-1)?.text).toContain('请先提交或放弃手动编辑后再发送 Agent 请求');
+    expect(messages.some((message) => message.text.includes('请先提交或放弃'))).toBe(false);
   });
 
-  it('renders dirty edit summary and queue lock reason in the workbench shell', () => {
+  it('does not render a canvas commit dock for leftover local edits', () => {
     const markup = renderToStaticMarkup(
       <App
         initialEditSession={{
@@ -251,11 +363,11 @@ describe('manual edit session workbench flow', () => {
       />,
     );
 
-    expect(markup).toContain('EDITING · 1 CHANGES');
-    expect(markup).toContain('Move video to 620, 210');
-    expect(markup).toContain('title="先提交或放弃 1 个手动编辑"');
-    expect(markup).toContain('提交编辑');
-    expect(markup).toContain('放弃');
+    expect(markup).not.toContain('EDITING · 1 CHANGES');
+    expect(markup).not.toContain('UNCOMMITTED');
+    expect(markup).not.toContain('提交编辑');
+    expect(markup).not.toContain('放弃');
+    expect(markup).not.toContain('title="先提交或放弃 1 个手动编辑"');
   });
 
   it('previews manual edit ops without mutating the committed state', () => {

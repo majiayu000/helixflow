@@ -102,6 +102,43 @@ describe('GraphCanvas view-mode integration', () => {
     }));
   });
 
+  it('reverts a node move draft when persistence is rejected', async () => {
+    onCreateProposal.mockRejectedValueOnce(new Error('move failed'));
+    renderer = await renderCanvas(true);
+    const workflowNode = renderer.root.findByType(WorkflowNode);
+    const start = pointerEvent();
+
+    await act(async () => {
+      workflowNode.props.onPointerDown(start);
+      workflowNode.props.onPointerMove({ ...start, clientX: 70, clientY: 50 });
+      workflowNode.props.onPointerUp({ ...start, clientX: 70, clientY: 50 });
+      await flushActions();
+    });
+
+    const reverted = renderer.root.findByType(WorkflowNode);
+    expect(reverted.props.node.position).toEqual({ x: 20, y: 20 });
+    expect(reverted.props.dirty).toBe(false);
+    expect(statusToastText()).toBe('move failed');
+  });
+
+  it('reverts a node resize draft when persistence is rejected', async () => {
+    onCreateProposal.mockRejectedValueOnce(new Error('resize failed'));
+    renderer = await renderCanvas(true);
+    const workflowNode = renderer.root.findByType(WorkflowNode);
+    const start = pointerEvent();
+
+    await act(async () => {
+      workflowNode.props.onResizePointerDown(start);
+      workflowNode.props.onResizePointerMove({ ...start, clientX: 70, clientY: 50 });
+      workflowNode.props.onResizePointerUp({ ...start, clientX: 70, clientY: 50 });
+      await flushActions();
+    });
+
+    const reverted = renderer.root.findByType(WorkflowNode);
+    expect(reverted.props.node.size).toBeUndefined();
+    expect(statusToastText()).toBe('resize failed');
+  });
+
   it('selects a graph node from the keyboard without dispatching a mutation', async () => {
     renderer = await renderCanvas(true);
     const workflowNode = renderer.root.findByType(WorkflowNode);

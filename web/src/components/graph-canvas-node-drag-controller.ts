@@ -102,11 +102,13 @@ export function useCanvasNodeDragController({
     if (editInput && onCreateProposal && !pendingProposal) {
       void onCreateProposal(editInput)
         .then(() => {
-          setDraftPositions({});
-          setStatus(`已加入编辑会话 · ${updates.length} 个移动`);
+          setStatus(`已移动 ${updates.length} 个节点`);
         })
         .catch((error) => {
           setStatus(error instanceof Error ? error.message : '移动节点失败');
+        })
+        .finally(() => {
+          setDraftPositions({});
         });
     }
     drag.current = null;
