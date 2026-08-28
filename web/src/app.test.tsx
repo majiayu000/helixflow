@@ -1125,11 +1125,12 @@ describe('App', () => {
     expect(markup).toContain('canvas-grid');
   });
 
-  it('renders graph canvas minimap when graph outputs have no preview', () => {
+  it('renders React Flow view controls when graph outputs have no preview', () => {
     const markup = renderToStaticMarkup(<App initialState={{ ...state, outputs: [] }} />);
 
-    expect(markup).toContain('canvas-minimap');
-    expect(markup).toContain('Graph minimap');
+    expect(markup).toContain('flow-view-controls');
+    expect(markup).toContain('2 nodes');
+    expect(markup).not.toContain('canvas-minimap');
   });
 
   it('sandboxes HTML artifact previews without script permissions', () => {
@@ -1860,7 +1861,8 @@ describe('GraphCanvas navigation', () => {
     expect(markup).toContain('待确认的图变更');
     expect(markup).toContain('node--upd');
     expect(markup).toContain('node--locked');
-    expect(markup).toContain('canvas-minimap');
+    expect(markup).toContain('flow-view-controls');
+    expect(markup).not.toContain('canvas-minimap');
     expect(markup).not.toContain('canvas-toolbar');
     expect(markup).not.toContain('保存布局');
   });

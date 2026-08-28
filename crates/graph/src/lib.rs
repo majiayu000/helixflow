@@ -249,81 +249,86 @@ impl GraphService {
         ops: &[ProposalOp],
     ) -> GraphResult<WorkflowGraph> {
         let mut graph = base_graph.clone();
-
         for op in ops {
-            match op {
-                ProposalOp::AddNode { id, node } => {
-                    if graph.nodes.insert(id.clone(), node.clone()).is_some() {
-                        return Err(GraphError::DuplicateNode(id.clone()));
-                    }
-                }
-                ProposalOp::RemoveNode { id } => {
-                    graph
-                        .nodes
-                        .remove(id)
-                        .ok_or_else(|| GraphError::MissingNode(id.clone()))?;
-                    graph
-                        .edges
-                        .retain(|edge| edge.from[0] != *id && edge.to[0] != *id);
-                }
-                ProposalOp::SetParam {
-                    id,
-                    key,
-                    prev,
-                    value,
-                } => {
-                    let node = graph
-                        .nodes
-                        .get_mut(id)
-                        .ok_or_else(|| GraphError::MissingNode(id.clone()))?;
-                    let params = node
-                        .params
-                        .as_object_mut()
-                        .ok_or_else(|| GraphError::ParamsNotObject(id.clone()))?;
-                    let current = params.get(key).cloned();
-                    if let Some(expected) = prev
-                        && current.as_ref() != Some(expected)
-                    {
-                        return Err(GraphError::SetParamConflict {
-                            node_id: id.clone(),
-                            key: key.clone(),
-                        });
-                    }
-                    params.insert(key.clone(), value.clone());
-                }
-                ProposalOp::AddEdge { edge } => graph.edges.push(edge.clone()),
-                ProposalOp::RemoveEdge { edge } => {
-                    let before = graph.edges.len();
-                    graph.edges.retain(|candidate| candidate != edge);
-                    if graph.edges.len() == before {
-                        return Err(GraphError::MissingEdge(edge.clone()));
-                    }
-                }
-                ProposalOp::MoveNode { id, pos } => {
-                    let node = graph
-                        .nodes
-                        .get_mut(id)
-                        .ok_or_else(|| GraphError::MissingNode(id.clone()))?;
-                    node.pos = *pos;
-                }
-                ProposalOp::ResizeNode { id, size } => {
-                    let node = graph
-                        .nodes
-                        .get_mut(id)
-                        .ok_or_else(|| GraphError::MissingNode(id.clone()))?;
-                    node.size = Some(*size);
-                }
-                ProposalOp::SetSemantics { id, semantics } => {
-                    let node = graph
-                        .nodes
-                        .get_mut(id)
-                        .ok_or_else(|| GraphError::MissingNode(id.clone()))?;
-                    node.semantics = semantics.clone();
+            self.apply_op_in_place(&mut graph, op)?;
+        }
+        Ok(graph)
+    }
+
+    /// Applies one operation directly to a disposable candidate graph.
+    /// Callers must discard the graph if this returns an error.
+    pub fn apply_op_in_place(&self, graph: &mut WorkflowGraph, op: &ProposalOp) -> GraphResult<()> {
+        match op {
+            ProposalOp::AddNode { id, node } => {
+                if graph.nodes.insert(id.clone(), node.clone()).is_some() {
+                    return Err(GraphError::DuplicateNode(id.clone()));
                 }
             }
+            ProposalOp::RemoveNode { id } => {
+                graph
+                    .nodes
+                    .remove(id)
+                    .ok_or_else(|| GraphError::MissingNode(id.clone()))?;
+                graph
+                    .edges
+                    .retain(|edge| edge.from[0] != *id && edge.to[0] != *id);
+            }
+            ProposalOp::SetParam {
+                id,
+                key,
+                prev,
+                value,
+            } => {
+                let node = graph
+                    .nodes
+                    .get_mut(id)
+                    .ok_or_else(|| GraphError::MissingNode(id.clone()))?;
+                let params = node
+                    .params
+                    .as_object_mut()
+                    .ok_or_else(|| GraphError::ParamsNotObject(id.clone()))?;
+                let current = params.get(key).cloned();
+                if let Some(expected) = prev
+                    && current.as_ref() != Some(expected)
+                {
+                    return Err(GraphError::SetParamConflict {
+                        node_id: id.clone(),
+                        key: key.clone(),
+                    });
+                }
+                params.insert(key.clone(), value.clone());
+            }
+            ProposalOp::AddEdge { edge } => graph.edges.push(edge.clone()),
+            ProposalOp::RemoveEdge { edge } => {
+                let before = graph.edges.len();
+                graph.edges.retain(|candidate| candidate != edge);
+                if graph.edges.len() == before {
+                    return Err(GraphError::MissingEdge(edge.clone()));
+                }
+            }
+            ProposalOp::MoveNode { id, pos } => {
+                graph
+                    .nodes
+                    .get_mut(id)
+                    .ok_or_else(|| GraphError::MissingNode(id.clone()))?
+                    .pos = *pos;
+            }
+            ProposalOp::ResizeNode { id, size } => {
+                graph
+                    .nodes
+                    .get_mut(id)
+                    .ok_or_else(|| GraphError::MissingNode(id.clone()))?
+                    .size = Some(*size);
+            }
+            ProposalOp::SetSemantics { id, semantics } => {
+                graph
+                    .nodes
+                    .get_mut(id)
+                    .ok_or_else(|| GraphError::MissingNode(id.clone()))?
+                    .semantics = semantics.clone();
+            }
         }
-
-        Ok(graph)
+        Ok(())
     }
 
     pub fn compile_plan(
@@ -709,3 +714,6 @@ fn summarize_diff(base: &WorkflowGraph, preview: &WorkflowGraph) -> Vec<String> 
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod ops_tests;

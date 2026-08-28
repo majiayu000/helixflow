@@ -14,7 +14,7 @@ afterEach(async () => {
 describe('WorkbenchShell', () => {
   it('renders registered business content in stable zones', () => {
     const markup = renderToStaticMarkup(<WorkbenchShell panes={paneBindings()} />);
-    expect(markup).toContain('data-workbench-zone="primarySidebar"');
+    expect(markup).not.toContain('data-workbench-zone="primarySidebar"');
     expect(markup).toContain('data-workbench-zone="editor"');
     expect(markup).toContain('data-workbench-zone="secondarySidebar"');
     expect(markup).toContain('data-workbench-zone="panel"');
@@ -92,14 +92,14 @@ describe('WorkbenchShell', () => {
     resetWorkbenchLayoutStoreForTests(memoryStorage(values));
     let renderer: ReactTestRenderer;
     await act(async () => { renderer = create(<WorkbenchShell panes={paneBindings()} />); });
-    const sash = renderer!.root.findByProps({ 'aria-label': '调整左侧栏大小' });
+    const sash = renderer!.root.findByProps({ 'aria-label': '调整右侧栏大小' });
 
     await act(async () => sash.props.onKeyDown({
-      key: 'ArrowRight', shiftKey: false, preventDefault: () => undefined,
+      key: 'ArrowLeft', shiftKey: false, preventDefault: () => undefined,
     }));
 
-    expect(useWorkbenchLayoutStore.getState().document.zones.primarySidebar.sizePx).toBe(430);
-    expect([...values.values()].join('')).toContain('"sizePx":430');
+    expect(useWorkbenchLayoutStore.getState().document.zones.secondarySidebar.sizePx).toBe(490);
+    expect([...values.values()].join('')).toContain('"sizePx":490');
     await act(async () => renderer!.unmount());
   });
 
@@ -127,7 +127,7 @@ describe('WorkbenchShell', () => {
     const markup = renderToStaticMarkup(<WorkbenchShell panes={paneBindings()} />);
     expect(markup).toContain('class="workbench-center"');
     expect(markup).toContain('workbench-panel-layer');
-    expect(markup).toContain('workbench-drawer-layer--primary');
+    expect(markup).not.toContain('workbench-drawer-layer--primary');
     expect(markup).toContain('workbench-drawer-layer--secondary');
     expect(markup).toContain('data-workbench-zone="panel"');
   });

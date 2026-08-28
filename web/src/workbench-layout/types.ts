@@ -29,7 +29,7 @@ export type WorkbenchPanePlacementState = {
 };
 
 export type WorkbenchLayoutDocument = {
-  schemaVersion: 2;
+  schemaVersion: 3;
   profileId: 'default';
   zones: Record<WorkbenchZoneId, WorkbenchZoneState>;
   containers: Record<string, WorkbenchViewContainerState>;

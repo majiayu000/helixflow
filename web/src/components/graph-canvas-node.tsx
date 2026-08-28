@@ -23,6 +23,7 @@ type WorkflowNodeProps = {
   stepState: RunStepState;
   artifactOutputs: CanvasNodeArtifact[];
   resizable: boolean;
+  embedded?: boolean;
   onSelectOutput?: (outputId: string) => void;
   onKeyboardSelect?: (additive: boolean) => void;
   onOutputPortPointerDown: (
@@ -54,6 +55,7 @@ export function WorkflowNode({
   stepState,
   artifactOutputs,
   resizable,
+  embedded = false,
   onSelectOutput,
   onKeyboardSelect,
   onOutputPortPointerDown,
@@ -80,6 +82,7 @@ export function WorkflowNode({
     diffState === 'upd' ? 'node--upd' : '',
     dirty ? 'node--dirty' : '',
     locked ? 'node--locked' : '',
+    embedded ? 'node--embedded' : '',
     selected ? 'p-sel' : '',
     active ? 'p-active' : '',
     failed ? 'node--err' : '',
@@ -98,7 +101,7 @@ export function WorkflowNode({
         event.stopPropagation();
         onKeyboardSelect?.(event.shiftKey || event.metaKey || event.ctrlKey);
       }}
-      onClick={(event) => event.stopPropagation()}
+      onClick={embedded ? undefined : (event) => event.stopPropagation()}
       onPointerCancel={onPointerCancel}
       onPointerDown={(event) => {
         if (isNodeInteractiveTarget(event.target)) {
@@ -111,13 +114,13 @@ export function WorkflowNode({
       onPointerUp={onPointerUp}
       role="group"
       style={{
-        left: node.position.x,
-        top: node.position.y,
+        left: embedded ? undefined : node.position.x,
+        top: embedded ? undefined : node.position.y,
         width: graphNodeWidth(node),
         minHeight: graphNodeHeight(node),
         '--swatch': categorySwatch(node.category),
       } as CSSProperties}
-      tabIndex={0}
+      tabIndex={embedded ? -1 : 0}
     >
       {done && (
         <span className="p-done">

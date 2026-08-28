@@ -76,10 +76,26 @@ describe('background run state reconciliation', () => {
     );
   });
 
+  it('does not refetch the snapshot when the websocket first becomes live', async () => {
+    mockSnapshotFetch(stateWithRun('run_1', 'interrupted', 0));
+    useWorkbenchStore.getState().setInitialState(stateWithRun('run_1', 'running', 0));
+
+    useWorkbenchStore.getState().setConnection('connecting');
+    useWorkbenchStore.getState().setConnection('live');
+    await Promise.resolve();
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(useWorkbenchStore.getState().state?.run?.status).toBe('running');
+  });
+
   it('refetches workspace state when the websocket reconnects', async () => {
     mockSnapshotFetch(stateWithRun('run_1', 'interrupted', 0));
     useWorkbenchStore.getState().setInitialState(stateWithRun('run_1', 'running', 0));
 
+    useWorkbenchStore.getState().setConnection('connecting');
+    useWorkbenchStore.getState().setConnection('live');
+    useWorkbenchStore.getState().setConnection('offline');
+    useWorkbenchStore.getState().setConnection('connecting');
     useWorkbenchStore.getState().setConnection('live');
 
     await waitUntil(() => useWorkbenchStore.getState().state?.run?.status === 'interrupted');
@@ -478,6 +494,10 @@ describe('background run state reconciliation', () => {
   it('runs a trailing refresh when an event arrives during an in-flight refresh', async () => {
     const responses = delayedSnapshotFetch();
     useWorkbenchStore.getState().setInitialState(stateWithRun('run_1', 'running', 0));
+    useWorkbenchStore.getState().setConnection('connecting');
+    useWorkbenchStore.getState().setConnection('live');
+    useWorkbenchStore.getState().setConnection('offline');
+    useWorkbenchStore.getState().setConnection('connecting');
     useWorkbenchStore.getState().setConnection('live');
     useWorkbenchStore.getState().applyEvent(runEvent('run_1', 2, 'run.succeeded'));
 

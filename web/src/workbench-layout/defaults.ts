@@ -9,8 +9,8 @@ export const WORKBENCH_PANE_DEFINITIONS: Record<string, WorkbenchPaneDefinition>
     id: 'chat',
     title: 'Chat',
     defaultContainerId: 'conversation',
-    defaultZone: 'primarySidebar',
-    allowedZones: ['primarySidebar', 'secondarySidebar'],
+    defaultZone: 'secondarySidebar',
+    allowedZones: ['secondarySidebar', 'primarySidebar'],
     canCollapse: true,
     canHide: false,
     singleton: true,
@@ -62,20 +62,20 @@ export const WORKBENCH_ZONE_CONSTRAINTS: Record<
   { defaultSizePx: number; minSizePx: number; maxSizePx: number }
 > = {
   primarySidebar: { defaultSizePx: 420, minSizePx: 280, maxSizePx: 580 },
-  secondarySidebar: { defaultSizePx: 420, minSizePx: 300, maxSizePx: 720 },
+  secondarySidebar: { defaultSizePx: 480, minSizePx: 360, maxSizePx: 720 },
   panel: { defaultSizePx: 240, minSizePx: 120, maxSizePx: 520 },
 };
 
 export function createDefaultWorkbenchLayout(): WorkbenchLayoutDocument {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     profileId: 'default',
     zones: {
       primarySidebar: {
-        visible: true,
+        visible: false,
         sizePx: WORKBENCH_ZONE_CONSTRAINTS.primarySidebar.defaultSizePx,
-        containerIds: ['conversation'],
-        activeContainerId: 'conversation',
+        containerIds: [],
+        activeContainerId: null,
       },
       editor: {
         visible: true,
@@ -86,8 +86,8 @@ export function createDefaultWorkbenchLayout(): WorkbenchLayoutDocument {
       secondarySidebar: {
         visible: true,
         sizePx: WORKBENCH_ZONE_CONSTRAINTS.secondarySidebar.defaultSizePx,
-        containerIds: ['artifactViewer'],
-        activeContainerId: 'artifactViewer',
+        containerIds: ['conversation', 'artifactViewer'],
+        activeContainerId: 'conversation',
       },
       panel: {
         visible: false,
@@ -99,7 +99,7 @@ export function createDefaultWorkbenchLayout(): WorkbenchLayoutDocument {
     containers: {
       conversation: {
         id: 'conversation',
-        zoneId: 'primarySidebar',
+        zoneId: 'secondarySidebar',
         paneIds: ['chat'],
         activePaneId: 'chat',
       },

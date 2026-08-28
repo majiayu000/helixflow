@@ -2,7 +2,10 @@ import type { GraphNodeState, RunStepState, WorkbenchState } from '../types';
 import {
   GRAPH_NODE_HEAD_HEIGHT,
   GRAPH_NODE_ROW_HEIGHT,
+  graphNodeHeight,
   graphNodeWidth,
+  type ViewportSize,
+  type ViewState,
 } from './graph-canvas-navigation';
 
 export type DiffState = 'add' | 'upd' | null;
@@ -28,6 +31,50 @@ export function buildEdgeSignatureSet(edges: WorkbenchState['graph']['edges']): 
 
 export function buildComparableNodeMap(nodes: GraphNodeState[]): Map<string, string> {
   return new Map(nodes.map((node) => [node.id, comparableNode(node)] as const));
+}
+
+export function edgesForViewport(
+  nodes: GraphNodeState[],
+  edges: WorkbenchState['graph']['edges'],
+  view: ViewState,
+  viewport: ViewportSize,
+  densityLimit = 2_000,
+): WorkbenchState['graph']['edges'] {
+  if (edges.length <= densityLimit) return edges;
+  const overscan = 480;
+  const visibleTargets = new Set(
+    nodes
+      .filter((node) => nodeIntersectsViewport(node, view, viewport, overscan))
+      .map((node) => node.id),
+  );
+  return edges.filter((edge) => visibleTargets.has(edge.to.nodeId));
+}
+
+/**
+ * Returns the dense-graph nodes React Flow must know about for the current
+ * viewport. `null` means the caller should preserve the complete node array.
+ * Edge endpoints stay in the slice so React Flow can still resolve visible
+ * connections whose source sits outside the overscanned viewport.
+ */
+export function nodeIdsForViewport(
+  nodes: GraphNodeState[],
+  visibleEdges: WorkbenchState['graph']['edges'],
+  view: ViewState,
+  viewport: ViewportSize,
+  densityLimit = 2_000,
+): Set<string> | null {
+  if (nodes.length <= densityLimit) return null;
+  const overscan = 480;
+  const nodeIds = new Set(
+    nodes
+      .filter((node) => nodeIntersectsViewport(node, view, viewport, overscan))
+      .map((node) => node.id),
+  );
+  for (const edge of visibleEdges) {
+    nodeIds.add(edge.from.nodeId);
+    nodeIds.add(edge.to.nodeId);
+  }
+  return nodeIds;
 }
 
 export function nodeDiffState(
@@ -97,4 +144,22 @@ function comparableNode(node: GraphNodeState): string {
     provider: node.provider,
     summary: node.summary,
   });
+}
+
+function nodeIntersectsViewport(
+  node: GraphNodeState,
+  view: ViewState,
+  viewport: ViewportSize,
+  overscan: number,
+): boolean {
+  const left = node.position.x * view.z + view.x;
+  const top = node.position.y * view.z + view.y;
+  const right = left + graphNodeWidth(node) * view.z;
+  const bottom = top + graphNodeHeight(node) * view.z;
+  return (
+    right >= -overscan &&
+    bottom >= -overscan &&
+    left <= viewport.width + overscan &&
+    top <= viewport.height + overscan
+  );
 }

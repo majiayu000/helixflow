@@ -15,7 +15,9 @@ describe('workbench layout reducer', () => {
     if (!result.ok) return;
     expect(result.state.containers.runMonitor.zoneId).toBe('secondarySidebar');
     expect(result.state.zones.panel.containerIds).toEqual(['outputs']);
-    expect(result.state.zones.secondarySidebar.containerIds).toEqual(['artifactViewer', 'runMonitor']);
+    expect(result.state.zones.secondarySidebar.containerIds).toEqual([
+      'conversation', 'artifactViewer', 'runMonitor',
+    ]);
     expect(validateWorkbenchLayout(result.state)).toBeNull();
   });
 

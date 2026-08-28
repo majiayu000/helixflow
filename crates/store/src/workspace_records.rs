@@ -29,6 +29,16 @@ pub struct MessageRecord {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, sqlx::FromRow)]
+pub struct WorkspaceSummaryRecord {
+    pub id: String,
+    pub name: String,
+    pub version_id: String,
+    pub updated_at: String,
+    pub message_count: i64,
+    pub first_message: Option<String>,
+}
+
 impl Store {
     pub async fn create_workspace(&self, name: &str) -> StoreResult<WorkspaceRecord> {
         let id = new_id("ws");
@@ -88,6 +98,39 @@ impl Store {
             SELECT id, name, cur_version_id, runtime_provider_id, created_at, updated_at
             FROM workspaces
             ORDER BY updated_at DESC, id DESC
+            "#,
+        )
+        .fetch_all(self.pool())
+        .await?)
+    }
+
+    /// Lists every workspace with its user-message summary in one SQL statement.
+    pub async fn workspace_summaries(&self) -> StoreResult<Vec<WorkspaceSummaryRecord>> {
+        Ok(sqlx::query_as::<_, WorkspaceSummaryRecord>(
+            r#"
+            SELECT
+                w.id,
+                w.name,
+                COALESCE(w.cur_version_id, '') AS version_id,
+                w.updated_at,
+                COALESCE(stats.message_count, 0) AS message_count,
+                (
+                    SELECT first_message.text
+                    FROM messages AS first_message
+                    WHERE first_message.workspace_id = w.id
+                      AND first_message.role = 'user'
+                      AND first_message.text IS NOT NULL
+                    ORDER BY first_message.created_at, first_message.id
+                    LIMIT 1
+                ) AS first_message
+            FROM workspaces AS w
+            LEFT JOIN (
+                SELECT workspace_id, COUNT(*) AS message_count
+                FROM messages
+                WHERE role = 'user'
+                GROUP BY workspace_id
+            ) AS stats ON stats.workspace_id = w.id
+            ORDER BY w.updated_at DESC, w.id DESC
             "#,
         )
         .fetch_all(self.pool())
@@ -365,6 +408,65 @@ mod tests {
         assert_eq!(workspaces.len(), 2);
         assert_eq!(workspaces[0].id, second.id);
         assert_eq!(workspaces[1].id, first.id);
+    }
+
+    #[tokio::test]
+    async fn lists_workspace_message_summaries_in_one_store_operation() {
+        let (store, _dir) = open_temp_store().await;
+        let empty = store.create_workspace("Empty").await.expect("create empty");
+        let active = store
+            .create_workspace("Active")
+            .await
+            .expect("create active");
+        for text in [Some("First user request"), None] {
+            store
+                .create_message(NewMessage {
+                    workspace_id: &active.id,
+                    role: "user",
+                    kind: "text",
+                    text,
+                    ref_id: None,
+                    attachment_ids_json: None,
+                    conversation_id: None,
+                    turn_id: None,
+                })
+                .await
+                .expect("create user message");
+        }
+        store
+            .create_message(NewMessage {
+                workspace_id: &active.id,
+                role: "agent",
+                kind: "text",
+                text: Some("Agent reply"),
+                ref_id: None,
+                attachment_ids_json: None,
+                conversation_id: None,
+                turn_id: None,
+            })
+            .await
+            .expect("create agent message");
+
+        let summaries = store
+            .workspace_summaries()
+            .await
+            .expect("workspace summaries");
+        let active_summary = summaries
+            .iter()
+            .find(|item| item.id == active.id)
+            .expect("active");
+        let empty_summary = summaries
+            .iter()
+            .find(|item| item.id == empty.id)
+            .expect("empty");
+
+        assert_eq!(active_summary.message_count, 2);
+        assert_eq!(
+            active_summary.first_message.as_deref(),
+            Some("First user request")
+        );
+        assert_eq!(empty_summary.message_count, 0);
+        assert_eq!(empty_summary.first_message, None);
     }
 
     #[tokio::test]

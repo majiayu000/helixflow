@@ -13,6 +13,52 @@
   transition: bottom 180ms ease, transform 180ms ease;
 }
 
+.flow-canvas .node-library {
+  top: 50%;
+  bottom: auto;
+  left: 15px;
+  max-width: none;
+  flex-direction: row;
+  transform: translateY(-50%);
+}
+
+.flow-canvas .node-library-bar {
+  width: 54px;
+  height: auto;
+  max-height: min(66vh, 560px);
+  flex-direction: column;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border-radius: 28px;
+  background: rgb(28 28 30 / 96%);
+  padding: 8px;
+}
+
+.flow-canvas .node-library-divider {
+  width: 28px;
+  height: 1px;
+  margin: 5px 0;
+}
+
+.flow-canvas .node-library-tool.is-primary,
+.flow-canvas .node-library-tool.has-text {
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 10px;
+}
+
+.flow-canvas .node-library-tool.has-text span {
+  display: none;
+}
+
+.flow-canvas .node-library-tray {
+  top: 0;
+  bottom: auto;
+  left: 66px;
+}
+
 .node-library-bar {
   max-width: 100%;
   height: 58px;

@@ -110,6 +110,139 @@
   user-select: none;
 }
 
+.flow-canvas {
+  contain: paint;
+  background: #070708;
+}
+
+.flow-canvas .react-flow {
+  width: 100%;
+  height: 100%;
+  background: #070708;
+}
+
+.flow-canvas .react-flow__pane {
+  cursor: grab;
+}
+
+.flow-canvas .react-flow__pane:active {
+  cursor: grabbing;
+}
+
+.flow-canvas .react-flow__selection,
+.flow-canvas .react-flow__nodesselection-rect {
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent-soft) 42%, transparent);
+}
+
+.flow-canvas .react-flow__edge-path {
+  filter: drop-shadow(0 2px 5px rgb(0 0 0 / 48%));
+}
+
+.flow-canvas .react-flow__connection-path {
+  stroke: var(--accent);
+  stroke-width: 2.5;
+}
+
+.workflow-flow-node {
+  position: relative;
+  width: 100%;
+  min-height: 100%;
+}
+
+.node.node--embedded {
+  position: relative;
+  inset: auto;
+  width: 100% !important;
+  min-height: 100%;
+  border-color: rgb(255 255 255 / 11%);
+  border-radius: 16px;
+  background: #171719;
+  box-shadow: 0 18px 44px rgb(0 0 0 / 38%);
+}
+
+.node--embedded .node-title {
+  border-radius: 16px 16px 0 0;
+  background: #1d1d20;
+}
+
+.node--embedded.p-sel {
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 2px var(--accent),
+    0 0 0 7px color-mix(in srgb, var(--accent-soft) 58%, transparent),
+    0 22px 52px rgb(0 0 0 / 46%);
+}
+
+.workflow-flow-handle {
+  z-index: 8;
+  width: 10px;
+  height: 10px;
+  border: 2px solid #070708;
+  box-shadow: 0 0 0 1px currentColor;
+}
+
+.flow-view-controls {
+  position: absolute;
+  left: 15px;
+  bottom: 15px;
+  z-index: 12;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid rgb(255 255 255 / 10%);
+  border-radius: 13px;
+  background: rgb(27 27 29 / 94%);
+  box-shadow: 0 12px 30px rgb(0 0 0 / 34%);
+  padding: 4px;
+  backdrop-filter: blur(16px);
+}
+
+.flow-view-controls button {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #c8c8cc;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.flow-view-controls button:hover:not(:disabled) {
+  background: rgb(255 255 255 / 8%);
+  color: #fff;
+}
+
+.flow-view-controls button:disabled {
+  opacity: .35;
+}
+
+.flow-view-controls .flow-view-zoom {
+  width: 56px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.flow-view-divider {
+  width: 1px;
+  height: 20px;
+  margin: 0 2px;
+  background: rgb(255 255 255 / 10%);
+}
+
+.flow-node-count {
+  padding: 0 8px 0 4px;
+  color: #77777d;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
 .canvas-error {
   display: grid;
   flex: 1;

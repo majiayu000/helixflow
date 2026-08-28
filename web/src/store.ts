@@ -31,7 +31,6 @@ import {
 } from './api';
 import {
   applyRunEvent,
-  preserveRetryNotices,
   shouldRefetchWorkspaceState,
 } from './store-events';
 import {
@@ -54,6 +53,7 @@ import {
   fetchWorkspaceSnapshot,
   snapshotError,
   snapshotReady,
+  WorkspaceSnapshotCoordinator,
 } from './workspace-snapshot';
 import type { WorkbenchStore } from './store-types';
 import type { ManualEditSession } from './types';
@@ -65,8 +65,6 @@ export { applyRunEvent } from './store-events';
 export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
   const requestScope = new WorkspaceRequestScope();
   const presenceExpiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  let snapshotRefresh: { generation: number; promise: Promise<void> } | null = null;
-  let trailingSnapshotGeneration: number | null = null;
   const actionGuard = new WorkspaceActionGuard(requestScope);
   let persistChain = Promise.resolve();
   const enqueuePersist = (work: () => Promise<void>): Promise<void> => {
@@ -140,6 +138,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     actionGuard.assertActive(workspaceId, 'saving canvas edits');
     return persistCapturedSession(workspaceId, editSession);
   };
+  const snapshots = new WorkspaceSnapshotCoordinator(requestScope, get, set);
   const clearPresenceExpiryTimers = () => {
     for (const timer of presenceExpiryTimers.values()) clearTimeout(timer);
     presenceExpiryTimers.clear();
@@ -148,8 +147,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     persistChain = Promise.resolve();
     clearPresenceExpiryTimers();
     const activation = requestScope.begin(workspaceId);
-    snapshotRefresh = null;
-    trailingSnapshotGeneration = null;
+    snapshots.reset();
     set({
       workspaceGeneration: activation.generation,
       activeWorkspaceId: workspaceId,
@@ -163,52 +161,6 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     set({ activeWorkspaceId: workspaceId });
     return true;
   };
-  const refreshSnapshot = (workspaceId: string) => {
-    const generation = requestScope.currentGeneration();
-    if (requestScope.currentWorkspaceId() !== workspaceId || requestScope.signal()?.aborted) return;
-    if (snapshotRefresh?.generation === generation) {
-      trailingSnapshotGeneration = generation;
-      return;
-    }
-    const promise = fetchWorkspaceSnapshot(workspaceId, requestScope.signal())
-      .then(({ state, canvas }) =>
-        set((current) =>
-          requestScope.isActive(generation, workspaceId) &&
-            trailingSnapshotGeneration !== generation &&
-            current.state?.workspace.id === workspaceId
-            ? {
-                status: 'ready',
-                canvasStatus: 'ready',
-                state: preserveRetryNotices(current.state, state),
-                canvas,
-                error: null,
-                canvasError: null,
-                editSession: compatibleEditSession(current.editSession, state),
-              }
-            : {},
-        ),
-      )
-      .catch((error) => {
-        if (isAbortError(error) || !requestScope.isActive(generation, workspaceId)) return;
-        const message =
-          error instanceof Error ? error.message : 'workspace state request failed';
-        set((current) =>
-          current.state?.workspace.id === workspaceId
-            ? { error: message, canvasError: message, canvasStatus: 'error' }
-            : {},
-        );
-      })
-      .finally(() => {
-        if (snapshotRefresh?.generation !== generation) return;
-        snapshotRefresh = null;
-        if (trailingSnapshotGeneration === generation) {
-          trailingSnapshotGeneration = null;
-          refreshSnapshot(workspaceId);
-        }
-      });
-    snapshotRefresh = { generation, promise };
-  };
-
   return {
   status: 'idle',
   error: null,
@@ -288,13 +240,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       presenceByActor: {},
     });
   },
-  setConnection: (connection) => {
-    set({ connection, canvasConnection: connection });
-    const state = get().state;
-    if (connection === 'live' && state) {
-      refreshSnapshot(state.workspace.id);
-    }
-  },
+  setConnection: (connection) => snapshots.setConnection(connection),
   setCanvasSelection: (selectedCanvasNodeIds) => set({ selectedCanvasNodeIds }),
   applyCanvasPresence: (presence) => {
     const actorId = presence.actor.actorId;
@@ -490,7 +436,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     const needsSnapshot = shouldRefetchWorkspaceState(state, event);
     set({ state: applyRunEvent(state, event) });
     if (needsSnapshot) {
-      refreshSnapshot(state.workspace.id);
+      snapshots.refresh(state.workspace.id);
     }
   },
   queueRun: async (options = {}) => {

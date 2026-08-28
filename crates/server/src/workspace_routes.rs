@@ -4,7 +4,7 @@ use axum::{
 };
 use helixflow_store::{
     ConversationRecord, CreateWorkspaceWithInitialVersion, InitializedWorkspace,
-    ReservedWorkspaceIdentity, StoreError, VersionSource, WorkspaceRecord,
+    ReservedWorkspaceIdentity, StoreError, VersionSource, WorkspaceRecord, WorkspaceSummaryRecord,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -60,12 +60,14 @@ pub(crate) struct WorkspaceSummary {
 pub(crate) async fn list_workspaces(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<WorkspaceSummary>>, ApiError> {
-    let workspaces = state.store.workspaces().await.map_err(ApiError::store)?;
-    let mut summaries = Vec::with_capacity(workspaces.len());
-    for workspace in &workspaces {
-        summaries.push(workspace_summary(&state, workspace).await?);
-    }
-    Ok(Json(summaries))
+    let summaries = state
+        .store
+        .workspace_summaries()
+        .await
+        .map_err(ApiError::store)?;
+    Ok(Json(
+        summaries.into_iter().map(WorkspaceSummary::from).collect(),
+    ))
 }
 
 pub(crate) async fn create_workspace(
@@ -114,6 +116,19 @@ impl From<ConversationRecord> for ConversationPayload {
             codex_thread_id: record.codex_thread_id,
             created_at: record.created_at,
             updated_at: record.updated_at,
+        }
+    }
+}
+
+impl From<WorkspaceSummaryRecord> for WorkspaceSummary {
+    fn from(record: WorkspaceSummaryRecord) -> Self {
+        Self {
+            id: record.id,
+            name: record.name,
+            version_id: record.version_id,
+            updated_at: record.updated_at,
+            message_count: record.message_count,
+            first_message: record.first_message,
         }
     }
 }

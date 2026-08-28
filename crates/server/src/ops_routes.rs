@@ -198,8 +198,8 @@ fn prepare_ops(
         }
         let op = manual_op_to_proposal_op(request, &graph, registry)
             .map_err(|err| op_error(index, err.message))?;
-        graph = graph_service
-            .apply_ops(&graph, std::slice::from_ref(&op))
+        graph_service
+            .apply_op_in_place(&mut graph, &op)
             .map_err(|err| graph_ops_error(err, Some(index)))?;
         ops.push(op);
     }

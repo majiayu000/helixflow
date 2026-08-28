@@ -629,8 +629,8 @@ function zoneLabel(zoneId: WorkbenchZoneId): string {
 }
 
 function zoneShortLabel(zoneId: Exclude<WorkbenchZoneId, 'editor'>): string {
-  if (zoneId === 'primarySidebar') return 'Chat';
-  if (zoneId === 'secondarySidebar') return '查看';
+  if (zoneId === 'primarySidebar') return '查看';
+  if (zoneId === 'secondarySidebar') return 'Agent';
   return '运行与输出';
 }
 

@@ -7,7 +7,7 @@ import type {
   WorkbenchZoneId,
 } from './types';
 
-export const WORKBENCH_LAYOUT_STORAGE_KEY = 'helixflow.workbench.layout.v2.default';
+export const WORKBENCH_LAYOUT_STORAGE_KEY = 'helixflow.workbench.layout.v3.canvas';
 export const LEGACY_DOCK_LAYOUT_STORAGE_KEY = 'helixflow.workbench.dock-layout.v1';
 
 export interface WorkbenchLayoutStorage {
@@ -36,7 +36,7 @@ const paneSchema = z.object({
   visible: z.boolean(),
 });
 const layoutSchema = z.object({
-  schemaVersion: z.literal(2),
+  schemaVersion: z.literal(3),
   profileId: z.literal('default'),
   zones: z.object({
     primarySidebar: zoneSchema,
@@ -71,7 +71,7 @@ export function loadWorkbenchLayout(storage: WorkbenchLayoutStorage | null): Loa
     if (serialized) {
       const parsed = layoutSchema.safeParse(JSON.parse(serialized));
       if (!parsed.success) {
-        return invalidHydration(fallback, 'Stored workbench layout does not match schema v2.');
+        return invalidHydration(fallback, 'Stored workbench layout does not match schema v3.');
       }
       const layout = parsed.data as WorkbenchLayoutDocument;
       const invariantError = validateWorkbenchLayout(layout);

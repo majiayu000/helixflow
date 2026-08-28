@@ -1,19 +1,18 @@
-import { Profiler } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CanvasPresence, GraphNodeState, WorkbenchState } from '../types';
+import type { GraphNodeState, WorkbenchState } from '../types';
 import { flushActions } from '../test-utils';
 import { GraphCanvas } from './graph-canvas';
 import { WorkflowNode } from './graph-canvas-node';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-describe('GraphCanvas view-mode integration', () => {
+describe('GraphCanvas React Flow mode integration', () => {
   let renderer: ReactTestRenderer | null = null;
-  const onCreateProposal = vi.fn(async () => undefined);
+  const proposals: unknown[] = [];
 
   beforeEach(() => {
-    onCreateProposal.mockClear();
+    proposals.length = 0;
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 404 })));
   });
 
@@ -23,133 +22,49 @@ describe('GraphCanvas view-mode integration', () => {
     vi.unstubAllGlobals();
   });
 
-  it('does not dispatch move, resize, or connection mutations in view mode', async () => {
+  it('renders a read-only SSR fallback without mutation affordances', async () => {
     renderer = await renderCanvas(false);
-    const workflowNode = renderer.root.findByType(WorkflowNode);
-    const nodeEvent = pointerEvent();
+    const node = renderer.root.findByType(WorkflowNode);
 
-    await act(async () => {
-      workflowNode.props.onPointerDown(nodeEvent);
-      workflowNode.props.onPointerMove({ ...nodeEvent, clientX: 80, clientY: 60 });
-      workflowNode.props.onPointerUp({ ...nodeEvent, clientX: 80, clientY: 60 });
-      workflowNode.props.onResizePointerDown(nodeEvent);
-      workflowNode.props.onResizePointerMove({ ...nodeEvent, clientX: 90, clientY: 70 });
-      workflowNode.props.onResizePointerUp({ ...nodeEvent, clientX: 90, clientY: 70 });
-      workflowNode.props.onOutputPortPointerDown(
-        viewModeNode(),
-        { name: 'video', type: 'VIDEO' },
-        0,
-        nodeEvent,
-      );
-      section().props.onPointerUp(nodeEvent);
-      await flushActions();
-    });
-
-    expect(onCreateProposal).not.toHaveBeenCalled();
-    expect(workflowNode.props.connectionDisabled).toBe(true);
-    expect(workflowNode.props.resizable).toBe(false);
+    expect(node.props.connectionDisabled).toBe(true);
+    expect(node.props.resizable).toBe(false);
+    expect(renderer.root.findByProps({ className: 'flow-view-controls nodrag nopan' })).toBeTruthy();
+    expect(proposals).toEqual([]);
   });
 
-  it('rejects view-mode delete and paste shortcuts with visible status', async () => {
+  it('rejects delete and paste shortcuts in view mode with visible status', async () => {
     renderer = await renderCanvas(false);
-
-    await act(async () => {
-      section().props.onKeyDown(keyEvent('Delete'));
-    });
-    expect(statusToastText()).toBe('当前模式不允许删除');
+    await act(async () => section().props.onKeyDown(keyEvent('Delete')));
+    expect(statusText()).toBe('当前模式不允许删除');
 
     await act(async () => {
       section().props.onKeyDown(keyEvent('v', { metaKey: true }));
       await flushActions();
     });
-    expect(statusToastText()).toBe('当前模式不允许粘贴');
-    expect(onCreateProposal).not.toHaveBeenCalled();
+    expect(statusText()).toBe('当前模式不允许粘贴');
+    expect(proposals).toEqual([]);
   });
 
-  it('cancels an in-flight edit connection before a view-mode pointer completion', async () => {
+  it('keeps keyboard selection local in edit mode', async () => {
     renderer = await renderCanvas(true);
-    const workflowNode = renderer.root.findByType(WorkflowNode);
-    const event = pointerEvent();
-    await act(async () => workflowNode.props.onOutputPortPointerDown(
-      viewModeNode(),
-      { name: 'video', type: 'VIDEO' },
-      0,
-      event,
-    ));
-
-    await act(async () => renderer?.update(canvasElement(false)));
-    await act(async () => section().props.onPointerUp(event));
-
-    expect(onCreateProposal).not.toHaveBeenCalled();
-    expect(renderer.root.findByType(WorkflowNode).props.connectionDisabled).toBe(true);
-  });
-
-  it('dispatches an edit-mode node move through the extracted drag controller', async () => {
-    renderer = await renderCanvas(true);
-    const workflowNode = renderer.root.findByType(WorkflowNode);
-    const start = pointerEvent();
-
-    await act(async () => {
-      workflowNode.props.onPointerDown(start);
-      workflowNode.props.onPointerMove({ ...start, clientX: 70, clientY: 50 });
-      workflowNode.props.onPointerUp({ ...start, clientX: 70, clientY: 50 });
-      await flushActions();
-    });
-
-    expect(onCreateProposal).toHaveBeenCalledWith(expect.objectContaining({
-      baseVersionId: 'ver_a',
-      ops: [expect.objectContaining({ id: 'video', op: 'move_node' })],
-    }));
-  });
-
-  it('reverts a node move draft when persistence is rejected', async () => {
-    onCreateProposal.mockRejectedValueOnce(new Error('move failed'));
-    renderer = await renderCanvas(true);
-    const workflowNode = renderer.root.findByType(WorkflowNode);
-    const start = pointerEvent();
-
-    await act(async () => {
-      workflowNode.props.onPointerDown(start);
-      workflowNode.props.onPointerMove({ ...start, clientX: 70, clientY: 50 });
-      workflowNode.props.onPointerUp({ ...start, clientX: 70, clientY: 50 });
-      await flushActions();
-    });
-
-    const reverted = renderer.root.findByType(WorkflowNode);
-    expect(reverted.props.node.position).toEqual({ x: 20, y: 20 });
-    expect(reverted.props.dirty).toBe(false);
-    expect(statusToastText()).toBe('move failed');
-  });
-
-  it('reverts a node resize draft when persistence is rejected', async () => {
-    onCreateProposal.mockRejectedValueOnce(new Error('resize failed'));
-    renderer = await renderCanvas(true);
-    const workflowNode = renderer.root.findByType(WorkflowNode);
-    const start = pointerEvent();
-
-    await act(async () => {
-      workflowNode.props.onResizePointerDown(start);
-      workflowNode.props.onResizePointerMove({ ...start, clientX: 70, clientY: 50 });
-      workflowNode.props.onResizePointerUp({ ...start, clientX: 70, clientY: 50 });
-      await flushActions();
-    });
-
-    const reverted = renderer.root.findByType(WorkflowNode);
-    expect(reverted.props.node.size).toBeUndefined();
-    expect(statusToastText()).toBe('resize failed');
-  });
-
-  it('selects a graph node from the keyboard without dispatching a mutation', async () => {
-    renderer = await renderCanvas(true);
-    const workflowNode = renderer.root.findByType(WorkflowNode);
-
-    await act(async () => workflowNode.props.onKeyboardSelect(false));
+    const node = renderer.root.findByType(WorkflowNode);
+    await act(async () => node.props.onKeyboardSelect(false));
 
     expect(renderer.root.findByType(WorkflowNode).props.selected).toBe(true);
-    expect(onCreateProposal).not.toHaveBeenCalled();
+    expect(proposals).toEqual([]);
   });
 
-  it('aborts component-owned catalog requests on unmount', async () => {
+  it('switches from edit to view mode without retaining edit affordances', async () => {
+    renderer = await renderCanvas(true);
+    expect(renderer.root.findByType(WorkflowNode).props.resizable).toBe(true);
+
+    await act(async () => renderer?.update(canvasElement(false)));
+
+    expect(renderer.root.findByType(WorkflowNode).props.connectionDisabled).toBe(true);
+    expect(renderer.root.findByType(WorkflowNode).props.resizable).toBe(false);
+  });
+
+  it('aborts both component-owned catalog requests on unmount', async () => {
     const signals: AbortSignal[] = [];
     vi.stubGlobal('fetch', vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
       if (init?.signal) signals.push(init.signal);
@@ -161,140 +76,23 @@ describe('GraphCanvas view-mode integration', () => {
     expect(signals.every((signal) => !signal.aborted)).toBe(true);
     await act(async () => renderer?.unmount());
     renderer = null;
-
     expect(signals.every((signal) => signal.aborted)).toBe(true);
   });
 
-  it('keeps selection drag coordinates after React releases the pointer event target', async () => {
-    renderer = await renderCanvas(true);
-    const start = pointerEvent();
-
-    await act(async () => {
-      section().props.onPointerDown(start);
-    });
-
-    const move = pointerEvent();
-    move.clientX = 80;
-    move.clientY = 60;
-
-    await act(async () => {
-      section().props.onPointerMove(move);
-      move.currentTarget = null;
-      await flushActions();
-    });
-
-    expect(renderer.root.findByProps({ className: 'selection-rect' }).props.style).toEqual({
-      height: 50,
-      width: 70,
-      x: 10,
-      y: 10,
-    });
-  });
-
-  it('does not rerender the graph for idle pointer movement', async () => {
-    const onRender = vi.fn();
-    const onPresenceChange = vi.fn<(presence: CanvasPresence) => void>();
-    await act(async () => {
-      renderer = create(
-        <Profiler id="graph-canvas" onRender={onRender}>
-          {canvasElement(true, onPresenceChange)}
-        </Profiler>,
-      );
-      await flushActions();
-    });
-    const renderCount = onRender.mock.calls.length;
-    onPresenceChange.mockClear();
-
-    await act(async () => {
-      section().props.onPointerMove(pointerEvent());
-      await new Promise((resolve) => setTimeout(resolve, 200));
-    });
-
-    expect(onRender).toHaveBeenCalledTimes(renderCount);
-    expect(onPresenceChange).toHaveBeenCalledTimes(1);
-    expect(onPresenceChange.mock.calls[0]?.[0].cursor).toEqual({
-      x: expect.any(Number),
-      y: expect.any(Number),
-    });
-  });
-
-  it('clears the shared cursor when the pointer leaves the canvas', async () => {
-    const onPresenceChange = vi.fn<(presence: CanvasPresence) => void>();
-    renderer = await renderCanvas(true, onPresenceChange);
-    onPresenceChange.mockClear();
-
-    await act(async () => {
-      section().props.onPointerMove(pointerEvent());
-      section().props.onPointerLeave();
-      await new Promise((resolve) => setTimeout(resolve, 200));
-    });
-
-    expect(onPresenceChange).toHaveBeenCalledTimes(1);
-    expect(onPresenceChange.mock.calls[0]?.[0].cursor).toBeNull();
-  });
-
-  it('keeps an edit-mode connection rejection visible through the extracted controller', async () => {
-    renderer = await renderCanvas(true);
-    class TestElement {}
-    vi.stubGlobal('HTMLElement', TestElement);
-    vi.stubGlobal('document', {
-      elementFromPoint: () => ({
-        closest: () => ({
-          dataset: {
-            portDirection: 'input',
-            portIndex: '0',
-            portName: 'video',
-            portNodeId: 'save',
-            portType: 'VIDEO',
-          },
-        }),
-      }),
-    });
-    onCreateProposal.mockRejectedValueOnce(new Error('connection failed'));
-    const workflowNode = renderer.root.findByType(WorkflowNode);
-    const event = pointerEvent();
-
-    await act(async () => {
-      workflowNode.props.onOutputPortPointerDown(
-        viewModeNode(),
-        { name: 'video', type: 'VIDEO' },
-        0,
-        event,
-      );
-    });
-    await act(async () => {
-      section().props.onPointerUp(event);
-      await flushActions();
-    });
-
-    expect(onCreateProposal).toHaveBeenCalledWith(expect.objectContaining({
-      baseVersionId: 'ver_a',
-      ops: [expect.objectContaining({ op: 'add_edge' })],
-    }));
-    expect(statusToastText()).toBe('connection failed');
-  });
-
-  async function renderCanvas(
-    editable: boolean,
-    onPresenceChange?: (presence: CanvasPresence) => void,
-  ): Promise<ReactTestRenderer> {
+  async function renderCanvas(editable: boolean): Promise<ReactTestRenderer> {
     let next!: ReactTestRenderer;
     await act(async () => {
-      next = create(canvasElement(editable, onPresenceChange));
+      next = create(canvasElement(editable));
       await flushActions();
     });
     return next;
   }
 
-  function canvasElement(
-    editable: boolean,
-    onPresenceChange?: (presence: CanvasPresence) => void,
-  ) {
+  function canvasElement(editable: boolean) {
     return (
       <GraphCanvas
         graph={{ nodes: [viewModeNode()], edges: [] }}
-        onCreateProposal={editable ? onCreateProposal : undefined}
-        onPresenceChange={onPresenceChange}
+        onCreateProposal={editable ? async (proposal) => { proposals.push(proposal); } : undefined}
         outputs={[]}
         pendingProposal={null}
         run={run()}
@@ -305,59 +103,16 @@ describe('GraphCanvas view-mode integration', () => {
     );
   }
 
-  function statusToastText(): string {
-    if (!renderer) throw new Error('renderer is not mounted');
-    return renderer.root.findByProps({ className: 'canvas-status-toast' }).children.join('');
-  }
-
   function section() {
     if (!renderer) throw new Error('renderer is not mounted');
     return renderer.root.findByProps({ className: 'p-canvas cv-bold' });
   }
+
+  function statusText(): string {
+    if (!renderer) throw new Error('renderer is not mounted');
+    return renderer.root.findByProps({ className: 'canvas-status-toast' }).children.join('');
+  }
 });
-
-type PointerTargetStub = {
-    focus: () => void;
-    getBoundingClientRect: () => { left: number; top: number; width: number; height: number };
-    hasPointerCapture: () => boolean;
-    releasePointerCapture: (pointerId: number) => void;
-    setPointerCapture: (pointerId: number) => void;
-};
-
-type PointerEventStub = {
-  button: number;
-  clientX: number;
-  clientY: number;
-  metaKey: boolean;
-  ctrlKey: boolean;
-  shiftKey: boolean;
-  pointerId: number;
-  preventDefault: () => void;
-  stopPropagation: () => void;
-  currentTarget: PointerTargetStub | null;
-};
-
-function pointerEvent(): PointerEventStub {
-  const currentTarget: PointerTargetStub = {
-    focus: vi.fn(),
-    getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }),
-    hasPointerCapture: () => false,
-    releasePointerCapture: vi.fn(),
-    setPointerCapture: vi.fn(),
-  };
-  return {
-    button: 0,
-    clientX: 10,
-    clientY: 10,
-    metaKey: false,
-    ctrlKey: false,
-    shiftKey: false,
-    pointerId: 1,
-    preventDefault: vi.fn(),
-    stopPropagation: vi.fn(),
-    currentTarget,
-  };
-}
 
 function keyEvent(key: string, overrides: { metaKey?: boolean } = {}) {
   return {
