@@ -147,6 +147,11 @@ pub(crate) async fn set_workspace_provider(
             "runtime provider `{provider_id}` is not registered"
         )));
     }
+    if !state.provider_registry.provider_enabled(provider_id) {
+        return Err(ApiError::conflict(format!(
+            "runtime provider `{provider_id}` is registered but unavailable"
+        )));
+    }
     state
         .store
         .set_workspace_runtime_provider(&workspace_id, Some(provider_id))
@@ -250,6 +255,7 @@ mod tests {
     use helixflow_agent::{
         AgentError, AgentSessionRequest, ValidatedAgentProposal, ValidatedAgentReply,
     };
+    use helixflow_gateway::{ProviderRegistry, RuntimeProvider};
     use helixflow_run::EventBus;
     use helixflow_store::Store;
 
@@ -438,6 +444,46 @@ mod tests {
         assert_eq!(workspaces.len(), 1);
         assert_eq!(workspaces[0].id, created.id);
         assert_eq!(workspaces[0].name, "User workspace");
+    }
+
+    #[tokio::test]
+    async fn set_workspace_provider_rejects_a_registered_but_unavailable_provider() {
+        let (mut state, _dir) = test_state().await;
+        state.provider_registry = ProviderRegistry::new(
+            "mock",
+            vec![
+                RuntimeProvider::mock(),
+                RuntimeProvider::unavailable("fal", "FAL_KEY is not configured"),
+            ],
+        );
+        let workspace = create_workspace(
+            State(state.clone()),
+            Json(CreateWorkspaceRequest { name: None }),
+        )
+        .await
+        .expect("create workspace")
+        .0;
+
+        let error = set_workspace_provider(
+            Path(workspace.id.clone()),
+            State(state.clone()),
+            Json(SetWorkspaceProviderRequest {
+                provider_id: "fal".to_owned(),
+            }),
+        )
+        .await
+        .expect_err("unavailable provider must not be persisted");
+
+        assert_eq!(error.status, axum::http::StatusCode::CONFLICT);
+        assert_eq!(
+            state
+                .store
+                .workspace(&workspace.id)
+                .await
+                .expect("workspace")
+                .runtime_provider_id,
+            None
+        );
     }
 
     async fn test_state() -> (AppState, tempfile::TempDir) {
