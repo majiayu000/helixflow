@@ -109,7 +109,7 @@ DOM 裁剪已经达到目标，且边 LOD 消除了 6000 边带来的秒级额�
 | 初始详细节点 DOM | < 100 | 通过 |
 | 低缩放全图 DOM | < 100 | 通过，单 Canvas 概览 |
 
-`.github/workflows/ci.yml` 安装 Chromium 并运行 `npm run test:e2e`；性能用例在 CI 自动启用硬门槛，超标即失败。本机数据是当前硬件和 fixture 的证据，不等于对任意设备、任意复杂自定义节点的绝对 60 FPS 承诺。
+`.github/workflows/ci.yml` 安装 Chromium 并运行 `npm run test:e2e`。固定开发机或专用性能 runner 用 `HELIXFLOW_ENFORCE_CANVAS_P95=1` 执行 32 ms / 300 样本硬门槛；GitHub 共享 runner 没有固定 CPU 配额，因此执行 75 ms 回归上限，并与同 runner 的 2 节点基线比较，避免把宿主机调度抖动误判成画布回归。本机数据是当前硬件和 fixture 的证据，不等于对任意设备、任意复杂自定义节点的绝对 60 FPS 承诺。
 
 ## 6. 数据访问设计
 
