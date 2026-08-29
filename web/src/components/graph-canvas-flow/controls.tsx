@@ -1,16 +1,21 @@
 import { Icon } from '../../icons';
+import type { GraphNodeState } from '../../types';
 import type { ViewState } from '../graph-canvas-navigation';
 import type { WorkflowFlowInstance } from './types';
+import { setFlowViewportToNodes } from './use-viewport';
 
 export function CanvasViewControls({
   instance,
-  nodeCount,
+  nodes,
   view,
+  viewportSize,
 }: {
   instance: WorkflowFlowInstance | null;
-  nodeCount: number;
+  nodes: GraphNodeState[];
   view: ViewState;
+  viewportSize: { width: number; height: number };
 }) {
+  const nodeCount = nodes.length;
   const zoomPercent = Math.round(view.z * 100);
   return (
     <div className="flow-view-controls nodrag nopan" role="toolbar" aria-label="画布视图控制">
@@ -31,7 +36,7 @@ export function CanvasViewControls({
       <button
         aria-label="适应全部节点"
         disabled={nodeCount === 0}
-        onClick={() => void instance?.fitView({ duration: 220, padding: 0.18 })}
+        onClick={() => void setFlowViewportToNodes(instance, nodes, viewportSize)}
       >
         <Icon n="layers" s={15} />
       </button>

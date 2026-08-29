@@ -1,8 +1,10 @@
 import { useCallback, type KeyboardEvent } from 'react';
 import type { GraphNodeState } from '../../types';
 import type { createCanvasEditActions } from '../graph-canvas-edit-actions';
+import type { ViewportSize } from '../graph-canvas-navigation';
 import { graphShortcutFromEvent, isEditableShortcutTarget } from '../graph-canvas-selection';
 import type { WorkflowFlowInstance } from './types';
+import { setFlowViewportToNodes } from './use-viewport';
 
 type ShortcutInput = {
   editActions: ReturnType<typeof createCanvasEditActions>;
@@ -11,6 +13,7 @@ type ShortcutInput = {
   selectedIds: Set<string>;
   selectedNodes: GraphNodeState[];
   setSelection: (ids: Iterable<string>) => void;
+  viewportSize: ViewportSize;
 };
 
 export function useCanvasShortcuts(input: ShortcutInput) {
@@ -22,7 +25,7 @@ export function useCanvasShortcuts(input: ShortcutInput) {
     if (shortcut === 'clear_selection') input.setSelection([]);
     if (shortcut === 'select_all') input.setSelection(input.nodes.map((node) => node.id));
     if (shortcut === 'fit_view') {
-      void input.instance?.fitView({ duration: 220, padding: 0.18 });
+      void setFlowViewportToNodes(input.instance, input.nodes, input.viewportSize);
     }
     if (shortcut === 'copy_selection') {
       void input.editActions.copySelection(input.selectedNodes);

@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite';
+import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 
 const env = (globalThis as unknown as { process?: { env?: Record<string, string | undefined> } })
@@ -8,6 +8,9 @@ const wsTarget = apiTarget.replace(/^http/, 'ws');
 
 export default defineConfig({
   plugins: [react()],
+  test: {
+    include: ['src/**/*.test.{ts,tsx}'],
+  },
   build: {
     rolldownOptions: {
       output: {

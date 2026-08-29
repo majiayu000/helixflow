@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "test:e2e:performance": "playwright test e2e/canvas.performance.spec.ts"
   },
   "dependencies": {
     "@xyflow/react": "12.11.5",
@@ -17,6 +19,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@playwright/test": "1.62.1",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "@types/react-test-renderer": "^19.1.0",

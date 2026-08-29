@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Viewport } from '@xyflow/react';
+import type { GraphNodeState } from '../../types';
 import {
   DEFAULT_GRAPH_VIEW,
   loadGraphCanvasView,
@@ -7,6 +8,7 @@ import {
   type ViewState,
   type ViewportSize,
 } from '../graph-canvas-navigation';
+import { fitViewToNodes } from '../graph-canvas-selection';
 import type { WorkflowFlowInstance } from './types';
 
 const VIEWPORT_SLICE_PAN_THRESHOLD = 240;
@@ -36,16 +38,33 @@ export function useFlowViewport(workspaceId: string) {
   useEffect(() => {
     const current = canvasRef.current;
     if (!current) return;
+    let frame: number | null = null;
     const updateSize = () => {
       const rect = current.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0) {
-        setViewportSize({ width: rect.width, height: rect.height });
+        setViewportSize((previous) => (
+          previous.width === rect.width && previous.height === rect.height
+            ? previous
+            : { width: rect.width, height: rect.height }
+        ));
       }
     };
+    const scheduleUpdate = () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        updateSize();
+      });
+    };
     updateSize();
-    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateSize);
+    const observer = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(scheduleUpdate);
     observer?.observe(current);
-    return () => observer?.disconnect();
+    return () => {
+      observer?.disconnect();
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
   }, []);
 
   const onInit = useCallback((next: WorkflowFlowInstance) => {
@@ -69,6 +88,16 @@ export function useFlowViewport(workspaceId: string) {
   }, []);
 
   return { canvasRef, instance, onInit, onMove, onMoveEnd, sliceView, view, viewportSize };
+}
+
+export async function setFlowViewportToNodes(
+  instance: Pick<WorkflowFlowInstance, 'setViewport'> | null,
+  nodes: GraphNodeState[],
+  viewportSize: ViewportSize,
+): Promise<void> {
+  if (!instance || nodes.length === 0) return;
+  const view = fitViewToNodes(nodes, viewportSize);
+  await instance.setViewport(toViewport(view), { duration: 220 });
 }
 
 export function shouldRefreshViewportSlice(current: ViewState, next: ViewState): boolean {

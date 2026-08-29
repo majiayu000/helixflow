@@ -61,7 +61,7 @@ export function StaticFlowContent(props: StaticContentProps) {
           <ConnectedCanvasCollaborationWorld comments={props.comments} nodes={graphNodes} />
         )}
       </div>
-      <CanvasViewControls instance={null} nodeCount={props.nodes.length} view={props.view} />
+      <CanvasViewControls instance={null} nodes={graphNodes} view={props.view} viewportSize={{ width: 900, height: 640 }} />
     </>
   );
 }

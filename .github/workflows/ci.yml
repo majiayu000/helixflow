@@ -94,5 +94,13 @@ jobs:
         working-directory: web
         run: npm run build
 
+      - name: Install Chromium for canvas browser tests
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+
+      - name: Test React Flow canvas in Chromium
+        working-directory: web
+        run: npm run test:e2e
+
       - name: Smoke release topology
         run: ./scripts/smoke-release.sh

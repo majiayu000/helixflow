@@ -47,9 +47,9 @@ export const GRAPH_NODE_MAX_WIDTH = 420;
 export const GRAPH_NODE_MAX_HEIGHT = 360;
 export const MINIMAP_WIDTH = 188;
 export const MINIMAP_HEIGHT = 124;
+export const GRAPH_CANVAS_MIN_ZOOM = 0.02;
+export const GRAPH_CANVAS_MAX_ZOOM = 1.4;
 
-const minZoom = 0.4;
-const maxZoom = 1.4;
 const minimapPadding = 260;
 
 export function viewStorageKey(workspaceId: string): string {
@@ -93,7 +93,7 @@ export function zoomViewAtPoint(
 
 export function clampZoom(value: number): number {
   if (!Number.isFinite(value)) return DEFAULT_GRAPH_VIEW.z;
-  return Math.min(maxZoom, Math.max(minZoom, value));
+  return Math.min(GRAPH_CANVAS_MAX_ZOOM, Math.max(GRAPH_CANVAS_MIN_ZOOM, value));
 }
 
 export function normalizeView(value: unknown): ViewState {

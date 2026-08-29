@@ -145,6 +145,12 @@
   stroke-width: 2.5;
 }
 
+.flow-canvas-overview {
+  opacity: .82;
+  pointer-events: none;
+  position: absolute;
+}
+
 .workflow-flow-node {
   position: relative;
   width: 100%;

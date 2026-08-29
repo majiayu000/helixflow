@@ -16,6 +16,10 @@ import { outputsByCanvasNode } from '../graph-canvas-artifacts';
 import { canvasCapabilities } from '../graph-canvas-capabilities';
 import { createCanvasEditActions } from '../graph-canvas-edit-actions';
 import {
+  GRAPH_CANVAS_MAX_ZOOM,
+  GRAPH_CANVAS_MIN_ZOOM,
+} from '../graph-canvas-navigation';
+import {
   buildComparableNodeMap,
   buildEdgeSignatureSet,
   buildRunStepStateMap,
@@ -27,6 +31,7 @@ import { toWorkflowFlowEdges, toWorkflowFlowNodes } from './adapter';
 import { CanvasViewControls } from './controls';
 import { ReactFlowWorkflowNode } from './node';
 import { CanvasOverlays } from './overlays';
+import { CanvasOverview, shouldUseCanvasOverview } from './overview';
 import { StaticFlowContent } from './static-content';
 import { useCanvasCatalog, useImplementationResolution } from './use-catalog';
 import { handleFlowDragOver, handleFlowDrop, useFlowActions } from './use-flow-actions';
@@ -41,6 +46,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
   const [editStatus, setEditStatus] = useState<string | null>(null);
   const onSelectionChangeRef = useRef(props.onSelectionChange);
   const onSelectOutputRef = useRef(props.onSelectOutput);
+  const reportedSelectionRef = useRef({ scope: '', signature: '' });
   onSelectionChangeRef.current = props.onSelectionChange;
   onSelectOutputRef.current = props.onSelectOutput;
   const selectOutput = useCallback((id: string) => onSelectOutputRef.current?.(id), []);
@@ -98,6 +104,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
       : []
   ), [baseEdgeIds, catalogState.definitionByType, drawGraph.nodes, props.pendingProposal, renderEdges]);
   const elements = useFlowElements(adaptedNodes, adaptedEdges);
+  const useOverview = shouldUseCanvasOverview(drawGraph.nodes.length, viewport.sliceView);
   const renderNodeIds = useMemo(
     () => nodeIdsForViewport(
       drawGraph.nodes,
@@ -108,18 +115,22 @@ export function GraphCanvas(props: GraphCanvasProps) {
     [drawGraph.nodes, renderEdges, viewport.sliceView, viewport.viewportSize],
   );
   const flowNodes = useMemo(
-    () => renderNodeIds
+    () => useOverview
+      ? []
+      : renderNodeIds
       ? elements.nodes.filter((node) => renderNodeIds.has(node.id))
       : elements.nodes,
-    [elements.nodes, renderNodeIds],
+    [elements.nodes, renderNodeIds, useOverview],
   );
   const flowEdges = useMemo(
-    () => renderNodeIds
+    () => useOverview
+      ? []
+      : renderNodeIds
       ? elements.edges.filter(
         (edge) => renderNodeIds.has(edge.source) && renderNodeIds.has(edge.target),
       )
       : elements.edges,
-    [elements.edges, renderNodeIds],
+    [elements.edges, renderNodeIds, useOverview],
   );
   const selectedNodes = useMemo(
     () => drawGraph.nodes.filter((node) => elements.selectedIds.has(node.id)),
@@ -150,6 +161,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
     selectedIds: elements.selectedIds,
     selectedNodes,
     setSelection: elements.setSelection,
+    viewportSize: viewport.viewportSize,
   });
   const presence = useFlowPresence({
     workspaceId: props.workspaceId,
@@ -160,10 +172,19 @@ export function GraphCanvas(props: GraphCanvasProps) {
   });
 
   useEffect(() => {
-    onSelectionChangeRef.current?.([...elements.selectedIds]);
-  }, [elements.selectedIds]);
-
-  useEffect(() => elements.setSelection([]), [props.versionId, props.workspaceId]);
+    const scope = `${props.workspaceId}\0${props.versionId}`;
+    const selectedIds = [...elements.selectedIds];
+    const signature = selectedIds.join('\0');
+    if (reportedSelectionRef.current.scope !== scope) {
+      reportedSelectionRef.current = { scope, signature: '' };
+      elements.setSelection([]);
+      onSelectionChangeRef.current?.([]);
+      return;
+    }
+    if (reportedSelectionRef.current.signature === signature) return;
+    reportedSelectionRef.current.signature = signature;
+    onSelectionChangeRef.current?.(selectedIds);
+  }, [elements.selectedIds, elements.setSelection, props.versionId, props.workspaceId]);
 
   return (
     <section ref={viewport.canvasRef} className={typeof window === 'undefined' ? 'p-canvas cv-bold' : 'p-canvas cv-bold flow-canvas'} aria-label="Workflow graph canvas" tabIndex={0} onKeyDown={shortcuts}>
@@ -180,8 +201,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
         elementsSelectable={capabilities.select}
         fitViewOptions={{ padding: 0.18 }}
         isValidConnection={flowActions.isValidConnection}
-        maxZoom={2}
-        minZoom={0.08}
+        maxZoom={GRAPH_CANVAS_MAX_ZOOM}
+        minZoom={GRAPH_CANVAS_MIN_ZOOM}
         nodesConnectable={capabilities.connect}
         nodesDraggable={capabilities.move}
         onlyRenderVisibleElements={typeof ResizeObserver !== 'undefined'}
@@ -204,13 +225,14 @@ export function GraphCanvas(props: GraphCanvasProps) {
       >
         <Background color="rgba(255,255,255,.22)" gap={20} size={1} variant={BackgroundVariant.Dots} />
         <ViewportPortal>
+          {useOverview ? <CanvasOverview nodes={drawGraph.nodes} /> : null}
           {props.presenceByActor ? (
             <CanvasCollaborationWorld comments={props.comments ?? []} hiddenActorId={LOCAL_CANVAS_ACTOR.actorId} nodes={drawGraph.nodes} presenceByActor={props.presenceByActor} />
           ) : (
             <ConnectedCanvasCollaborationWorld comments={props.comments ?? []} nodes={drawGraph.nodes} />
           )}
         </ViewportPortal>
-        <CanvasViewControls instance={viewport.instance} nodeCount={drawGraph.nodes.length} view={viewport.view} />
+        <CanvasViewControls instance={viewport.instance} nodes={drawGraph.nodes} view={viewport.view} viewportSize={viewport.viewportSize} />
         </ReactFlow>
       )}
       <CanvasOverlays {...props} canEdit={capabilities.move} catalog={catalogState.catalog} catalogError={catalogState.catalogError} definitionByType={catalogState.definitionByType} drawGraph={drawGraph} editActions={editActions} editStatus={editStatus} modelCatalog={catalogState.modelCatalog} modelCatalogError={catalogState.modelCatalogError} pendingProposal={Boolean(props.pendingProposal)} readiness={implementation.readiness} resolution={implementation.resolution} selectedIds={elements.selectedIds} selectedNodes={selectedNodes} setSelection={elements.setSelection} view={viewport.view} viewportSize={viewport.viewportSize} />

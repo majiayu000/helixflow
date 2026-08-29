@@ -4,10 +4,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   DEFAULT_GRAPH_VIEW,
+  graphNodeHeight,
+  graphNodeWidth,
   loadGraphCanvasView,
   saveGraphCanvasView,
 } from './graph-canvas-navigation';
+import { fitViewToNodes } from './graph-canvas-selection';
 import {
+  setFlowViewportToNodes,
   shouldRefreshViewportSlice,
   useFlowViewport,
 } from './graph-canvas-flow/use-viewport';
@@ -37,6 +41,46 @@ describe('graph canvas view persistence', () => {
 });
 
 describe('dense graph viewport slice refresh', () => {
+  it('fits the entire 4000-node benchmark grid inside the viewport', () => {
+    const nodes = Array.from({ length: 4_000 }, (_, index) => (
+      node(`node-${index}`, (index % 80) * 320, Math.floor(index / 80) * 180)
+    ));
+    const viewport = { width: 1_440, height: 900 };
+
+    const view = fitViewToNodes(nodes, viewport);
+    const right = Math.max(...nodes.map((item) => item.position.x + graphNodeWidth(item)));
+    const bottom = Math.max(...nodes.map((item) => item.position.y + graphNodeHeight(item)));
+
+    expect(view.x).toBeGreaterThanOrEqual(0);
+    expect(view.y).toBeGreaterThanOrEqual(0);
+    expect(view.x + right * view.z).toBeLessThanOrEqual(viewport.width);
+    expect(view.y + bottom * view.z).toBeLessThanOrEqual(viewport.height);
+  });
+
+  it('fits the complete domain graph instead of the mounted React Flow slice', async () => {
+    const setViewport = vi.fn(async (
+      _viewport: { x: number; y: number; zoom: number },
+      _options?: { duration?: number },
+    ) => true);
+    const nodes = [node('near', 0, 0), node('far', 12_000, 8_000)];
+
+    await setFlowViewportToNodes(
+      { setViewport } as never,
+      nodes,
+      { width: 1200, height: 800 },
+    );
+
+    expect(setViewport).toHaveBeenCalledOnce();
+    expect(setViewport.mock.calls[0]?.[0]).toEqual({
+      x: expect.any(Number),
+      y: expect.any(Number),
+      zoom: expect.any(Number),
+    });
+    expect(setViewport.mock.calls[0]![0].zoom).toBeGreaterThanOrEqual(0.08);
+    expect(setViewport.mock.calls[0]![0].zoom).toBeLessThan(0.4);
+    expect(setViewport.mock.calls[0]?.[1]).toEqual({ duration: 220 });
+  });
+
   it('does not commit transient React Flow movement to the domain view', async () => {
     let renderer: ReactTestRenderer | null = null;
     let latest: ReturnType<typeof useFlowViewport> | null = null;

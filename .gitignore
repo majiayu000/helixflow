@@ -14,5 +14,7 @@ target/
 .design-canvas.state.json
 .thumbnail
 web/bun.lock
+web/playwright-report/
+web/test-results/
 .gstack/
 __pycache__/
