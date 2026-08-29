@@ -47,9 +47,11 @@ export function GraphCanvas(props: GraphCanvasProps) {
   const onSelectionChangeRef = useRef(props.onSelectionChange);
   const onSelectOutputRef = useRef(props.onSelectOutput);
   const reportedSelectionRef = useRef({ scope: '', signature: '' });
+  const resetFlowNodesRef = useRef<() => void>(() => undefined);
   onSelectionChangeRef.current = props.onSelectionChange;
   onSelectOutputRef.current = props.onSelectOutput;
   const selectOutput = useCallback((id: string) => onSelectOutputRef.current?.(id), []);
+  const resetRejectedMutation = useCallback(() => resetFlowNodesRef.current(), []);
   const sourceGraph = props.canvasGraph ?? props.graph;
   const drawGraph = props.pendingProposal?.previewGraph ?? sourceGraph;
   const activeMode = props.pendingProposal ? 'review' : props.onCreateProposal ? 'edit' : 'view';
@@ -70,6 +72,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
     edges: drawGraph.edges,
     definitionByType: catalogState.definitionByType,
     onCreateProposal: props.onCreateProposal,
+    onMutationRejected: resetRejectedMutation,
     setStatus: setEditStatus,
   });
   const adaptedNodes = useMemo(() => toWorkflowFlowNodes({
@@ -104,6 +107,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
       : []
   ), [baseEdgeIds, catalogState.definitionByType, drawGraph.nodes, props.pendingProposal, renderEdges]);
   const elements = useFlowElements(adaptedNodes, adaptedEdges);
+  resetFlowNodesRef.current = elements.resetNodes;
   const useOverview = shouldUseCanvasOverview(drawGraph.nodes.length, viewport.sliceView);
   const renderNodeIds = useMemo(
     () => nodeIdsForViewport(

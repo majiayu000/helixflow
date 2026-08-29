@@ -68,6 +68,41 @@ test('resizes a selected node through React Flow NodeResizer', async ({ page }) 
   await expect.poll(() => proposalOps(page)).toContain('resize_node');
 });
 
+test('reverts transient drag and resize state when persistence rejects', async ({ page }) => {
+  const textNode = page.locator('.react-flow__node[data-id="text"]');
+  const original = await textNode.boundingBox();
+  if (!original) throw new Error('text node has no initial browser bounds');
+
+  await page.evaluate(() => window.__helixflowE2E.rejectOps.push('move_node'));
+  await page.mouse.move(original.x + 80, original.y + 24);
+  await page.mouse.down();
+  await page.mouse.move(original.x + 170, original.y + 94, { steps: 5 });
+  await page.mouse.up();
+
+  await expect(page.locator('.canvas-status-toast')).toContainText('move_node rejected');
+  await expect.poll(async () => (await textNode.boundingBox())?.x).toBeCloseTo(original.x, 0);
+  await expect.poll(async () => (await textNode.boundingBox())?.y).toBeCloseTo(original.y, 0);
+
+  await page.evaluate(() => {
+    window.__helixflowE2E.rejectOps.splice(0, 1, 'resize_node');
+  });
+  await textNode.click();
+  const resizeHandle = textNode.locator('.react-flow__resize-control.handle.bottom.right');
+  const handleBox = await resizeHandle.boundingBox();
+  if (!handleBox) throw new Error('resize handle has no browser bounds');
+  await page.mouse.move(
+    handleBox.x + handleBox.width / 2,
+    handleBox.y + handleBox.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(handleBox.x + 90, handleBox.y + 70, { steps: 5 });
+  await page.mouse.up();
+
+  await expect(page.locator('.canvas-status-toast')).toContainText('resize_node rejected');
+  await expect.poll(async () => (await textNode.boundingBox())?.width).toBeCloseTo(original.width, 0);
+  await expect.poll(async () => (await textNode.boundingBox())?.height).toBeCloseTo(original.height, 0);
+});
+
 test('mounts only the viewport slice for a 4000-node graph', async ({ page }) => {
   await page.goto('/e2e/canvas.html?nodes=4000');
   await expect(page.locator('.flow-node-count')).toContainText('4,000 nodes');

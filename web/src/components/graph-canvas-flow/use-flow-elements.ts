@@ -15,9 +15,11 @@ export function useFlowElements(
   const [nodes, setNodes] = useState(adaptedNodes);
   const [edges, setEdges] = useState(adaptedEdges);
 
-  useEffect(() => {
+  const resetNodes = useCallback(() => {
     setNodes((current) => reconcileFlowNodes(current, adaptedNodes));
   }, [adaptedNodes]);
+
+  useEffect(() => resetNodes(), [resetNodes]);
 
   useEffect(() => {
     setEdges((current) => {
@@ -57,5 +59,5 @@ export function useFlowElements(
     });
   }, []);
 
-  return { edges, nodes, onEdgesChange, onNodesChange, selectedIds, setSelection };
+  return { edges, nodes, onEdgesChange, onNodesChange, resetNodes, selectedIds, setSelection };
 }

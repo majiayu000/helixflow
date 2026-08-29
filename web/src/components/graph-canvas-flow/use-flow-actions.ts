@@ -16,6 +16,7 @@ type FlowActionsInput = {
   edges: WorkbenchState['graph']['edges'];
   definitionByType: Map<string, NodeDefinition>;
   onCreateProposal?: (input: ManualProposalInput) => Promise<void>;
+  onMutationRejected: () => void;
   setStatus: (message: string | null) => void;
 };
 
@@ -28,10 +29,11 @@ export function useFlowActions(input: FlowActionsInput) {
       void onCreateProposalRef.current(proposal)
         .then(() => input.setStatus(success))
         .catch((error) => {
+          input.onMutationRejected();
           input.setStatus(error instanceof Error ? error.message : '画布编辑失败');
         });
     },
-    [input.setStatus],
+    [input.onMutationRejected, input.setStatus],
   );
 
   const commitMove = useCallback(

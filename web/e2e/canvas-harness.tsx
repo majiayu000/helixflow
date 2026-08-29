@@ -18,6 +18,7 @@ declare global {
     __helixflowE2E: {
       logicalNodeCount: number;
       proposals: ManualProposalInput[];
+      rejectOps: string[];
     };
   }
 }
@@ -26,7 +27,7 @@ const proposals: ManualProposalInput[] = [];
 const requestedCount = Number.parseInt(new URLSearchParams(location.search).get('nodes') ?? '2', 10);
 const logicalNodeCount = Number.isFinite(requestedCount) ? Math.max(2, requestedCount) : 2;
 const graph = graphFixture(logicalNodeCount);
-window.__helixflowE2E = { logicalNodeCount, proposals };
+window.__helixflowE2E = { logicalNodeCount, proposals, rejectOps: [] };
 
 const nativeFetch = window.fetch.bind(window);
 window.fetch = async (input, init) => {
@@ -64,6 +65,10 @@ createRoot(document.getElementById('root')!).render(
       workspaceId="ws_e2e"
       onCreateProposal={async (proposal) => {
         proposals.push(proposal);
+        const operation = proposal.ops[0]?.op;
+        if (operation && window.__helixflowE2E.rejectOps.includes(operation)) {
+          throw new Error(`${operation} rejected`);
+        }
       }}
     />
   </main>,
