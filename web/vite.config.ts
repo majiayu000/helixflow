@@ -6,13 +6,16 @@ const env = (globalThis as unknown as { process?: { env?: Record<string, string 
 const apiTarget = env?.HELIXFLOW_API_TARGET ?? 'http://127.0.0.1:8787';
 const wsTarget = apiTarget.replace(/^http/, 'ws');
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [react()],
   test: {
     include: ['src/**/*.test.{ts,tsx}'],
   },
   build: {
     rolldownOptions: {
+      input: mode === 'e2e'
+        ? { app: 'index.html', canvas: 'e2e/canvas.html' }
+        : undefined,
       output: {
         codeSplitting: {
           groups: [{ name: 'vendor', test: /node_modules/ }],
@@ -31,4 +34,4 @@ export default defineConfig({
       },
     },
   },
-});
+}));
