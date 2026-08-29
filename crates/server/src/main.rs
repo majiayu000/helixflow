@@ -79,7 +79,7 @@ use app_state::AppState;
 use artifact_routes::{
     accept_output, artifact_content, download_output, preview_output, reject_output, select_output,
 };
-use auth::{AuthConfig, require_auth, validate_bind_auth};
+use auth::{AuthConfig, create_auth_session, login_page, require_auth, validate_bind_auth};
 use canvas_collaboration::{apply_canvas_comment_op, update_canvas_presence};
 use canvas_ticket::create_canvas_ticket;
 use catalog_routes::{
@@ -106,9 +106,9 @@ use ws::ws_handler;
 
 #[tokio::main]
 async fn main() {
-    let auth_config = AuthConfig::from_env();
     let bind_addr =
         std::env::var("HELIXFLOW_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8787".to_owned());
+    let auth_config = AuthConfig::from_env(&bind_addr);
     if let Err(message) = validate_bind_auth(&bind_addr, &auth_config) {
         eprintln!("{message}");
         std::process::exit(1);
@@ -202,6 +202,8 @@ pub(crate) fn version_file_reconciliation_event(report: &ReconciliationReport) -
 
 fn app(state: AppState) -> Router {
     Router::new()
+        .route("/login", get(login_page))
+        .route("/api/auth/session", post(create_auth_session))
         .route("/api/health", get(health))
         .route("/api/ready", get(ready))
         .route("/api/system", get(system))
@@ -524,7 +526,9 @@ mod tests {
 
     #[tokio::test]
     async fn auth_token_gates_rest_and_ws_requests() {
+        use reqwest::redirect::Policy;
         use tokio::net::TcpListener;
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
         let events = EventBus::new(16);
         let (_dir, state) = test_app_state(events.clone()).await;
@@ -537,7 +541,29 @@ mod tests {
             axum::serve(listener, app).await.expect("serve test app");
         });
 
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .redirect(Policy::none())
+            .build()
+            .expect("build test client");
+
+        let login = client
+            .get(format!("http://{addr}/login"))
+            .send()
+            .await
+            .expect("request public login page");
+        assert_eq!(login.status(), 200);
+
+        let browser_redirect = client
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .expect("request protected browser route");
+        assert_eq!(browser_redirect.status(), 307);
+        assert_eq!(
+            browser_redirect.headers().get(reqwest::header::LOCATION),
+            Some(&reqwest::header::HeaderValue::from_static("/login"))
+        );
+
         let denied = client
             .get(format!("http://{addr}/api/health"))
             .send()
@@ -561,8 +587,8 @@ mod tests {
             .expect("request with token");
         assert_eq!(allowed.status(), 200);
 
-        // Query-string tokens are reserved for the WebSocket route; REST
-        // endpoints must use the Authorization header (GH-127).
+        // Query-string tokens leak through logs, history, and referrers, so
+        // neither REST nor WebSocket endpoints accept them.
         let query_denied = client
             .get(format!("http://{addr}/api/health?token=secret-token"))
             .send()
@@ -573,11 +599,58 @@ mod tests {
         let ws_denied =
             tokio_tungstenite::connect_async(format!("ws://{addr}/ws?workspace_id=ws_1")).await;
         assert!(ws_denied.is_err(), "ws without token must be rejected");
-        let ws_allowed = tokio_tungstenite::connect_async(format!(
+        let ws_query_denied = tokio_tungstenite::connect_async(format!(
             "ws://{addr}/ws?workspace_id=ws_1&token=secret-token"
         ))
         .await;
-        assert!(ws_allowed.is_ok(), "ws with token must connect");
+        assert!(ws_query_denied.is_err(), "ws query token must be rejected");
+
+        let invalid_login = client
+            .post(format!("http://{addr}/api/auth/session"))
+            .form(&[("token", "wrong-token")])
+            .send()
+            .await
+            .expect("submit invalid browser login");
+        assert_eq!(invalid_login.status(), 401);
+
+        let valid_login = client
+            .post(format!("http://{addr}/api/auth/session"))
+            .form(&[("token", "secret-token")])
+            .send()
+            .await
+            .expect("submit valid browser login");
+        assert_eq!(valid_login.status(), 303);
+        let set_cookie = valid_login
+            .headers()
+            .get(reqwest::header::SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .expect("browser session cookie");
+        assert!(set_cookie.contains("HttpOnly"));
+        assert!(set_cookie.contains("SameSite=Strict"));
+        assert!(!set_cookie.contains("secret-token"));
+        let cookie = set_cookie
+            .split(';')
+            .next()
+            .expect("cookie name and value")
+            .to_owned();
+
+        let browser_allowed = client
+            .get(format!("http://{addr}/api/health"))
+            .header(reqwest::header::COOKIE, &cookie)
+            .send()
+            .await
+            .expect("request with browser session");
+        assert_eq!(browser_allowed.status(), 200);
+
+        let mut ws_request = format!("ws://{addr}/ws?workspace_id=ws_1")
+            .into_client_request()
+            .expect("build websocket request");
+        ws_request.headers_mut().insert(
+            axum::http::header::COOKIE,
+            cookie.parse().expect("cookie header value"),
+        );
+        let ws_allowed = tokio_tungstenite::connect_async(ws_request).await;
+        assert!(ws_allowed.is_ok(), "ws with session cookie must connect");
     }
 
     #[tokio::test]

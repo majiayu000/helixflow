@@ -63,12 +63,27 @@ curl --fail --silent --show-error \
   --header "Authorization: Bearer $SMOKE_TOKEN" \
   "$SMOKE_BASE_URL/" \
   >"$SMOKE_DIR/index.html"
+LOGIN_STATUS="$(curl --silent --show-error \
+  --output /dev/null \
+  --write-out '%{http_code}' \
+  --cookie-jar "$SMOKE_DIR/browser.cookies" \
+  --data-urlencode "token=$SMOKE_TOKEN" \
+  "$SMOKE_BASE_URL/api/auth/session")"
+if [[ "$LOGIN_STATUS" != "303" ]]; then
+  printf 'browser login returned HTTP %s, expected 303\n' "$LOGIN_STATUS" >&2
+  exit 1
+fi
+curl --fail --silent --show-error \
+  --cookie "$SMOKE_DIR/browser.cookies" \
+  "$SMOKE_BASE_URL/" \
+  >"$SMOKE_DIR/browser-index.html"
 grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$SMOKE_DIR/ready.json"
 grep -q '"database"[[:space:]]*:[[:space:]]*true' "$SMOKE_DIR/ready.json"
 grep -q '"storage"[[:space:]]*:[[:space:]]*true' "$SMOKE_DIR/ready.json"
 grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$SMOKE_DIR/health.json"
 grep -q '"service"[[:space:]]*:[[:space:]]*"helixflow"' "$SMOKE_DIR/health.json"
 grep -q '<div id="root"></div>' "$SMOKE_DIR/index.html"
+grep -q '<div id="root"></div>' "$SMOKE_DIR/browser-index.html"
 
 kill -TERM "$SMOKE_PID"
 wait "$SMOKE_PID"

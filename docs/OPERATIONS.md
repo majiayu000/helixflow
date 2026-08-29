@@ -10,12 +10,31 @@ durable state under one data root.
    `cd web && npm ci && npm run build`.
 2. Set an explicit `HELIXFLOW_DATA_DIR` for managed deployments. The default is
    `$HOME/.helixflow`, never the process working directory.
-3. Configure exactly one runtime provider. Mock mode requires both
-   `HELIXFLOW_RUNTIME_PROVIDER=mock` and `HELIXFLOW_ENABLE_MOCK_PROVIDER=1`.
+3. Configure one default runtime provider with `HELIXFLOW_RUNTIME_PROVIDER`.
+   Atlas and FAL credentials may coexist; the registry exposes every configured
+   provider and each workspace persists its own enabled-provider selection.
+   Mock mode requires both `HELIXFLOW_RUNTIME_PROVIDER=mock` and
+   `HELIXFLOW_ENABLE_MOCK_PROVIDER=1`.
 4. Set `HELIXFLOW_AUTH_TOKEN` before any non-loopback bind. Startup refuses an
    unauthenticated non-loopback address.
 5. Run `./scripts/smoke-release.sh` to exercise the built web bundle, database,
-   provider readiness, HTTP routes, and graceful SIGTERM shutdown.
+   provider readiness, Bearer and browser-cookie authentication, HTTP routes,
+   and graceful SIGTERM shutdown.
+
+## Authentication topology
+
+- Generate a high-entropy `HELIXFLOW_AUTH_TOKEN` that is unrelated to every
+  provider credential. Non-loopback startup fails closed without it.
+- CLI and automation send `Authorization: Bearer <token>`.
+- Browser users open `/login`. A successful form exchange stores a derived
+  12-hour `HttpOnly; SameSite=Strict` cookie; the deployment token is never put
+  into local storage, JavaScript state, WebSocket URLs, or query strings.
+- Query-string deployment tokens are rejected for both REST and WebSocket
+  routes. Browser WebSockets authenticate with the same cookie and may then use
+  a short-lived canvas ticket for workspace authorization.
+- Non-loopback deployments mark the session cookie `Secure`; terminate TLS
+  before exposing the service. This is a single-tenant deployment boundary,
+  not per-user identity or role-based access control.
 
 ## Health and readiness
 
@@ -63,3 +82,11 @@ traffic after every restart.
 
 Never place provider credentials in logs, database fixtures, graph parameters,
 Agent context, or support bundles.
+
+## Canvas performance gate
+
+`cd web && npm run test:e2e` runs the real Chromium interaction suite. In CI it
+also enforces the 4000-node gate: five cold loads must have p95 at or below
+2.5 seconds and the 10-second pan/zoom track must have frame-interval p95 at or
+below 32 ms. Dense low-zoom views use one Canvas overview bitmap while React
+Flow continues to own the viewport and detailed editable nodes.

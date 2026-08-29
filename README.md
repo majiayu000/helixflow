@@ -33,11 +33,16 @@ cargo run --release -p helixflow-server
 # 3. Open http://127.0.0.1:8787/
 ```
 
-To execute against a real provider instead:
+To execute against real providers, configure any credentials that should be
+available and choose the default provider. Atlas and FAL can be registered in
+the same process; each workspace can switch between enabled providers in the
+workbench.
 
 ```sh
-ATLAS_API_KEY=... HELIXFLOW_RUNTIME_PROVIDER=atlas cargo run --release -p helixflow-server
-# or: FAL_KEY=... HELIXFLOW_RUNTIME_PROVIDER=fal ...
+ATLAS_API_KEY=... \
+FAL_KEY=... \
+HELIXFLOW_RUNTIME_PROVIDER=atlas \
+cargo run --release -p helixflow-server
 ```
 
 Health check: `GET /api/ready` verifies database, storage, and provider.
@@ -74,8 +79,8 @@ web/         # React workbench
 | Variable | Meaning |
 |---|---|
 | `HELIXFLOW_BIND_ADDR` | Listen address (default `127.0.0.1:8787`). Non-loopback requires `HELIXFLOW_AUTH_TOKEN`. |
-| `HELIXFLOW_AUTH_TOKEN` | Bearer/`?token=` auth for all REST/WS routes. |
-| `HELIXFLOW_RUNTIME_PROVIDER` | `atlas`, `fal`, or explicitly `mock` (dev/test). Unset fails closed. |
+| `HELIXFLOW_AUTH_TOKEN` | Deployment access token. CLI/API clients use `Authorization: Bearer`; browsers exchange it at `/login` for an HttpOnly, SameSite=Strict session cookie. URL query tokens are rejected. |
+| `HELIXFLOW_RUNTIME_PROVIDER` | Default provider: `atlas`, `fal`, or explicitly `mock` (dev/test). Atlas/FAL credentials may coexist and workspaces persist their own enabled-provider selection. Unset fails closed. |
 | `HELIXFLOW_ENABLE_MOCK_PROVIDER` | Required to actually enable the `mock` provider. |
 | `HELIXFLOW_WEB_DIST` | Frontend build dir served by the backend (default `web/dist`). |
 | `HELIXFLOW_DATA_DIR` | Durable data root (default `$HOME/.helixflow`; never process cwd). |
@@ -105,6 +110,8 @@ cd web
 npm ci
 npm test
 npm run build
+npm run test:e2e                # real Chromium interactions + enforced p95 in CI
+npm run test:e2e:performance    # focused 4000-node benchmark
 
 # Release-topology startup/readiness/shutdown smoke
 cd ..
