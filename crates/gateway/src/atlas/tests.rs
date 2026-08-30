@@ -126,6 +126,66 @@ async fn gh130_resolved_operation_drives_request_model() -> Result<(), Box<dyn s
     Ok(())
 }
 
+#[tokio::test]
+async fn atlas_requests_send_a_stable_user_agent() -> Result<(), Box<dyn std::error::Error>> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let server = capture_raw_request_and_respond(
+        listener,
+        200,
+        r#"{"data":{"outputs":["https://cdn.example/image.png"]}}"#,
+    );
+    let provider = AtlasProvider::new(ApiProviderConfig::atlas(
+        "test-key".to_owned(),
+        format!("http://{addr}/v1"),
+    ));
+
+    provider
+        .invoke(request(
+            "text_to_image",
+            json!({ "prompt": "hello", "aspect_ratio": "1:1" }),
+        ))
+        .await
+        .expect("image result");
+    let raw_request = server.await??;
+
+    let expected = concat!("helixflow/", env!("CARGO_PKG_VERSION"));
+    assert!(
+        raw_request
+            .lines()
+            .any(|line| line.eq_ignore_ascii_case(&format!("user-agent: {expected}")))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires Atlas credentials and incurs a real image-generation charge"]
+async fn atlas_live_image_generation_returns_a_remote_artifact()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = AtlasProvider::from_env().ok_or("Atlas credentials are not configured")?;
+
+    let result = provider
+        .invoke(request(
+            "text_to_image",
+            json!({
+                "prompt": "A minimal black square centered on a plain white background, Helixflow integration test",
+                "aspect_ratio": "1:1",
+                "output_format": "png",
+                "num_images": 1
+            }),
+        ))
+        .await?;
+    let image = result.outputs.get("image").ok_or("missing image output")?;
+
+    assert_eq!(image.kind, ArtifactKind::Image);
+    assert_eq!(image.mime, "image/png");
+    assert!(matches!(
+        &image.content,
+        ArtifactContent::RemoteUrl { url } if url.starts_with("https://")
+    ));
+    Ok(())
+}
+
 fn request(capability: &str, params: Value) -> ProviderRequest {
     let operation_id = match capability {
         "prompt_writer" => "deepseek-ai/DeepSeek-V3-0324",
@@ -211,6 +271,27 @@ fn capture_request_and_respond(
             .map(|(_, body)| body)
             .unwrap_or("");
         Ok(serde_json::from_str(body).unwrap_or(Value::Null))
+    })
+}
+
+fn capture_raw_request_and_respond(
+    listener: tokio::net::TcpListener,
+    status: u16,
+    response_body: &'static str,
+) -> tokio::task::JoinHandle<Result<String, std::io::Error>> {
+    tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+
+        let (mut stream, _) = listener.accept().await?;
+        let request = read_full_request(&mut stream).await?;
+        let status_text = if status == 200 { "OK" } else { "Error" };
+        let response = format!(
+            "HTTP/1.1 {status} {status_text}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+            response_body.len(),
+            response_body
+        );
+        stream.write_all(response.as_bytes()).await?;
+        Ok(request)
     })
 }
 

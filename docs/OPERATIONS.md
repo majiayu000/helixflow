@@ -44,6 +44,20 @@ durable state under one data root.
 - A process can be live but deliberately unready while its selected provider is
   missing or unhealthy. Do not replace readiness checks with liveness checks.
 
+## Atlas acceptance
+
+- Production Atlas uses `ATLAS_API_BASE=https://api.atlascloud.ai/v1` and
+  `ATLAS_API_KEY`. A dev base such as `api.dev.atlascloud.ai` may additionally
+  require the account or extra-header variables documented in `README.md`; a
+  Cloudflare Access HTML login response is not a successful provider probe.
+- Run the opt-in paid acceptance check with
+  `cargo test -p helixflow-gateway atlas_live_image_generation_returns_a_remote_artifact -- --ignored`.
+  It exercises the real `AtlasProvider` text-to-image path and requires an
+  explicit credential in the process environment. It is ignored by normal CI
+  because it incurs a real image-generation charge.
+- Never paste a provider key into a command argument or test output. Inject it
+  through the process environment and rotate it after any accidental exposure.
+
 ## Durable data and backup
 
 The default SQLite database is `$HELIXFLOW_DATA_DIR/helixflow.sqlite`; graph,
