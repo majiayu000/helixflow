@@ -5,7 +5,7 @@ use helixflow_graph::{
 use helixflow_registry::NodeRegistry;
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentError, AgentResult, AgentSession, read_output_file};
+use crate::{AgentError, AgentResult, AgentSession, TurnMode, read_output_file};
 
 #[derive(Debug, Clone)]
 pub struct ValidatedAgentProposal {
@@ -95,6 +95,13 @@ struct ReplyOutput {
     message: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ValidatedRoute {
+    pub mode: TurnMode,
+    pub requested_action: String,
+}
+
 pub fn read_validated_proposal(
     session: &AgentSession,
     base_graph: &WorkflowGraph,
@@ -147,6 +154,19 @@ pub fn read_validated_reply(session: &AgentSession) -> AgentResult<ValidatedAgen
         agent_logs: Vec::new(),
         message: output.message,
     })
+}
+
+pub fn read_validated_route(session: &AgentSession) -> AgentResult<ValidatedRoute> {
+    let output_path = session.out_dir.join("route.json");
+    let output: ValidatedRoute =
+        serde_json::from_slice(&read_output_file(&session.out_dir, &output_path)?)?;
+    validate_text_field(
+        &output_path,
+        "requestedAction",
+        &output.requested_action,
+        1024,
+    )?;
+    Ok(output)
 }
 
 pub fn read_validated_run_request(session: &AgentSession) -> AgentResult<ValidatedRunRequest> {

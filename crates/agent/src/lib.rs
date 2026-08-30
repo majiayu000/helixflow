@@ -22,8 +22,9 @@ pub use app_server_runtime::{CodexAppServerRuntime, CodexBackendRuntime};
 pub use canvas_ops::{CanvasGateState, CanvasOpsContext, CanvasOpsContract, CanvasSelection};
 pub use contract::{
     AgentLogEntry, AgentRuntimeIdentity, RunRequestAction, RunRequestOutput, ValidatedAgentIntent,
-    ValidatedAgentProposal, ValidatedAgentReply, ValidatedRunRequest, read_validated_intent,
-    read_validated_proposal, read_validated_reply, read_validated_run_request,
+    ValidatedAgentProposal, ValidatedAgentReply, ValidatedRoute, ValidatedRunRequest,
+    read_validated_intent, read_validated_proposal, read_validated_reply, read_validated_route,
+    read_validated_run_request,
 };
 pub use prompt_stack::{
     PromptSection, PromptSectionKey, PromptStack, PromptStackMetadata, build_prompt_stack,
@@ -34,8 +35,7 @@ pub use runtime::{
 };
 pub use service::AgentService;
 pub use turn_mode::{
-    AgentSkill, OutputContract, TurnClassification, TurnMode, TurnModeSource, TurnRoutingError,
-    classify_turn_mode, explicit_turn_mode,
+    AgentSkill, OutputContract, TurnClassification, TurnMode, TurnModeSource, explicit_turn_mode,
 };
 
 pub fn module_name() -> &'static str {
@@ -236,6 +236,7 @@ fn selected_skill(skill: AgentSkill) -> &'static str {
             "# Run Request\nWrite a backend run request to out/run_request.json.\n"
         }
         AgentSkill::Sweep => "# Sweep\nWrite a sweep run plan when requested.\n",
+        AgentSkill::Route => "# Route\nSelect one user-facing turn mode.\n",
     }
 }
 

@@ -9,8 +9,9 @@ use serde_json::{Value, json};
 use crate::{
     AgentError, AgentLogEntry, AgentResult, AgentRuntime, AgentSession, AgentSessionRequest,
     AgentTurn, OutputContract, PromptStackMetadata, RuntimeEvent, RuntimeHandle,
-    ValidatedAgentIntent, ValidatedAgentProposal, ValidatedAgentReply, create_session_contract,
-    read_validated_intent, read_validated_proposal, read_validated_reply,
+    TurnClassification, TurnModeSource, ValidatedAgentIntent, ValidatedAgentProposal,
+    ValidatedAgentReply, create_session_contract, read_validated_intent, read_validated_proposal,
+    read_validated_reply, read_validated_route,
 };
 
 const DEFAULT_MAX_PROPOSAL_ROUNDS: usize = 3;
@@ -29,6 +30,38 @@ impl<R> AgentService<R>
 where
     R: AgentRuntime,
 {
+    pub async fn route_turn(
+        &self,
+        request: AgentSessionRequest,
+    ) -> AgentResult<TurnClassification> {
+        ensure_output_contract(&request, OutputContract::RouteJson)?;
+        let mut run = self.start_agent_session(&request).await?;
+        let turn = AgentTurn {
+            message: request.user_message.clone(),
+            mode: request.mode,
+            output_contract: OutputContract::RouteJson,
+            skill: request.skill,
+        };
+        if let TurnRunOutcome::RuntimeFailed(message) = self.send_agent_turn(&mut run, turn).await?
+        {
+            return Err(AgentError::Runtime(message));
+        }
+        let route = read_validated_route(&run.session)?;
+        self.emit_status(
+            &run.session,
+            run.seq,
+            "agent.status.end",
+            json!({
+                "turn_mode": route.mode,
+                "requested_action": route.requested_action,
+            }),
+        );
+        Ok(TurnClassification {
+            mode: route.mode,
+            source: TurnModeSource::Model,
+        })
+    }
+
     pub fn new(runtime: R, events: EventBus) -> Self {
         Self {
             runtime,

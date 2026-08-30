@@ -221,7 +221,7 @@ fn writes_compact_canvas_state_with_filtered_selection() {
 }
 
 #[test]
-fn chat_contract_skips_graph_context_and_records_prompt_metadata() {
+fn chat_contract_exposes_read_only_canvas_context_and_records_prompt_metadata() {
     let dir = tempfile::tempdir().expect("temp dir");
     let session = create_session_contract(&chat_request(&dir)).expect("session");
 
@@ -232,21 +232,16 @@ fn chat_contract_skips_graph_context_and_records_prompt_metadata() {
         session.prompt_metadata.output_contract,
         OutputContract::ReplyJson
     );
-    assert!(!session.ctx_dir.join("graph.json").exists());
-    assert!(!session.ctx_dir.join("node_defs/catalog.json").exists());
-    assert!(
-        !session
-            .ctx_dir
-            .join("runtime_providers/catalog.json")
-            .exists()
-    );
-    assert!(!session.ctx_dir.join("canvas_state.json").exists());
-    assert!(!session.ctx_dir.join("canvas_ops.json").exists());
+    assert!(session.ctx_dir.join("graph.json").exists());
+    assert!(session.ctx_dir.join("node_defs/catalog.json").exists());
+    assert!(session.ctx_dir.join("canvas_state.json").exists());
+    assert!(session.ctx_dir.join("canvas_ops.json").exists());
 
     let ctx = fs::read_to_string(session.ctx_dir.join("instructions.md")).expect("ctx");
     assert!(ctx.contains("Mode: Chat"));
     assert!(ctx.contains("out/reply.json"));
-    assert!(ctx.contains("Do not read `ctx/graph.json`"));
+    assert!(ctx.contains("canvas.get_state"));
+    assert!(ctx.contains("must not create proposals or request a run"));
     assert!(ctx.contains("create, modify, run, or debug a workflow"));
     assert!(ctx.contains("five built-in workflow skills"));
     assert!(ctx.contains("Create Workflow"));
@@ -265,68 +260,11 @@ fn chat_contract_skips_graph_context_and_records_prompt_metadata() {
 }
 
 #[test]
-fn classifies_run_requests_without_falling_back_to_workflow_change() {
-    assert_eq!(
-        classify_turn_mode("运行当前 workflow", &sample_graph())
-            .expect("mode")
-            .mode,
-        TurnMode::RunRequest
-    );
-    assert_eq!(
-        classify_turn_mode("你好", &sample_graph())
-            .expect("mode")
-            .mode,
-        TurnMode::Chat
-    );
-    let fallback = classify_turn_mode("继续", &sample_graph()).expect("mode");
-    assert_eq!(fallback.mode, TurnMode::Chat);
-    assert_eq!(fallback.source, TurnModeSource::AmbiguousFallback);
-    assert!(classify_turn_mode("   ", &sample_graph()).is_err());
-}
-
-#[test]
 fn preserves_an_explicit_surface_mode_without_keyword_routing() {
     let classification = explicit_turn_mode(TurnMode::CreateWorkflow);
 
     assert_eq!(classification.mode, TurnMode::CreateWorkflow);
     assert_eq!(classification.source, TurnModeSource::Explicit);
-}
-
-#[test]
-fn classifies_modify_requests_before_broad_workflow_creation() {
-    assert_eq!(
-        classify_turn_mode("modify workflow duration", &sample_graph())
-            .expect("mode")
-            .mode,
-        TurnMode::ModifyWorkflow
-    );
-    assert_eq!(
-        classify_turn_mode("把工作流时长改短", &sample_graph())
-            .expect("mode")
-            .mode,
-        TurnMode::ModifyWorkflow
-    );
-    assert_eq!(
-        classify_turn_mode("创建一个 workflow", &sample_graph())
-            .expect("mode")
-            .mode,
-        TurnMode::CreateWorkflow
-    );
-    let fallback = classify_turn_mode("workflow", &sample_graph()).expect("mode");
-    assert_eq!(fallback.mode, TurnMode::Chat);
-    assert_eq!(fallback.source, TurnModeSource::AmbiguousFallback);
-    let empty_graph = WorkflowGraph {
-        schema_version: 1,
-        nodes: BTreeMap::new(),
-        edges: Vec::new(),
-        catalog_revision: None,
-    };
-    assert_eq!(
-        classify_turn_mode("workflow", &empty_graph)
-            .expect("mode")
-            .mode,
-        TurnMode::CreateWorkflow
-    );
 }
 
 #[test]
@@ -640,6 +578,66 @@ async fn service_streams_agent_status_and_reads_chat_reply() {
 }
 
 #[tokio::test]
+async fn service_routes_free_form_turn_from_model_contract() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let events = EventBus::new(16);
+    let service = AgentService::new(FakeRuntime::route(TurnMode::ModifyWorkflow), events);
+    let mut request = chat_request(&dir);
+    request.user_message = "照刚才那个，把第二段换掉".to_owned();
+    request.mode = TurnMode::Route;
+    request.skill = AgentSkill::Route;
+
+    let classification = service.route_turn(request).await.expect("route");
+
+    assert_eq!(classification.mode, TurnMode::ModifyWorkflow);
+    assert_eq!(classification.source, TurnModeSource::Model);
+}
+
+#[test]
+fn route_contract_rejects_unknown_fields_and_internal_route_mode() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut request = chat_request(&dir);
+    request.mode = TurnMode::Route;
+    request.skill = AgentSkill::Route;
+    let session = create_session_contract(&request).expect("route session");
+
+    fs::write(session.out_dir.join("route.json"), br#"{"mode":"chat"}"#)
+        .expect("route without semantic restatement");
+    assert!(read_validated_route(&session).is_err());
+
+    fs::write(
+        session.out_dir.join("route.json"),
+        br#"{"mode":"chat","requestedAction":"Summarize the current workflow.","confidence":0.9}"#,
+    )
+    .expect("route with unknown field");
+    assert!(read_validated_route(&session).is_err());
+
+    fs::write(
+        session.out_dir.join("route.json"),
+        br#"{"mode":"route","requestedAction":"Choose an internal mode."}"#,
+    )
+    .expect("internal route output");
+    assert!(read_validated_route(&session).is_err());
+
+    fs::write(
+        session.out_dir.join("route.json"),
+        br#"{"mode":"chat","requestedAction":"Summarize the current workflow."}"#,
+    )
+    .expect("valid semantic route");
+    let route = read_validated_route(&session).expect("validated route");
+    assert_eq!(route.mode, TurnMode::Chat);
+    assert_eq!(route.requested_action, "Summarize the current workflow.");
+
+    let instructions =
+        fs::read_to_string(session.ctx_dir.join("instructions.md")).expect("routing instructions");
+    assert!(instructions.contains("Route by meaning, not by keyword matching"));
+    assert!(instructions.contains("A prior run does not make a later question a Run Request"));
+    assert!(instructions.contains("summarize the current workflow => Chat"));
+    assert!(instructions.contains("out/route.json"));
+    assert!(!session.ctx_dir.join("graph.json").exists());
+}
+
+#[tokio::test]
 async fn service_times_out_and_cancels_a_stuck_runtime_turn() {
     let dir = tempfile::tempdir().expect("temp dir");
     let runtime = HangingRuntime::default();
@@ -830,6 +828,18 @@ impl FakeRuntime {
             output: FakeOutput::Reply,
         }
     }
+
+    fn route(mode: TurnMode) -> Self {
+        Self {
+            events: Arc::new(Mutex::new(VecDeque::from([
+                RuntimeEvent::Status {
+                    message: "routing turn".to_owned(),
+                },
+                RuntimeEvent::Finished,
+            ]))),
+            output: FakeOutput::Route(mode),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -837,6 +847,7 @@ enum FakeOutput {
     #[default]
     Proposal,
     Reply,
+    Route(TurnMode),
 }
 
 #[async_trait]
@@ -861,6 +872,7 @@ impl AgentRuntime for FakeRuntime {
         match self.output {
             FakeOutput::Proposal => write_valid_proposal_to_path(&handle.out_dir),
             FakeOutput::Reply => write_reply_to_path(&handle.out_dir),
+            FakeOutput::Route(mode) => write_route_to_path(&handle.out_dir, mode),
         }
     }
 
@@ -933,6 +945,18 @@ fn write_reply_to_path(out_dir: &Path) -> RuntimeResult<()> {
         out_dir.join("reply.json"),
         serde_json::to_vec(&json!({ "message": "我是 Helixflow agent。" }))
             .map_err(|err| RuntimeError::Failed(err.to_string()))?,
+    )
+    .map_err(|err| RuntimeError::Failed(err.to_string()))
+}
+
+fn write_route_to_path(out_dir: &Path, mode: TurnMode) -> RuntimeResult<()> {
+    fs::write(
+        out_dir.join("route.json"),
+        serde_json::to_vec(&json!({
+            "mode": mode,
+            "requestedAction": "Change the second stage."
+        }))
+        .map_err(|err| RuntimeError::Failed(err.to_string()))?,
     )
     .map_err(|err| RuntimeError::Failed(err.to_string()))
 }
@@ -1041,6 +1065,7 @@ fn intent_prompt_prefers_the_bounded_submit_intent_tool() {
 
     assert_eq!(session.output_contract, OutputContract::IntentJson);
     assert!(ctx.contains("canvas.submit_intent"));
+    assert!(ctx.contains("compiler materializes the corresponding input node"));
     assert!(!ctx.contains("canvas.submit_proposal"));
 }
 

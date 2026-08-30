@@ -472,7 +472,7 @@ mod tests {
                 graph: sample_graph(),
                 canvas_context: None,
                 conversation_id: None,
-                turn_mode: None,
+                turn_mode: Some(helixflow_agent::TurnMode::CreateWorkflow),
             }),
         )
         .await
@@ -605,7 +605,7 @@ mod tests {
                 graph: sample_graph(),
                 canvas_context: None,
                 conversation_id: None,
-                turn_mode: None,
+                turn_mode: Some(helixflow_agent::TurnMode::Chat),
             }),
         )
         .await

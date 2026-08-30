@@ -10,7 +10,7 @@ use super::tests::{sample_graph, state_with_workspace};
 use super::{WorkspaceMessageRequest, post_workspace_message};
 
 #[tokio::test]
-async fn post_message_routes_ambiguous_text_to_chat() {
+async fn post_message_records_a_model_selected_chat_route() {
     let (state, workspace_id, version_id, _dir) = state_with_workspace().await;
 
     let response = post_workspace_message(
@@ -26,7 +26,7 @@ async fn post_message_routes_ambiguous_text_to_chat() {
         }),
     )
     .await
-    .expect("ambiguous text should route to chat")
+    .expect("model-selected chat response")
     .0;
 
     assert_eq!(response.turn_mode, TurnMode::Chat);
@@ -49,7 +49,7 @@ async fn post_message_routes_ambiguous_text_to_chat() {
     )
     .expect("metadata json");
     assert_eq!(metadata["turnMode"], "chat");
-    assert_eq!(metadata["turnModeSource"], "ambiguous_fallback");
+    assert_eq!(metadata["turnModeSource"], "model");
 }
 
 #[tokio::test]

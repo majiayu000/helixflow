@@ -3,8 +3,7 @@ use axum::{
     extract::{Path, State},
 };
 use helixflow_agent::{
-    AgentLogEntry, AgentRuntimeIdentity, AgentSessionRequest, TurnMode, classify_turn_mode,
-    explicit_turn_mode,
+    AgentLogEntry, AgentRuntimeIdentity, AgentSessionRequest, TurnMode, explicit_turn_mode,
 };
 use helixflow_graph::WorkflowGraph;
 use helixflow_store::{
@@ -82,16 +81,9 @@ pub(crate) async fn post_workspace_message(
 ) -> Result<Json<WorkspaceMessageResponse>, ApiError> {
     let VerifiedMessageGraph { version, graph } =
         verified_message_graph(&state, &workspace_id, &input.base_version_id, &input.graph).await?;
-    let classification = match input.turn_mode {
-        Some(mode) => {
-            if input.user_message.trim().is_empty() {
-                return Err(ApiError::bad_request("empty agent turn is not allowed"));
-            }
-            explicit_turn_mode(mode)
-        }
-        None => classify_turn_mode(&input.user_message, &graph)
-            .map_err(|err| ApiError::bad_request(err.to_string()))?,
-    };
+    if input.user_message.trim().is_empty() {
+        return Err(ApiError::bad_request("empty agent turn is not allowed"));
+    }
     let conversation = match input.conversation_id.as_deref() {
         Some(conversation_id) => state
             .store
@@ -104,24 +96,18 @@ pub(crate) async fn post_workspace_message(
             .await
             .map_err(ApiError::store)?,
     };
-    let canvas_context = prepare_agent_canvas_context(
-        &state,
-        &workspace_id,
-        classification.mode,
-        &version.id,
-        &graph,
-        input.canvas_context.clone(),
-    )
-    .await?;
     // Prior turns give the agent cross-request memory (HF-013). Loaded
     // before persisting the new user message so it is not duplicated.
-    let history = state
+    let history: Vec<_> = state
         .store
         .conversation_messages(&conversation.id)
         .await
         .map_err(ApiError::store)?
         .into_iter()
-        .filter(|message| message.role == "user" || message.role == "agent")
+        .filter(|message| {
+            message.role == "user"
+                || (message.role == "agent" && !message.kind.starts_with("agent_log:"))
+        })
         .filter_map(|message| {
             message
                 .text
@@ -137,6 +123,61 @@ pub(crate) async fn post_workspace_message(
         .await
         .map_err(ApiError::store)?;
     let provider_catalog = state.provider_catalog_for_workspace(&workspace);
+    let classification = match input.turn_mode {
+        Some(TurnMode::Route) => {
+            return Err(ApiError::bad_request(
+                "the internal routing mode cannot be selected explicitly",
+            ));
+        }
+        Some(mode) => explicit_turn_mode(mode),
+        None => {
+            let selected_nodes = input
+                .canvas_context
+                .as_ref()
+                .map(|context| context.selection.node_ids.len())
+                .unwrap_or_default();
+            let routing_request = AgentSessionRequest {
+                workspace_id: workspace_id.clone(),
+                base_version_id: version.id.clone(),
+                user_message: input.user_message.clone(),
+                codex_thread_id: None,
+                conversation_id: None,
+                durable_turn_id: None,
+                history: history.clone(),
+                graph: graph.clone(),
+                provider_catalog: provider_catalog.clone(),
+                run_context: Some(format!(
+                    "Routing context: graph_nodes={}, graph_empty={}, selected_nodes={selected_nodes}",
+                    graph.nodes.len(),
+                    graph.nodes.is_empty(),
+                )),
+                sessions_dir: state.agent_sessions_dir.clone(),
+                mode: TurnMode::Route,
+                skill: TurnMode::Route.agent_skill(),
+                canvas_context: None,
+                use_intent_contract: false,
+            };
+            state
+                .agent
+                .route_turn(routing_request)
+                .await
+                .map_err(|error| {
+                    ApiError::service_unavailable(format!(
+                        "agent semantic routing failed: {}",
+                        agent_error_code(&error)
+                    ))
+                })?
+        }
+    };
+    let canvas_context = prepare_agent_canvas_context(
+        &state,
+        &workspace_id,
+        classification.mode,
+        &version.id,
+        &graph,
+        input.canvas_context.clone(),
+    )
+    .await?;
     let run_context = debug_run_context(&state, &workspace_id, classification.mode).await?;
     let durable_turn_id = format!("turn_{}", uuid::Uuid::now_v7().simple());
     let mut durable_turn_guard =
@@ -226,6 +267,9 @@ pub(crate) async fn post_workspace_message(
     let response = tokio::select! {
         response = async {
             match classification.mode {
+        TurnMode::Route => Err(ApiError::server_error(
+            "internal routing mode reached workbench dispatch",
+        )),
         TurnMode::Chat => {
             let reply = match state.agent.answer_chat(request).await {
                 Ok(reply) => reply,

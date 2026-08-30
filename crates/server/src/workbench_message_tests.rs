@@ -7,12 +7,12 @@ use axum::{
     extract::{Path, State},
 };
 use helixflow_agent::{
-    AgentError, AgentLogEntry, AgentRuntimeIdentity, AgentSessionRequest, TurnMode,
-    ValidatedAgentProposal, ValidatedAgentReply,
+    AgentError, AgentLogEntry, AgentRuntimeIdentity, AgentSessionRequest, TurnClassification,
+    TurnMode, TurnModeSource, ValidatedAgentProposal, ValidatedAgentReply,
 };
 use helixflow_graph::{PreparedProposal, WorkflowGraph};
 use helixflow_run::EventBus;
-use helixflow_store::{NewRun, NewRunStep, NewVersion, Store, VersionSource};
+use helixflow_store::{NewMessage, NewRun, NewRunStep, NewVersion, Store, VersionSource};
 
 use crate::agent_turn_control::interrupt_workspace_agent_turn;
 use crate::app_state::{AppState, WorkbenchAgent};
@@ -61,7 +61,7 @@ async fn post_message_routes_chat_to_agent_runtime() {
     assert_eq!(persisted[0].role, "user");
     assert_eq!(
         persisted[0].attachment_ids_json.as_deref(),
-        Some(r#"{"turnMode":"chat"}"#)
+        Some(r#"{"turnMode":"chat","turnModeSource":"model"}"#)
     );
     assert_eq!(persisted[1].role, "agent");
     assert_eq!(persisted[1].kind, "chat");
@@ -121,6 +121,108 @@ async fn explicit_surface_mode_overrides_ambiguous_prompt_routing() {
 }
 
 #[tokio::test]
+async fn free_form_text_uses_the_agent_semantic_route() {
+    let (state, workspace_id, version_id, _dir) = state_with_workspace().await;
+
+    let response = post_workspace_message(
+        Path(workspace_id.clone()),
+        State(state.clone()),
+        Json(WorkspaceMessageRequest {
+            base_version_id: version_id,
+            user_message: "沿用上一轮的结构，第二段采用静态帧".to_owned(),
+            graph: sample_graph(),
+            canvas_context: None,
+            conversation_id: None,
+            turn_mode: None,
+        }),
+    )
+    .await
+    .expect("model-routed response")
+    .0;
+
+    assert_eq!(response.turn_mode, TurnMode::ModifyWorkflow);
+    let persisted = state
+        .store
+        .workspace_messages(&workspace_id)
+        .await
+        .expect("messages");
+    assert_eq!(
+        persisted[0].attachment_ids_json.as_deref(),
+        Some(r#"{"turnMode":"modify_workflow","turnModeSource":"model"}"#)
+    );
+}
+
+#[tokio::test]
+async fn semantic_route_history_excludes_agent_telemetry() {
+    let (state, workspace_id, version_id, _dir) = state_with_workspace().await;
+    let conversation = state
+        .store
+        .ensure_workspace_conversation(&workspace_id)
+        .await
+        .expect("conversation");
+    state
+        .store
+        .create_message(NewMessage {
+            workspace_id: &workspace_id,
+            role: "user",
+            kind: "text",
+            text: Some("先创建一条文案到图片的工作流"),
+            ref_id: None,
+            attachment_ids_json: None,
+            conversation_id: Some(&conversation.id),
+            turn_id: None,
+        })
+        .await
+        .expect("prior user message");
+    for index in 0..25 {
+        let text = format!("runtime telemetry {index}");
+        state
+            .store
+            .create_message(NewMessage {
+                workspace_id: &workspace_id,
+                role: "agent",
+                kind: "agent_log:status",
+                text: Some(&text),
+                ref_id: None,
+                attachment_ids_json: None,
+                conversation_id: Some(&conversation.id),
+                turn_id: None,
+            })
+            .await
+            .expect("agent telemetry");
+    }
+    state
+        .store
+        .create_message(NewMessage {
+            workspace_id: &workspace_id,
+            role: "agent",
+            kind: "clarify",
+            text: Some("请补充产品主题"),
+            ref_id: None,
+            attachment_ids_json: None,
+            conversation_id: Some(&conversation.id),
+            turn_id: None,
+        })
+        .await
+        .expect("clarification message");
+
+    let _response = post_workspace_message(
+        Path(workspace_id),
+        State(state),
+        Json(WorkspaceMessageRequest {
+            base_version_id: version_id,
+            user_message: "主题是一款银色无线耳机".to_owned(),
+            graph: sample_graph(),
+            canvas_context: None,
+            conversation_id: Some(conversation.id),
+            turn_mode: None,
+        }),
+    )
+    .await
+    .expect("follow-up response");
+}
+
+#[tokio::test]
 async fn failed_chat_persists_a_terminal_turn_and_visible_error_message() {
     let (mut state, workspace_id, version_id, _dir) = state_with_workspace().await;
     state.agent = Arc::new(FailingWorkbenchAgent);
@@ -134,7 +236,7 @@ async fn failed_chat_persists_a_terminal_turn_and_visible_error_message() {
             graph: sample_graph(),
             canvas_context: None,
             conversation_id: None,
-            turn_mode: None,
+            turn_mode: Some(TurnMode::Chat),
         }),
     )
     .await
@@ -152,6 +254,41 @@ async fn failed_chat_persists_a_terminal_turn_and_visible_error_message() {
     assert_eq!(turn.status, "error");
     assert_eq!(turn.reason_code.as_deref(), Some("AGENT_RUNTIME_ERROR"));
     assert!(turn.completed_at.is_some());
+}
+
+#[tokio::test]
+async fn routing_failure_is_explicit_and_never_falls_back_to_chat() {
+    let (mut state, workspace_id, version_id, _dir) = state_with_workspace().await;
+    state.agent = Arc::new(FailingWorkbenchAgent);
+
+    let error = post_workspace_message(
+        Path(workspace_id.clone()),
+        State(state.clone()),
+        Json(WorkspaceMessageRequest {
+            base_version_id: version_id,
+            user_message: "沿用上次的方案继续".to_owned(),
+            graph: sample_graph(),
+            canvas_context: None,
+            conversation_id: None,
+            turn_mode: None,
+        }),
+    )
+    .await
+    .expect_err("routing failure must be visible");
+
+    assert_eq!(error.status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        error.message,
+        "agent semantic routing failed: AGENT_RUNTIME_ERROR"
+    );
+    assert!(
+        state
+            .store
+            .workspace_messages(&workspace_id)
+            .await
+            .expect("messages")
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -174,7 +311,7 @@ async fn interrupting_active_chat_persists_an_interrupted_terminal_turn() {
                 graph: sample_graph(),
                 canvas_context: None,
                 conversation_id: None,
-                turn_mode: None,
+                turn_mode: Some(TurnMode::Chat),
             }),
         )
         .await
@@ -249,7 +386,7 @@ async fn post_message_auto_starts_free_run_request() {
     assert_eq!(persisted[0].text.as_deref(), Some("运行当前 workflow"));
     assert_eq!(
         persisted[0].attachment_ids_json.as_deref(),
-        Some(r#"{"turnMode":"run_request"}"#)
+        Some(r#"{"turnMode":"run_request","turnModeSource":"model"}"#)
     );
     assert_eq!(persisted[1].kind, "run_requested");
     let run = state
@@ -273,7 +410,7 @@ async fn post_message_auto_applies_proposal_record() {
             graph: sample_graph(),
             canvas_context: None,
             conversation_id: None,
-            turn_mode: None,
+            turn_mode: Some(TurnMode::CreateWorkflow),
         }),
     )
     .await
@@ -652,7 +789,7 @@ async fn post_message_routes_debug_with_latest_run_context() {
         .expect("messages");
     assert_eq!(
         persisted[0].attachment_ids_json.as_deref(),
-        Some(r#"{"turnMode":"debug_workflow"}"#)
+        Some(r#"{"turnMode":"debug_workflow","turnModeSource":"model"}"#)
     );
 }
 
@@ -751,6 +888,35 @@ struct FakeWorkbenchAgent;
 
 #[async_trait]
 impl WorkbenchAgent for FakeWorkbenchAgent {
+    async fn route_turn(
+        &self,
+        request: AgentSessionRequest,
+    ) -> Result<TurnClassification, AgentError> {
+        if request.user_message == "主题是一款银色无线耳机" {
+            assert_eq!(request.history.len(), 2);
+            assert_eq!(request.history[0].role, "user");
+            assert_eq!(request.history[0].text, "先创建一条文案到图片的工作流");
+            assert_eq!(request.history[1].role, "agent");
+            assert_eq!(request.history[1].text, "请补充产品主题");
+        }
+        let mode = match request.user_message.as_str() {
+            "运行当前 workflow" => TurnMode::RunRequest,
+            "创建一个 workflow"
+            | "用 Nano Banana 创建一个生成图片的 workflow"
+            | "创建一个生成图片的 workflow"
+            | "用 Nano Banana 生图，再用 Seedance 做成视频 workflow" => {
+                TurnMode::CreateWorkflow
+            }
+            "为什么失败了，帮我修复" => TurnMode::DebugWorkflow,
+            "沿用上一轮的结构，第二段采用静态帧" => TurnMode::ModifyWorkflow,
+            _ => TurnMode::Chat,
+        };
+        Ok(TurnClassification {
+            mode,
+            source: TurnModeSource::Model,
+        })
+    }
+
     async fn answer_chat(
         &self,
         request: AgentSessionRequest,
@@ -930,7 +1096,7 @@ async fn intent_turn_compiles_and_persists_semantics() {
             graph: sample_graph(),
             canvas_context: None,
             conversation_id: None,
-            turn_mode: None,
+            turn_mode: Some(TurnMode::CreateWorkflow),
         }),
     )
     .await
@@ -991,7 +1157,7 @@ async fn intent_turn_missing_input_produces_clarify_message() {
             graph: sample_graph(),
             canvas_context: None,
             conversation_id: None,
-            turn_mode: None,
+            turn_mode: Some(TurnMode::CreateWorkflow),
         }),
     )
     .await
@@ -1044,7 +1210,7 @@ async fn intent_turn_compiles_seedance_image_to_video_binding() {
             graph: sample_graph(),
             canvas_context: None,
             conversation_id: None,
-            turn_mode: None,
+            turn_mode: Some(TurnMode::CreateWorkflow),
         }),
     )
     .await

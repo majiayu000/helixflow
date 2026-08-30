@@ -284,7 +284,7 @@ fn section(
 fn mode_override(mode: TurnMode, output_contract: OutputContract) -> String {
     match mode {
         TurnMode::Chat => format!(
-            "Mode: Chat. Answer the user directly in JSON. Do not read `ctx/graph.json`, do not inspect the filesystem, do not run shell commands, and do not create proposals. Write `out/{}` with shape {{\"message\":\"...\"}}.",
+            "Mode: Chat. Answer the user directly in JSON. Read the compact canvas only through `canvas.get_state` when the question depends on workspace state. Do not inspect unrelated files, run shell commands, create proposals, or request execution. Submit {{\"message\":\"...\"}} through `canvas.submit_reply` when available; otherwise write `out/{}`.",
             output_contract.file_name()
         ),
         TurnMode::CreateWorkflow => format!(
@@ -304,6 +304,10 @@ fn mode_override(mode: TurnMode, output_contract: OutputContract) -> String {
         ),
         TurnMode::RunRequest => format!(
             "Mode: RunRequest. Validate that the user wants to run the current graph and write `out/{}`. Do not redesign or modify the graph; backend owns provider execution.",
+            output_contract.file_name()
+        ),
+        TurnMode::Route => format!(
+            "Mode: Route. Classify the user's semantic intent using the current request, conversation history, and routing context. First restate the action requested by the current user turn, then submit exactly one {{\"mode\":\"chat|create_workflow|modify_workflow|debug_workflow|run_request\",\"requestedAction\":\"one concise sentence\"}} result through `agent.select_turn_mode` when that tool is available; otherwise write `out/{}`. Choose one user-facing mode; do not answer the request or perform the action.",
             output_contract.file_name()
         ),
     }
@@ -330,6 +334,7 @@ fn intent_output_contract() -> &'static str {
 - "requestedModel": set ONLY when the user named a model; otherwise omit it and the backend applies the configured default. Never invent model names.
 - If the user names a model-capability pair with no enabled binding, preserve the requested model and capability in the intent. Never silently substitute another model or capability; the backend will return a structured clarification with available choices.
 - "inputFrom" references earlier stages only: [{"stageId":"s1","output":"image"}]. Use "linear" unless the user explicitly asked for parallel branches.
+- When the user supplies a literal value for a required input port, put that value in the stage "params" under the exact input port name; the compiler materializes the corresponding input node. Use "inputFrom" instead when an earlier stage supplies it.
 - Stage ids are lowercase short labels (s1, s2, ...). Do not write node ids, edges, coordinates, binding ids, connector names, or credentials.
 - If a required input cannot come from the user's message or an earlier stage, still write the intent — the backend returns a structured clarification."#
 }
@@ -382,20 +387,29 @@ fn canvas_ops_contract(mode: TurnMode, output_contract: OutputContract) -> &'sta
 - The backend estimates cost and only creates pending confirmation when the run exceeds the configured threshold.
 - Do not confirm runs, queue provider execution directly, or implement selected-subgraph execution."#
         }
-        TurnMode::Chat => "Canvas ops are not available in chat mode.",
+        TurnMode::Chat => {
+            r#"Canvas ops contract:
+- Use `canvas.get_state` only when the answer depends on the current compact graph or selection.
+- Use `canvas.submit_reply` to return the answer when available.
+- Chat is read-only and must not create proposals or request a run."#
+        }
+        TurnMode::Route => "Canvas ops are not available in this mode.",
     }
 }
 
 fn runtime_tool_policy(mode: TurnMode) -> &'static str {
     match mode {
         TurnMode::Chat => {
-            "No tools are needed for chat replies. The only permitted output is `out/reply.json`."
+            "Use only `canvas.get_state` and `canvas.submit_reply` when available. Chat must not mutate the canvas or call providers."
         }
         TurnMode::CreateWorkflow | TurnMode::ModifyWorkflow | TurnMode::DebugWorkflow => {
             "Read declared ctx files and write one proposal file. Shell execution and provider calls are not needed."
         }
         TurnMode::RunRequest => {
             "Read declared ctx files only if needed to validate run readiness. Do not call provider APIs."
+        }
+        TurnMode::Route => {
+            "Use only `agent.select_turn_mode` when available. It records a typed decision and cannot modify the canvas or run providers."
         }
     }
 }
@@ -420,6 +434,9 @@ fn system_behavior(mode: TurnMode) -> &'static str {
         }
         TurnMode::RunRequest => {
             "Return a backend run request only; provider invocation is backend-owned and may start automatically when the estimate is within the cost threshold."
+        }
+        TurnMode::Route => {
+            "Route by meaning, not by keyword matching. Chat answers questions, explains, or summarizes without changing the canvas. Create Workflow builds a new goal or an empty canvas. Modify Workflow changes the current graph. Debug Workflow diagnoses or fixes a failure. Run Request executes the current graph without redesigning it, and is valid only when the current user turn asks for execution. A prior run does not make a later question a Run Request. Semantic boundary examples: summarize the current workflow => Chat; explain the latest output or run status => Chat; produce results with the current workflow => Run Request. A direct answer to an Agent clarification continues the unresolved mode being clarified. Use conversation history to resolve references, but route the action requested by the current turn. If there is no actionable canvas or run intent, choose Chat."
         }
     }
 }

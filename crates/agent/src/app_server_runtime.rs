@@ -186,7 +186,7 @@ async fn run_app_server_turn(
     )
     .await?;
 
-    let dynamic_tools = canvas_dynamic_tools(&handle.root_dir, handle.output_contract);
+    let dynamic_tools = helixflow_dynamic_tools(&handle.root_dir, handle.output_contract);
     let thread_request = match handle.resume_thread_id().await {
         Some(thread_id) => json!({
             "method": "thread/resume",
@@ -316,10 +316,60 @@ async fn run_app_server_turn(
     }
 }
 
-fn canvas_dynamic_tools(
+fn helixflow_dynamic_tools(
     root_dir: &std::path::Path,
     output_contract: Option<crate::OutputContract>,
 ) -> Vec<Value> {
+    if output_contract == Some(crate::OutputContract::RouteJson) {
+        return vec![json!({
+            "type": "namespace",
+            "name": "agent",
+            "description": "Submit the current Helixflow Agent control decision for strict backend validation.",
+            "tools": [{
+                "type": "function",
+                "name": "select_turn_mode",
+                "description": "Restate the action requested by the current user turn, then select the single user-facing mode that matches that action.",
+                "inputSchema": {
+                    "type": "object",
+                    "required": ["mode", "requestedAction"],
+                    "properties": {
+                        "mode": {
+                            "type": "string",
+                            "oneOf": [
+                                {
+                                    "const": "chat",
+                                    "description": "Give a read-only answer, explanation, status interpretation, or summary; do not change or execute the workflow."
+                                },
+                                {
+                                    "const": "create_workflow",
+                                    "description": "Build a new workflow goal, normally for an empty canvas."
+                                },
+                                {
+                                    "const": "modify_workflow",
+                                    "description": "Change the structure or parameters of the existing workflow."
+                                },
+                                {
+                                    "const": "debug_workflow",
+                                    "description": "Diagnose a failed run or propose a minimal repair."
+                                },
+                                {
+                                    "const": "run_request",
+                                    "description": "Execute the existing workflow because the current user explicitly requests execution or new results."
+                                }
+                            ]
+                        },
+                        "requestedAction": {
+                            "type": "string",
+                            "description": "One concise sentence containing only the user-visible outcome requested by the current user; exclude routing, tools, files, and prior-turn actions.",
+                            "minLength": 1,
+                            "maxLength": 1024
+                        }
+                    },
+                    "additionalProperties": false
+                }
+            }]
+        })];
+    }
     if !root_dir.join("ctx/canvas_state.json").is_file() {
         return Vec::new();
     }
@@ -353,6 +403,7 @@ fn canvas_dynamic_tools(
             }
         }));
     } else if output_contract == Some(crate::OutputContract::IntentJson) {
+        let capability_ids = catalog_capability_ids(root_dir);
         tools.push(json!({
             "type": "function",
             "name": "submit_intent",
@@ -363,7 +414,37 @@ fn canvas_dynamic_tools(
                 "properties": {
                     "intentVersion": { "type": "string", "enum": ["1"] },
                     "topology": { "type": "string", "enum": ["linear", "parallel"] },
-                    "stages": { "type": "array", "items": { "type": "object" } },
+                    "stages": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "required": ["stageId", "capabilityId"],
+                            "properties": {
+                                "stageId": { "type": "string" },
+                                "capabilityId": {
+                                    "type": "string",
+                                    "enum": capability_ids,
+                                    "description": "Choose a catalog capability id, never a node type."
+                                },
+                                "requestedModel": { "type": "string" },
+                                "inputFrom": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "required": ["stageId", "output"],
+                                        "properties": {
+                                            "stageId": { "type": "string" },
+                                            "output": { "type": "string" }
+                                        },
+                                        "additionalProperties": false
+                                    }
+                                },
+                                "params": { "type": "object" }
+                            },
+                            "additionalProperties": false
+                        }
+                    },
                     "outputStageIds": { "type": "array", "items": { "type": "string" } },
                     "assumptions": { "type": "array", "items": { "type": "string" } }
                 },
@@ -385,6 +466,20 @@ fn canvas_dynamic_tools(
                 "additionalProperties": false
             }
         }));
+    } else if output_contract == Some(crate::OutputContract::ReplyJson) {
+        tools.push(json!({
+            "type": "function",
+            "name": "submit_reply",
+            "description": "Submit a read-only chat answer for backend validation. This cannot modify or run the canvas.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["message"],
+                "properties": {
+                    "message": { "type": "string", "minLength": 1, "maxLength": 65536 }
+                },
+                "additionalProperties": false
+            }
+        }));
     }
     vec![json!({
         "type": "namespace",
@@ -392,6 +487,26 @@ fn canvas_dynamic_tools(
         "description": "Read the current Helixflow canvas and submit bounded outputs for backend validation.",
         "tools": tools
     })]
+}
+
+fn catalog_capability_ids(root_dir: &std::path::Path) -> Vec<String> {
+    let path = root_dir.join("ctx/node_defs/catalog.json");
+    let mut ids = std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|catalog| catalog.get("nodes").and_then(Value::as_array).cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| {
+            entry
+                .get("capability")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect::<Vec<_>>();
+    ids.sort();
+    ids.dedup();
+    ids
 }
 
 async fn respond_to_dynamic_tool_call<W: AsyncWrite + Unpin>(
@@ -431,6 +546,16 @@ async fn respond_to_dynamic_tool_call<W: AsyncWrite + Unpin>(
         {
             request_run_tool_result(out_dir, &params["arguments"]).await
         }
+        (true, Some("canvas"), Some("submit_reply"))
+            if output_contract == Some(crate::OutputContract::ReplyJson) =>
+        {
+            submit_reply_tool_result(out_dir, &params["arguments"]).await
+        }
+        (true, Some("agent"), Some("select_turn_mode"))
+            if output_contract == Some(crate::OutputContract::RouteJson) =>
+        {
+            submit_route_tool_result(out_dir, &params["arguments"]).await
+        }
         _ => failed_tool_result("Unsupported or stale Helixflow dynamic tool call."),
     };
     write_rpc(writer, &json!({ "id": request_id, "result": result })).await
@@ -465,6 +590,28 @@ async fn request_run_tool_result(out_dir: &std::path::Path, arguments: &Value) -
         "run_request.json",
         "Run request",
         "Run request captured for backend estimation and cost gating; no provider was dispatched.",
+    )
+    .await
+}
+
+async fn submit_reply_tool_result(out_dir: &std::path::Path, arguments: &Value) -> Value {
+    capture_json_output(
+        out_dir,
+        arguments,
+        "reply.json",
+        "Chat reply",
+        "Chat reply captured for backend validation; the canvas was not changed.",
+    )
+    .await
+}
+
+async fn submit_route_tool_result(out_dir: &std::path::Path, arguments: &Value) -> Value {
+    capture_json_output(
+        out_dir,
+        arguments,
+        "route.json",
+        "Turn route",
+        "Turn mode captured for backend validation; no user action has run.",
     )
     .await
 }
@@ -642,160 +789,5 @@ fn notification_matches_turn(value: &Value, thread_id: &str, turn_id: &str) -> b
 }
 
 #[cfg(test)]
-mod tests {
-    use std::fs;
-
-    use serde_json::{Value, json};
-
-    use super::{
-        canvas_dynamic_tools, canvas_state_tool_result, completed_item_status,
-        notification_matches_turn, request_run_tool_result, required_string, started_item_status,
-        submit_intent_tool_result, submit_proposal_tool_result,
-    };
-
-    #[test]
-    fn parses_thread_identity_and_completed_items() {
-        let response = json!({ "result": { "thread": { "id": "thr_1" } } });
-        assert_eq!(
-            required_string(&response, "/result/thread/id").unwrap(),
-            "thr_1"
-        );
-        assert_eq!(
-            completed_item_status(&json!({
-                "params": { "item": { "type": "dynamicToolCall", "tool": "canvas.get_state" } }
-            }))
-            .as_deref(),
-            Some("Tool completed: canvas.get_state")
-        );
-        assert_eq!(
-            started_item_status(&json!({
-                "params": { "item": { "type": "reasoning" } }
-            }))
-            .as_deref(),
-            Some("Planning workflow")
-        );
-        assert_eq!(
-            completed_item_status(&json!({
-                "params": {
-                    "item": {
-                        "type": "commandExecution",
-                        "command": "printenv SUPER_SECRET"
-                    }
-                }
-            }))
-            .as_deref(),
-            Some("Restricted command completed")
-        );
-        let active = json!({
-            "params": { "threadId": "thr_1", "turnId": "turn_1" }
-        });
-        assert!(notification_matches_turn(&active, "thr_1", "turn_1"));
-        assert!(!notification_matches_turn(&active, "thr_1", "turn_stale"));
-    }
-
-    #[tokio::test]
-    async fn exposes_bounded_canvas_state_as_a_dynamic_tool() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        fs::create_dir(dir.path().join("ctx")).expect("ctx dir");
-        fs::write(
-            dir.path().join("ctx/canvas_state.json"),
-            r#"{ "workspace_id": "ws_1", "graph": { "node_count": 1 } }"#,
-        )
-        .expect("canvas state");
-
-        let tools = canvas_dynamic_tools(dir.path(), Some(crate::OutputContract::ProposalJson));
-        assert_eq!(tools[0]["name"], "canvas");
-        assert_eq!(tools[0]["tools"][0]["name"], "get_state");
-        assert_eq!(tools[0]["tools"][1]["name"], "submit_proposal");
-        let intent_tools =
-            canvas_dynamic_tools(dir.path(), Some(crate::OutputContract::IntentJson));
-        assert_eq!(intent_tools[0]["tools"][1]["name"], "submit_intent");
-        let run_tools =
-            canvas_dynamic_tools(dir.path(), Some(crate::OutputContract::RunRequestJson));
-        assert_eq!(run_tools[0]["tools"][1]["name"], "request_run");
-        let result = canvas_state_tool_result(dir.path()).await;
-        assert_eq!(result["success"], true);
-        assert!(
-            result["contentItems"][0]["text"]
-                .as_str()
-                .expect("text")
-                .contains("ws_1")
-        );
-    }
-
-    #[tokio::test]
-    async fn captures_proposals_without_applying_them() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let out_dir = dir.path().join("out");
-        fs::create_dir(&out_dir).expect("out dir");
-        let proposal = json!({
-            "base_version_id": "ver_1",
-            "kind": "modify",
-            "title": "Move node",
-            "summary": "Move one node.",
-            "ops": [{ "op": "move_node", "id": "video", "pos": [10, 20] }]
-        });
-
-        let result = submit_proposal_tool_result(&out_dir, &proposal).await;
-
-        assert_eq!(result["success"], true);
-        let captured: Value = serde_json::from_slice(
-            &fs::read(out_dir.join("proposal.json")).expect("captured proposal"),
-        )
-        .expect("proposal json");
-        assert_eq!(captured, proposal);
-    }
-
-    #[tokio::test]
-    async fn captures_intents_without_mutating_the_canvas() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let out_dir = dir.path().join("out");
-        fs::create_dir(&out_dir).expect("out dir");
-        let intent = json!({
-            "intentVersion": "1",
-            "topology": "linear",
-            "stages": [{
-                "stageId": "s1",
-                "capabilityId": "text_to_image",
-                "inputFrom": [],
-                "params": { "prompt": "a paper fox" }
-            }],
-            "outputStageIds": ["s1"]
-        });
-
-        let result = submit_intent_tool_result(&out_dir, &intent).await;
-
-        assert_eq!(result["success"], true);
-        let captured: Value = serde_json::from_slice(
-            &fs::read(out_dir.join("intent.json")).expect("captured intent"),
-        )
-        .expect("intent json");
-        assert_eq!(captured, intent);
-    }
-
-    #[tokio::test]
-    async fn captures_run_requests_without_dispatching_providers() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let out_dir = dir.path().join("out");
-        fs::create_dir(&out_dir).expect("out dir");
-        let request = json!({
-            "action": "request_confirmation",
-            "summary": "Run the current workflow."
-        });
-
-        let result = request_run_tool_result(&out_dir, &request).await;
-
-        assert_eq!(result["success"], true);
-        assert!(
-            result["contentItems"][0]["text"]
-                .as_str()
-                .expect("tool result")
-                .contains("no provider was dispatched")
-        );
-        let captured: Value = serde_json::from_slice(
-            &fs::read(out_dir.join("run_request.json")).expect("captured run request"),
-        )
-        .expect("run request json");
-        assert_eq!(captured, request);
-    }
-}
+#[path = "app_server_runtime_tests.rs"]
+mod tests;
