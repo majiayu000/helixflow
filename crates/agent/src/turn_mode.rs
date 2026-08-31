@@ -1,6 +1,5 @@
 use std::fmt;
 
-use helixflow_graph::WorkflowGraph;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -11,6 +10,10 @@ pub enum TurnMode {
     ModifyWorkflow,
     DebugWorkflow,
     RunRequest,
+    /// Internal model-owned semantic routing turn. HTTP callers cannot
+    /// deserialize this control-plane mode.
+    #[serde(skip_deserializing)]
+    Route,
 }
 
 impl TurnMode {
@@ -31,6 +34,7 @@ impl TurnMode {
                 }
             }
             Self::RunRequest => OutputContract::RunRequestJson,
+            Self::Route => OutputContract::RouteJson,
         }
     }
 
@@ -41,11 +45,16 @@ impl TurnMode {
             Self::ModifyWorkflow => AgentSkill::ModifyWorkflow,
             Self::DebugWorkflow => AgentSkill::FixError,
             Self::RunRequest => AgentSkill::RunRequest,
+            Self::Route => AgentSkill::Route,
         }
     }
 
     pub fn uses_graph_context(self) -> bool {
-        !matches!(self, Self::Chat)
+        !matches!(self, Self::Chat | Self::Route)
+    }
+
+    pub fn uses_canvas_context(self) -> bool {
+        !matches!(self, Self::Route)
     }
 }
 
@@ -57,6 +66,7 @@ impl fmt::Display for TurnMode {
             Self::ModifyWorkflow => "modify_workflow",
             Self::DebugWorkflow => "debug_workflow",
             Self::RunRequest => "run_request",
+            Self::Route => "route",
         };
         f.write_str(value)
     }
@@ -69,6 +79,7 @@ pub enum OutputContract {
     ProposalJson,
     IntentJson,
     RunRequestJson,
+    RouteJson,
 }
 
 impl OutputContract {
@@ -78,6 +89,7 @@ impl OutputContract {
             Self::ProposalJson => "proposal.json",
             Self::IntentJson => "intent.json",
             Self::RunRequestJson => "run_request.json",
+            Self::RouteJson => "route.json",
         }
     }
 }
@@ -89,6 +101,7 @@ impl fmt::Display for OutputContract {
             Self::ProposalJson => "proposal_json",
             Self::IntentJson => "intent_json",
             Self::RunRequestJson => "run_request_json",
+            Self::RouteJson => "route_json",
         };
         f.write_str(value)
     }
@@ -103,6 +116,7 @@ pub enum AgentSkill {
     FixError,
     RunRequest,
     Sweep,
+    Route,
 }
 
 impl AgentSkill {
@@ -114,79 +128,22 @@ impl AgentSkill {
             Self::FixError => "fix_error.md",
             Self::RunRequest => "run_request.md",
             Self::Sweep => "sweep.md",
+            Self::Route => "route.md",
         }
     }
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TurnRoutingError {
-    EmptyMessage,
-}
-
-impl fmt::Display for TurnRoutingError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::EmptyMessage => f.write_str("cannot classify an empty agent turn"),
-        }
-    }
-}
-
-impl std::error::Error for TurnRoutingError {}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TurnModeSource {
-    Keyword,
-    AmbiguousFallback,
     Explicit,
+    Model,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TurnClassification {
     pub mode: TurnMode,
     pub source: TurnModeSource,
-}
-
-pub fn classify_turn_mode(
-    user_message: &str,
-    graph: &WorkflowGraph,
-) -> Result<TurnClassification, TurnRoutingError> {
-    let trimmed = user_message.trim();
-    if trimmed.is_empty() {
-        return Err(TurnRoutingError::EmptyMessage);
-    }
-
-    let normalized = trimmed.to_lowercase();
-    if contains_any(&normalized, RUN_KEYWORDS) {
-        return Ok(keyword(TurnMode::RunRequest));
-    }
-    if contains_any(&normalized, DEBUG_KEYWORDS) {
-        return Ok(keyword(TurnMode::DebugWorkflow));
-    }
-    if contains_any(&normalized, CHAT_KEYWORDS) {
-        return Ok(keyword(TurnMode::Chat));
-    }
-    if contains_any(&normalized, MODIFY_KEYWORDS) {
-        return Ok(keyword(TurnMode::ModifyWorkflow));
-    }
-    if contains_any(&normalized, CREATE_KEYWORDS) {
-        return Ok(keyword(TurnMode::CreateWorkflow));
-    }
-    if graph.nodes.is_empty() && contains_any(&normalized, WORKFLOW_NOUNS) {
-        return Ok(keyword(TurnMode::CreateWorkflow));
-    }
-
-    Ok(TurnClassification {
-        mode: TurnMode::Chat,
-        source: TurnModeSource::AmbiguousFallback,
-    })
-}
-
-fn keyword(mode: TurnMode) -> TurnClassification {
-    TurnClassification {
-        mode,
-        source: TurnModeSource::Keyword,
-    }
 }
 
 /// Uses an explicit UI surface intent instead of guessing from message text.
@@ -198,78 +155,3 @@ pub fn explicit_turn_mode(mode: TurnMode) -> TurnClassification {
         source: TurnModeSource::Explicit,
     }
 }
-
-fn contains_any(value: &str, keywords: &[&str]) -> bool {
-    keywords.iter().any(|keyword| value.contains(keyword))
-}
-
-const CHAT_KEYWORDS: &[&str] = &[
-    "你好",
-    "您好",
-    "你是谁",
-    "是什么",
-    "解释",
-    "说明",
-    "区别",
-    "compare",
-    "explain",
-    "hello",
-    "hi",
-    "who are you",
-];
-
-const CREATE_KEYWORDS: &[&str] = &[
-    "创建",
-    "新建",
-    "帮我做",
-    "搭一个",
-    "做一个",
-    "生成一个工作流",
-    "文生图",
-    "图生图",
-    "create",
-    "build",
-    "make a workflow",
-];
-
-const MODIFY_KEYWORDS: &[&str] = &[
-    "改",
-    "调整",
-    "加一个",
-    "移除",
-    "删除",
-    "把",
-    "change",
-    "set ",
-    "add ",
-    "remove",
-    "modify",
-];
-
-const DEBUG_KEYWORDS: &[&str] = &[
-    "为什么失败",
-    "失败了",
-    "报错",
-    "修复",
-    "debug",
-    "fix",
-    "failed",
-    "error",
-];
-
-const RUN_KEYWORDS: &[&str] = &[
-    "运行",
-    "执行",
-    "跑一下",
-    "跑当前",
-    "提交",
-    "出图",
-    "生成结果",
-    "run current",
-    "run the current",
-    "execute",
-    "queue",
-    "render current",
-];
-
-const WORKFLOW_NOUNS: &[&str] = &["workflow", "工作流", "graph", "流程"];

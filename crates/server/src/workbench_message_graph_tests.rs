@@ -29,7 +29,7 @@ async fn verified_read_valid_ingress_sends_server_graph_to_agent() {
             graph: fixture.server_graph.clone(),
             canvas_context: None,
             conversation_id: None,
-            turn_mode: None,
+            turn_mode: Some(helixflow_agent::TurnMode::Chat),
         }),
     )
     .await

@@ -5,8 +5,8 @@ use std::{error::Error, fmt};
 
 use async_trait::async_trait;
 use helixflow_agent::{
-    AgentError, AgentService, AgentSessionRequest, CodexBackendRuntime, ValidatedAgentIntent,
-    ValidatedAgentProposal, ValidatedAgentReply,
+    AgentError, AgentService, AgentSessionRequest, CodexBackendRuntime, TurnClassification,
+    ValidatedAgentIntent, ValidatedAgentProposal, ValidatedAgentReply,
 };
 #[cfg(test)]
 use helixflow_gateway::RuntimeProvider;
@@ -282,6 +282,16 @@ impl From<VersionFileReconciliationError> for AppStateError {
 
 #[async_trait]
 pub(crate) trait WorkbenchAgent: Send + Sync {
+    async fn route_turn(
+        &self,
+        request: AgentSessionRequest,
+    ) -> Result<TurnClassification, AgentError> {
+        Err(AgentError::Runtime(format!(
+            "semantic routing is unavailable for mode {}",
+            request.mode
+        )))
+    }
+
     async fn answer_chat(
         &self,
         request: AgentSessionRequest,
@@ -316,6 +326,15 @@ struct CodexWorkbenchAgent {
 
 #[async_trait]
 impl WorkbenchAgent for CodexWorkbenchAgent {
+    async fn route_turn(
+        &self,
+        request: AgentSessionRequest,
+    ) -> Result<TurnClassification, AgentError> {
+        AgentService::new(self.runtime.clone(), self.events.clone())
+            .route_turn(request)
+            .await
+    }
+
     async fn answer_chat(
         &self,
         request: AgentSessionRequest,
