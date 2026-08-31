@@ -7,6 +7,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{ChildStdout, Command};
 use tokio::sync::oneshot;
 
+use crate::canvas_ops::MAX_CANVAS_STATE_BYTES;
 use crate::runtime::{codex_turn_prompt, safe_runtime_env};
 use crate::{
     AgentRuntime, AgentSession, AgentTurn, CodexRuntime, RuntimeError, RuntimeEvent, RuntimeHandle,
@@ -666,11 +667,10 @@ fn failed_tool_result(message: &str) -> Value {
 }
 
 async fn canvas_state_tool_result(root_dir: &std::path::Path) -> Value {
-    const MAX_CANVAS_STATE_BYTES: u64 = 256 * 1024;
     let path = root_dir.join("ctx/canvas_state.json");
     let read = async {
         let metadata = tokio::fs::metadata(&path).await?;
-        if metadata.len() > MAX_CANVAS_STATE_BYTES {
+        if metadata.len() > MAX_CANVAS_STATE_BYTES as u64 {
             return Err(std::io::Error::other("canvas state exceeds 256 KiB"));
         }
         let bytes = tokio::fs::read(&path).await?;
