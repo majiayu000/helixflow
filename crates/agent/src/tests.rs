@@ -581,6 +581,7 @@ async fn service_streams_agent_status_and_reads_chat_reply() {
 async fn service_routes_free_form_turn_from_model_contract() {
     let dir = tempfile::tempdir().expect("temp dir");
     let events = EventBus::new(16);
+    let mut receiver = events.subscribe();
     let service = AgentService::new(FakeRuntime::route(TurnMode::ModifyWorkflow), events);
     let mut request = chat_request(&dir);
     request.user_message = "照刚才那个，把第二段换掉".to_owned();
@@ -591,6 +592,41 @@ async fn service_routes_free_form_turn_from_model_contract() {
 
     assert_eq!(classification.mode, TurnMode::ModifyWorkflow);
     assert_eq!(classification.source, TurnModeSource::Model);
+    assert!(
+        matches!(
+            receiver.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ),
+        "internal routing telemetry must not reach workspace subscribers"
+    );
+}
+
+#[tokio::test]
+async fn dropping_route_turn_cancels_the_runtime() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let runtime = HangingRuntime::default();
+    let started = runtime.started.clone();
+    let service = AgentService::new(runtime.clone(), EventBus::new(16));
+    let mut request = chat_request(&dir);
+    request.mode = TurnMode::Route;
+    request.skill = AgentSkill::Route;
+
+    let task = tokio::spawn(async move { service.route_turn(request).await });
+    started.notified().await;
+    task.abort();
+    assert!(
+        task.await
+            .expect_err("route task must be cancelled")
+            .is_cancelled()
+    );
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !runtime.cancelled.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("dropped route cancellation");
 }
 
 #[test]
@@ -888,6 +924,7 @@ impl AgentRuntime for FakeRuntime {
 #[derive(Clone, Default)]
 struct HangingRuntime {
     cancelled: Arc<AtomicBool>,
+    started: Arc<tokio::sync::Notify>,
 }
 
 #[async_trait]
@@ -910,6 +947,7 @@ impl AgentRuntime for HangingRuntime {
     }
 
     async fn next_event(&self, _handle: &RuntimeHandle) -> Option<RuntimeEvent> {
+        self.started.notify_one();
         std::future::pending().await
     }
 

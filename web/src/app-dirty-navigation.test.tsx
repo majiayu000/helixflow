@@ -1,6 +1,7 @@
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './app';
+import { GraphCanvas } from './components/graph-canvas';
 import { HistoryPanel } from './components/run-panels';
 import { TopBar } from './components/top-bar';
 import { useWorkbenchStore } from './store';
@@ -116,6 +117,32 @@ describe('App dirty navigation integration', () => {
     expect(useWorkbenchStore.getState().editSession).toBeNull();
   });
 
+  it('sends an explicit run mode from the Agent Run surface', async () => {
+    const fetchMock = agentMessageFetch('run_request');
+    vi.stubGlobal('fetch', fetchMock);
+    renderer = await renderCleanApp();
+
+    await act(async () => {
+      renderer!.root.findByType(TopBar).props.onAgentRun();
+      await flushActions();
+    });
+
+    expect(messageRequestBody(fetchMock).turnMode).toBe('run_request');
+  });
+
+  it('sends an explicit modify mode from the selected-node Agent action', async () => {
+    const fetchMock = agentMessageFetch('modify_workflow');
+    vi.stubGlobal('fetch', fetchMock);
+    renderer = await renderCleanApp();
+
+    await act(async () => {
+      renderer!.root.findByType(GraphCanvas).props.onRequestNodeProposal('video');
+      await flushActions();
+    });
+
+    expect(messageRequestBody(fetchMock).turnMode).toBe('modify_workflow');
+  });
+
   async function renderDirtyApp(): Promise<ReactTestRenderer> {
     let next!: ReactTestRenderer;
     await act(async () => {
@@ -128,7 +155,51 @@ describe('App dirty navigation integration', () => {
     }));
     return next;
   }
+
+  async function renderCleanApp(): Promise<ReactTestRenderer> {
+    let next!: ReactTestRenderer;
+    await act(async () => {
+      next = create(<App initialState={stateForVersion('ver_a')} />);
+      await flushActions();
+    });
+    return next;
+  }
 });
+
+function agentMessageFetch(turnMode: 'run_request' | 'modify_workflow') {
+  return vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes('/events')) return jsonResponse({ events: [] });
+    if (url === '/api/workspaces') return jsonResponse([]);
+    if (url.endsWith('/messages')) {
+      return jsonResponse({
+        conversationId: 'conv_agent_action',
+        turnId: 'turn_agent_action',
+        turnStatus: 'succeeded',
+        turnMode,
+        messages: [{
+          id: 'msg_agent_action',
+          role: 'agent',
+          kind: 'chat',
+          text: 'Agent action completed.',
+          time: 'unix:1',
+          conversationId: 'conv_agent_action',
+          turnId: 'turn_agent_action',
+        }],
+        proposal: null,
+        run: null,
+        pendingConfirmation: null,
+      });
+    }
+    return new Response('{}', { status: 404 });
+  });
+}
+
+function messageRequestBody(fetchMock: ReturnType<typeof agentMessageFetch>) {
+  const call = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/messages'));
+  if (!call) throw new Error('workspace message request was not sent');
+  return JSON.parse(String(call[1]?.body)) as { turnMode?: string };
+}
 
 function dirtySession(): ManualEditSession {
   return {

@@ -292,6 +292,120 @@ async fn routing_failure_is_explicit_and_never_falls_back_to_chat() {
 }
 
 #[tokio::test]
+async fn semantic_routing_can_be_interrupted_before_a_durable_turn_exists() {
+    let (mut state, workspace_id, version_id, _dir) = state_with_workspace().await;
+    let started = Arc::new(tokio::sync::Notify::new());
+    state.agent = Arc::new(HangingRoutingAgent {
+        started: started.clone(),
+    });
+    let request_state = state.clone();
+    let request_workspace_id = workspace_id.clone();
+    let request = tokio::spawn(async move {
+        post_workspace_message(
+            Path(request_workspace_id),
+            State(request_state),
+            Json(WorkspaceMessageRequest {
+                base_version_id: version_id,
+                user_message: "继续处理这个画布".to_owned(),
+                graph: sample_graph(),
+                canvas_context: None,
+                conversation_id: None,
+                turn_mode: None,
+            }),
+        )
+        .await
+    });
+    started.notified().await;
+
+    let interrupted =
+        interrupt_workspace_agent_turn(Path(workspace_id.clone()), State(state.clone()))
+            .await
+            .expect("routing interrupt response")
+            .0;
+    assert_eq!(interrupted.status, "interrupt_requested");
+    let error = request
+        .await
+        .expect("request task")
+        .expect_err("routing request must stop");
+    assert_eq!(error.status, axum::http::StatusCode::CONFLICT);
+    assert!(
+        state
+            .store
+            .workspace_messages(&workspace_id)
+            .await
+            .expect("messages")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn semantic_routing_revalidates_the_base_version_before_dispatch() {
+    let (mut state, workspace_id, version_id, _dir) = state_with_workspace().await;
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    state.agent = Arc::new(BlockingRoutingAgent {
+        started: started.clone(),
+        release: release.clone(),
+    });
+    let request_state = state.clone();
+    let request_workspace_id = workspace_id.clone();
+    let base_version_id = version_id.clone();
+    let request = tokio::spawn(async move {
+        post_workspace_message(
+            Path(request_workspace_id),
+            State(request_state),
+            Json(WorkspaceMessageRequest {
+                base_version_id,
+                user_message: "现在运行".to_owned(),
+                graph: sample_graph(),
+                canvas_context: None,
+                conversation_id: None,
+                turn_mode: None,
+            }),
+        )
+        .await
+    });
+    started.notified().await;
+
+    let base = state
+        .store
+        .version(&version_id)
+        .await
+        .expect("base version");
+    state
+        .store
+        .create_version_after(
+            NewVersion {
+                workspace_id: &workspace_id,
+                label: "Concurrent canvas publish",
+                source: VersionSource::Manual,
+                graph_path: &base.graph_path,
+                graph_hash: &base.graph_hash,
+                parent_id: Some(&version_id),
+                semantics_json: None,
+            },
+            &version_id,
+        )
+        .await
+        .expect("publish concurrent version");
+    release.notify_one();
+
+    let error = request
+        .await
+        .expect("request task")
+        .expect_err("stale routed request must be rejected");
+    assert_eq!(error.status, axum::http::StatusCode::CONFLICT);
+    assert!(
+        state
+            .store
+            .workspace_messages(&workspace_id)
+            .await
+            .expect("messages")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn interrupting_active_chat_persists_an_interrupted_terminal_turn() {
     let (mut state, workspace_id, version_id, _dir) = state_with_workspace().await;
     let started = Arc::new(tokio::sync::Notify::new());
@@ -996,6 +1110,69 @@ struct IntentWorkbenchAgent {
 
 struct HangingWorkbenchAgent {
     started: Arc<tokio::sync::Notify>,
+}
+
+struct HangingRoutingAgent {
+    started: Arc<tokio::sync::Notify>,
+}
+
+struct BlockingRoutingAgent {
+    started: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait]
+impl WorkbenchAgent for HangingRoutingAgent {
+    async fn route_turn(
+        &self,
+        _request: AgentSessionRequest,
+    ) -> Result<TurnClassification, AgentError> {
+        self.started.notify_one();
+        std::future::pending().await
+    }
+
+    async fn answer_chat(
+        &self,
+        _request: AgentSessionRequest,
+    ) -> Result<ValidatedAgentReply, AgentError> {
+        unreachable!("routing never completes")
+    }
+
+    async fn propose_graph_change(
+        &self,
+        _request: AgentSessionRequest,
+    ) -> Result<ValidatedAgentProposal, AgentError> {
+        unreachable!("routing never completes")
+    }
+}
+
+#[async_trait]
+impl WorkbenchAgent for BlockingRoutingAgent {
+    async fn route_turn(
+        &self,
+        _request: AgentSessionRequest,
+    ) -> Result<TurnClassification, AgentError> {
+        self.started.notify_one();
+        self.release.notified().await;
+        Ok(TurnClassification {
+            mode: TurnMode::RunRequest,
+            source: TurnModeSource::Model,
+        })
+    }
+
+    async fn answer_chat(
+        &self,
+        _request: AgentSessionRequest,
+    ) -> Result<ValidatedAgentReply, AgentError> {
+        unreachable!("run request does not answer chat")
+    }
+
+    async fn propose_graph_change(
+        &self,
+        _request: AgentSessionRequest,
+    ) -> Result<ValidatedAgentProposal, AgentError> {
+        unreachable!("run request does not propose")
+    }
 }
 
 #[async_trait]

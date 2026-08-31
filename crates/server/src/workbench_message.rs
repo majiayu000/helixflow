@@ -79,8 +79,10 @@ pub(crate) async fn post_workspace_message(
     State(state): State<AppState>,
     Json(input): Json<WorkspaceMessageRequest>,
 ) -> Result<Json<WorkspaceMessageResponse>, ApiError> {
-    let VerifiedMessageGraph { version, graph } =
-        verified_message_graph(&state, &workspace_id, &input.base_version_id, &input.graph).await?;
+    let VerifiedMessageGraph {
+        mut version,
+        mut graph,
+    } = verified_message_graph(&state, &workspace_id, &input.base_version_id, &input.graph).await?;
     if input.user_message.trim().is_empty() {
         return Err(ApiError::bad_request("empty agent turn is not allowed"));
     }
@@ -117,12 +119,16 @@ pub(crate) async fn post_workspace_message(
                 })
         })
         .collect();
-    let workspace = state
+    let mut workspace = state
         .store
         .workspace(&workspace_id)
         .await
         .map_err(ApiError::store)?;
-    let provider_catalog = state.provider_catalog_for_workspace(&workspace);
+    let mut provider_catalog = state.provider_catalog_for_workspace(&workspace);
+    let durable_turn_id = format!("turn_{}", uuid::Uuid::now_v7().simple());
+    let (active_turn_guard, mut interrupt_rx) = state
+        .active_agent_turns
+        .register(&workspace_id, &durable_turn_id)?;
     let classification = match input.turn_mode {
         Some(TurnMode::Route) => {
             return Err(ApiError::bad_request(
@@ -157,16 +163,17 @@ pub(crate) async fn post_workspace_message(
                 canvas_context: None,
                 use_intent_contract: false,
             };
-            state
-                .agent
-                .route_turn(routing_request)
-                .await
-                .map_err(|error| {
+            tokio::select! {
+                result = state.agent.route_turn(routing_request) => result.map_err(|error| {
                     ApiError::service_unavailable(format!(
                         "agent semantic routing failed: {}",
                         agent_error_code(&error)
                     ))
-                })?
+                })?,
+                _ = &mut interrupt_rx => {
+                    return Err(ApiError::conflict("agent semantic routing was interrupted"));
+                }
+            }
         }
     };
     let canvas_context = prepare_agent_canvas_context(
@@ -179,7 +186,19 @@ pub(crate) async fn post_workspace_message(
     )
     .await?;
     let run_context = debug_run_context(&state, &workspace_id, classification.mode).await?;
-    let durable_turn_id = format!("turn_{}", uuid::Uuid::now_v7().simple());
+    if input.turn_mode.is_none() {
+        let verified =
+            verified_message_graph(&state, &workspace_id, &input.base_version_id, &input.graph)
+                .await?;
+        version = verified.version;
+        graph = verified.graph;
+        workspace = state
+            .store
+            .workspace(&workspace_id)
+            .await
+            .map_err(ApiError::store)?;
+        provider_catalog = state.provider_catalog_for_workspace(&workspace);
+    }
     let mut durable_turn_guard =
         DurableAgentTurnGuard::new(state.store.clone(), &durable_turn_id, None);
     let durable_turn = state
@@ -261,9 +280,6 @@ pub(crate) async fn post_workspace_message(
         use_intent_contract,
     };
 
-    let (active_turn_guard, mut interrupt_rx) = state
-        .active_agent_turns
-        .register(&workspace_id, &durable_turn.id)?;
     let response = tokio::select! {
         response = async {
             match classification.mode {

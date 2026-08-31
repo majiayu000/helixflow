@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use crate::{
     AgentError, AgentLogEntry, AgentResult, AgentRuntime, AgentSession, AgentSessionRequest,
     AgentTurn, OutputContract, PromptStackMetadata, RuntimeEvent, RuntimeHandle,
-    TurnClassification, TurnModeSource, ValidatedAgentIntent, ValidatedAgentProposal,
+    TurnClassification, TurnMode, TurnModeSource, ValidatedAgentIntent, ValidatedAgentProposal,
     ValidatedAgentReply, create_session_contract, read_validated_intent, read_validated_proposal,
     read_validated_reply, read_validated_route,
 };
@@ -30,32 +30,25 @@ impl<R> AgentService<R>
 where
     R: AgentRuntime,
 {
-    pub async fn route_turn(
-        &self,
-        request: AgentSessionRequest,
-    ) -> AgentResult<TurnClassification> {
+    pub async fn route_turn(&self, request: AgentSessionRequest) -> AgentResult<TurnClassification>
+    where
+        R: Clone + 'static,
+    {
         ensure_output_contract(&request, OutputContract::RouteJson)?;
         let mut run = self.start_agent_session(&request).await?;
+        let mut cancellation = RuntimeCancellationGuard::new(self.runtime.clone(), &run.handle);
         let turn = AgentTurn {
             message: request.user_message.clone(),
             mode: request.mode,
             output_contract: OutputContract::RouteJson,
             skill: request.skill,
         };
-        if let TurnRunOutcome::RuntimeFailed(message) = self.send_agent_turn(&mut run, turn).await?
-        {
+        let outcome = self.send_agent_turn(&mut run, turn).await?;
+        cancellation.disarm();
+        if let TurnRunOutcome::RuntimeFailed(message) = outcome {
             return Err(AgentError::Runtime(message));
         }
         let route = read_validated_route(&run.session)?;
-        self.emit_status(
-            &run.session,
-            run.seq,
-            "agent.status.end",
-            json!({
-                "turn_mode": route.mode,
-                "requested_action": route.requested_action,
-            }),
-        );
         Ok(TurnClassification {
             mode: route.mode,
             source: TurnModeSource::Model,
@@ -404,6 +397,9 @@ where
     }
 
     fn emit_status(&self, session: &AgentSession, seq: i64, status: &str, detail: Value) {
+        if session.mode == TurnMode::Route {
+            return;
+        }
         let message_kind = agent_message_kind(status, &detail);
         if let Err(err) = self.events.publish(RunEventEnvelope {
             workspace_id: session.workspace_id.clone(),
@@ -425,6 +421,52 @@ where
             }),
         }) {
             eprintln!("failed to publish agent event: {err}");
+        }
+    }
+}
+
+struct RuntimeCancellationGuard<R>
+where
+    R: AgentRuntime + Clone + 'static,
+{
+    runtime: R,
+    handle: RuntimeHandle,
+    armed: bool,
+}
+
+impl<R> RuntimeCancellationGuard<R>
+where
+    R: AgentRuntime + Clone + 'static,
+{
+    fn new(runtime: R, handle: &RuntimeHandle) -> Self {
+        Self {
+            runtime,
+            handle: handle.clone(),
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl<R> Drop for RuntimeCancellationGuard<R>
+where
+    R: AgentRuntime + Clone + 'static,
+{
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let runtime = self.runtime.clone();
+        let handle = self.handle.clone();
+        if let Ok(tokio_runtime) = tokio::runtime::Handle::try_current() {
+            tokio_runtime.spawn(async move {
+                if let Err(error) = runtime.cancel(&handle).await {
+                    eprintln!("failed to cancel dropped Agent routing turn: {error}");
+                }
+            });
         }
     }
 }

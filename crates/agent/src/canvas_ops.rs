@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 
 use helixflow_graph::{GraphEdge, WorkflowGraph};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -55,6 +56,7 @@ impl CompactCanvasGraph {
                     id: id.clone(),
                     node_type: node.node_type.clone(),
                     title: node.title.clone(),
+                    params: safe_canvas_params(&node.params, 0),
                     pos: node.pos,
                 })
                 .collect(),
@@ -69,7 +71,85 @@ pub struct CompactCanvasNode {
     pub id: String,
     pub node_type: String,
     pub title: String,
+    pub params: Value,
     pub pos: [f32; 2],
+}
+
+fn safe_canvas_params(value: &Value, depth: usize) -> Value {
+    const MAX_DEPTH: usize = 4;
+    const MAX_ITEMS: usize = 32;
+    const MAX_TEXT_CHARS: usize = 240;
+    if depth >= MAX_DEPTH {
+        return Value::String("[truncated]".to_owned());
+    }
+    match value {
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .take(MAX_ITEMS)
+                .map(|(key, value)| {
+                    let value = if is_sensitive_param_key(key) {
+                        Value::String("[redacted]".to_owned())
+                    } else {
+                        safe_canvas_params(value, depth + 1)
+                    };
+                    (key.clone(), value)
+                })
+                .collect::<Map<_, _>>(),
+        ),
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .take(MAX_ITEMS)
+                .map(|item| safe_canvas_params(item, depth + 1))
+                .collect(),
+        ),
+        Value::String(text) if is_sensitive_param_value(text) => {
+            Value::String("[redacted]".to_owned())
+        }
+        Value::String(text) => Value::String(
+            text.lines()
+                .next()
+                .unwrap_or_default()
+                .chars()
+                .take(MAX_TEXT_CHARS)
+                .collect(),
+        ),
+        scalar => scalar.clone(),
+    }
+}
+
+fn is_sensitive_param_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    [
+        "token",
+        "secret",
+        "password",
+        "authorization",
+        "api_key",
+        "apikey",
+        "credential",
+        "cookie",
+        "url",
+        "uri",
+        "path",
+    ]
+    .iter()
+    .any(|candidate| key.contains(candidate))
+}
+
+fn is_sensitive_param_value(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("bearer ")
+        || lower
+            .split(|character: char| {
+                character.is_whitespace()
+                    || matches!(character, '"' | '\'' | '`' | ',' | ':' | ';' | '(' | '[')
+            })
+            .any(|segment| segment.starts_with("sk-"))
+        || value.starts_with("/Users/")
+        || value.starts_with("/private/")
+        || value.starts_with("file://")
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -145,5 +225,63 @@ impl CanvasOpSpec {
             op: op.to_owned(),
             behavior: behavior.to_owned(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    use helixflow_graph::GraphNode;
+    use serde_json::json;
+
+    #[test]
+    fn compact_canvas_exposes_bounded_redacted_node_params() {
+        let graph = WorkflowGraph {
+            schema_version: 1,
+            catalog_revision: None,
+            nodes: BTreeMap::from([(
+                "video".to_owned(),
+                GraphNode {
+                    node_type: "video.text_to_video".to_owned(),
+                    title: "Video".to_owned(),
+                    params: json!({
+                        "model": "seedance-v1.5-pro",
+                        "prompt": "product shot",
+                        "duration_sec": 4,
+                        "aspect_ratio": "9:16",
+                        "api_key": "sk-secret",
+                        "storage_uri": "/Users/example/private.mov",
+                        "samples": (0..40).collect::<Vec<_>>(),
+                    }),
+                    pos: [0.0, 0.0],
+                    size: None,
+                    semantics: None,
+                },
+            )]),
+            edges: Vec::new(),
+        };
+
+        let value = serde_json::to_value(CanvasOpsContext::from_graph(
+            "ws_1",
+            "ver_1",
+            &graph,
+            CanvasSelection::default(),
+            CanvasGateState::default(),
+        ))
+        .expect("canvas context");
+        let params = &value["graph"]["nodes"][0]["params"];
+
+        assert_eq!(params["model"], "seedance-v1.5-pro");
+        assert_eq!(params["prompt"], "product shot");
+        assert_eq!(params["duration_sec"], 4);
+        assert_eq!(params["aspect_ratio"], "9:16");
+        assert_eq!(params["api_key"], "[redacted]");
+        assert_eq!(params["storage_uri"], "[redacted]");
+        assert_eq!(params["samples"].as_array().expect("samples").len(), 32);
+        let encoded = serde_json::to_string(params).expect("params json");
+        assert!(!encoded.contains("sk-secret"));
+        assert!(!encoded.contains("/Users/example"));
     }
 }

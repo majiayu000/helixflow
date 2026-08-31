@@ -229,7 +229,14 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
         exportDisabled={busy || !activeState.workspace.versionId}
         historyOpen={historyOpen}
         onAgentRun={() =>
-          void runAction(() => sendMessage('运行当前 workflow', undefined, activeConversationId ?? undefined))
+          void runAction(() =>
+            sendMessage(
+              '运行当前 workflow',
+              undefined,
+              activeConversationId ?? undefined,
+              'run_request',
+            ),
+          )
         }
         onExport={exportCurrentWorkflow}
         onHistory={() => setHistoryOpen((open) => !open)}
@@ -307,9 +314,13 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
                 onPresenceChange={sendCanvasPresence}
                 onRequestNodeProposal={(nodeId) =>
                   runAction(
-                    () => sendMessage(`围绕选中节点 ${nodeId} 生成最小修改 proposal。`, {
-                      selection: { nodeIds: [nodeId] },
-                    }),
+                    () =>
+                      sendMessage(
+                        `围绕选中节点 ${nodeId} 生成最小修改 proposal。`,
+                        { selection: { nodeIds: [nodeId] } },
+                        activeConversationId ?? undefined,
+                        'modify_workflow',
+                      ),
                     true,
                   )
                 }
