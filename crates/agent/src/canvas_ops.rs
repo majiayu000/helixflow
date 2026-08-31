@@ -457,7 +457,7 @@ mod tests {
             .map(|pair| GraphEdge {
                 from: [pair[0].clone(), "output".repeat(15)],
                 to: [pair[1].clone(), "input".repeat(16)],
-                edge_type: "artifact".repeat(15),
+                edge_type: "artifact".repeat(10),
             })
             .collect();
         let graph = WorkflowGraph {
