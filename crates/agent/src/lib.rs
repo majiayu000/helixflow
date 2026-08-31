@@ -112,44 +112,46 @@ pub fn create_session_contract(request: &AgentSessionRequest) -> AgentResult<Age
     let prompt_metadata = prompt_stack.metadata();
     fs::write(ctx_dir.join("instructions.md"), prompt_stack.render())?;
     write_json(root_dir.join("prompt_metadata.json"), &prompt_metadata)?;
-    if request.mode.uses_graph_context() {
+    if request.mode.uses_canvas_context() {
         fs::create_dir_all(&skills_dir)?;
-        fs::create_dir_all(&node_defs_dir)?;
-        fs::create_dir_all(&model_catalog_dir)?;
-        fs::create_dir_all(&workflow_backends_dir)?;
-        fs::create_dir_all(&runtime_providers_dir)?;
-        fs::create_dir_all(&api_connectors_dir)?;
-        write_json(ctx_dir.join("graph.json"), &request.graph)?;
         write_json(
             ctx_dir.join("canvas_state.json"),
             &canvas_context_from_request(request),
         )?;
         write_json(ctx_dir.join("canvas_ops.json"), &CanvasOpsContract::v1())?;
-        write_json(
-            node_defs_dir.join("catalog.json"),
-            &NodeRegistry::builtin().export_catalog(),
-        )?;
-        write_json(
-            model_catalog_dir.join("catalog.json"),
-            helixflow_run::shared_catalog(),
-        )?;
-        write_json(
-            workflow_backends_dir.join("catalog.json"),
-            &request.provider_catalog.workflow_backends,
-        )?;
-        write_json(
-            runtime_providers_dir.join("catalog.json"),
-            &request.provider_catalog.runtime_providers,
-        )?;
-        write_json(
-            api_connectors_dir.join("catalog.json"),
-            &request.provider_catalog.api_connectors,
-        )?;
-        fs::write(skills_dir.join("node_library.md"), node_library_skill())?;
         fs::write(
             skills_dir.join(request.skill.file_name()),
             selected_skill(request.skill),
         )?;
+        if request.mode.uses_graph_context() {
+            fs::create_dir_all(&node_defs_dir)?;
+            fs::create_dir_all(&model_catalog_dir)?;
+            fs::create_dir_all(&workflow_backends_dir)?;
+            fs::create_dir_all(&runtime_providers_dir)?;
+            fs::create_dir_all(&api_connectors_dir)?;
+            write_json(ctx_dir.join("graph.json"), &request.graph)?;
+            write_json(
+                node_defs_dir.join("catalog.json"),
+                &NodeRegistry::builtin().export_catalog(),
+            )?;
+            write_json(
+                model_catalog_dir.join("catalog.json"),
+                helixflow_run::shared_catalog(),
+            )?;
+            write_json(
+                workflow_backends_dir.join("catalog.json"),
+                &request.provider_catalog.workflow_backends,
+            )?;
+            write_json(
+                runtime_providers_dir.join("catalog.json"),
+                &request.provider_catalog.runtime_providers,
+            )?;
+            write_json(
+                api_connectors_dir.join("catalog.json"),
+                &request.provider_catalog.api_connectors,
+            )?;
+            fs::write(skills_dir.join("node_library.md"), node_library_skill())?;
+        }
     }
     fs::write(
         root_dir.join("transcript.jsonl"),

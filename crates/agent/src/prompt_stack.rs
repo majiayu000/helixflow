@@ -200,13 +200,15 @@ pub fn build_prompt_stack(request: &AgentSessionRequest) -> PromptStack {
                 "Read `ctx/api_connectors/catalog.json` and only use connector capabilities that the backend exposes through context files. Do not invent providers or fields.",
                 false,
             ),
-            section(
-                PromptSectionKey::CanvasOps,
-                "Bounded canvas ops",
-                canvas_ops_contract(mode, output_contract),
-                false,
-            ),
         ]);
+    }
+    if mode.uses_canvas_context() {
+        sections.push(section(
+            PromptSectionKey::CanvasOps,
+            "Bounded canvas ops",
+            canvas_ops_contract(mode, output_contract),
+            false,
+        ));
     }
 
     sections.extend([

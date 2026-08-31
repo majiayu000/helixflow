@@ -107,14 +107,7 @@ fn safe_canvas_params(value: &Value, depth: usize) -> Value {
         Value::String(text) if is_sensitive_param_value(text) => {
             Value::String("[redacted]".to_owned())
         }
-        Value::String(text) => Value::String(
-            text.lines()
-                .next()
-                .unwrap_or_default()
-                .chars()
-                .take(MAX_TEXT_CHARS)
-                .collect(),
-        ),
+        Value::String(text) => Value::String(text.chars().take(MAX_TEXT_CHARS).collect()),
         scalar => scalar.clone(),
     }
 }
@@ -248,7 +241,7 @@ mod tests {
                     title: "Video".to_owned(),
                     params: json!({
                         "model": "seedance-v1.5-pro",
-                        "prompt": "product shot",
+                        "prompt": "product shot\nwith soft shadows",
                         "duration_sec": 4,
                         "aspect_ratio": "9:16",
                         "api_key": "sk-secret",
@@ -274,7 +267,7 @@ mod tests {
         let params = &value["graph"]["nodes"][0]["params"];
 
         assert_eq!(params["model"], "seedance-v1.5-pro");
-        assert_eq!(params["prompt"], "product shot");
+        assert_eq!(params["prompt"], "product shot\nwith soft shadows");
         assert_eq!(params["duration_sec"], 4);
         assert_eq!(params["aspect_ratio"], "9:16");
         assert_eq!(params["api_key"], "[redacted]");

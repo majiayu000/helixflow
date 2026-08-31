@@ -36,7 +36,7 @@ pub(crate) async fn prepare_agent_canvas_context(
             "workspace already has a pending proposal; apply or dismiss it first",
         ));
     }
-    if !turn_mode.uses_graph_context() {
+    if !turn_mode.uses_canvas_context() {
         return Ok(None);
     }
 

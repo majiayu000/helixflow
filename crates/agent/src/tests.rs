@@ -223,7 +223,14 @@ fn writes_compact_canvas_state_with_filtered_selection() {
 #[test]
 fn chat_contract_exposes_read_only_canvas_context_and_records_prompt_metadata() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let session = create_session_contract(&chat_request(&dir)).expect("session");
+    let mut request = chat_request(&dir);
+    request
+        .graph
+        .nodes
+        .get_mut("input")
+        .expect("input node")
+        .params = json!({ "text": "sk-sensitive-chat-value" });
+    let session = create_session_contract(&request).expect("session");
 
     assert_eq!(session.mode, TurnMode::Chat);
     assert_eq!(session.output_contract, OutputContract::ReplyJson);
@@ -232,8 +239,9 @@ fn chat_contract_exposes_read_only_canvas_context_and_records_prompt_metadata() 
         session.prompt_metadata.output_contract,
         OutputContract::ReplyJson
     );
-    assert!(session.ctx_dir.join("graph.json").exists());
-    assert!(session.ctx_dir.join("node_defs/catalog.json").exists());
+    assert!(!session.ctx_dir.join("graph.json").exists());
+    assert!(!session.ctx_dir.join("node_defs/catalog.json").exists());
+    assert!(!session.ctx_dir.join("models/catalog.json").exists());
     assert!(session.ctx_dir.join("canvas_state.json").exists());
     assert!(session.ctx_dir.join("canvas_ops.json").exists());
 
@@ -246,6 +254,11 @@ fn chat_contract_exposes_read_only_canvas_context_and_records_prompt_metadata() 
     assert!(ctx.contains("five built-in workflow skills"));
     assert!(ctx.contains("Create Workflow"));
     assert!(ctx.contains("External Codex skills or plugins"));
+    assert!(!ctx.contains("ctx/graph.json"));
+    assert!(!ctx.contains("ctx/node_defs/catalog.json"));
+    let canvas = fs::read_to_string(session.ctx_dir.join("canvas_state.json"))
+        .expect("compact canvas state");
+    assert!(!canvas.contains("sk-sensitive-chat-value"));
 
     let metadata: Value = serde_json::from_slice(
         &fs::read(session.root_dir.join("prompt_metadata.json")).expect("metadata"),

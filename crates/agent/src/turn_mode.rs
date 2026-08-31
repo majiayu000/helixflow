@@ -50,6 +50,10 @@ impl TurnMode {
     }
 
     pub fn uses_graph_context(self) -> bool {
+        !matches!(self, Self::Chat | Self::Route)
+    }
+
+    pub fn uses_canvas_context(self) -> bool {
         !matches!(self, Self::Route)
     }
 }

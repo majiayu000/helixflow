@@ -328,7 +328,7 @@ where
         self.record_status(&mut run, "ctx.created", json!({}));
         run.agent_logs
             .push(prompt_metadata_log_entry(&run.session.prompt_metadata));
-        if request.mode.uses_graph_context() {
+        if request.mode.uses_canvas_context() {
             run.agent_logs.push(canvas_ops_log_entry(request));
         }
         self.record_status(&mut run, "runtime.started", json!({}));
