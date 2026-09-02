@@ -114,7 +114,15 @@ where
                         .await?;
                     }
                     PROVIDER_TASK_RESULT_READY => {
-                        if self
+                        if desired_status == "interrupted" {
+                            self.store
+                                .complete_provider_task(
+                                    &task.id,
+                                    PROVIDER_TASK_RESULT_READY,
+                                    Some("ARTIFACT_MATERIALIZATION_INTERRUPTED"),
+                                )
+                                .await?;
+                        } else if self
                             .store
                             .provider_task_timing(&task.id)
                             .await?
