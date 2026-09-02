@@ -18,20 +18,10 @@ pub enum TurnMode {
 
 impl TurnMode {
     pub fn output_contract(self) -> OutputContract {
-        self.output_contract_with(false)
-    }
-
-    /// GH130 T6: graph-editing turns switch to the IntentPlan contract when
-    /// requested; chat and run-request turns are unaffected.
-    pub fn output_contract_with(self, use_intent_contract: bool) -> OutputContract {
         match self {
             Self::Chat => OutputContract::ReplyJson,
             Self::CreateWorkflow | Self::ModifyWorkflow | Self::DebugWorkflow => {
-                if use_intent_contract {
-                    OutputContract::IntentJson
-                } else {
-                    OutputContract::ProposalJson
-                }
+                OutputContract::IntentJson
             }
             Self::RunRequest => OutputContract::RunRequestJson,
             Self::Route => OutputContract::RouteJson,
@@ -76,7 +66,6 @@ impl fmt::Display for TurnMode {
 #[serde(rename_all = "snake_case")]
 pub enum OutputContract {
     ReplyJson,
-    ProposalJson,
     IntentJson,
     RunRequestJson,
     RouteJson,
@@ -86,7 +75,6 @@ impl OutputContract {
     pub fn file_name(self) -> &'static str {
         match self {
             Self::ReplyJson => "reply.json",
-            Self::ProposalJson => "proposal.json",
             Self::IntentJson => "intent.json",
             Self::RunRequestJson => "run_request.json",
             Self::RouteJson => "route.json",
@@ -98,7 +86,6 @@ impl fmt::Display for OutputContract {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
             Self::ReplyJson => "reply_json",
-            Self::ProposalJson => "proposal_json",
             Self::IntentJson => "intent_json",
             Self::RunRequestJson => "run_request_json",
             Self::RouteJson => "route_json",

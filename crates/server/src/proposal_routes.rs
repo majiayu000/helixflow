@@ -16,6 +16,7 @@ use serde_json::Value;
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
 use crate::graph_files::{read_graph_file, read_json_file};
+use crate::version_commit::{VersionCommitError, commit_version_candidate};
 use crate::version_file_consistency::{
     CandidateKind, VersionFileCandidate, VersionFileConsistencyError, read_version_graph,
 };
@@ -93,49 +94,48 @@ async fn apply_workspace_proposal_inner(
         .to_owned();
     let graph_hash = candidate.graph_hash().to_owned();
     let semantics_json = derive_semantics_json(&current_version, &current_graph, &applied_graph)?;
-    candidate
-        .publish(&state.data_dir)
-        .map_err(candidate_error)?;
-    #[cfg(test)]
-    if let Some(hook) = commit_hook {
-        hook.after_publish().await;
-    }
     let version_label = format!("Apply proposal: {}", proposal.title);
     let message_text = format!("Applied proposal `{}`.", proposal.title);
-    let result = state
-        .store
-        .create_version_after_applying_proposal(ApplyProposalVersionRecord {
-            proposal_id: &proposal.id,
-            expected_current_version_id: current_version_id,
-            version: NewVersion {
-                workspace_id: &workspace_id,
-                label: &version_label,
-                source: VersionSource::Proposal,
-                graph_path: &graph_path,
-                graph_hash: &graph_hash,
-                parent_id: Some(&proposal.base_version_id),
-                semantics_json: semantics_json.as_deref(),
-            },
-            message_text: &message_text,
-        })
-        .await;
-    match result {
-        Ok(_) => candidate.mark_committed().map_err(candidate_error)?,
-        Err(store_error) => {
-            return Err(cleanup_applied_candidate(&state, &mut candidate, store_error).await);
+    let transaction = async {
+        #[cfg(test)]
+        if let Some(hook) = commit_hook {
+            hook.after_publish().await;
         }
+        state
+            .store
+            .create_version_after_applying_proposal(ApplyProposalVersionRecord {
+                proposal_id: &proposal.id,
+                expected_current_version_id: current_version_id,
+                version: NewVersion {
+                    workspace_id: &workspace_id,
+                    label: &version_label,
+                    source: VersionSource::Proposal,
+                    graph_path: &graph_path,
+                    graph_hash: &graph_hash,
+                    parent_id: Some(&proposal.base_version_id),
+                    semantics_json: semantics_json.as_deref(),
+                },
+                message_text: &message_text,
+            })
+            .await
+    };
+    let result =
+        commit_version_candidate(&mut candidate, &state.data_dir, &state.store, transaction).await;
+    match result {
+        Ok(_) => {}
+        Err(error) => return Err(applied_commit_error(error)),
     }
 
     Ok(Json(workspace_state_value(&state, &workspace_id).await?))
 }
 
-async fn cleanup_applied_candidate(
-    state: &AppState,
-    candidate: &mut VersionFileCandidate,
-    store_error: StoreError,
-) -> ApiError {
-    match candidate.cleanup_after_store_error(&state.store).await {
-        Ok(_) => match store_error {
+fn applied_commit_error(error: VersionCommitError<StoreError>) -> ApiError {
+    match error {
+        VersionCommitError::Consistency(error) => candidate_error(error),
+        VersionCommitError::Store {
+            source,
+            cleanup: None,
+        } => match source {
             StoreError::VersionConflict { .. }
             | StoreError::VersionParentMismatch { .. }
             | StoreError::ProposalBaseMismatch { .. }
@@ -144,7 +144,10 @@ async fn cleanup_applied_candidate(
             ),
             error => ApiError::store(error),
         },
-        Err(cleanup_error) => ApiError::server_error(format!(
+        VersionCommitError::Store {
+            cleanup: Some(cleanup_error),
+            ..
+        } => ApiError::server_error(format!(
             "proposal commit failed and candidate cleanup was deferred: {cleanup_error}"
         )),
     }
@@ -259,9 +262,7 @@ mod tests {
 
     use async_trait::async_trait;
     use axum::extract::{Path, State};
-    use helixflow_agent::{
-        AgentError, AgentSessionRequest, ValidatedAgentProposal, ValidatedAgentReply,
-    };
+    use helixflow_agent::{AgentError, AgentSessionRequest, ValidatedAgentReply};
     use helixflow_graph::{
         GraphEdge, GraphNode, GraphService, ProposalDraft, ProposalKind, ProposalOp, WorkflowGraph,
     };
@@ -783,13 +784,6 @@ mod tests {
             &self,
             _request: AgentSessionRequest,
         ) -> Result<ValidatedAgentReply, AgentError> {
-            Err(AgentError::Runtime("noop agent".to_owned()))
-        }
-
-        async fn propose_graph_change(
-            &self,
-            _request: AgentSessionRequest,
-        ) -> Result<ValidatedAgentProposal, AgentError> {
             Err(AgentError::Runtime("noop agent".to_owned()))
         }
     }

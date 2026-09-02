@@ -49,6 +49,18 @@ impl Store {
         .await?;
         require_one_row("insert_initial_workspace", workspace_insert.rows_affected())?;
 
+        let canvas_insert = sqlx::query(
+            r#"
+            INSERT INTO canvas_snapshots (
+                workspace_id, revision, nodes_json, viewport_json, updated_at
+            ) VALUES (?, 0, '{}', NULL, current_timestamp)
+            "#,
+        )
+        .bind(&input.identity.workspace_id)
+        .execute(&mut *tx)
+        .await?;
+        require_one_row("insert_initial_canvas", canvas_insert.rows_affected())?;
+
         let version_insert = sqlx::query(
             r#"
             INSERT INTO versions (

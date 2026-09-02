@@ -5,9 +5,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use axum::extract::{Path, State};
-use helixflow_agent::{
-    AgentError, AgentSessionRequest, ValidatedAgentProposal, ValidatedAgentReply,
-};
+use helixflow_agent::{AgentError, AgentSessionRequest, ValidatedAgentReply};
 use helixflow_graph::{GraphEdge, GraphNode, WorkflowGraph};
 use helixflow_run::{EventBus, ManualRunRequest};
 use helixflow_store::{NewVersion, Store, VersionSource};
@@ -227,15 +225,6 @@ impl WorkbenchAgent for UnusedAgent {
         &self,
         _request: AgentSessionRequest,
     ) -> Result<ValidatedAgentReply, AgentError> {
-        Err(AgentError::Runtime(
-            "agent is unused in artifact retry tests".to_owned(),
-        ))
-    }
-
-    async fn propose_graph_change(
-        &self,
-        _request: AgentSessionRequest,
-    ) -> Result<ValidatedAgentProposal, AgentError> {
         Err(AgentError::Runtime(
             "agent is unused in artifact retry tests".to_owned(),
         ))

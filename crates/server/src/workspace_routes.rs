@@ -12,6 +12,7 @@ use serde_json::Value;
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
 use crate::graph_files::blank_graph;
+use crate::version_commit::{VersionCommitError, commit_version_candidate};
 use crate::version_file_consistency::{
     CandidateKind, VersionFileCandidate, VersionFileConsistencyError,
 };
@@ -176,12 +177,10 @@ async fn initialize_workspace(
         .map_err(candidate_error)?
         .to_owned();
     let graph_hash = candidate.graph_hash().to_owned();
-    candidate
-        .publish(&state.data_dir)
-        .map_err(candidate_error)?;
-    commit_initial_candidate(
-        state,
+    commit_version_candidate(
         &mut candidate,
+        &state.data_dir,
+        &state.store,
         state
             .store
             .create_workspace_with_initial_version(CreateWorkspaceWithInitialVersion {
@@ -194,30 +193,20 @@ async fn initialize_workspace(
             }),
     )
     .await
+    .map_err(initial_commit_error)
 }
 
-async fn commit_initial_candidate(
-    state: &AppState,
-    candidate: &mut VersionFileCandidate,
-    commit: impl std::future::Future<Output = Result<InitializedWorkspace, StoreError>>,
-) -> Result<InitializedWorkspace, ApiError> {
-    match commit.await {
-        Ok(initialized) => {
-            candidate.mark_committed().map_err(candidate_error)?;
-            Ok(initialized)
-        }
-        Err(store_error) => Err(cleanup_initial_candidate(state, candidate, store_error).await),
-    }
-}
-
-async fn cleanup_initial_candidate(
-    state: &AppState,
-    candidate: &mut VersionFileCandidate,
-    store_error: StoreError,
-) -> ApiError {
-    match candidate.cleanup_after_store_error(&state.store).await {
-        Ok(_) => ApiError::store(store_error),
-        Err(cleanup_error) => ApiError::server_error(format!(
+fn initial_commit_error(error: VersionCommitError<StoreError>) -> ApiError {
+    match error {
+        VersionCommitError::Consistency(error) => candidate_error(error),
+        VersionCommitError::Store {
+            source,
+            cleanup: None,
+        } => ApiError::store(source),
+        VersionCommitError::Store {
+            cleanup: Some(cleanup_error),
+            ..
+        } => ApiError::server_error(format!(
             "initial workspace commit failed and candidate cleanup was deferred: {cleanup_error}"
         )),
     }
@@ -252,9 +241,7 @@ mod tests {
 
     use async_trait::async_trait;
     use axum::extract::State;
-    use helixflow_agent::{
-        AgentError, AgentSessionRequest, ValidatedAgentProposal, ValidatedAgentReply,
-    };
+    use helixflow_agent::{AgentError, AgentSessionRequest, ValidatedAgentReply};
     use helixflow_gateway::{ProviderRegistry, RuntimeProvider};
     use helixflow_run::EventBus;
     use helixflow_store::Store;
@@ -345,32 +332,31 @@ mod tests {
             .expect("initial candidate path")
             .to_owned();
         let graph_hash = candidate.graph_hash().to_owned();
-        candidate
-            .publish(&state.data_dir)
-            .expect("publish candidate");
         let commit_identity = identity.clone();
         let store = state.store.clone();
 
-        let error = commit_initial_candidate(&state, &mut candidate, async move {
-            store
-                .create_workspace_with_initial_version(CreateWorkspaceWithInitialVersion {
-                    identity: commit_identity,
-                    name: "Committed before synthetic error",
-                    version_label: "Initial graph",
-                    source: VersionSource::Manual,
-                    graph_path: &graph_path,
-                    graph_hash: &graph_hash,
+        let error =
+            commit_version_candidate(&mut candidate, &state.data_dir, &state.store, async move {
+                store
+                    .create_workspace_with_initial_version(CreateWorkspaceWithInitialVersion {
+                        identity: commit_identity,
+                        name: "Committed before synthetic error",
+                        version_label: "Initial graph",
+                        source: VersionSource::Manual,
+                        graph_path: &graph_path,
+                        graph_hash: &graph_hash,
+                    })
+                    .await
+                    .expect("real Store commit succeeds");
+                Err::<InitializedWorkspace, _>(StoreError::StatementInvariant {
+                    operation: "synthetic_post_commit_outcome",
+                    expected_rows: 1,
+                    actual_rows: 0,
                 })
-                .await
-                .expect("real Store commit succeeds");
-            Err(StoreError::StatementInvariant {
-                operation: "synthetic_post_commit_outcome",
-                expected_rows: 1,
-                actual_rows: 0,
             })
-        })
-        .await
-        .expect_err("synthetic outcome error remains visible");
+            .await
+            .map_err(initial_commit_error)
+            .expect_err("synthetic outcome error remains visible");
 
         assert_eq!(error.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
         let workspaces = state.store.workspaces().await.expect("workspaces");
@@ -533,13 +519,6 @@ mod tests {
             &self,
             _request: AgentSessionRequest,
         ) -> Result<ValidatedAgentReply, AgentError> {
-            Err(AgentError::Runtime("noop agent".to_owned()))
-        }
-
-        async fn propose_graph_change(
-            &self,
-            _request: AgentSessionRequest,
-        ) -> Result<ValidatedAgentProposal, AgentError> {
             Err(AgentError::Runtime("noop agent".to_owned()))
         }
     }

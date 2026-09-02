@@ -388,7 +388,9 @@ describe('background run state reconciliation', () => {
   it.each([
     ['undo', () => useWorkbenchStore.getState().undoVersion()],
     ['restore', () => useWorkbenchStore.getState().restoreVersion('ver_old_a')],
-    ['layout', () => useWorkbenchStore.getState().saveLayout([{ id: 'video', x: 10, y: 20 }])],
+    ['canvas snapshot', () => useWorkbenchStore.getState().saveCanvasSnapshot({
+      positions: [{ id: 'video', x: 10, y: 20 }],
+    })],
     ['select output', () => useWorkbenchStore.getState().selectOutput('output_a')],
     ['accept output', () => useWorkbenchStore.getState().acceptOutput('output_a')],
     ['reject output', () => useWorkbenchStore.getState().rejectOutput('output_a')],
@@ -410,14 +412,21 @@ describe('background run state reconciliation', () => {
     }],
     ['apply proposal', () => useWorkbenchStore.getState().applyProposal('proposal_a')],
     ['dismiss proposal', () => useWorkbenchStore.getState().dismissProposal('proposal_a')],
-  ])('rejects a stale %s state replacement without modifying B', async (_name, startAction) => {
+  ])('rejects a stale %s state replacement without modifying B', async (name, startAction) => {
     const response = delayedResponseFetch();
-    useWorkbenchStore.getState().setInitialState(stateForWorkspace('ws_a'));
+    const workspaceA = stateForWorkspace('ws_a');
+    useWorkbenchStore.getState().setInitialState(workspaceA);
+    if (name === 'canvas snapshot') {
+      useWorkbenchStore.setState({ canvas: canvasForState(workspaceA) });
+    }
     const action = startAction();
+    if (name === 'canvas snapshot') await Promise.resolve();
     const workspaceB = stateForWorkspace('ws_b');
     useWorkbenchStore.getState().setInitialState(workspaceB);
 
-    response.resolve(jsonResponse(stateForWorkspace('ws_a')));
+    response.resolve(jsonResponse(
+      name === 'canvas snapshot' ? canvasForState(workspaceA) : workspaceA,
+    ));
 
     await expect(action).rejects.toThrow('workspace changed');
     expect(useWorkbenchStore.getState().state).toEqual(workspaceB);
@@ -820,6 +829,8 @@ function canvasForState(nextState: WorkbenchState) {
     workspaceId: nextState.workspace.id,
     versionId: nextState.workspace.versionId,
     seq: 0,
+    revision: 0,
+    viewport: null,
     nodes: nextState.graph.nodes.map((node) => ({
       id: node.id,
       nodeType: node.nodeType,

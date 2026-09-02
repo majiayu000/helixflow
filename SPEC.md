@@ -4,11 +4,18 @@ Helixflow is a local-first AI workflow orchestrator. Its product contract is
 implemented by the Rust workspace and React workbench and documented in the
 following sources:
 
-- `SPEC_WORKFLOW_ORCHESTRATOR.md`: primary workflow-orchestrator direction.
+- `SPEC_WORKFLOW_ORCHESTRATOR_V2.zh.md`: normative current product contract.
+- `SPEC_WORKFLOW_ORCHESTRATOR.md`: historical v1 product contract.
 - `docs/AGENT_RUNTIME_PROVIDER_SPEC.md`: agent/runtime-provider boundaries.
 - `docs/CANVAS_BACKEND_FORMAT.zh.md`: backend canvas format proposal.
 - `docs/`: product research, roadmaps, validation notes, and design material.
 - `specs/`: historical issue-linked product, technical, and task records.
+
+## Non-normative Architecture Analysis
+
+- `docs/DESIGN_ARCHITECTURE_ANALYSIS.zh.md`: architecture comparison and
+  design-debt analysis against `origin/main` and rationale for the v2
+  architecture; the normative contract is `SPEC_WORKFLOW_ORCHESTRATOR_V2.zh.md`.
 
 ## Historical Workflow Records
 

@@ -5,7 +5,6 @@ import { composerDraftAfterSubmit } from './components/chat-pane';
 import { useWorkbenchStore } from './store';
 import type { WorkbenchState } from './types';
 import {
-  buildResizeNodeEditInput,
   buildSetParamEditInput,
   deriveQueueLockReason,
   previewWorkbenchStateWithManualEdits,
@@ -396,16 +395,6 @@ describe('manual edit session workbench flow', () => {
     expect(state.graph.nodes.find((node) => node.id === 'video')?.position).toEqual({
       x: 486,
       y: 156,
-    });
-  });
-
-  it('builds resize_node edits from node size updates', () => {
-    expect(
-      buildResizeNodeEditInput('ver_test_1', [{ id: 'video', width: 260, height: 180 }]),
-    ).toEqual({
-      baseVersionId: 'ver_test_1',
-      label: 'Resize 1 node',
-      ops: [{ op: 'resize_node', id: 'video', size: [260, 180] }],
     });
   });
 

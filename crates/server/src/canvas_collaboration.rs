@@ -88,12 +88,12 @@ pub(crate) struct CanvasPresenceSelection {
     edge_ids: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CanvasViewport {
-    x: f32,
-    y: f32,
-    zoom: f32,
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+    pub(crate) zoom: f32,
 }
 
 #[derive(Debug, Deserialize)]

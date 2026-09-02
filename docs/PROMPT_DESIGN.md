@@ -190,9 +190,9 @@ Routing should be explicit and testable. The classifier can be simple at first, 
 | User intent | Graph state | Mode | Expected output |
 | --- | --- | --- | --- |
 | Greeting, identity, explanation, comparison | any | `Chat` | `out/reply.json` |
-| "帮我做一个工作流", "生成一个图生图 workflow" | empty or non-empty | `CreateWorkflow` | `out/proposal.json` |
-| "把分辨率改成 1024", "加一个 ControlNet" | non-empty | `ModifyWorkflow` | `out/proposal.json` |
-| "为什么失败了", "修复报错" | non-empty plus error/run context | `DebugWorkflow` | `out/proposal.json` or `out/reply.json` |
+| "帮我做一个工作流", "生成一个图生图 workflow" | empty or non-empty | `CreateWorkflow` | `out/intent.json` |
+| "把分辨率改成 1024", "加一个 ControlNet" | non-empty | `ModifyWorkflow` | `out/intent.json` |
+| "修复这个失败的 workflow" | non-empty plus error/run context | `DebugWorkflow` | `out/intent.json` |
 | "运行", "提交到某个 API", "生成结果" | valid graph | `RunRequest` | `out/run_request.json` |
 | "做一个网页/app/UI 原型" | explicit artifact request | `DesignArtifact` | `out/artifact.json` |
 
@@ -215,9 +215,9 @@ Highest-priority current-turn behavior. This is the section that prevents the ag
 Examples:
 
 - `Chat`: answer directly, no ctx reads, no filesystem reads, no shell, write `out/reply.json`.
-- `CreateWorkflow`: read graph/catalog/provider context, design from user intent, write `out/proposal.json`.
-- `ModifyWorkflow`: preserve current graph, make the smallest valid diff, write `out/proposal.json`.
-- `DebugWorkflow`: inspect graph plus run/error context, decide whether reply or proposal is needed.
+- `CreateWorkflow`: read graph/catalog/provider context and submit a high-level `IntentPlan` through `canvas.submit_intent` or `out/intent.json`.
+- `ModifyWorkflow`: preserve the user's goal and submit the smallest semantic change as an `IntentPlan`.
+- `DebugWorkflow`: inspect graph plus run/error context and submit the smallest repair intent; diagnosis-only questions route to `Chat`.
 - `RunRequest`: validate and request a backend-managed run through the provider abstraction, do not redesign the graph.
 - `DesignArtifact`: only when explicitly requested, write artifact manifest and files.
 
@@ -386,7 +386,7 @@ Do not inspect ctx files.
 Do not read the filesystem.
 Do not run shell commands.
 Do not create or modify the graph.
-Do not write proposal.json.
+Do not write graph-edit output files.
 
 If the user asks what you can do, explain that you can help design and modify ComfyUI-style workflows through chat.
 
@@ -405,7 +405,7 @@ This section is used for `TurnMode::CreateWorkflow`.
 ```text
 # Mode: Create workflow
 
-The user wants you to design a workflow graph. Start from the user's goal and create a valid graph proposal.
+The user wants you to design a workflow. Start from the user's goal and create a valid high-level IntentPlan.
 
 Read:
 - ctx/graph.json
@@ -414,13 +414,13 @@ Read:
 
 Use ctx/graph.json as the current graph. If it is empty, create the workflow from scratch. Do not assume a default graph exists.
 
-Use only node types, ports, params, runtime providers, and API connector capabilities from the catalogs.
+Use only capabilities and models from the catalogs. Do not emit node ids, edges, coordinates, binding ids, connector names, or low-level graph ops.
 
-Do not present mock providers or placeholder output nodes as real provider capabilities. If a real provider capability is required but missing from the catalog, explain the missing capability in the proposal summary and create only the graph structure that can be validated.
+Do not present mock providers as real provider capabilities. Preserve an explicitly requested unavailable model/capability pair so the backend can return structured clarification; never silently substitute it.
 
-Prefer reasonable defaults when the user gives a clear creative goal but omits routine parameters. Put those defaults in the summary. Ask a question only when the workflow cannot be designed safely without the missing detail.
+Prefer reasonable defaults when the user gives a clear creative goal but omits routine parameters. Record material assumptions in the intent. The backend returns structured clarification when required input is missing.
 
-Write exactly one file: out/proposal.json.
+Prefer `canvas.submit_intent`; otherwise write exactly one file: out/intent.json.
 ```
 
 ### Concrete `modeOverridePrompt`: ModifyWorkflow
@@ -430,22 +430,20 @@ This section is used for `TurnMode::ModifyWorkflow`.
 ```text
 # Mode: Modify workflow
 
-The user wants a change to the existing workflow. Make the smallest valid graph proposal that satisfies the request.
+The user wants a change to the existing workflow. Express the smallest valid semantic change as an IntentPlan.
 
 Read:
 - ctx/graph.json
 - ctx/node_defs/catalog.json
 - ctx/providers/catalog.json if it exists
 
-Preserve existing nodes, parameters, and connections unless the user asks to change them or a change is required for graph validity.
+Preserve the existing workflow goal unless the user asks to change it. Do not emit or reuse low-level node ids; deterministic backend compilation owns graph structure and layout.
 
-Use existing node ids when editing existing nodes. Add new ids only for new nodes.
-
-Do not rebuild the whole graph for a local change.
+Do not redesign unrelated stages for a local change.
 Do not run the workflow.
 Do not present mock providers as real provider capabilities.
 
-Write exactly one file: out/proposal.json.
+Prefer `canvas.submit_intent`; otherwise write exactly one file: out/intent.json.
 ```
 
 ### Concrete `modeOverridePrompt`: DebugWorkflow
@@ -455,7 +453,7 @@ This section is used for `TurnMode::DebugWorkflow`.
 ```text
 # Mode: Debug workflow
 
-The user wants help with a failed or suspicious workflow. Inspect the current graph and the provided run/error context, then decide whether a graph proposal is needed.
+The user asked to repair a failed or suspicious workflow. Inspect the current graph and the provided run/error context, then express the smallest repair as an IntentPlan.
 
 Read:
 - ctx/graph.json
@@ -463,10 +461,9 @@ Read:
 - ctx/run_context.json if it exists
 - ctx/providers/catalog.json if it exists
 
-If the issue can be answered without changing the graph, write out/reply.json.
-If a graph fix is needed, write out/proposal.json.
+Diagnosis-only questions use Chat mode instead. In DebugWorkflow, prefer `canvas.submit_intent`; otherwise write `out/intent.json`.
 
-Prefer the smallest fix. Do not hide uncertainty; include the evidence in the summary.
+Prefer the smallest fix. Do not hide uncertainty; include relevant evidence in intent assumptions.
 ```
 
 ### Concrete `modeOverridePrompt`: RunRequest
@@ -659,7 +656,7 @@ The transcript shown in the UI should be user-centered:
 - Nest tool calls under the assistant turn that caused them.
 - Collapse tool logs by default.
 - Hide internal lifecycle events such as `thread.started`, `turn.started`, and `turn.completed`.
-- Hide file-change noise for expected output files such as `out/reply.json` and `out/proposal.json`.
+- Hide file-change noise for expected output files such as `out/reply.json` and `out/intent.json`.
 - Hide prompt budget warnings from the normal chat body.
 - Deduplicate command start/result pairs into one log item.
 

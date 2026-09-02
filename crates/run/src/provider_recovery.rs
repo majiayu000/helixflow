@@ -19,9 +19,7 @@ use uuid::Uuid;
 use helixflow_graph::ExecutionPlan;
 
 use super::cache::CachedArtifactLink;
-use super::{
-    RunError, RunInterrupt, RunResult, RunService, RunStatus, StepOutput, agent_fix_policy,
-};
+use super::{RunError, RunInterrupt, RunResult, RunService, RunStatus, StepOutput};
 
 const DISPATCH_LEASE_SECONDS: i64 = 60;
 const DISPATCH_DEADLINE_SECONDS: i64 = 300;
@@ -44,9 +42,6 @@ where
 
     pub async fn recover_after_restart(&self) -> RunResult<()> {
         let requeue = restart_requeue_enabled()?;
-        let fix_enabled = agent_fix_policy()
-            .map(|policy| policy.enabled)
-            .unwrap_or(false);
         self.reconcile_artifact_publish_journals().await?;
         for work in self.store.pending_run_terminalizations().await? {
             let run = self.store.run(&work.run_id).await?;
@@ -64,16 +59,6 @@ where
         }
         let mut workspace_keepers = BTreeMap::<String, (String, Option<String>)>::new();
         for run in self.store.restart_active_runs().await? {
-            if self
-                .store
-                .run_fix_attempt_for_child(&run.id)
-                .await?
-                .is_some()
-                && self.is_quiescent_fix_child(&run.id).await?
-                && (run.status == "estimating" || !fix_enabled)
-            {
-                continue;
-            }
             if run.status == "running" {
                 if let Some((_, keeper_group)) = workspace_keepers.get(&run.workspace_id)
                     && (run.group_id.is_none() || run.group_id != *keeper_group)

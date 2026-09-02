@@ -118,9 +118,6 @@ where
     }
 
     pub async fn hold_run(&self, run_id: &str) -> RunResult<RunOutcome> {
-        if let Some(outcome) = self.cancel_waiting_fix_child(run_id).await? {
-            return Ok(outcome);
-        }
         let run = self.store.run(run_id).await?;
         if run.status != RunStatus::WaitingConfirmation.as_str() {
             return Err(RunError::InvalidRunStatus {
@@ -156,7 +153,6 @@ where
         &self,
         run_id: &str,
     ) -> RunResult<(RunRecord, helixflow_graph::ExecutionPlan)> {
-        self.validate_run_fix_child_guard(run_id).await?;
         let run = self.store.run(run_id).await?;
         if run.status != RunStatus::WaitingConfirmation.as_str() {
             return Err(RunError::InvalidRunStatus {
@@ -180,7 +176,6 @@ where
                 RunStatus::Running.as_str(),
                 &run.workspace_id,
                 run.group_id.as_deref(),
-                self.ignore_quiescent_fix_children()?,
             )
             .await?
         else {
@@ -220,7 +215,6 @@ where
         &self,
         run_id: &str,
     ) -> RunResult<(RunRecord, helixflow_graph::ExecutionPlan, RunInterrupt)> {
-        self.validate_run_fix_child_guard(run_id).await?;
         let run = self.store.run(run_id).await?;
         self.ensure_workspace_not_busy(&run.workspace_id, run.group_id.as_deref(), Some(&run.id))
             .await?;
@@ -252,7 +246,6 @@ where
                 RunStatus::Running.as_str(),
                 &run.workspace_id,
                 run.group_id.as_deref(),
-                self.ignore_quiescent_fix_children()?,
             )
             .await?
         else {
@@ -334,8 +327,6 @@ where
     ) -> RunResult<SweepOutcome> {
         let (group_id, runs) = self
             .validate_sweep_confirmation(run_ids, recommended_run_id)
-            .await?;
-        self.prepare_recommended_sweep_fix_chain(&group_id, recommended_run_id)
             .await?;
         let mut claimed: Vec<String> = Vec::new();
         for run in runs {
@@ -523,7 +514,8 @@ where
         let plan = plan;
         let plan_json = serde_json::to_string(&plan)?;
         let run = self
-            .create_run_with_optional_fix_chain(NewRun {
+            .store
+            .create_run(NewRun {
                 workspace_id: &request.workspace_id,
                 version_id: &request.version_id,
                 group_id: request.group_id.as_deref(),

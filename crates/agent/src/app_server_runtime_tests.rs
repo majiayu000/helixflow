@@ -5,8 +5,7 @@ use serde_json::{Value, json};
 use super::{
     canvas_state_tool_result, completed_item_status, helixflow_dynamic_tools,
     notification_matches_turn, request_run_tool_result, required_string, started_item_status,
-    submit_intent_tool_result, submit_proposal_tool_result, submit_reply_tool_result,
-    submit_route_tool_result,
+    submit_intent_tool_result, submit_reply_tool_result, submit_route_tool_result,
 };
 
 #[test]
@@ -72,14 +71,12 @@ async fn exposes_bounded_canvas_state_as_a_dynamic_tool() {
     )
     .expect("node catalog");
 
-    let tools = helixflow_dynamic_tools(dir.path(), Some(crate::OutputContract::ProposalJson));
+    let tools = helixflow_dynamic_tools(dir.path(), Some(crate::OutputContract::IntentJson));
     assert_eq!(tools[0]["name"], "canvas");
     assert_eq!(tools[0]["tools"][0]["name"], "get_state");
-    assert_eq!(tools[0]["tools"][1]["name"], "submit_proposal");
-    let intent_tools = helixflow_dynamic_tools(dir.path(), Some(crate::OutputContract::IntentJson));
-    assert_eq!(intent_tools[0]["tools"][1]["name"], "submit_intent");
+    assert_eq!(tools[0]["tools"][1]["name"], "submit_intent");
     assert_eq!(
-        intent_tools[0]["tools"][1]["inputSchema"]["properties"]["stages"]["items"]["properties"]["capabilityId"]
+        tools[0]["tools"][1]["inputSchema"]["properties"]["stages"]["items"]["properties"]["capabilityId"]
             ["enum"],
         json!(["prompt_writer", "text_to_image"])
     );
@@ -136,29 +133,6 @@ async fn exposes_and_captures_semantic_routing_without_canvas_access() {
         serde_json::from_slice(&fs::read(out_dir.join("route.json")).expect("captured route"))
             .expect("route json");
     assert_eq!(captured, route);
-}
-
-#[tokio::test]
-async fn captures_proposals_without_applying_them() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let out_dir = dir.path().join("out");
-    fs::create_dir(&out_dir).expect("out dir");
-    let proposal = json!({
-        "base_version_id": "ver_1",
-        "kind": "modify",
-        "title": "Move node",
-        "summary": "Move one node.",
-        "ops": [{ "op": "move_node", "id": "video", "pos": [10, 20] }]
-    });
-
-    let result = submit_proposal_tool_result(&out_dir, &proposal).await;
-
-    assert_eq!(result["success"], true);
-    let captured: Value = serde_json::from_slice(
-        &fs::read(out_dir.join("proposal.json")).expect("captured proposal"),
-    )
-    .expect("proposal json");
-    assert_eq!(captured, proposal);
 }
 
 #[tokio::test]

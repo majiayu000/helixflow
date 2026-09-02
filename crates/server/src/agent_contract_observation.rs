@@ -97,16 +97,8 @@ pub(crate) fn agent_error_code(error: &AgentError) -> &'static str {
         AgentError::InvalidOutputFile { .. } => "AGENT_OUTPUT_INVALID",
         AgentError::InvalidMode { .. } => "AGENT_MODE_ERROR",
         AgentError::InvalidPromptContext(_) => "AGENT_PROMPT_CONTEXT_INVALID",
-        AgentError::ProposalRetryExhausted { .. } => "AGENT_RETRY_EXHAUSTED",
+        AgentError::IntentRetryExhausted { .. } => "AGENT_RETRY_EXHAUSTED",
         AgentError::Runtime(_) => "AGENT_RUNTIME_ERROR",
-    }
-}
-
-pub(crate) fn contract_mode(use_intent_contract: bool) -> AgentContractMode {
-    if use_intent_contract {
-        AgentContractMode::Intent
-    } else {
-        AgentContractMode::Legacy
     }
 }
 
@@ -417,9 +409,7 @@ mod tests {
         Json,
         extract::{Path, State},
     };
-    use helixflow_agent::{
-        AgentSessionRequest, ValidatedAgentIntent, ValidatedAgentProposal, ValidatedAgentReply,
-    };
+    use helixflow_agent::{AgentSessionRequest, ValidatedAgentIntent, ValidatedAgentReply};
     use helixflow_compiler::IntentPlan;
     use helixflow_store::AgentContractObservationRecord;
 
@@ -480,7 +470,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_success_records_release_attributed_terminal_observation() {
+    async fn intent_success_records_release_attributed_terminal_observation() {
         let (mut state, workspace_id, version_id, _dir) = state_with_workspace().await;
         state.agent_contract_attribution = AgentContractAttribution {
             release_id: Some("v0.2.0".to_owned()),
@@ -489,16 +479,13 @@ mod tests {
 
         post_graph_edit(state.clone(), workspace_id.clone(), version_id)
             .await
-            .expect("legacy success");
+            .expect("intent success");
 
         let rows = observations(&state, &workspace_id).await;
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].contract_mode, "legacy");
+        assert_eq!(rows[0].contract_mode, "intent");
         assert_eq!(rows[0].outcome, "success");
-        assert_eq!(
-            rows[0].reason_code.as_deref(),
-            Some("LEGACY_PROPOSAL_APPLIED")
-        );
+        assert_eq!(rows[0].reason_code.as_deref(), Some("INTENT_COMPILED"));
         assert_eq!(rows[0].release_id.as_deref(), Some("v0.2.0"));
         assert_eq!(rows[0].build_revision.as_deref(), Some("abc123"));
         assert!(rows[0].session_id.is_some());
@@ -516,7 +503,7 @@ mod tests {
 
         let rows = observations(&state, &workspace_id).await;
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].contract_mode, "legacy");
+        assert_eq!(rows[0].contract_mode, "intent");
         assert_eq!(rows[0].outcome, "error");
         assert_eq!(rows[0].reason_code.as_deref(), Some("AGENT_RUNTIME_ERROR"));
         assert!(
@@ -579,7 +566,6 @@ mod tests {
         for (intent, expected_outcome, expected_code) in cases {
             let (mut state, workspace_id, version_id, _dir) = state_with_workspace().await;
             state.agent = Arc::new(ScriptedIntentAgent { intent });
-            state.use_intent_contract = true;
             state.provider_registry = configured_atlas_registry();
 
             post_graph_edit(state.clone(), workspace_id.clone(), version_id)
@@ -630,7 +616,6 @@ mod tests {
         }));
         let (mut state, workspace_id, version_id, _dir) = state_with_workspace().await;
         state.agent = Arc::new(ScriptedIntentAgent { intent });
-        state.use_intent_contract = true;
         state.provider_registry = configured_atlas_registry();
         state.agent_contract_attribution = AgentContractAttribution {
             release_id: Some("v0.2.0".to_owned()),
@@ -699,10 +684,10 @@ mod tests {
             Err(AgentError::Runtime("not used".to_owned()))
         }
 
-        async fn propose_graph_change(
+        async fn propose_intent(
             &self,
             _request: AgentSessionRequest,
-        ) -> Result<ValidatedAgentProposal, AgentError> {
+        ) -> Result<ValidatedAgentIntent, AgentError> {
             Err(AgentError::Runtime(
                 "provider failed with sk-secret-never-persist".to_owned(),
             ))
@@ -720,13 +705,6 @@ mod tests {
             _request: AgentSessionRequest,
         ) -> Result<ValidatedAgentReply, AgentError> {
             Err(AgentError::Runtime("not used".to_owned()))
-        }
-
-        async fn propose_graph_change(
-            &self,
-            _request: AgentSessionRequest,
-        ) -> Result<ValidatedAgentProposal, AgentError> {
-            Err(AgentError::Runtime("legacy path not expected".to_owned()))
         }
 
         async fn propose_intent(

@@ -42,6 +42,7 @@ pub struct WorkspaceSummaryRecord {
 impl Store {
     pub async fn create_workspace(&self, name: &str) -> StoreResult<WorkspaceRecord> {
         let id = new_id("ws");
+        let mut tx = self.pool().begin().await?;
 
         sqlx::query(
             r#"
@@ -51,8 +52,19 @@ impl Store {
         )
         .bind(&id)
         .bind(name)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        sqlx::query(
+            r#"
+            INSERT INTO canvas_snapshots (
+                workspace_id, revision, nodes_json, viewport_json, updated_at
+            ) VALUES (?, 0, '{}', NULL, current_timestamp)
+            "#,
+        )
+        .bind(&id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
 
         self.workspace(&id).await
     }

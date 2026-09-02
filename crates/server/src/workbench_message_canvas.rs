@@ -82,9 +82,7 @@ mod tests {
     use std::sync::Arc;
 
     use async_trait::async_trait;
-    use helixflow_agent::{
-        AgentError, AgentSessionRequest, ValidatedAgentProposal, ValidatedAgentReply,
-    };
+    use helixflow_agent::{AgentError, AgentSessionRequest, ValidatedAgentReply};
     use helixflow_graph::{GraphNode, WorkflowGraph};
     use helixflow_run::EventBus;
     use helixflow_store::{NewProposal, NewVersion, Store, VersionSource};
@@ -222,13 +220,6 @@ mod tests {
             &self,
             _request: AgentSessionRequest,
         ) -> Result<ValidatedAgentReply, AgentError> {
-            Err(AgentError::Runtime("noop agent".to_owned()))
-        }
-
-        async fn propose_graph_change(
-            &self,
-            _request: AgentSessionRequest,
-        ) -> Result<ValidatedAgentProposal, AgentError> {
             Err(AgentError::Runtime("noop agent".to_owned()))
         }
     }

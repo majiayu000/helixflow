@@ -6,7 +6,7 @@ use std::{error::Error, fmt};
 use async_trait::async_trait;
 use helixflow_agent::{
     AgentError, AgentService, AgentSessionRequest, CodexBackendRuntime, TurnClassification,
-    ValidatedAgentIntent, ValidatedAgentProposal, ValidatedAgentReply,
+    ValidatedAgentIntent, ValidatedAgentReply,
 };
 #[cfg(test)]
 use helixflow_gateway::RuntimeProvider;
@@ -35,10 +35,6 @@ pub(crate) struct AppState {
     pub(crate) run_queue_locks: Arc<Mutex<BTreeMap<String, Arc<Mutex<()>>>>>,
     pub(crate) active_agent_turns: ActiveAgentTurns,
     pub(crate) reconciliation_report: Arc<ReconciliationReport>,
-    /// GH130 T6: IntentPlan contract switch. Production reads the env flag
-    /// (default on); test states default to the legacy path so proposal
-    /// mechanics stay deterministically covered, and intent tests opt in.
-    pub(crate) use_intent_contract: bool,
     pub(crate) migration_apply_enabled: bool,
     pub(crate) agent_contract_attribution: AgentContractAttribution,
 }
@@ -80,7 +76,6 @@ impl AppState {
         );
         state.runner.validate_restart_config()?;
         let recovery_runner = state.runner.clone();
-        let fix_state = state.clone();
         tokio::spawn(async move {
             if let Err(err) = recovery_runner.recover_after_restart().await {
                 eprintln!(
@@ -88,7 +83,6 @@ impl AppState {
                     err.public_message()
                 );
             }
-            crate::workbench_message_run_fix::run_agent_fix_worker(fix_state).await;
         });
         Ok(state)
     }
@@ -135,7 +129,6 @@ impl AppState {
             run_queue_locks,
             active_agent_turns: ActiveAgentTurns::default(),
             reconciliation_report,
-            use_intent_contract: crate::workbench_message_intent::intent_contract_enabled(),
             migration_apply_enabled: version_migration_apply_enabled(),
             agent_contract_attribution,
         }
@@ -170,7 +163,6 @@ impl AppState {
             run_queue_locks,
             active_agent_turns: ActiveAgentTurns::default(),
             reconciliation_report,
-            use_intent_contract: false,
             migration_apply_enabled: false,
             agent_contract_attribution: AgentContractAttribution::default(),
         }
@@ -206,7 +198,6 @@ impl AppState {
             run_queue_locks,
             active_agent_turns: ActiveAgentTurns::default(),
             reconciliation_report,
-            use_intent_contract: false,
             migration_apply_enabled: false,
             agent_contract_attribution: AgentContractAttribution::default(),
         }
@@ -297,14 +288,6 @@ pub(crate) trait WorkbenchAgent: Send + Sync {
         request: AgentSessionRequest,
     ) -> Result<ValidatedAgentReply, AgentError>;
 
-    async fn propose_graph_change(
-        &self,
-        request: AgentSessionRequest,
-    ) -> Result<ValidatedAgentProposal, AgentError>;
-
-    /// GH130 T6: IntentPlan contract. Test doubles that never exercise the
-    /// intent path keep this default, which fails closed instead of
-    /// pretending to produce an intent.
     async fn propose_intent(
         &self,
         request: AgentSessionRequest,
@@ -312,9 +295,7 @@ pub(crate) trait WorkbenchAgent: Send + Sync {
         Err(AgentError::InvalidMode {
             mode: request.mode,
             expected: helixflow_agent::OutputContract::IntentJson,
-            actual: request
-                .mode
-                .output_contract_with(request.use_intent_contract),
+            actual: request.mode.output_contract(),
         })
     }
 }
@@ -341,15 +322,6 @@ impl WorkbenchAgent for CodexWorkbenchAgent {
     ) -> Result<ValidatedAgentReply, AgentError> {
         AgentService::new(self.runtime.clone(), self.events.clone())
             .answer_chat(request)
-            .await
-    }
-
-    async fn propose_graph_change(
-        &self,
-        request: AgentSessionRequest,
-    ) -> Result<ValidatedAgentProposal, AgentError> {
-        AgentService::new(self.runtime.clone(), self.events.clone())
-            .propose_graph_change(request)
             .await
     }
 

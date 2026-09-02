@@ -119,7 +119,9 @@ cd ..
 ```
 
 The production checklist is in [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
-Specs and design docs live in [`SPEC_WORKFLOW_ORCHESTRATOR.md`](SPEC_WORKFLOW_ORCHESTRATOR.md), [`docs/`](docs/), and [`specs/`](specs/).
+The current product contract is [`SPEC_WORKFLOW_ORCHESTRATOR_V2.zh.md`](SPEC_WORKFLOW_ORCHESTRATOR_V2.zh.md).
+Historical specs and supporting design material live in
+[`SPEC_WORKFLOW_ORCHESTRATOR.md`](SPEC_WORKFLOW_ORCHESTRATOR.md), [`docs/`](docs/), and [`specs/`](specs/).
 
 ## Repository policy
 

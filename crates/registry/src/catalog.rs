@@ -30,8 +30,12 @@ pub struct CatalogSnapshot {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CapabilityDefinition {
     pub capability_id: String,
+    /// Stable executable node type for this capability. The runtime registry
+    /// projects executable capabilities from this canonical definition.
+    pub node_type: String,
     pub category: MediaCategory,
     pub display_name: String,
+    pub description: String,
     pub inputs: Vec<PortDefinition>,
     pub outputs: Vec<PortDefinition>,
     pub params_schema: ParamsSchema,

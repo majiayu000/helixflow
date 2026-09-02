@@ -18,19 +18,6 @@ use crate::{LayoutHint, ResolvedStage};
 const COLUMN_WIDTH: f32 = 240.0;
 const ROW_HEIGHT: f32 = 180.0;
 
-/// Maps a canonical capability to the v1 node type that carries it in the
-/// structural layer. Capabilities without an executable node type cannot be
-/// compiled in this runtime yet.
-fn node_type_for(capability_id: &str) -> Option<&'static str> {
-    match capability_id {
-        "prompt_writer" => Some("llm.prompt_writer"),
-        "text_to_image" => Some("image.generate"),
-        "text_to_video" => Some("video.text_to_video"),
-        "image_to_video" => Some("video.image_to_video"),
-        _ => None,
-    }
-}
-
 pub(crate) struct BuiltGraph {
     pub target: WorkflowGraph,
     pub resolved_stages: Vec<ResolvedStage>,
@@ -91,11 +78,12 @@ pub(crate) fn build(
             Err(err) => return Err(err.into()),
         };
 
-        let node_type = node_type_for(&resolved.capability_id).ok_or_else(|| {
-            CompileError::UnmappedCapability {
+        let node_type = catalog
+            .capability(&resolved.capability_id)
+            .map(|capability| capability.node_type.as_str())
+            .ok_or_else(|| CompileError::UnmappedCapability {
                 capability_id: resolved.capability_id.clone(),
-            }
-        })?;
+            })?;
         let definition =
             registry
                 .definition(node_type)
@@ -115,7 +103,7 @@ pub(crate) fn build(
                 .iter()
                 .find(|candidate| candidate.stage_id == input.stage_id)
                 .expect("validated earlier");
-            let source_type = node_type_for_stage(source_stage)?;
+            let source_type = node_type_for_stage(source_stage, catalog)?;
             let source_def =
                 registry
                     .definition(source_type)
@@ -406,10 +394,16 @@ fn binding_not_found_clarification(
 
 /// Resolves the node type of an upstream stage without re-running binding
 /// selection side effects (pure lookup, deterministic).
-fn node_type_for_stage(stage: &StageIntent) -> Result<&'static str, CompileError> {
-    node_type_for(&stage.capability_id).ok_or_else(|| CompileError::UnmappedCapability {
-        capability_id: stage.capability_id.clone(),
-    })
+fn node_type_for_stage<'a>(
+    stage: &StageIntent,
+    catalog: &'a CatalogSnapshot,
+) -> Result<&'a str, CompileError> {
+    catalog
+        .capability(&stage.capability_id)
+        .map(|capability| capability.node_type.as_str())
+        .ok_or_else(|| CompileError::UnmappedCapability {
+            capability_id: stage.capability_id.clone(),
+        })
 }
 
 /// Layout is a pure projection of the semantic topology: the main chain runs

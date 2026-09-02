@@ -9,20 +9,19 @@ use serde_json::{Value, json};
 use crate::{
     AgentError, AgentLogEntry, AgentResult, AgentRuntime, AgentSession, AgentSessionRequest,
     AgentTurn, OutputContract, PromptStackMetadata, RuntimeEvent, RuntimeHandle,
-    TurnClassification, TurnMode, TurnModeSource, ValidatedAgentIntent, ValidatedAgentProposal,
-    ValidatedAgentReply, create_session_contract, read_validated_intent, read_validated_proposal,
-    read_validated_reply, read_validated_route,
+    TurnClassification, TurnMode, TurnModeSource, ValidatedAgentIntent, ValidatedAgentReply,
+    create_session_contract, read_validated_intent, read_validated_reply, read_validated_route,
 };
 
-const DEFAULT_MAX_PROPOSAL_ROUNDS: usize = 3;
+const DEFAULT_MAX_INTENT_ROUNDS: usize = 3;
 const DEFAULT_TURN_TIMEOUT: Duration = Duration::from_secs(300);
-pub(crate) const MAX_PROPOSAL_ROUNDS: usize = 10;
+pub(crate) const MAX_INTENT_ROUNDS: usize = 10;
 
 #[derive(Debug, Clone)]
 pub struct AgentService<R> {
     runtime: R,
     events: EventBus,
-    max_proposal_rounds: usize,
+    max_intent_rounds: usize,
     turn_timeout: Duration,
 }
 
@@ -59,13 +58,13 @@ where
         Self {
             runtime,
             events,
-            max_proposal_rounds: DEFAULT_MAX_PROPOSAL_ROUNDS,
+            max_intent_rounds: DEFAULT_MAX_INTENT_ROUNDS,
             turn_timeout: DEFAULT_TURN_TIMEOUT,
         }
     }
 
-    pub fn with_max_proposal_rounds(mut self, max_proposal_rounds: usize) -> Self {
-        self.max_proposal_rounds = max_proposal_rounds.clamp(1, MAX_PROPOSAL_ROUNDS);
+    pub fn with_max_intent_rounds(mut self, max_intent_rounds: usize) -> Self {
+        self.max_intent_rounds = max_intent_rounds.clamp(1, MAX_INTENT_ROUNDS);
         self
     }
 
@@ -74,16 +73,15 @@ where
         self
     }
 
-    /// GH130 T6: the IntentPlan contract. Same bounded retry loop as the
-    /// proposal path, but validation errors come from the intent schema and
-    /// structural validator instead of graph preview.
+    /// Runs the IntentPlan contract with a bounded retry loop. Validation
+    /// errors come from the intent schema and structural validator.
     pub async fn propose_intent(
         &self,
         request: AgentSessionRequest,
     ) -> AgentResult<ValidatedAgentIntent> {
         ensure_output_contract(&request, OutputContract::IntentJson)?;
         let mut run = self.start_agent_session(&request).await?;
-        let max_rounds = self.max_proposal_rounds.max(1);
+        let max_rounds = self.max_intent_rounds.max(1);
         let mut next_message = request.user_message.clone();
         let mut last_error;
 
@@ -149,7 +147,7 @@ where
             }
 
             if round == max_rounds {
-                return Err(AgentError::ProposalRetryExhausted {
+                return Err(AgentError::IntentRetryExhausted {
                     rounds: max_rounds,
                     last_error,
                 });
@@ -160,125 +158,6 @@ where
             );
         }
         unreachable!("intent rounds always return or error")
-    }
-
-    pub async fn propose_graph_change(
-        &self,
-        request: AgentSessionRequest,
-    ) -> AgentResult<ValidatedAgentProposal> {
-        ensure_output_contract(&request, OutputContract::ProposalJson)?;
-        let base_graph = request.graph.clone();
-        let current_version_id = request.base_version_id.clone();
-        let mut run = self.start_agent_session(&request).await?;
-        let max_rounds = self.max_proposal_rounds.max(1);
-        let mut next_message = request.user_message.clone();
-        let mut last_error = String::new();
-        let mut last_summary: String;
-
-        for round in 1..=max_rounds {
-            self.record_status(
-                &mut run,
-                "proposal.round.started",
-                json!({
-                    "round": round,
-                    "max_rounds": max_rounds,
-                    "message": format!("proposal round {round}/{max_rounds} started")
-                }),
-            );
-
-            let turn = AgentTurn {
-                message: next_message.clone(),
-                mode: request.mode,
-                output_contract: request
-                    .mode
-                    .output_contract_with(request.use_intent_contract),
-                skill: request.skill,
-            };
-            let outcome = self.send_agent_turn(&mut run, turn).await?;
-
-            if let TurnRunOutcome::RuntimeFailed(message) = outcome {
-                last_error = sanitize_retry_feedback(&message);
-                last_summary = "runtime failed before producing a valid proposal".to_owned();
-            } else {
-                match read_validated_proposal(&run.session, &base_graph, &current_version_id) {
-                    Ok(mut proposal) => {
-                        self.record_status(
-                            &mut run,
-                            "proposal.ready",
-                            json!({
-                                "round": round,
-                                "proposal_title": proposal.proposal.title,
-                                "message": format!("proposal ready after round {round}")
-                            }),
-                        );
-                        proposal.agent_logs = run.agent_logs;
-                        proposal.runtime_identity = run.handle.identity().await;
-                        self.emit_status(
-                            &run.session,
-                            run.seq,
-                            "agent.status.end",
-                            json!({ "proposal_title": proposal.proposal.title }),
-                        );
-                        return Ok(proposal);
-                    }
-                    Err(err) => {
-                        last_error = sanitize_retry_feedback(&err.to_string());
-                        last_summary = summarize_last_proposal(&run.session);
-                        self.record_status(
-                            &mut run,
-                            "proposal.validation_failed",
-                            json!({
-                                "round": round,
-                                "max_rounds": max_rounds,
-                                "message": format!("proposal validation failed: {last_error}")
-                            }),
-                        );
-                    }
-                }
-            }
-
-            if round == max_rounds {
-                self.record_status(
-                    &mut run,
-                    "proposal.retry_exhausted",
-                    json!({
-                        "rounds": max_rounds,
-                        "last_error": last_error.clone(),
-                        "last_summary": last_summary.clone(),
-                        "message": format!(
-                            "proposal retry exhausted after {max_rounds} rounds: {last_error}"
-                        )
-                    }),
-                );
-                return Err(AgentError::ProposalRetryExhausted {
-                    rounds: max_rounds,
-                    last_error,
-                });
-            }
-
-            self.record_status(
-                &mut run,
-                "proposal.retrying",
-                json!({
-                    "round": round,
-                    "next_round": round + 1,
-                    "max_rounds": max_rounds,
-                    "last_error": last_error.clone(),
-                    "last_summary": last_summary.clone(),
-                    "message": format!(
-                        "retrying proposal generation (round {}/{max_rounds})",
-                        round + 1
-                    )
-                }),
-            );
-            next_message =
-                build_retry_message(&request, round + 1, max_rounds, &last_error, &last_summary);
-        }
-
-        Err(AgentError::ProposalRetryExhausted {
-            rounds: max_rounds,
-            last_error,
-        })
     }
 
     pub async fn answer_chat(
@@ -493,62 +372,6 @@ fn clear_turn_output(session: &AgentSession, output_contract: OutputContract) ->
     }
 }
 
-fn build_retry_message(
-    request: &AgentSessionRequest,
-    round: usize,
-    max_rounds: usize,
-    last_error: &str,
-    last_summary: &str,
-) -> String {
-    let graph_summary = format!(
-        "workspace_id={}, base_version_id={}, node_count={}, edge_count={}",
-        request.workspace_id,
-        request.base_version_id,
-        request.graph.nodes.len(),
-        request.graph.edges.len()
-    );
-
-    format!(
-        "\
-{original_message}
-
-Previous proposal validation failed.
-Retry round: {round}/{max_rounds}
-Current graph context: {graph_summary}. Re-read ctx/graph.json, ctx/canvas_state.json, ctx/node_defs/catalog.json, and ctx/canvas_ops.json.
-Validator error: {last_error}
-Last failed proposal summary: {last_summary}
-Write a fresh out/proposal.json that satisfies the proposal_json contract. Keep the same user intent, correct only the invalid proposal shape or ops, and do not include secrets, local paths, or extra fields.",
-        original_message = request.user_message.as_str(),
-    )
-}
-
-fn summarize_last_proposal(session: &AgentSession) -> String {
-    let path = session
-        .out_dir
-        .join(OutputContract::ProposalJson.file_name());
-    let Ok(bytes) = fs::read(path) else {
-        return "proposal output was not readable".to_owned();
-    };
-    let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
-        return "proposal output was not valid JSON".to_owned();
-    };
-
-    let title = value
-        .get("title")
-        .and_then(Value::as_str)
-        .unwrap_or("untitled");
-    let summary = value
-        .get("summary")
-        .and_then(Value::as_str)
-        .unwrap_or("missing summary");
-    let op_count = value
-        .get("ops")
-        .and_then(Value::as_array)
-        .map(Vec::len)
-        .unwrap_or_default();
-    sanitize_retry_feedback(&format!("title={title}; summary={summary}; ops={op_count}"))
-}
-
 fn sanitize_retry_feedback(message: &str) -> String {
     let mut sanitized = message
         .split_whitespace()
@@ -600,9 +423,7 @@ fn ensure_output_contract(
     request: &AgentSessionRequest,
     expected: OutputContract,
 ) -> AgentResult<()> {
-    let actual = request
-        .mode
-        .output_contract_with(request.use_intent_contract);
+    let actual = request.mode.output_contract();
     if actual == expected {
         return Ok(());
     }
@@ -613,13 +434,11 @@ fn ensure_output_contract(
     })
 }
 
-fn agent_message_kind(status: &str, detail: &Value) -> &'static str {
+fn agent_message_kind(status: &str, _detail: &Value) -> &'static str {
     if status.contains("failed") || status.contains("error") {
         return "agent_log:error";
     }
-    if status == "agent.status.end" && detail.get("proposal_title").is_some() {
-        "proposal_pending"
-    } else if status == "agent.status.end" {
+    if status == "agent.status.end" {
         "chat"
     } else {
         "agent_log:status"

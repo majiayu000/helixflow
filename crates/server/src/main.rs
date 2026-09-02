@@ -21,6 +21,8 @@ mod capability_preflight;
 mod catalog_routes;
 mod graph_files;
 mod layout_routes;
+#[cfg(test)]
+mod layout_routes_tests;
 mod ops_routes;
 #[cfg(test)]
 mod ops_routes_tests;
@@ -37,6 +39,7 @@ mod test_support;
 #[cfg(test)]
 mod test_wait;
 mod upload_routes;
+mod version_commit;
 mod version_file_consistency;
 #[cfg(test)]
 mod version_file_consistency_tests;
@@ -56,11 +59,8 @@ mod workbench_message_graph;
 mod workbench_message_graph_tests;
 mod workbench_message_intent;
 mod workbench_message_intent_readiness;
-#[cfg(test)]
-mod workbench_message_intent_tests;
 mod workbench_message_metadata;
 mod workbench_message_proposals;
-mod workbench_message_run_fix;
 #[cfg(test)]
 mod workbench_message_tests;
 mod workbench_payload;
@@ -86,7 +86,7 @@ use catalog_routes::{
     capability_models, catalog_snapshot, compile_intent, model_capabilities,
     resolve_implementation, resolve_workspace_implementation,
 };
-use layout_routes::save_workspace_layout;
+use layout_routes::save_canvas_snapshot;
 use ops_routes::apply_workspace_ops;
 use proposal_routes::{apply_workspace_proposal, dismiss_workspace_proposal};
 use registry_routes::node_registry_catalog;
@@ -312,8 +312,8 @@ fn app(state: AppState) -> Router {
             post(undo_workspace_version),
         )
         .route(
-            "/api/workspaces/{workspace_id}/versions/layout",
-            post(save_workspace_layout),
+            "/api/workspaces/{workspace_id}/canvas/snapshot",
+            post(save_canvas_snapshot),
         )
         .route(
             "/api/workspaces/{workspace_id}/versions/{version_id}/restore",

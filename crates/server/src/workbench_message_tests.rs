@@ -8,7 +8,7 @@ use axum::{
 };
 use helixflow_agent::{
     AgentError, AgentLogEntry, AgentRuntimeIdentity, AgentSessionRequest, TurnClassification,
-    TurnMode, TurnModeSource, ValidatedAgentProposal, ValidatedAgentReply,
+    TurnMode, TurnModeSource, ValidatedAgentIntent, ValidatedAgentReply,
 };
 use helixflow_graph::{PreparedProposal, WorkflowGraph};
 use helixflow_run::EventBus;
@@ -512,8 +512,19 @@ async fn post_message_auto_starts_free_run_request() {
 }
 
 #[tokio::test]
-async fn post_message_auto_applies_proposal_record() {
-    let (state, workspace_id, version_id, _dir) = state_with_workspace().await;
+async fn post_message_auto_applies_compiled_intent_proposal_record() {
+    let (state, workspace_id, version_id, _dir) = intent_state(intent_plan(serde_json::json!({
+        "intentVersion": "1",
+        "topology": "linear",
+        "stages": [{
+            "stageId": "image",
+            "capabilityId": "text_to_image",
+            "inputFrom": [],
+            "params": {"prompt": "a silver wireless headset"}
+        }],
+        "outputStageIds": ["image"]
+    })))
+    .await;
 
     let response = post_workspace_message(
         Path(workspace_id.clone()),
@@ -559,7 +570,7 @@ async fn post_message_auto_applies_proposal_record() {
     let proposal_id = proposals[0].id.clone();
     let proposal = state.store.proposal(&proposal_id).await.expect("proposal");
     assert_eq!(proposal.state, "applied");
-    assert_eq!(proposal.kind, "modify");
+    assert_eq!(proposal.kind, "create");
     let version_id = proposal
         .result_version_id
         .as_deref()
@@ -589,11 +600,12 @@ async fn post_message_auto_applies_proposal_record() {
         .await
         .expect("applied graph bytes");
     assert_eq!(version.graph_hash, graph_hash(&bytes));
-    assert_eq!(
-        read_version_graph(&state.data_dir, &version)
+    assert!(
+        !read_version_graph(&state.data_dir, &version)
             .await
-            .expect("verified applied graph"),
-        sample_graph()
+            .expect("verified applied graph")
+            .nodes
+            .is_empty()
     );
     assert_eq!(
         state
@@ -668,7 +680,7 @@ async fn post_message_auto_applies_proposal_record() {
 #[tokio::test]
 async fn post_message_auto_applies_store_conflict_cleans_three_candidates() {
     let (state, workspace_id, base_version_id, _dir) = state_with_workspace().await;
-    let proposal = auto_apply_proposal(&base_version_id, "../../raw-session-id");
+    let proposal = auto_apply_proposal(&base_version_id);
     let hook = AutoApplyCommitHook::new();
     let task_state = state.clone();
     let task_workspace_id = workspace_id.clone();
@@ -907,22 +919,17 @@ async fn post_message_routes_debug_with_latest_run_context() {
     );
 }
 
-fn auto_apply_proposal(base_version_id: &str, session_id: &str) -> ValidatedAgentProposal {
-    ValidatedAgentProposal {
-        session_id: session_id.to_owned(),
-        runtime_identity: None,
-        agent_logs: Vec::new(),
-        proposal: PreparedProposal {
-            base_version_id: base_version_id.to_owned(),
-            kind: helixflow_graph::ProposalKind::Modify,
-            title: "Test proposal".to_owned(),
-            summary: "Test proposal ready.".to_owned(),
-            ops: Vec::new(),
-            diff_summary: Vec::new(),
-            preview_graph: sample_graph(),
-            state: helixflow_graph::ProposalState::Pending,
-            message_id: None,
-        },
+fn auto_apply_proposal(base_version_id: &str) -> PreparedProposal {
+    PreparedProposal {
+        base_version_id: base_version_id.to_owned(),
+        kind: helixflow_graph::ProposalKind::Modify,
+        title: "Test proposal".to_owned(),
+        summary: "Test proposal ready.".to_owned(),
+        ops: Vec::new(),
+        diff_summary: Vec::new(),
+        preview_graph: sample_graph(),
+        state: helixflow_graph::ProposalState::Pending,
+        message_id: None,
     }
 }
 
@@ -1049,10 +1056,10 @@ impl WorkbenchAgent for FakeWorkbenchAgent {
         })
     }
 
-    async fn propose_graph_change(
+    async fn propose_intent(
         &self,
         request: AgentSessionRequest,
-    ) -> Result<ValidatedAgentProposal, AgentError> {
+    ) -> Result<ValidatedAgentIntent, AgentError> {
         if request.mode == TurnMode::DebugWorkflow {
             let context = request
                 .run_context
@@ -1079,7 +1086,7 @@ impl WorkbenchAgent for FakeWorkbenchAgent {
                 )));
             }
         }
-        Ok(ValidatedAgentProposal {
+        Ok(ValidatedAgentIntent {
             session_id: format!("{}_fake", request.workspace_id),
             runtime_identity: Some(AgentRuntimeIdentity {
                 thread_id: "thr_fake".to_owned(),
@@ -1087,19 +1094,19 @@ impl WorkbenchAgent for FakeWorkbenchAgent {
             }),
             agent_logs: vec![AgentLogEntry {
                 kind: "agent_log:status".to_owned(),
-                text: "fake proposal status".to_owned(),
+                text: "fake intent status".to_owned(),
             }],
-            proposal: PreparedProposal {
-                base_version_id: request.base_version_id,
-                kind: helixflow_graph::ProposalKind::Modify,
-                title: "Test proposal".to_owned(),
-                summary: "Test proposal ready.".to_owned(),
-                ops: Vec::new(),
-                diff_summary: Vec::new(),
-                preview_graph: request.graph,
-                state: helixflow_graph::ProposalState::Pending,
-                message_id: None,
-            },
+            intent: intent_plan(serde_json::json!({
+                "intentVersion": "1",
+                "topology": "linear",
+                "stages": [{
+                    "stageId": "image",
+                    "capabilityId": "text_to_image",
+                    "inputFrom": [],
+                    "params": {"prompt": "a silver wireless headset"}
+                }],
+                "outputStageIds": ["image"]
+            })),
         })
     }
 }
@@ -1137,13 +1144,6 @@ impl WorkbenchAgent for HangingRoutingAgent {
     ) -> Result<ValidatedAgentReply, AgentError> {
         unreachable!("routing never completes")
     }
-
-    async fn propose_graph_change(
-        &self,
-        _request: AgentSessionRequest,
-    ) -> Result<ValidatedAgentProposal, AgentError> {
-        unreachable!("routing never completes")
-    }
 }
 
 #[async_trait]
@@ -1166,13 +1166,6 @@ impl WorkbenchAgent for BlockingRoutingAgent {
     ) -> Result<ValidatedAgentReply, AgentError> {
         unreachable!("run request does not answer chat")
     }
-
-    async fn propose_graph_change(
-        &self,
-        _request: AgentSessionRequest,
-    ) -> Result<ValidatedAgentProposal, AgentError> {
-        unreachable!("run request does not propose")
-    }
 }
 
 #[async_trait]
@@ -1183,15 +1176,6 @@ impl WorkbenchAgent for HangingWorkbenchAgent {
     ) -> Result<ValidatedAgentReply, AgentError> {
         self.started.notify_waiters();
         std::future::pending().await
-    }
-
-    async fn propose_graph_change(
-        &self,
-        _request: AgentSessionRequest,
-    ) -> Result<ValidatedAgentProposal, AgentError> {
-        Err(AgentError::Runtime(
-            "graph change is not under test".to_owned(),
-        ))
     }
 }
 
@@ -1204,24 +1188,17 @@ impl WorkbenchAgent for IntentWorkbenchAgent {
         Err(AgentError::Runtime("chat is not under test".to_owned()))
     }
 
-    async fn propose_graph_change(
-        &self,
-        _request: AgentSessionRequest,
-    ) -> Result<ValidatedAgentProposal, AgentError> {
-        Err(AgentError::Runtime(
-            "legacy proposal contract must not be used when the intent flag is on".to_owned(),
-        ))
-    }
-
     async fn propose_intent(
         &self,
         request: AgentSessionRequest,
     ) -> Result<helixflow_agent::ValidatedAgentIntent, AgentError> {
-        assert!(request.use_intent_contract, "flag must reach the request");
         Ok(helixflow_agent::ValidatedAgentIntent {
             session_id: format!("{}_intent", request.workspace_id),
             runtime_identity: None,
-            agent_logs: Vec::new(),
+            agent_logs: vec![AgentLogEntry {
+                kind: "agent_log:status".to_owned(),
+                text: "fake intent status".to_owned(),
+            }],
             intent: self.intent.clone(),
         })
     }
@@ -1236,7 +1213,6 @@ async fn intent_state(
 ) -> (AppState, String, String, tempfile::TempDir) {
     let (mut state, workspace_id, version_id, dir) = state_with_workspace().await;
     state.agent = std::sync::Arc::new(IntentWorkbenchAgent { intent });
-    state.use_intent_contract = true;
     // A healthy atlas connector so catalog resolution succeeds in tests.
     let atlas = helixflow_gateway::RuntimeProvider::Atlas(helixflow_gateway::AtlasProvider::new(
         helixflow_gateway::ApiProviderConfig::atlas(

@@ -1328,38 +1328,52 @@ describe('App', () => {
     expect(useWorkbenchStore.getState().state?.workspace.versionId).toBe('ver_restore_1');
   });
 
-  it('saves graph layout through the workspace version API', async () => {
+  it('saves graph layout through the canvas snapshot API without changing the version', async () => {
+    const initialCanvas = {
+      ...canvasDocument(),
+      nodes: state.graph.nodes.map((node) => ({
+        id: node.id,
+        nodeType: node.nodeType,
+        title: node.title,
+        position: node.position,
+        size: node.size,
+        params: {},
+        runtime: null,
+        metadata: { source: 'test' },
+      })),
+    };
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
         jsonResponse({
-          ...state,
-          workspace: { ...state.workspace, versionId: 'ver_layout_1' },
-          graph: {
-            ...state.graph,
-            nodes: state.graph.nodes.map((node) =>
-              node.id === 'video' ? { ...node, position: { x: 620, y: 210 } } : node,
-            ),
-          },
+          ...initialCanvas,
+          revision: 1,
+          nodes: initialCanvas.nodes.map((node) =>
+            node.id === 'video' ? { ...node, position: { x: 620, y: 210 } } : node,
+          ),
         }),
       ),
     );
     useWorkbenchStore.getState().setInitialState(state);
+    useWorkbenchStore.setState({ canvas: initialCanvas });
 
-    await useWorkbenchStore.getState().saveLayout([{ id: 'video', x: 620, y: 210 }]);
+    await useWorkbenchStore.getState().saveCanvasSnapshot({
+      positions: [{ id: 'video', x: 620, y: 210 }],
+    });
 
     const fetchMock = vi.mocked(fetch);
-    expect(fetchMock).toHaveBeenCalledWith('/api/workspaces/ws_test/versions/layout', {
+    expect(fetchMock).toHaveBeenCalledWith('/api/workspaces/ws_test/canvas/snapshot', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: expect.any(String),
     });
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
-      baseVersionId: 'ver_test_1',
+      versionId: 'ver_test_1',
+      baseRevision: 0,
       positions: [{ id: 'video', x: 620, y: 210 }],
     });
-    expect(useWorkbenchStore.getState().state?.workspace.versionId).toBe('ver_layout_1');
-    expect(useWorkbenchStore.getState().state?.graph.nodes.find((node) => node.id === 'video')?.position).toEqual({
+    expect(useWorkbenchStore.getState().state?.workspace.versionId).toBe('ver_test_1');
+    expect(useWorkbenchStore.getState().canvas?.nodes.find((node) => node.id === 'video')?.position).toEqual({
       x: 620,
       y: 210,
     });
@@ -2425,6 +2439,8 @@ function canvasDocument(): CanvasDocument {
     workspaceId: 'ws_test',
     versionId: 'ver_test_1',
     seq: 4,
+    revision: 0,
+    viewport: null,
     nodes: [
       {
         id: 'canvas_text',

@@ -23,7 +23,7 @@ async fn startup_verifies_references_and_removes_only_owned_orphans() {
         uuid::Uuid::now_v7().simple()
     );
     let orphan_temp = format!(
-        "workspaces/{workspace_id}/graphs/.hf-layout-{}-{}.tmp",
+        "workspaces/{workspace_id}/graphs/.hf-ops-{}-{}.tmp",
         uuid::Uuid::now_v7().simple(),
         uuid::Uuid::now_v7().simple()
     );
@@ -164,7 +164,7 @@ async fn startup_retains_non_v7_and_uppercase_uuid_names_as_unknown() {
         workspace.id
     );
     let uppercase_v7 = format!(
-        "workspaces/{}/graphs/layout-{}.json",
+        "workspaces/{}/graphs/ops-{}.json",
         workspace.id,
         uuid::Uuid::now_v7().simple().to_string().to_uppercase()
     );

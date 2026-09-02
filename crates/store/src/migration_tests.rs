@@ -166,7 +166,7 @@ async fn version_migration_rebuild_preserves_old_rows_semantics_and_foreign_keys
 }
 
 #[tokio::test]
-async fn run_fix_migration_preserves_every_gh154_continuation_state() {
+async fn legacy_0009_migration_preserves_every_gh154_continuation_state() {
     let dir = tempfile::tempdir().expect("temp dir");
     let database_url = format!("sqlite://{}", dir.path().join("pre-0009.sqlite").display());
     let pool = connect_pool(&database_url)
@@ -224,7 +224,6 @@ async fn run_fix_migration_preserves_every_gh154_continuation_state() {
             .expect("preserved continuation");
         assert_eq!(record.state, state);
         assert_eq!(record.child_run_id.as_deref(), child);
-        assert!(record.chain_id.is_none());
     }
     let foreign_key_violations: Vec<(String, i64, String, i64)> =
         sqlx::query_as("PRAGMA foreign_key_check")

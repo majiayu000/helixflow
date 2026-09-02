@@ -166,7 +166,7 @@ where
     /// Decide whether the just-finished run should be retried. Returns the
     /// prepared (claimed, steps-ensured) retry run when it should auto-start.
     /// Pending confirmation, explicit exhaustion, and non-retryable stops stay
-    /// distinct so only true retry exhaustion can enter Agent fix.
+    /// distinct so retry state remains durable and observable.
     async fn prepare_retry(
         &self,
         workspace_id: &str,

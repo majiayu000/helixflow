@@ -14,11 +14,11 @@ import {
   WorkbenchStateSchema,
   NodeCatalogSchema,
   type CanvasDocument,
+  type CanvasSnapshotUpdate,
   type CanvasCommentOpInput,
   type CanvasPresence,
   type RunConfirmationResponse,
   type RunEventEnvelope,
-  type LayoutPositionUpdate,
   type ManualProposalInput,
   type NodeCatalog,
   type WorkflowGraph,
@@ -427,12 +427,12 @@ export async function restoreWorkspaceVersion(
   return WorkbenchStateSchema.parse(body);
 }
 
-export async function saveWorkspaceLayout(
+export async function saveWorkspaceCanvasSnapshot(
   workspaceId: string,
-  input: { baseVersionId: string; positions: LayoutPositionUpdate[] },
-): Promise<WorkbenchState> {
+  input: CanvasSnapshotUpdate & { versionId: string; baseRevision: number },
+): Promise<CanvasDocument> {
   const response = await fetch(
-    `/api/workspaces/${encodeURIComponent(workspaceId)}/versions/layout`,
+    `/api/workspaces/${encodeURIComponent(workspaceId)}/canvas/snapshot`,
     {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -444,11 +444,11 @@ export async function saveWorkspaceLayout(
     const message =
       body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
         ? body.error
-        : `workspace layout request failed: ${response.status}`;
+        : `canvas snapshot request failed: ${response.status}`;
     throw new Error(message);
   }
 
-  return WorkbenchStateSchema.parse(body);
+  return CanvasDocumentSchema.parse(body);
 }
 
 export async function selectOutput(outputId: string): Promise<WorkbenchState> {

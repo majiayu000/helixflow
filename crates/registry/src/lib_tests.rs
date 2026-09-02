@@ -157,3 +157,30 @@ fn executable_nodes_are_provider_neutral() {
         );
     }
 }
+
+#[test]
+fn executable_capability_nodes_are_projected_from_enabled_bindings() {
+    let catalog = crate::catalog_seed::builtin_catalog();
+    let registry = NodeRegistry::builtin();
+    let executable: std::collections::BTreeSet<&str> = registry
+        .definitions()
+        .filter_map(|definition| definition.capability.as_deref())
+        .collect();
+    let enabled: std::collections::BTreeSet<&str> = catalog
+        .bindings
+        .iter()
+        .filter(|binding| binding.availability == crate::catalog::BindingAvailability::Enabled)
+        .map(|binding| binding.capability_id.as_str())
+        .collect();
+
+    assert_eq!(executable, enabled);
+    for capability_id in executable {
+        let capability = catalog.capability(capability_id).expect("capability");
+        let definition = registry
+            .definition(&capability.node_type)
+            .expect("projected node definition");
+        assert_eq!(definition.inputs, capability.inputs);
+        assert_eq!(definition.outputs, capability.outputs);
+        assert_eq!(definition.params_schema, capability.params_schema);
+    }
+}

@@ -25,8 +25,6 @@ async fn ops_route_applies_multiple_ops_as_one_manual_version() {
         "baseVersionId": base_version_id,
         "ops": [
             { "op": "set_param", "id": "text", "key": "text", "value": "updated" },
-            { "op": "move_node", "id": "writer", "pos": [420, 80] },
-            { "op": "resize_node", "id": "writer", "size": [260, 180] },
             { "op": "add_node", "id": "alt", "node_type": "input.text", "title": null, "params": { "text": "alt" }, "pos": [120, 0] },
             { "op": "remove_edge", "from": ["text", "text"], "to": ["writer", "text"], "edge_type": "text" },
             { "op": "add_edge", "from": ["alt", "text"], "to": ["writer", "text"], "edge_type": "text" },
@@ -63,14 +61,6 @@ async fn ops_route_applies_multiple_ops_as_one_manual_version() {
         2
     );
     assert!(response["graph"]["nodes"].to_string().contains("alt"));
-    assert_eq!(
-        response["workflowGraph"]["nodes"]["writer"]["size"][0],
-        260.0
-    );
-    assert_eq!(
-        response["workflowGraph"]["nodes"]["writer"]["size"][1],
-        180.0
-    );
 }
 
 #[tokio::test]
@@ -79,7 +69,7 @@ async fn idempotency_reuses_exact_key_and_payload_without_duplicate_versions() {
     let body = json!({
         "baseVersionId": base_version_id,
         "idempotencyKey": "canvas_op_retry_1",
-        "ops": [{ "op": "move_node", "id": "writer", "pos": [420, 80] }]
+        "ops": [{ "op": "set_param", "id": "text", "key": "text", "value": "retry" }]
     });
 
     let first = apply_workspace_ops(
@@ -396,7 +386,10 @@ async fn concurrent_same_base_ops_has_one_winner_and_cleans_loser_candidate() {
         .expect("verified winner");
     assert_eq!(winner.parent_id.as_deref(), Some(base_version_id.as_str()));
     assert_eq!(winner.graph_hash, graph_hash(&bytes));
-    assert!(matches!(graph.nodes["writer"].pos[0], 420.0 | 520.0));
+    assert!(matches!(
+        graph.nodes["text"].params["text"].as_str(),
+        Some("value-420") | Some("value-520")
+    ));
     assert_eq!(
         state
             .store
@@ -458,7 +451,7 @@ async fn idempotency_replay_after_later_advance_returns_latest_state_without_dup
 fn ops_move_body(base_version_id: &str, key: Option<&str>, x: f32) -> Value {
     let mut body = json!({
         "baseVersionId": base_version_id,
-        "ops": [{ "op": "move_node", "id": "writer", "pos": [x, 80] }]
+        "ops": [{ "op": "set_param", "id": "text", "key": "text", "value": format!("value-{x}") }]
     });
     if let Some(key) = key {
         body["idempotencyKey"] = Value::String(key.to_owned());
@@ -591,7 +584,12 @@ async fn ops_route_rejects_invalid_resize_without_writes() {
     let body = error_body(err).await;
 
     assert_eq!(body["opIndex"], 0);
-    assert!(body["error"].as_str().expect("error").contains("node size"));
+    assert!(
+        body["error"]
+            .as_str()
+            .expect("error")
+            .contains("canvas snapshot")
+    );
     assert_eq!(graph_file_count(&state, &workspace_id).await, graph_count);
     assert_eq!(
         state
@@ -631,7 +629,7 @@ async fn ops_route_rejects_pending_proposal_and_stale_base_without_writes() {
     create_pending_proposal(&state, &workspace_id, &base_version_id).await;
     let body = json!({
         "baseVersionId": base_version_id,
-        "ops": [{ "op": "move_node", "id": "writer", "pos": [420, 80] }]
+        "ops": [{ "op": "set_param", "id": "text", "key": "text", "value": "blocked" }]
     });
 
     let err = apply_workspace_ops(
@@ -661,7 +659,7 @@ async fn ops_route_rejects_unknown_fields_with_structured_error() {
     let (state, workspace_id, base_version_id, _dir) = state_with_graph().await;
     let body = json!({
         "baseVersionId": base_version_id,
-        "ops": [{ "op": "move_node", "id": "writer", "pos": [420, 80] }],
+        "ops": [{ "op": "set_param", "id": "text", "key": "text", "value": "updated" }],
         "unexpected": true
     });
 

@@ -19,6 +19,9 @@ use sha2::{Digest, Sha256};
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
 use crate::catalog_routes::shared_catalog;
+use crate::version_commit::{
+    VersionCommitDisposition, VersionCommitError, commit_version_candidate_with_disposition,
+};
 use crate::version_file_consistency::{
     CandidateKind, VersionFileCandidate, VersionFileConsistencyError, read_version_graph,
 };
@@ -226,54 +229,64 @@ pub(crate) async fn apply_version_migration(
     let mut candidate =
         VersionFileCandidate::from_graph(&workspace_id, CandidateKind::Migration, &migrated)
             .map_err(candidate_error)?;
-    candidate
-        .publish(&state.data_dir)
-        .map_err(candidate_error)?;
     let target_path = candidate
         .relative_path_text()
         .map_err(candidate_error)?
         .to_owned();
     let target_hash = candidate.graph_hash().to_owned();
 
-    let result = state
-        .store
-        .apply_version_migration(ApplyVersionMigration {
-            workspace_id: &workspace_id,
-            operation_id: &request.operation_id,
-            operation_fingerprint: &fingerprint,
-            source_version_id: &version_id,
-            source_graph_hash: &request.source_graph_hash,
-            expected_runtime_provider_id: expected_runtime_provider_id.as_deref(),
-            target_label: "Migrated to graph v2",
-            target_graph_path: &target_path,
-            target_graph_hash: &target_hash,
-            target_semantics_json: &semantics_json,
-            migration_version: &request.migration_version,
-            catalog_revision: &request.catalog_revision,
-            workspace_connector_id: &request.workspace_connector_id,
-            report_hash: &request.report_hash,
-            report_json: &report_json,
-        })
-        .await;
+    let transaction = async {
+        state
+            .store
+            .apply_version_migration(ApplyVersionMigration {
+                workspace_id: &workspace_id,
+                operation_id: &request.operation_id,
+                operation_fingerprint: &fingerprint,
+                source_version_id: &version_id,
+                source_graph_hash: &request.source_graph_hash,
+                expected_runtime_provider_id: expected_runtime_provider_id.as_deref(),
+                target_label: "Migrated to graph v2",
+                target_graph_path: &target_path,
+                target_graph_hash: &target_hash,
+                target_semantics_json: &semantics_json,
+                migration_version: &request.migration_version,
+                catalog_revision: &request.catalog_revision,
+                workspace_connector_id: &request.workspace_connector_id,
+                report_hash: &request.report_hash,
+                report_json: &report_json,
+            })
+            .await
+            .map(|applied| {
+                let disposition = if applied.replayed {
+                    VersionCommitDisposition::Replayed
+                } else {
+                    VersionCommitDisposition::Committed
+                };
+                (applied, disposition)
+            })
+    };
 
-    let applied = match result {
-        Ok(applied) if applied.replayed => {
-            candidate
-                .cleanup_after_store_error(&state.store)
-                .await
-                .map_err(candidate_error)?;
-            applied
+    let applied = match commit_version_candidate_with_disposition(
+        &mut candidate,
+        &state.data_dir,
+        &state.store,
+        transaction,
+    )
+    .await
+    {
+        Ok(applied) => applied,
+        Err(VersionCommitError::Consistency(error)) => return Err(candidate_error(error)),
+        Err(VersionCommitError::Store {
+            cleanup: Some(error),
+            ..
+        }) => {
+            return Err(candidate_error(error));
         }
-        Ok(applied) => {
-            candidate.mark_committed().map_err(candidate_error)?;
-            applied
-        }
-        Err(error) => {
-            candidate
-                .cleanup_after_store_error(&state.store)
-                .await
-                .map_err(candidate_error)?;
-            let conflict_code = match &error {
+        Err(VersionCommitError::Store {
+            source,
+            cleanup: None,
+        }) => {
+            let conflict_code = match &source {
                 StoreError::OperationIdConflict { .. } => Some("OPERATION_ID_CONFLICT"),
                 StoreError::VersionConflict { .. } => Some("CURRENT_VERSION_CONFLICT"),
                 StoreError::WorkspaceConnectorConflict { .. } => Some("WORKSPACE_CONNECTOR_STALE"),
@@ -283,7 +296,7 @@ pub(crate) async fn apply_version_migration(
             if let Some(code) = conflict_code {
                 persist_conflict_assessment(&state, &assessment.report, code).await?;
             }
-            return Err(migration_store_error(error));
+            return Err(migration_store_error(source));
         }
     };
     Ok(Json(

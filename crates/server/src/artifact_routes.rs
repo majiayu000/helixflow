@@ -249,9 +249,7 @@ mod tests {
 
     use async_trait::async_trait;
     use axum::extract::{Path, State};
-    use helixflow_agent::{
-        AgentError, AgentSessionRequest, ValidatedAgentProposal, ValidatedAgentReply,
-    };
+    use helixflow_agent::{AgentError, AgentSessionRequest, ValidatedAgentReply};
     use helixflow_graph::{GraphNode, WorkflowGraph};
     use helixflow_run::EventBus;
     use helixflow_store::{NewArtifact, NewRun, NewVersion, Store, VersionSource};
@@ -727,13 +725,6 @@ mod tests {
             &self,
             _request: AgentSessionRequest,
         ) -> Result<ValidatedAgentReply, AgentError> {
-            Err(AgentError::Runtime("noop agent".to_owned()))
-        }
-
-        async fn propose_graph_change(
-            &self,
-            _request: AgentSessionRequest,
-        ) -> Result<ValidatedAgentProposal, AgentError> {
             Err(AgentError::Runtime("noop agent".to_owned()))
         }
     }

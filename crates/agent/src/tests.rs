@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use helixflow_gateway::RuntimeProvider;
-use helixflow_graph::{GraphEdge, GraphNode, ProposalKind};
+use helixflow_graph::{GraphEdge, GraphNode};
 use helixflow_run::EventBus;
 use serde_json::{Value, json};
 
@@ -71,7 +71,6 @@ fn request(dir: &tempfile::TempDir) -> AgentSessionRequest {
         mode: TurnMode::ModifyWorkflow,
         skill: AgentSkill::ModifyWorkflow,
         canvas_context: None,
-        use_intent_contract: false,
     }
 }
 
@@ -91,7 +90,6 @@ fn chat_request(dir: &tempfile::TempDir) -> AgentSessionRequest {
         mode: TurnMode::Chat,
         skill: AgentSkill::Chat,
         canvas_context: None,
-        use_intent_contract: false,
     }
 }
 
@@ -125,22 +123,21 @@ fn creates_ctx_out_contract_without_provider_secret_values() {
     assert!(session.out_dir.exists());
 
     let ctx = fs::read_to_string(session.ctx_dir.join("instructions.md")).expect("ctx");
-    assert!(ctx.contains("Write exactly one result file: `out/proposal.json`"));
+    assert!(ctx.contains("Write exactly one result file: `out/intent.json`"));
     assert!(session.ctx_dir.join("canvas_state.json").exists());
     assert!(session.ctx_dir.join("canvas_ops.json").exists());
     assert!(ctx.contains("Top-level keys must be exactly"));
     assert!(ctx.contains("Bounded canvas ops"));
-    assert!(ctx.contains("propose_layout"));
+    let canvas_ops =
+        fs::read_to_string(session.ctx_dir.join("canvas_ops.json")).expect("canvas ops");
+    assert!(canvas_ops.contains("propose_layout"));
     assert!(ctx.contains("ctx/workflow_backends/catalog.json"));
     assert!(ctx.contains("ctx/models/catalog.json"));
     assert!(ctx.contains("ctx/runtime_providers/catalog.json"));
     assert!(ctx.contains("ctx/api_connectors/catalog.json"));
-    assert!(ctx.contains("\"base_version_id\""));
-    assert!(ctx.contains("\"ops\""));
-    assert!(ctx.contains("Do not put top-level \"schema_version\", \"nodes\", or \"edges\""));
-    assert!(ctx.contains("\"op\":\"add_node\""));
-    assert!(ctx.contains("\"node_type\":\"input.text\""));
-    assert!(ctx.contains("\"to\":[\"output\",\"artifact\"],\"edge_type\":\"artifact\""));
+    assert!(ctx.contains("\"intentVersion\""));
+    assert!(ctx.contains("\"capabilityId\""));
+    assert!(ctx.contains("Do not write node ids, edges, coordinates, binding ids"));
     assert_no_raw_auth_material(&ctx);
 
     let workflow_catalog =
@@ -341,97 +338,17 @@ fn safe_runtime_env_derives_codex_home_without_exposing_real_home() {
     assert_eq!(env.get("HOME"), Some(&dir.path().display().to_string()));
 }
 
-#[test]
-fn rejects_unknown_fields_in_proposal_output() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let session = create_session_contract(&request(&dir)).expect("session");
-    write_proposal(
-        &session,
-        json!({
-            "base_version_id": "ver_1",
-            "kind": "modify",
-            "title": "Bad proposal",
-            "summary": "Contains untrusted field",
-            "ops": [],
-            "api_key": "should-not-be-here"
-        }),
-    );
-
-    let err = read_validated_proposal(&session, &sample_graph(), "ver_1")
-        .expect_err("unknown field should fail");
-
-    assert!(err.to_string().contains("unknown field"));
-}
-
-#[test]
-fn rejects_unknown_fields_nested_in_proposal_ops() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let session = create_session_contract(&request(&dir)).expect("session");
-    write_proposal(
-        &session,
-        json!({
-            "base_version_id": "ver_1",
-            "kind": "modify",
-            "title": "Bad nested proposal",
-            "summary": "Contains ignored nested data",
-            "ops": [{
-                "op": "set_param",
-                "id": "video",
-                "key": "duration_sec",
-                "value": 3,
-                "provider_secret": "should-not-be-ignored"
-            }]
-        }),
-    );
-
-    let err = read_validated_proposal(&session, &sample_graph(), "ver_1")
-        .expect_err("nested unknown field should fail");
-
-    assert!(err.to_string().contains("unknown field"));
-}
-
-#[test]
-fn gh130_baseline_proposal_cannot_pin_model_via_params() {
-    // GH130 T0 baseline: the agent contract has no way to pin an execution
-    // model — `params.model` is rejected as an unknown param, while providers
-    // silently fall back to internal defaults. SP130-T3 introduces IntentPlan
-    // with an explicit requested_model instead.
-    let dir = tempfile::tempdir().expect("temp dir");
-    let session = create_session_contract(&request(&dir)).expect("session");
-    write_proposal(
-        &session,
-        json!({
-            "base_version_id": "ver_1",
-            "kind": "modify",
-            "title": "Pin video model",
-            "summary": "Attempt to pin the execution model through params",
-            "ops": [{
-                "op": "set_param",
-                "id": "video",
-                "key": "model",
-                "value": "bytedance/seedance-v1.5-pro"
-            }]
-        }),
-    );
-
-    let err = read_validated_proposal(&session, &sample_graph(), "ver_1")
-        .expect_err("params.model must be rejected");
-
-    assert!(err.to_string().contains("unknown param `model`"));
-}
-
 #[cfg(unix)]
 #[test]
-fn rejects_symlinked_proposal_output() {
+fn rejects_symlinked_intent_output() {
     let dir = tempfile::tempdir().expect("temp dir");
     let session = create_session_contract(&request(&dir)).expect("session");
     let outside = dir.path().join("outside.json");
     fs::write(&outside, "{}").expect("outside");
-    std::os::unix::fs::symlink(&outside, session.out_dir.join("proposal.json"))
-        .expect("symlink proposal");
+    std::os::unix::fs::symlink(&outside, session.out_dir.join("intent.json"))
+        .expect("symlink intent");
 
-    let err = read_validated_proposal(&session, &sample_graph(), "ver_1")
-        .expect_err("symlink output should fail");
+    let err = read_validated_intent(&session).expect_err("symlink output should fail");
 
     assert!(err.to_string().contains("invalid agent output file"));
 }
@@ -481,55 +398,36 @@ fn rejects_blank_reply_and_run_request_summary() {
     assert!(read_validated_run_request(&run_session).is_err());
 }
 
-#[test]
-fn validates_proposal_output_before_returning() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let session = create_session_contract(&request(&dir)).expect("session");
-    write_valid_proposal(&session);
-
-    let proposal = read_validated_proposal(&session, &sample_graph(), "ver_1").expect("proposal");
-
-    assert_eq!(proposal.session_id, session.id);
-    assert_eq!(proposal.proposal.kind, ProposalKind::Modify);
-    assert_eq!(
-        proposal.proposal.preview_graph.nodes["video"].params["duration_sec"],
-        3
-    );
-}
-
 #[tokio::test]
-async fn service_streams_agent_status_and_reads_runtime_proposal() {
+async fn service_streams_agent_status_and_reads_runtime_intent() {
     let dir = tempfile::tempdir().expect("temp dir");
     let events = EventBus::new(16);
-    let service = AgentService::new(FakeRuntime::proposal(), events.clone());
+    let service = AgentService::new(FakeRuntime::intent(), events.clone());
     let mut receiver = events.subscribe();
 
-    let proposal = service
-        .propose_graph_change(request(&dir))
-        .await
-        .expect("proposal");
+    let intent = service.propose_intent(request(&dir)).await.expect("intent");
 
-    assert_eq!(proposal.proposal.title, "Shorter video");
+    assert_eq!(intent.intent.stages[0].capability_id, "text_to_video");
     assert_eq!(
-        proposal
+        intent
             .runtime_identity
             .as_ref()
             .map(|identity| (identity.thread_id.as_str(), identity.turn_id.as_str(),)),
         Some(("thr_fake", "turn_fake")),
     );
     assert!(
-        proposal
+        intent
             .agent_logs
             .iter()
-            .any(|log| log.kind == "agent_log:status" && log.text == "drafting proposal")
+            .any(|log| log.kind == "agent_log:status" && log.text == "drafting intent")
     );
-    assert!(proposal.agent_logs.iter().any(|log| {
+    assert!(intent.agent_logs.iter().any(|log| {
         log.text.contains("Prompt telemetry: mode=modify_workflow")
-            && log.text.contains("output_contract=proposal_json")
+            && log.text.contains("output_contract=intent_json")
             && log.text.contains("mode_override")
     }));
     assert!(
-        proposal.agent_logs.iter().any(|log| {
+        intent.agent_logs.iter().any(|log| {
             log.kind == "agent_log:canvas_ops" && log.text.contains("read_selection")
         })
     );
@@ -776,7 +674,7 @@ case "$thread_request" in *'"method":"thread/start"'*|*'"method":"thread/resume"
 case "$thread_request" in *'"dynamicTools"'*) ;; *) printf '%s\n' '{"id":2,"error":{"message":"missing dynamic tools field"}}'; exit 31 ;; esac
 case "$thread_request" in *'"name":"canvas"'*) ;; *) printf '%s\n' '{"id":2,"error":{"message":"missing canvas namespace"}}'; exit 31 ;; esac
 case "$thread_request" in *'"name":"get_state"'*) ;; *) printf '%s\n' '{"id":2,"error":{"message":"missing get state tool"}}'; exit 31 ;; esac
-case "$thread_request" in *'"name":"submit_proposal"'*) ;; *) printf '%s\n' '{"id":2,"error":{"message":"missing submit proposal tool"}}'; exit 31 ;; esac
+case "$thread_request" in *'"name":"submit_intent"'*) ;; *) printf '%s\n' '{"id":2,"error":{"message":"missing submit intent tool"}}'; exit 31 ;; esac
 printf '%s\n' '{"id":2,"result":{"thread":{"id":"thr_canvas","sessionId":"thr_canvas"}}}'
 IFS= read -r turn_request
 printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn_canvas","status":"inProgress","items":[],"error":null}}}'
@@ -787,10 +685,10 @@ case "$tool_response" in *'"id":40'*) ;; *) printf '%s\n' '{"method":"error","pa
 case "$tool_response" in *'workspace_id'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"missing workspace state"}}}'; exit 32 ;; esac
 case "$tool_response" in *'node_count'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"missing graph state"}}}'; exit 32 ;; esac
 case "$tool_response" in *'"success":true'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"tool response not successful"}}}'; exit 32 ;; esac
-printf '%s\n' '{"id":41,"method":"item/tool/call","params":{"threadId":"thr_canvas","turnId":"turn_canvas","callId":"call_2","namespace":"canvas","tool":"submit_proposal","arguments":{"base_version_id":"ver_1","kind":"modify","title":"Shorter video","summary":"Set duration to three seconds.","ops":[{"op":"set_param","id":"video","key":"duration_sec","prev":5,"value":3}]}}}'
-IFS= read -r proposal_response
-case "$proposal_response" in *'"id":41'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"missing proposal response id"}}}'; exit 33 ;; esac
-case "$proposal_response" in *'"success":true'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"proposal was not captured"}}}'; exit 33 ;; esac
+printf '%s\n' '{"id":41,"method":"item/tool/call","params":{"threadId":"thr_canvas","turnId":"turn_canvas","callId":"call_2","namespace":"canvas","tool":"submit_intent","arguments":{"intentVersion":"1","topology":"linear","stages":[{"stageId":"s1","capabilityId":"text_to_video","inputFrom":[],"params":{"prompt":"clean product shot","duration_sec":3}}],"outputStageIds":["s1"]}}}'
+IFS= read -r intent_response
+case "$intent_response" in *'"id":41'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"missing intent response id"}}}'; exit 33 ;; esac
+case "$intent_response" in *'"success":true'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"intent was not captured"}}}'; exit 33 ;; esac
 printf '%s\n' '{"method":"item/completed","params":{"threadId":"thr_canvas","turnId":"turn_canvas","item":{"type":"dynamicToolCall","tool":"canvas.get_state","status":"completed","success":true}}}'
 printf '%s\n' '{"method":"turn/completed","params":{"turn":{"id":"turn_canvas","status":"completed","items":[],"error":null}}}'
 "#,
@@ -800,51 +698,24 @@ printf '%s\n' '{"method":"turn/completed","params":{"turn":{"id":"turn_canvas","
     permissions.set_mode(0o755);
     fs::set_permissions(&program, permissions).expect("executable");
 
-    let proposal = AgentService::new(
+    let intent = AgentService::new(
         crate::CodexAppServerRuntime::new(program),
         EventBus::new(16),
     )
-    .propose_graph_change(request(&dir))
+    .propose_intent(request(&dir))
     .await
-    .expect("canvas tool proposal");
+    .expect("canvas tool intent");
 
-    assert_eq!(proposal.proposal.title, "Shorter video");
+    assert_eq!(intent.intent.stages[0].capability_id, "text_to_video");
     assert!(
-        proposal
+        intent
             .agent_logs
             .iter()
             .any(|log| log.text == "Calling tool: canvas.get_state")
     );
-    let identity = proposal.runtime_identity.expect("runtime identity");
+    let identity = intent.runtime_identity.expect("runtime identity");
     assert_eq!(identity.thread_id, "thr_canvas");
     assert_eq!(identity.turn_id, "turn_canvas");
-}
-
-fn write_valid_proposal(session: &AgentSession) {
-    write_proposal(
-        session,
-        json!({
-            "base_version_id": "ver_1",
-            "kind": "modify",
-            "title": "Shorter video",
-            "summary": "Set duration to three seconds.",
-            "ops": [{
-                "op": "set_param",
-                "id": "video",
-                "key": "duration_sec",
-                "prev": 5,
-                "value": 3
-            }]
-        }),
-    );
-}
-
-fn write_proposal(session: &AgentSession, value: Value) {
-    fs::write(
-        session.out_dir.join("proposal.json"),
-        serde_json::to_vec(&value).expect("proposal json"),
-    )
-    .expect("write proposal");
 }
 
 #[derive(Clone, Default)]
@@ -854,15 +725,15 @@ struct FakeRuntime {
 }
 
 impl FakeRuntime {
-    fn proposal() -> Self {
+    fn intent() -> Self {
         Self {
             events: Arc::new(Mutex::new(VecDeque::from([
                 RuntimeEvent::Status {
-                    message: "drafting proposal".to_owned(),
+                    message: "drafting intent".to_owned(),
                 },
                 RuntimeEvent::Finished,
             ]))),
-            output: FakeOutput::Proposal,
+            output: FakeOutput::Intent,
         }
     }
 
@@ -894,7 +765,7 @@ impl FakeRuntime {
 #[derive(Clone, Copy, Default)]
 enum FakeOutput {
     #[default]
-    Proposal,
+    Intent,
     Reply,
     Route(TurnMode),
 }
@@ -919,7 +790,7 @@ impl AgentRuntime for FakeRuntime {
             .set_identity("thr_fake".to_owned(), "turn_fake".to_owned())
             .await;
         match self.output {
-            FakeOutput::Proposal => write_valid_proposal_to_path(&handle.out_dir),
+            FakeOutput::Intent => write_valid_intent_to_path(&handle.out_dir),
             FakeOutput::Reply => write_reply_to_path(&handle.out_dir),
             FakeOutput::Route(mode) => write_route_to_path(&handle.out_dir, mode),
         }
@@ -970,21 +841,19 @@ impl AgentRuntime for HangingRuntime {
     }
 }
 
-fn write_valid_proposal_to_path(out_dir: &Path) -> RuntimeResult<()> {
+fn write_valid_intent_to_path(out_dir: &Path) -> RuntimeResult<()> {
     fs::write(
-        out_dir.join("proposal.json"),
+        out_dir.join("intent.json"),
         serde_json::to_vec(&json!({
-            "base_version_id": "ver_1",
-            "kind": "modify",
-            "title": "Shorter video",
-            "summary": "Set duration to three seconds.",
-            "ops": [{
-                "op": "set_param",
-                "id": "video",
-                "key": "duration_sec",
-                "prev": 5,
-                "value": 3
-            }]
+            "intentVersion": "1",
+            "topology": "linear",
+            "stages": [{
+                "stageId": "s1",
+                "capabilityId": "text_to_video",
+                "inputFrom": [],
+                "params": { "prompt": "clean product shot", "duration_sec": 3 }
+            }],
+            "outputStageIds": ["s1"]
         }))
         .map_err(|err| RuntimeError::Failed(err.to_string()))?,
     )
@@ -1108,8 +977,7 @@ fn gh130_intent_contract_accepts_valid_intent() {
 #[test]
 fn intent_prompt_prefers_the_bounded_submit_intent_tool() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let mut req = request(&dir);
-    req.use_intent_contract = true;
+    let req = request(&dir);
 
     let session = create_session_contract(&req).expect("session");
     let ctx = fs::read_to_string(session.ctx_dir.join("instructions.md")).expect("ctx");
@@ -1117,7 +985,6 @@ fn intent_prompt_prefers_the_bounded_submit_intent_tool() {
     assert_eq!(session.output_contract, OutputContract::IntentJson);
     assert!(ctx.contains("canvas.submit_intent"));
     assert!(ctx.contains("compiler materializes the corresponding input node"));
-    assert!(!ctx.contains("canvas.submit_proposal"));
 }
 
 #[test]

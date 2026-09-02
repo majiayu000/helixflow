@@ -22,9 +22,8 @@ pub use app_server_runtime::{CodexAppServerRuntime, CodexBackendRuntime};
 pub use canvas_ops::{CanvasGateState, CanvasOpsContext, CanvasOpsContract, CanvasSelection};
 pub use contract::{
     AgentLogEntry, AgentRuntimeIdentity, RunRequestAction, RunRequestOutput, ValidatedAgentIntent,
-    ValidatedAgentProposal, ValidatedAgentReply, ValidatedRoute, ValidatedRunRequest,
-    read_validated_intent, read_validated_proposal, read_validated_reply, read_validated_route,
-    read_validated_run_request,
+    ValidatedAgentReply, ValidatedRoute, ValidatedRunRequest, read_validated_intent,
+    read_validated_reply, read_validated_route, read_validated_run_request,
 };
 pub use prompt_stack::{
     PromptSection, PromptSectionKey, PromptStack, PromptStackMetadata, build_prompt_stack,
@@ -78,10 +77,6 @@ pub struct AgentSessionRequest {
     pub mode: TurnMode,
     pub skill: AgentSkill,
     pub canvas_context: Option<CanvasOpsContext>,
-    /// GH130 T6: graph-editing turns request the IntentPlan contract
-    /// (`out/intent.json`) instead of low-level proposals. Rollback path:
-    /// the server flips this off via HELIXFLOW_AGENT_INTENT_CONTRACT=0.
-    pub use_intent_contract: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -162,7 +157,7 @@ pub fn create_session_contract(request: &AgentSessionRequest) -> AgentResult<Age
                 "message": request.user_message,
                 "mode": request.mode,
                 "skill": request.skill,
-                "output_contract": request.mode.output_contract_with(request.use_intent_contract)
+                "output_contract": request.mode.output_contract()
             })
         ),
     )?;
@@ -175,9 +170,7 @@ pub fn create_session_contract(request: &AgentSessionRequest) -> AgentResult<Age
         out_dir,
         base_version_id: request.base_version_id.clone(),
         mode: request.mode,
-        output_contract: request
-            .mode
-            .output_contract_with(request.use_intent_contract),
+        output_contract: request.mode.output_contract(),
         prompt_metadata,
         codex_thread_id: request.codex_thread_id.clone(),
         conversation_id: request.conversation_id.clone(),
@@ -231,9 +224,13 @@ fn node_library_skill() -> &'static str {
 fn selected_skill(skill: AgentSkill) -> &'static str {
     match skill {
         AgentSkill::Chat => "# Chat\nWrite a concise assistant reply to out/reply.json.\n",
-        AgentSkill::CreateWorkflow => "# Create Workflow\nCreate a valid graph proposal.\n",
-        AgentSkill::ModifyWorkflow => "# Modify Workflow\nMake the smallest valid proposal.\n",
-        AgentSkill::FixError => "# Fix Error\nPropose the smallest graph fix.\n",
+        AgentSkill::CreateWorkflow => {
+            "# Create Workflow\nDescribe the workflow as a valid IntentPlan.\n"
+        }
+        AgentSkill::ModifyWorkflow => {
+            "# Modify Workflow\nDescribe the smallest valid IntentPlan change.\n"
+        }
+        AgentSkill::FixError => "# Fix Error\nDescribe the smallest graph fix as an IntentPlan.\n",
         AgentSkill::RunRequest => {
             "# Run Request\nWrite a backend run request to out/run_request.json.\n"
         }
@@ -267,7 +264,7 @@ fn read_output_file(out_dir: &Path, output_path: &Path) -> AgentResult<Vec<u8>> 
     if output_type.is_symlink() || !output_type.is_file() {
         return Err(AgentError::InvalidOutputFile {
             path: output_path.to_path_buf(),
-            reason: "proposal output is not a regular file".to_owned(),
+            reason: "agent output is not a regular file".to_owned(),
         });
     }
 
@@ -313,7 +310,7 @@ pub enum AgentError {
         actual: OutputContract,
     },
     InvalidPromptContext(String),
-    ProposalRetryExhausted {
+    IntentRetryExhausted {
         rounds: usize,
         last_error: String,
     },
@@ -347,9 +344,9 @@ impl fmt::Display for AgentError {
             Self::InvalidPromptContext(message) => {
                 write!(f, "invalid agent prompt context: {message}")
             }
-            Self::ProposalRetryExhausted { rounds, last_error } => write!(
+            Self::IntentRetryExhausted { rounds, last_error } => write!(
                 f,
-                "proposal retry exhausted after {rounds} rounds: {last_error}"
+                "intent retry exhausted after {rounds} rounds: {last_error}"
             ),
             Self::Runtime(message) => write!(f, "{message}"),
         }

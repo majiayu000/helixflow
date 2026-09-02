@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
+use crate::version_commit::{VersionCommitError, commit_version_candidate};
 use crate::version_file_consistency::{
     CandidateKind, VersionFileCandidate, VersionFileConsistencyError, read_version_graph,
 };
@@ -134,8 +135,26 @@ pub(crate) async fn apply_workspace_ops(
         .to_owned();
     let graph_hash = candidate.graph_hash().to_owned();
     let semantics_json = derive_semantics_json(&base, &current_graph, &edited_graph)?;
-    if let Err(error) = candidate.publish(&state.data_dir) {
-        if opaque_digest.is_some() && is_publish_collision(&error) {
+    let version_result = commit_version_candidate(
+        &mut candidate,
+        &state.data_dir,
+        &state.store,
+        state.store.create_version_after_without_pending_proposal(
+            NewVersion {
+                workspace_id: &workspace_id,
+                label: &label,
+                source: VersionSource::Manual,
+                graph_path: &graph_path,
+                graph_hash: &graph_hash,
+                parent_id: Some(&input.base_version_id),
+                semantics_json: semantics_json.as_deref(),
+            },
+            &input.base_version_id,
+        ),
+    )
+    .await;
+    if let Err(VersionCommitError::Consistency(error)) = &version_result {
+        if opaque_digest.is_some() && is_publish_collision(error) {
             if accepted_idempotent_version(
                 &state,
                 &workspace_id,
@@ -151,30 +170,11 @@ pub(crate) async fn apply_workspace_ops(
                 "idempotent ops candidate conflicts with existing state",
             ));
         }
-        return Err(candidate_error(error));
     }
-    let version_result = state
-        .store
-        .create_version_after_without_pending_proposal(
-            NewVersion {
-                workspace_id: &workspace_id,
-                label: &label,
-                source: VersionSource::Manual,
-                graph_path: &graph_path,
-                graph_hash: &graph_hash,
-                parent_id: Some(&input.base_version_id),
-                semantics_json: semantics_json.as_deref(),
-            },
-            &input.base_version_id,
-        )
-        .await;
 
     match version_result {
-        Ok(_) => {
-            candidate.mark_committed().map_err(candidate_error)?;
-            Ok(Json(workspace_state_value(&state, &workspace_id).await?))
-        }
-        Err(store_error) => Err(cleanup_ops_candidate(&state, &mut candidate, store_error).await),
+        Ok(_) => Ok(Json(workspace_state_value(&state, &workspace_id).await?)),
+        Err(error) => Err(ops_commit_error(error)),
     }
 }
 
@@ -291,16 +291,12 @@ fn manual_op_to_proposal_op(
                 },
             })
         }
-        ManualOpRequest::MoveNode { id, pos } => {
-            ensure_non_empty("node id", &id)?;
-            ensure_finite_pos(pos)?;
-            Ok(ProposalOp::MoveNode { id, pos })
-        }
-        ManualOpRequest::ResizeNode { id, size } => {
-            ensure_non_empty("node id", &id)?;
-            ensure_finite_size(size)?;
-            Ok(ProposalOp::ResizeNode { id, size })
-        }
+        ManualOpRequest::MoveNode { id, pos } => Err(ApiError::bad_request(format!(
+            "move_node for `{id}` at {pos:?} must use the canvas snapshot endpoint"
+        ))),
+        ManualOpRequest::ResizeNode { id, size } => Err(ApiError::bad_request(format!(
+            "resize_node for `{id}` at {size:?} must use the canvas snapshot endpoint"
+        ))),
     }
 }
 
@@ -329,15 +325,6 @@ fn ensure_finite_pos(pos: [f32; 2]) -> Result<(), ApiError> {
     if pos.iter().any(|value| !value.is_finite()) {
         return Err(ApiError::bad_request(
             "node position must contain finite numbers",
-        ));
-    }
-    Ok(())
-}
-
-fn ensure_finite_size(size: [f32; 2]) -> Result<(), ApiError> {
-    if size.iter().any(|value| !value.is_finite()) || size[0] <= 0.0 || size[1] <= 0.0 {
-        return Err(ApiError::bad_request(
-            "node size must contain positive finite numbers",
         ));
     }
     Ok(())
@@ -446,19 +433,22 @@ fn is_publish_collision(error: &VersionFileConsistencyError) -> bool {
     )
 }
 
-async fn cleanup_ops_candidate(
-    state: &AppState,
-    candidate: &mut VersionFileCandidate,
-    store_error: StoreError,
-) -> ApiError {
-    match candidate.cleanup_after_store_error(&state.store).await {
-        Ok(_) => match store_error {
+fn ops_commit_error(error: VersionCommitError<StoreError>) -> ApiError {
+    match error {
+        VersionCommitError::Consistency(error) => candidate_error(error),
+        VersionCommitError::Store {
+            source,
+            cleanup: None,
+        } => match source {
             StoreError::VersionConflict { .. } | StoreError::PendingProposalConflict { .. } => {
                 ApiError::conflict("workspace changed while applying manual ops; refresh and retry")
             }
             error => ApiError::store(error),
         },
-        Err(cleanup_error) => ApiError::server_error(format!(
+        VersionCommitError::Store {
+            cleanup: Some(cleanup_error),
+            ..
+        } => ApiError::server_error(format!(
             "manual ops commit failed and candidate cleanup was deferred: {cleanup_error}"
         )),
     }

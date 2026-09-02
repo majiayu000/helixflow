@@ -1,7 +1,11 @@
 import { useCallback, useRef, type DragEvent } from 'react';
 import type { Connection, IsValidConnection } from '@xyflow/react';
-import type { ManualProposalInput, NodeDefinition, WorkbenchState } from '../../types';
-import { buildMoveNodeEditInput, buildResizeNodeEditInput } from '../../workbench-edit-session';
+import type {
+  CanvasSnapshotUpdate,
+  ManualProposalInput,
+  NodeDefinition,
+  WorkbenchState,
+} from '../../types';
 import {
   buildConnectionProposalInput,
   edgeToRemoveOp,
@@ -16,6 +20,7 @@ type FlowActionsInput = {
   edges: WorkbenchState['graph']['edges'];
   definitionByType: Map<string, NodeDefinition>;
   onCreateProposal?: (input: ManualProposalInput) => Promise<void>;
+  onSaveCanvasSnapshot?: (update: CanvasSnapshotUpdate) => Promise<void>;
   onMutationRejected: () => void;
   setStatus: (message: string | null) => void;
 };
@@ -23,6 +28,8 @@ type FlowActionsInput = {
 export function useFlowActions(input: FlowActionsInput) {
   const onCreateProposalRef = useRef(input.onCreateProposal);
   onCreateProposalRef.current = input.onCreateProposal;
+  const onSaveCanvasSnapshotRef = useRef(input.onSaveCanvasSnapshot);
+  onSaveCanvasSnapshotRef.current = input.onSaveCanvasSnapshot;
   const submit = useCallback(
     (proposal: ManualProposalInput | null, success: string) => {
       if (!proposal || !onCreateProposalRef.current) return;
@@ -31,6 +38,18 @@ export function useFlowActions(input: FlowActionsInput) {
         .catch((error) => {
           input.onMutationRejected();
           input.setStatus(error instanceof Error ? error.message : '画布编辑失败');
+        });
+    },
+    [input.onMutationRejected, input.setStatus],
+  );
+  const submitSnapshot = useCallback(
+    (update: CanvasSnapshotUpdate, success: string) => {
+      if (!onSaveCanvasSnapshotRef.current) return;
+      void onSaveCanvasSnapshotRef.current(update)
+        .then(() => input.setStatus(success))
+        .catch((error) => {
+          input.onMutationRejected();
+          input.setStatus(error instanceof Error ? error.message : '画布布局保存失败');
         });
     },
     [input.onMutationRejected, input.setStatus],
@@ -45,21 +64,20 @@ export function useFlowActions(input: FlowActionsInput) {
           return base && (base.position.x !== node.position.x || base.position.y !== node.position.y);
         })
         .map((node) => ({ id: node.id, x: node.position.x, y: node.position.y }));
-      submit(buildMoveNodeEditInput(input.versionId, positions), `已移动 ${positions.length} 个节点`);
+      if (positions.length > 0) {
+        submitSnapshot({ positions }, `已移动 ${positions.length} 个节点`);
+      }
     },
-    [input.nodes, input.versionId, submit],
+    [input.nodes, submitSnapshot],
   );
 
   const commitResize = useCallback(
     (nodeId: string, width: number, height: number) => {
       const base = input.nodes.find((node) => node.id === nodeId);
       if (base?.size?.width === width && base.size.height === height) return;
-      submit(
-        buildResizeNodeEditInput(input.versionId, [{ id: nodeId, width, height }]),
-        `已调整 ${nodeId} 尺寸`,
-      );
+      submitSnapshot({ sizes: [{ id: nodeId, width, height }] }, `已调整 ${nodeId} 尺寸`);
     },
-    [input.nodes, input.versionId, submit],
+    [input.nodes, submitSnapshot],
   );
 
   const connectionPorts = useCallback(

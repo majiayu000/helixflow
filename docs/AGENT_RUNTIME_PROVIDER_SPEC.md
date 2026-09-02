@@ -1,6 +1,8 @@
 # Agent Runtime Provider Spec
 
-Status: draft implementation spec
+Status: historical v1 implementation spec; the current Agent output and execution contract is
+defined by `../SPEC_WORKFLOW_ORCHESTRATOR_V2.zh.md`. Sections below remain design history unless
+they are compatible with that v2 contract.
 Date: 2026-06-23
 Issue: #19
 Related work: PR #18 proposes the companion prompt design.
@@ -51,8 +53,8 @@ Atlas must not be hardcoded as the product boundary. It can be the first real co
 2. User sends a chat request such as "做一个图生图 workflow".
 3. Backend classifies the turn as `CreateWorkflow`.
 4. Agent receives graph, node catalog, workflow backend catalog, runtime provider catalog, API connector catalog, and output contract.
-5. Agent writes `out/proposal.json`.
-6. Backend validates the proposal and atomically commits the applied proposal, immutable version, workspace current-version pointer, and `proposal_applied` message.
+5. Agent submits a high-level `IntentPlan` through `canvas.submit_intent` or writes `out/intent.json`.
+6. Backend validates and deterministically compiles the intent into proposal ops, then atomically commits the applied proposal, immutable version, workspace current-version pointer, and `proposal_applied` message.
 7. UI refreshes to the new graph version and keeps rollback available in history.
 
 ### 4.2 Existing Workflow Modification
@@ -60,8 +62,8 @@ Atlas must not be hardcoded as the product boundary. It can be the first real co
 1. User asks for a change such as "加一个 ControlNet" or "把分辨率改成 1024".
 2. Backend classifies the turn as `ModifyWorkflow`.
 3. Agent receives current graph and catalogs.
-4. Agent writes the smallest valid proposal diff.
-5. Backend validates and atomically applies the diff as a new immutable version; it does not create a run implicitly.
+4. Agent writes the smallest valid high-level intent; it does not emit node ids, edges, coordinates, binding ids, or low-level ops.
+5. Backend validates and compiles the intent, then atomically applies the generated ops as a new immutable version; it does not create a run implicitly.
 6. UI refreshes the graph and leaves detailed diff evidence in history/debug surfaces.
 
 ### 4.3 Run Request
@@ -113,7 +115,7 @@ Both automatic and user-confirmed starts use the same run service entrypoints.
 1. User asks "你是谁" or "这个工具能干嘛".
 2. Backend classifies the turn as `Chat`.
 3. Agent is still called.
-4. Prompt forbids ctx reads, filesystem reads, shell commands, graph mutation, and `proposal.json`.
+4. Prompt forbids unrelated filesystem reads, shell commands, graph mutation, and graph-edit outputs.
 5. Agent writes `out/reply.json`.
 6. UI shows one assistant chat bubble and no tool log group if no visible tools ran.
 
@@ -178,10 +180,9 @@ pub enum PromptSectionKey {
 ```rust
 pub enum OutputContract {
     ReplyJson,
-    ProposalJson,
-    ArtifactManifest,
-    ClarificationForm,
-    RunRequest,
+    IntentJson,
+    RunRequestJson,
+    RouteJson,
 }
 ```
 
@@ -272,21 +273,21 @@ Defines the current turn's behavior.
 `CreateWorkflow`:
 
 - read graph and catalogs;
-- design a valid graph from user intent;
-- write only `out/proposal.json`;
-- use catalog-backed nodes and capabilities only.
+- describe the requested workflow as an `IntentPlan`;
+- submit through `canvas.submit_intent` when available, otherwise write only `out/intent.json`;
+- use catalog-backed capabilities and models only; never emit node ids or bindings.
 
 `ModifyWorkflow`:
 
 - preserve existing graph by default;
-- make the smallest valid diff;
-- write only `out/proposal.json`.
+- make the smallest valid semantic change;
+- submit through `canvas.submit_intent` when available, otherwise write only `out/intent.json`.
 
 `DebugWorkflow`:
 
 - inspect graph plus run context;
-- write either `out/reply.json` or `out/proposal.json`;
-- include evidence in the summary.
+- describe the smallest repair as an `IntentPlan` through the same intent transport;
+- include evidence in intent assumptions without weakening validation.
 
 `RunRequest`:
 
@@ -447,8 +448,9 @@ agent_{id}/
     atoms/{atom_id}.md
   out/
     reply.json
-    proposal.json
-    artifact.json
+    intent.json
+    run_request.json
+    route.json
   transcript.jsonl
 ```
 

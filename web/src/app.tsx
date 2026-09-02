@@ -66,6 +66,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const confirmRun = useWorkbenchStore((store) => store.confirmRun);
   const holdRun = useWorkbenchStore((store) => store.holdRun);
   const appendManualEdit = useWorkbenchStore((store) => store.appendManualEdit);
+  const saveCanvasSnapshot = useWorkbenchStore((store) => store.saveCanvasSnapshot);
   const commitManualEdits = useWorkbenchStore((store) => store.commitManualEdits);
   const queueRun = useWorkbenchStore((store) => store.queueRun);
   const interruptRun = useWorkbenchStore((store) => store.interruptRun);
@@ -307,9 +308,11 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
                     <GraphCanvas
                 graph={previewState.graph}
                 canvasGraph={canvasGraph}
+                canvasViewport={canvas?.viewport}
                 comments={canvas?.comments ?? []}
                 providers={previewState.providers}
                 onCreateProposal={(input) => runAction(() => appendManualEdit(input), true)}
+                onSaveCanvasSnapshot={saveCanvasSnapshot}
                 onCommentOp={(input) => runAction(() => submitCanvasCommentOp(input), true)}
                 onPresenceChange={sendCanvasPresence}
                 onRequestNodeProposal={(nodeId) =>

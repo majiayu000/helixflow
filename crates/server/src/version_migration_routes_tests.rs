@@ -316,44 +316,14 @@ async fn dry_run_apply_and_lost_response_replay_use_server_truth() {
         .await
         .expect("sidecar-only version");
 
-    let layout: Value = client
-        .post(format!(
-            "http://{address}/api/workspaces/{}/versions/layout",
-            workspace.id
-        ))
-        .json(&json!({
-            "baseVersionId": sidecar_only.id,
-            "positions": [{"id": "image", "x": 12.0, "y": 34.0}],
-        }))
-        .send()
-        .await
-        .expect("layout")
-        .error_for_status()
-        .expect("layout status")
-        .json()
-        .await
-        .expect("layout json");
-    let layout_id = layout["workspace"]["versionId"]
-        .as_str()
-        .expect("layout version id")
-        .to_owned();
-    assert!(
-        store
-            .version(&layout_id)
-            .await
-            .expect("layout version")
-            .semantics_json
-            .is_some()
-    );
-
     let ops: Value = client
         .post(format!(
             "http://{address}/api/workspaces/{}/versions/ops",
             workspace.id
         ))
         .json(&json!({
-            "baseVersionId": layout_id,
-            "ops": [{"op": "move_node", "id": "image", "pos": [56.0, 78.0]}],
+            "baseVersionId": sidecar_only.id,
+            "ops": [{"op": "set_param", "id": "image", "key": "prompt", "value": "updated"}],
         }))
         .send()
         .await
@@ -500,7 +470,6 @@ async fn ordinary_agent_proposal_preserves_sidecar_only_semantics() {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    use helixflow_agent::ValidatedAgentProposal;
     use helixflow_graph::{PreparedProposal, ProposalKind, ProposalState};
     use helixflow_run::EventBus;
     use helixflow_store::{NewVersion, Store, VersionSource};
@@ -550,21 +519,16 @@ async fn ordinary_agent_proposal_preserves_sidecar_only_semantics() {
         Arc::new(FailingWorkbenchAgent),
         data_dir.join("sessions"),
     );
-    let proposal = ValidatedAgentProposal {
-        session_id: "agent-v2".to_owned(),
-        runtime_identity: None,
-        agent_logs: Vec::new(),
-        proposal: PreparedProposal {
-            base_version_id: source.id,
-            kind: ProposalKind::Modify,
-            title: "Cosmetic".to_owned(),
-            summary: "Keep semantics".to_owned(),
-            ops: Vec::new(),
-            diff_summary: Vec::new(),
-            preview_graph: graph,
-            state: ProposalState::Pending,
-            message_id: None,
-        },
+    let proposal = PreparedProposal {
+        base_version_id: source.id,
+        kind: ProposalKind::Modify,
+        title: "Cosmetic".to_owned(),
+        summary: "Keep semantics".to_owned(),
+        ops: Vec::new(),
+        diff_summary: Vec::new(),
+        preview_graph: graph,
+        state: ProposalState::Pending,
+        message_id: None,
     };
 
     persist_and_apply_agent_proposal(&state, &workspace.id, &proposal, None)

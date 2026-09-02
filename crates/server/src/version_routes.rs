@@ -8,6 +8,7 @@ use serde_json::Value;
 
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
+use crate::version_commit::{VersionCommitError, commit_existing_version};
 use crate::version_file_consistency::read_version_graph;
 use crate::version_semantics::derive_semantics_json;
 use crate::workspace_state::workspace_state_value;
@@ -126,22 +127,23 @@ async fn create_restore_version(
         RestoreAction::Undo => format!("Undo to {}", target.label),
         RestoreAction::Restore => format!("Restore {}", target.label),
     };
-    state
-        .store
-        .create_version_after(
-            NewVersion {
-                workspace_id: &workspace.id,
-                label: &label,
-                source: VersionSource::Restore,
-                graph_path: &target.graph_path,
-                graph_hash: &target.graph_hash,
-                parent_id: Some(&current.id),
-                semantics_json: semantics_json.as_deref(),
-            },
-            &current.id,
-        )
-        .await
-        .map_err(ApiError::store)
+    commit_existing_version(state.store.create_version_after(
+        NewVersion {
+            workspace_id: &workspace.id,
+            label: &label,
+            source: VersionSource::Restore,
+            graph_path: &target.graph_path,
+            graph_hash: &target.graph_hash,
+            parent_id: Some(&current.id),
+            semantics_json: semantics_json.as_deref(),
+        },
+        &current.id,
+    ))
+    .await
+    .map_err(|error| match error {
+        VersionCommitError::Store { source, .. } => ApiError::store(source),
+        VersionCommitError::Consistency(error) => ApiError::server_error(error.to_string()),
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -235,9 +237,7 @@ mod tests {
 
     use async_trait::async_trait;
     use axum::extract::{Path, State};
-    use helixflow_agent::{
-        AgentError, AgentSessionRequest, ValidatedAgentProposal, ValidatedAgentReply,
-    };
+    use helixflow_agent::{AgentError, AgentSessionRequest, ValidatedAgentReply};
     use helixflow_graph::{GraphEdge, GraphNode, WorkflowGraph};
     use helixflow_run::EventBus;
     use helixflow_store::{NewProposal, NewVersion, Store, VersionSource};
@@ -751,13 +751,6 @@ mod tests {
             &self,
             _request: AgentSessionRequest,
         ) -> Result<ValidatedAgentReply, AgentError> {
-            Err(AgentError::Runtime("noop agent".to_owned()))
-        }
-
-        async fn propose_graph_change(
-            &self,
-            _request: AgentSessionRequest,
-        ) -> Result<ValidatedAgentProposal, AgentError> {
             Err(AgentError::Runtime("noop agent".to_owned()))
         }
     }

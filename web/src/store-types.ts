@@ -4,7 +4,7 @@ import type {
   CanvasDocument,
   CanvasMessageContext,
   CanvasPresence,
-  LayoutPositionUpdate,
+  CanvasSnapshotUpdate,
   ManualEditSession,
   ManualProposalInput,
   RunEventEnvelope,
@@ -57,7 +57,7 @@ export type WorkbenchStore = {
   exportWorkflow: () => Promise<WorkflowGraph | null>;
   undoVersion: () => Promise<void>;
   restoreVersion: (versionId: string) => Promise<void>;
-  saveLayout: (positions: LayoutPositionUpdate[]) => Promise<void>;
+  saveCanvasSnapshot: (update: CanvasSnapshotUpdate) => Promise<void>;
   selectOutput: (outputId: string) => Promise<void>;
   acceptOutput: (outputId: string) => Promise<void>;
   rejectOutput: (outputId: string, rerun?: boolean) => Promise<void>;

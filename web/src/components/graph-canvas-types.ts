@@ -2,6 +2,8 @@ import type {
   CanvasComment,
   CanvasCommentOpInput,
   CanvasPresence,
+  CanvasSnapshotUpdate,
+  CanvasViewport,
   ManualProposalInput,
   WorkbenchState,
 } from '../types';
@@ -14,6 +16,7 @@ export type GraphCanvasProps = {
   versionId: string;
   graph: WorkbenchState['graph'];
   canvasGraph?: WorkbenchState['graph'];
+  canvasViewport?: CanvasViewport | null;
   comments?: CanvasComment[];
   pendingProposal: WorkbenchState['pendingProposal'];
   presenceByActor?: Record<string, CanvasPresence>;
@@ -22,6 +25,7 @@ export type GraphCanvasProps = {
   providers?: WorkbenchState['providers'];
   onCommentOp?: (input: CanvasCommentOpInput) => Promise<void>;
   onCreateProposal?: (input: ManualProposalInput) => Promise<void>;
+  onSaveCanvasSnapshot?: (update: CanvasSnapshotUpdate) => Promise<void>;
   onPresenceChange?: (presence: CanvasPresence) => void | Promise<void>;
   onRequestNodeProposal?: (nodeId: string) => Promise<void>;
   onSelectOutput?: (outputId: string) => void;

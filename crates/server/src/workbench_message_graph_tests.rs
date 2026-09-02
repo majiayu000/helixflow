@@ -4,9 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use axum::extract::{Path, State};
-use helixflow_agent::{
-    AgentError, AgentSessionRequest, ValidatedAgentProposal, ValidatedAgentReply,
-};
+use helixflow_agent::{AgentError, AgentSessionRequest, ValidatedAgentIntent, ValidatedAgentReply};
 use helixflow_graph::{GraphNode, WorkflowGraph};
 use helixflow_run::EventBus;
 use helixflow_store::{NewVersion, Store, VersionSource};
@@ -366,14 +364,14 @@ impl WorkbenchAgent for RecordingAgent {
         })
     }
 
-    async fn propose_graph_change(
+    async fn propose_intent(
         &self,
         request: AgentSessionRequest,
-    ) -> Result<ValidatedAgentProposal, AgentError> {
+    ) -> Result<ValidatedAgentIntent, AgentError> {
         self.invocations.fetch_add(1, Ordering::SeqCst);
         self.graphs.lock().await.push(request.graph);
         Err(AgentError::Runtime(
-            "proposal path is not expected in graph ingress tests".to_owned(),
+            "intent result is not expected in graph ingress tests".to_owned(),
         ))
     }
 }

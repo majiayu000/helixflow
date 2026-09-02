@@ -30,8 +30,10 @@ fn capabilities() -> Vec<CapabilityDefinition> {
     vec![
         capability(
             "prompt_writer",
+            "llm.prompt_writer",
             MediaCategory::Text,
             "Prompt Writer",
+            "Drafts a generation prompt from source text.",
             vec![port("text", PortType::Text, true)],
             vec![port("prompt", PortType::Text, true)],
             schema(
@@ -44,8 +46,10 @@ fn capabilities() -> Vec<CapabilityDefinition> {
         ),
         capability(
             "text_to_image",
+            "image.generate",
             MediaCategory::Image,
             "Text To Image",
+            "Generates an image artifact from a prompt.",
             vec![port("prompt", PortType::Text, true)],
             vec![port("image", PortType::Image, true)],
             schema(
@@ -62,8 +66,10 @@ fn capabilities() -> Vec<CapabilityDefinition> {
         ),
         capability(
             "image_edit",
+            "image.edit",
             MediaCategory::Image,
             "Image Edit",
+            "Edits an image artifact from a prompt.",
             vec![
                 port("image", PortType::Image, true),
                 port("prompt", PortType::Text, true),
@@ -73,8 +79,10 @@ fn capabilities() -> Vec<CapabilityDefinition> {
         ),
         capability(
             "text_to_video",
+            "video.text_to_video",
             MediaCategory::Video,
             "Text To Video",
+            "Generates a video artifact from a prompt.",
             vec![port("prompt", PortType::Text, true)],
             vec![port("video", PortType::Video, true)],
             schema(
@@ -92,8 +100,10 @@ fn capabilities() -> Vec<CapabilityDefinition> {
         ),
         capability(
             "image_to_video",
+            "video.image_to_video",
             MediaCategory::Video,
             "Image To Video",
+            "Animates an input image into a video artifact.",
             vec![
                 port("image", PortType::Image, true),
                 port("prompt", PortType::Text, false),
@@ -103,14 +113,24 @@ fn capabilities() -> Vec<CapabilityDefinition> {
                 &["duration_sec"],
                 [
                     ("prompt", ParamSpec::string()),
-                    ("duration_sec", ParamSpec::integer_range(1, 10)),
+                    ("duration_sec", ParamSpec::integer_range(4, 12)),
+                    (
+                        "aspect_ratio",
+                        ParamSpec::string_enum(&["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]),
+                    ),
+                    ("resolution", ParamSpec::string_enum(&["720p", "480p"])),
+                    ("generate_audio", ParamSpec::boolean()),
+                    ("camera_fixed", ParamSpec::boolean()),
+                    ("seed", ParamSpec::integer()),
                 ],
             ),
         ),
         capability(
             "video_extend",
+            "video.extend",
             MediaCategory::Video,
             "Video Extend",
+            "Extends an existing video artifact.",
             vec![port("video", PortType::Video, true)],
             vec![port("video", PortType::Video, true)],
             schema(
@@ -120,24 +140,30 @@ fn capabilities() -> Vec<CapabilityDefinition> {
         ),
         capability(
             "upscale_image",
+            "image.upscale",
             MediaCategory::Image,
             "Upscale Image",
+            "Upscales an image artifact.",
             vec![port("image", PortType::Image, true)],
             vec![port("image", PortType::Image, true)],
             schema(&[], [("scale", ParamSpec::integer_range(2, 4))]),
         ),
         capability(
             "upscale_video",
+            "video.upscale",
             MediaCategory::Video,
             "Upscale Video",
+            "Upscales a video artifact.",
             vec![port("video", PortType::Video, true)],
             vec![port("video", PortType::Video, true)],
             schema(&[], [("scale", ParamSpec::integer_range(2, 4))]),
         ),
         capability(
             "image_analyze",
+            "image.analyze",
             MediaCategory::Text,
             "Image Analyze",
+            "Analyzes an image and returns text.",
             vec![port("image", PortType::Image, true)],
             vec![port("text", PortType::Text, true)],
             schema(&[], [("prompt", ParamSpec::string())]),
@@ -360,16 +386,20 @@ fn default_bindings() -> BTreeMap<String, String> {
 
 fn capability(
     capability_id: &str,
+    node_type: &str,
     category: MediaCategory,
     display_name: &str,
+    description: &str,
     inputs: Vec<PortDefinition>,
     outputs: Vec<PortDefinition>,
     params_schema: ParamsSchema,
 ) -> CapabilityDefinition {
     CapabilityDefinition {
         capability_id: capability_id.to_owned(),
+        node_type: node_type.to_owned(),
         category,
         display_name: display_name.to_owned(),
+        description: description.to_owned(),
         inputs,
         outputs,
         params_schema,

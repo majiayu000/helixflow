@@ -1,6 +1,6 @@
 # AI Workflow Orchestrator Spec
 
-Status: v1 draft  
+Status: historical v1 draft; superseded by `SPEC_WORKFLOW_ORCHESTRATOR_V2.zh.md`
 Date: 2026-06-12  
 Target: local-first node workflow orchestration app  
 Frontend: React 19 + TypeScript + Vite  
@@ -1221,7 +1221,7 @@ Optional later:
 - WebSocket event ordering.
 - Proposal apply -> version committed.
 - Run execution with mock provider.
-- Failed node -> Agent fix proposal with mock runtime.
+- Explicit user debug request -> Agent fix proposal with mock runtime.
 - Upload -> artifact flow.
 
 ### 23.3 E2E Tests
@@ -1304,7 +1304,7 @@ Scope:
 
 Acceptance:
 
-- Failed provider run triggers an Agent fix proposal.
+- Failed provider run never mutates the graph automatically; users can request a debug proposal.
 - Agent requested sweep requires confirmation.
 - Sweep produces multiple outputs and selected recommendation.
 

@@ -24,7 +24,6 @@ async fn invalid_threshold_fails_before_creating_run() {
             mode: TurnMode::RunRequest,
             skill: TurnMode::RunRequest.agent_skill(),
             canvas_context: None,
-            use_intent_contract: false,
         },
         Some("not-a-number"),
     )

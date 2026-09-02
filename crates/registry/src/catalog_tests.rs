@@ -102,6 +102,20 @@ fn seed_catalog_covers_all_v2_capabilities() {
 }
 
 #[test]
+fn canonical_capabilities_have_unique_node_types() {
+    let catalog = builtin_catalog();
+    let mut node_types = std::collections::BTreeSet::new();
+    for capability in &catalog.capabilities {
+        assert!(!capability.node_type.trim().is_empty());
+        assert!(
+            node_types.insert(capability.node_type.as_str()),
+            "duplicate node type {}",
+            capability.node_type
+        );
+    }
+}
+
+#[test]
 fn default_bindings_reference_existing_enabled_bindings() {
     let catalog = builtin_catalog();
     assert!(!catalog.default_bindings.is_empty());

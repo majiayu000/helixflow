@@ -1,9 +1,7 @@
 import type {
-  LayoutPositionUpdate,
   ManualEditOp,
   ManualEditSession,
   ManualProposalInput,
-  NodeSizeUpdate,
   WorkbenchState,
   WorkflowGraph,
 } from './types';
@@ -86,38 +84,6 @@ export function manualEditSummary(session: ManualEditSession | null, limit = 6):
   const rows = session.ops.map(manualEditOpSummary);
   if (rows.length <= limit) return rows;
   return [...rows.slice(0, limit), `+${rows.length - limit} more changes`];
-}
-
-export function buildMoveNodeEditInput(
-  baseVersionId: string,
-  positions: LayoutPositionUpdate[],
-): ManualProposalInput | null {
-  if (positions.length === 0) return null;
-  return {
-    baseVersionId,
-    label: `Move ${positions.length} node${positions.length === 1 ? '' : 's'}`,
-    ops: positions.map((position) => ({
-      op: 'move_node' as const,
-      id: position.id,
-      pos: [position.x, position.y],
-    })),
-  };
-}
-
-export function buildResizeNodeEditInput(
-  baseVersionId: string,
-  sizes: NodeSizeUpdate[],
-): ManualProposalInput | null {
-  if (sizes.length === 0) return null;
-  return {
-    baseVersionId,
-    label: `Resize ${sizes.length} node${sizes.length === 1 ? '' : 's'}`,
-    ops: sizes.map((size) => ({
-      op: 'resize_node' as const,
-      id: size.id,
-      size: [size.width, size.height],
-    })),
-  };
 }
 
 export function buildSetParamEditInput(

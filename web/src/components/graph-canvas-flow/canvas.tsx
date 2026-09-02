@@ -56,7 +56,16 @@ export function GraphCanvas(props: GraphCanvasProps) {
   const drawGraph = props.pendingProposal?.previewGraph ?? sourceGraph;
   const activeMode = props.pendingProposal ? 'review' : props.onCreateProposal ? 'edit' : 'view';
   const capabilities = canvasCapabilities(activeMode, Boolean(props.onCreateProposal));
-  const viewport = useFlowViewport(props.workspaceId);
+  const persistedView = props.canvasViewport
+    ? { x: props.canvasViewport.x, y: props.canvasViewport.y, z: props.canvasViewport.zoom }
+    : null;
+  const viewport = useFlowViewport(
+    props.workspaceId,
+    persistedView,
+    (view) => void props.onSaveCanvasSnapshot?.({
+      viewport: { x: view.x, y: view.y, zoom: view.z },
+    }),
+  );
   const catalogState = useCanvasCatalog();
   const baseComparableById = useMemo(
     () => buildComparableNodeMap(sourceGraph.nodes),
@@ -72,6 +81,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
     edges: drawGraph.edges,
     definitionByType: catalogState.definitionByType,
     onCreateProposal: props.onCreateProposal,
+    onSaveCanvasSnapshot: props.onSaveCanvasSnapshot,
     onMutationRejected: resetRejectedMutation,
     setStatus: setEditStatus,
   });

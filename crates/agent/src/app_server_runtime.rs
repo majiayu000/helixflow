@@ -384,26 +384,7 @@ fn helixflow_dynamic_tools(
             "additionalProperties": false
         }
     })];
-    if output_contract == Some(crate::OutputContract::ProposalJson) {
-        tools.push(json!({
-            "type": "function",
-            "name": "submit_proposal",
-            "description": "Submit bounded graph operations for backend validation. This does not apply the proposal.",
-            "inputSchema": {
-                "type": "object",
-                "required": ["base_version_id", "kind", "title", "summary", "ops"],
-                "properties": {
-                    "base_version_id": { "type": "string" },
-                    "kind": { "type": "string", "enum": ["create", "modify", "fix", "sweep"] },
-                    "title": { "type": "string" },
-                    "summary": { "type": "string" },
-                    "ops": { "type": "array", "items": { "type": "object" } },
-                    "message_id": { "type": "string" }
-                },
-                "additionalProperties": false
-            }
-        }));
-    } else if output_contract == Some(crate::OutputContract::IntentJson) {
+    if output_contract == Some(crate::OutputContract::IntentJson) {
         let capability_ids = catalog_capability_ids(root_dir);
         tools.push(json!({
             "type": "function",
@@ -532,11 +513,6 @@ async fn respond_to_dynamic_tool_call<W: AsyncWrite + Unpin>(
     let tool = params.get("tool").and_then(Value::as_str);
     let result = match (matches_turn, namespace, tool) {
         (true, Some("canvas"), Some("get_state")) => canvas_state_tool_result(root_dir).await,
-        (true, Some("canvas"), Some("submit_proposal"))
-            if output_contract == Some(crate::OutputContract::ProposalJson) =>
-        {
-            submit_proposal_tool_result(out_dir, &params["arguments"]).await
-        }
         (true, Some("canvas"), Some("submit_intent"))
             if output_contract == Some(crate::OutputContract::IntentJson) =>
         {
@@ -560,17 +536,6 @@ async fn respond_to_dynamic_tool_call<W: AsyncWrite + Unpin>(
         _ => failed_tool_result("Unsupported or stale Helixflow dynamic tool call."),
     };
     write_rpc(writer, &json!({ "id": request_id, "result": result })).await
-}
-
-async fn submit_proposal_tool_result(out_dir: &std::path::Path, arguments: &Value) -> Value {
-    capture_json_output(
-        out_dir,
-        arguments,
-        "proposal.json",
-        "Proposal",
-        "Proposal captured for backend validation; it has not been applied.",
-    )
-    .await
 }
 
 async fn submit_intent_tool_result(out_dir: &std::path::Path, arguments: &Value) -> Value {

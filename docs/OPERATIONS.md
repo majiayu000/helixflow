@@ -88,7 +88,6 @@ traffic after every restart.
 
 - `HELIXFLOW_MAX_PARALLEL_STEPS`: integer 1–1024; invalid values fail startup.
 - `HELIXFLOW_RUN_MAX_RETRIES`: integer 0–10; default 1.
-- `HELIXFLOW_RUN_MAX_FIX_ATTEMPTS`: integer 0–10 when Agent fix is enabled.
 - `HELIXFLOW_MAX_UPLOAD_BYTES`: integer 1–1073741824; default 16 MiB;
   invalid values fail startup.
 - Provider polling intervals and timeouts are milliseconds/seconds respectively

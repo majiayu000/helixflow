@@ -154,7 +154,7 @@ fn candidate_publishes_canonical_graph_with_hash_and_no_temp() {
     let dir = tempfile::tempdir().expect("temp dir");
     let graph = sample_graph();
     let mut candidate =
-        VersionFileCandidate::from_graph("ws_candidate", CandidateKind::Layout, &graph)
+        VersionFileCandidate::from_graph("ws_candidate", CandidateKind::Ops, &graph)
             .expect("candidate");
     let relative_path = candidate.relative_path().to_path_buf();
     let expected_bytes = serde_json::to_vec(&graph).expect("canonical graph bytes");
@@ -167,7 +167,7 @@ fn candidate_publishes_canonical_graph_with_hash_and_no_temp() {
     );
     assert_eq!(candidate.graph_hash(), graph_hash(&expected_bytes));
     assert_eq!(candidate.workspace_id(), "ws_candidate");
-    assert_eq!(candidate.kind(), CandidateKind::Layout);
+    assert_eq!(candidate.kind(), CandidateKind::Ops);
     assert_eq!(graph_directory_entries(dir.path(), "ws_candidate"), 1);
     candidate.mark_committed().expect("mark committed");
 }
@@ -460,7 +460,7 @@ async fn cleanup_commit_then_error_preserves_exact_version_reference() {
         .await
         .expect("create workspace");
     let mut candidate =
-        VersionFileCandidate::from_graph(&workspace.id, CandidateKind::Layout, &sample_graph())
+        VersionFileCandidate::from_graph(&workspace.id, CandidateKind::Ops, &sample_graph())
             .expect("candidate");
     candidate.publish(dir.path()).expect("publish candidate");
     let version = store
@@ -669,7 +669,7 @@ async fn cleanup_candidate_set_continues_and_preserves_references_after_earlier_
         .expect("later candidate"),
     );
     set.push(
-        VersionFileCandidate::from_graph(&workspace.id, CandidateKind::Layout, &sample_graph())
+        VersionFileCandidate::from_graph(&workspace.id, CandidateKind::Ops, &sample_graph())
             .expect("referenced candidate"),
     );
     set.publish_all(dir.path()).expect("publish set");

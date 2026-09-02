@@ -1,12 +1,14 @@
 //! Built-in node definitions and construction helpers (#147 split;
 //! definitions are byte-identical to the pre-split registry).
 
+use crate::catalog::{BindingAvailability, CapabilityDefinition, MediaCategory};
+use crate::catalog_seed::builtin_catalog;
 use crate::types::{
     EstimatedCostRef, NodeDefinition, ParamSpec, ParamsSchema, PortDefinition, PortType,
 };
 
 pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
-    vec![
+    let mut definitions = vec![
         node(NodeSpec {
             node_type: "input.text",
             title: "Text Input",
@@ -30,94 +32,6 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
             params_schema: schema(&["storage_uri"], [("storage_uri", ParamSpec::string())]),
         }),
         node(NodeSpec {
-            node_type: "llm.prompt_writer",
-            title: "Prompt Writer",
-            category: "text",
-            provider: None,
-            capability: Some("prompt_writer"),
-            description: "Drafts a generation prompt from source text.",
-            inputs: vec![port("text", PortType::Text, true)],
-            outputs: vec![port("prompt", PortType::Text, true)],
-            params_schema: schema(
-                &["style"],
-                [(
-                    "style",
-                    ParamSpec::string_enum(&["cinematic", "product", "plain"]),
-                )],
-            ),
-        }),
-        node(NodeSpec {
-            node_type: "image.generate",
-            title: "Generate Image",
-            category: "image",
-            provider: None,
-            capability: Some("text_to_image"),
-            description: "Generates an image artifact from a prompt.",
-            inputs: vec![port("prompt", PortType::Text, true)],
-            outputs: vec![port("image", PortType::Image, true)],
-            params_schema: schema(
-                &["prompt", "aspect_ratio"],
-                [
-                    ("prompt", ParamSpec::string()),
-                    (
-                        "aspect_ratio",
-                        ParamSpec::string_enum(&["1:1", "9:16", "16:9"]),
-                    ),
-                    ("seed", ParamSpec::integer()),
-                ],
-            ),
-        }),
-        node(NodeSpec {
-            node_type: "video.text_to_video",
-            title: "Text To Video",
-            category: "video",
-            provider: None,
-            capability: Some("text_to_video"),
-            description: "Generates a video artifact from a prompt.",
-            inputs: vec![port("prompt", PortType::Text, true)],
-            outputs: vec![port("video", PortType::Video, true)],
-            params_schema: schema(
-                &["prompt", "duration_sec", "aspect_ratio"],
-                [
-                    ("prompt", ParamSpec::string()),
-                    ("duration_sec", ParamSpec::integer_range(1, 10)),
-                    (
-                        "aspect_ratio",
-                        ParamSpec::string_enum(&["1:1", "9:16", "16:9"]),
-                    ),
-                    ("seed", ParamSpec::integer()),
-                ],
-            ),
-        }),
-        node(NodeSpec {
-            node_type: "video.image_to_video",
-            title: "Image To Video",
-            category: "video",
-            provider: None,
-            capability: Some("image_to_video"),
-            description: "Animates an input image into a video artifact.",
-            inputs: vec![
-                port("image", PortType::Image, true),
-                port("prompt", PortType::Text, false),
-            ],
-            outputs: vec![port("video", PortType::Video, true)],
-            params_schema: schema(
-                &["duration_sec"],
-                [
-                    ("prompt", ParamSpec::string()),
-                    ("duration_sec", ParamSpec::integer_range(4, 12)),
-                    (
-                        "aspect_ratio",
-                        ParamSpec::string_enum(&["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]),
-                    ),
-                    ("resolution", ParamSpec::string_enum(&["720p", "480p"])),
-                    ("generate_audio", ParamSpec::boolean()),
-                    ("camera_fixed", ParamSpec::boolean()),
-                    ("seed", ParamSpec::integer()),
-                ],
-            ),
-        }),
-        node(NodeSpec {
             node_type: "output.save",
             title: "Save Output",
             category: "output",
@@ -128,7 +42,43 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
             outputs: vec![],
             params_schema: schema::<0>(&[], []),
         }),
-    ]
+    ];
+
+    let catalog = builtin_catalog();
+    definitions.extend(catalog.capabilities.iter().filter_map(|capability| {
+        catalog
+            .bindings
+            .iter()
+            .any(|binding| {
+                binding.capability_id == capability.capability_id
+                    && binding.availability == BindingAvailability::Enabled
+            })
+            .then(|| capability_node(capability))
+    }));
+    definitions
+}
+
+fn capability_node(capability: &CapabilityDefinition) -> NodeDefinition {
+    NodeDefinition {
+        node_type: capability.node_type.clone(),
+        title: capability.display_name.clone(),
+        category: match capability.category {
+            MediaCategory::Text => "text",
+            MediaCategory::Image => "image",
+            MediaCategory::Video => "video",
+        }
+        .to_owned(),
+        provider: None,
+        capability: Some(capability.capability_id.clone()),
+        description: capability.description.clone(),
+        inputs: capability.inputs.clone(),
+        outputs: capability.outputs.clone(),
+        params_schema: capability.params_schema.clone(),
+        estimated_cost: Some(EstimatedCostRef {
+            unit: "call".to_owned(),
+            catalog_key: capability.capability_id.clone(),
+        }),
+    }
 }
 
 struct NodeSpec<'a> {

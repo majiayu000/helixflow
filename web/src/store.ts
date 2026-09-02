@@ -18,7 +18,6 @@ import {
   interruptWorkspaceAgent,
   queueWorkspaceRun,
   restoreWorkspaceVersion,
-  saveWorkspaceLayout,
   sendCanvasPresence as sendCanvasPresenceRequest,
   selectOutput as selectOutputRequest,
   acceptOutput as acceptOutputRequest,
@@ -43,11 +42,7 @@ import {
   messageTime,
   workflowGraphFromState,
 } from './store-model';
-import {
-  appendManualEditInput,
-  hasDirtyEdits,
-  manualEditInputFromSession,
-} from './workbench-edit-session';
+import { appendManualEditInput, hasDirtyEdits } from './workbench-edit-session';
 import { isAbortError, WorkspaceRequestScope } from './workspace-request-scope';
 import {
   fetchWorkspaceSnapshot,
@@ -56,8 +51,8 @@ import {
   WorkspaceSnapshotCoordinator,
 } from './workspace-snapshot';
 import type { WorkbenchStore } from './store-types';
-import type { ManualEditSession } from './types';
 import { createUploadImageAction } from './store-upload';
+import { StorePersistence } from './store-persistence';
 import { WorkspaceActionGuard, WorkspaceChangedError } from './workspace-action-guard';
 
 export { applyRunEvent } from './store-events';
@@ -66,85 +61,14 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
   const requestScope = new WorkspaceRequestScope();
   const presenceExpiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const actionGuard = new WorkspaceActionGuard(requestScope);
-  let persistChain = Promise.resolve();
-  const enqueuePersist = (work: () => Promise<void>): Promise<void> => {
-    const run = persistChain.then(work, work);
-    persistChain = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return run;
-  };
-  const persistCapturedSession = async (
-    workspaceId: string,
-    editSession: ManualEditSession,
-  ) => {
-    actionGuard.assertActive(workspaceId, 'saving canvas edits');
-    const workspaceState = get().state;
-    if (!workspaceState || workspaceState.workspace.id !== workspaceId) {
-      actionGuard.fail('workspace changed while saving canvas edits');
-      throw new WorkspaceChangedError('workspace changed while saving canvas edits');
-    }
-    if (editSession.baseVersionId !== workspaceState.workspace.versionId) {
-      const message = '画布已更新到新版本，请再试一次刚才的改动。';
-      set((current) => ({
-        editSession: current.state?.workspace.id === workspaceId ? null : current.editSession,
-        state: current.state?.workspace.id === workspaceId
-          ? appendSystemError(current.state, message)
-          : current.state,
-      }));
-      throw new Error(message);
-    }
-
-    try {
-      const next = await actionGuard.run(workspaceId, 'saving canvas edits', () =>
-        createManualWorkspaceProposal(
-          workspaceId,
-          manualEditInputFromSession(editSession),
-        ));
-      set((current) =>
-        current.state?.workspace.id === workspaceId
-          ? { state: next, status: 'ready', error: null, editSession: null }
-          : {},
-      );
-    } catch (error) {
-      if (error instanceof WorkspaceChangedError) throw error;
-      const normalized =
-        error instanceof Error ? error : new Error('canvas edit request failed');
-      set((current) => ({
-        editSession: current.state?.workspace.id === workspaceId ? null : current.editSession,
-        state: current.state?.workspace.id === workspaceId
-          ? appendSystemError(current.state, normalized.message)
-          : current.state,
-      }));
-      throw normalized;
-    }
-  };
-  const persistEditSession = async () => {
-    const state = get().state;
-    const editSession = get().editSession;
-    if (!state || !hasDirtyEdits(editSession)) {
-      return;
-    }
-    await persistCapturedSession(state.workspace.id, editSession);
-  };
-  const flushManualEdits = () => {
-    const state = get().state;
-    const editSession = get().editSession;
-    if (!state || !hasDirtyEdits(editSession)) {
-      return Promise.resolve();
-    }
-    const workspaceId = state.workspace.id;
-    actionGuard.assertActive(workspaceId, 'saving canvas edits');
-    return persistCapturedSession(workspaceId, editSession);
-  };
+  const persistence = new StorePersistence(get, set, actionGuard);
   const snapshots = new WorkspaceSnapshotCoordinator(requestScope, get, set);
   const clearPresenceExpiryTimers = () => {
     for (const timer of presenceExpiryTimers.values()) clearTimeout(timer);
     presenceExpiryTimers.clear();
   };
   const activateWorkspace = (workspaceId: string | null) => {
-    persistChain = Promise.resolve();
+    persistence.reset();
     clearPresenceExpiryTimers();
     const activation = requestScope.begin(workspaceId);
     snapshots.reset();
@@ -352,7 +276,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       throw new WorkspaceChangedError('workspace changed before the message could be sent');
     }
     if (hasDirtyEdits(get().editSession)) {
-      await flushManualEdits();
+      await persistence.flushManual();
     }
     const flushed = get().state;
     if (!flushed) {
@@ -447,7 +371,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
     actionGuard.assertActive(state.workspace.id, 'queueing the run');
     if (hasDirtyEdits(get().editSession)) {
       try {
-        await flushManualEdits();
+        await persistence.flushManual();
       } catch (error) {
         if (error instanceof WorkspaceChangedError) throw error;
         return;
@@ -562,27 +486,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       }));
     }
   },
-  saveLayout: async (positions) => {
-    const state = get().state;
-    if (!state || positions.length === 0) {
-      return;
-    }
-
-    try {
-      const next = await actionGuard.run(state.workspace.id, 'saving the layout', () =>
-        saveWorkspaceLayout(state.workspace.id, {
-          baseVersionId: state.workspace.versionId,
-          positions,
-        }));
-      set({ state: next, status: 'ready', error: null, editSession: null });
-    } catch (error) {
-      if (error instanceof WorkspaceChangedError) throw error;
-      const message = error instanceof Error ? error.message : 'workspace layout request failed';
-      set((current) => ({
-        state: current.state ? appendSystemError(current.state, message) : current.state,
-      }));
-    }
-  },
+  saveCanvasSnapshot: (update) => persistence.saveCanvas(update),
   selectOutput: async (outputId) => {
     const state = get().state;
     if (!state) {
@@ -700,7 +604,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       throw new Error(message);
     }
 
-    await enqueuePersist(async () => {
+    await persistence.enqueueManual(async () => {
       const current = get().state;
       if (!current) {
         return;
@@ -728,11 +632,11 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
         }));
         throw normalized;
       }
-      await persistEditSession();
+      await persistence.persistManual();
     });
   },
   commitManualEdits: async () => {
-    await flushManualEdits();
+    await persistence.flushManual();
   },
   discardManualEdits: () => set({ editSession: null }),
   confirmRun: async (runId) => {

@@ -197,6 +197,12 @@ const CanvasPositionSchema = z.object({
   y: z.number(),
 });
 
+export const CanvasViewportSchema = z.object({
+  x: z.number(),
+  y: z.number(),
+  zoom: z.number().positive(),
+});
+
 const CanvasNodeSchema = z.object({
   id: z.string(),
   nodeType: z.string(),
@@ -226,6 +232,8 @@ export const CanvasDocumentSchema = z.object({
   workspaceId: z.string(),
   versionId: z.string(),
   seq: z.number(),
+  revision: z.number().int().nonnegative(),
+  viewport: CanvasViewportSchema.nullable(),
   nodes: z.array(CanvasNodeSchema),
   edges: z.array(CanvasEdgeSchema),
   comments: z.array(CanvasCommentSchema).default([]),
@@ -613,6 +621,12 @@ export type RunStatus = z.infer<typeof RunStatusSchema>;
 export type GraphNodeState = WorkbenchState['graph']['nodes'][number];
 export type LayoutPositionUpdate = { id: string; x: number; y: number };
 export type NodeSizeUpdate = { id: string; width: number; height: number };
+export type CanvasViewport = z.infer<typeof CanvasViewportSchema>;
+export type CanvasSnapshotUpdate = {
+  positions?: LayoutPositionUpdate[];
+  sizes?: NodeSizeUpdate[];
+  viewport?: CanvasViewport;
+};
 export type ChatMessageKind = z.infer<typeof ChatMessageKindSchema>;
 export type WorkflowGraph = z.infer<typeof WorkflowGraphSchema>;
 export type WorkspaceMessageResponse = z.infer<typeof WorkspaceMessageResponseSchema>;

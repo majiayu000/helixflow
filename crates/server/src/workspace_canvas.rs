@@ -9,6 +9,7 @@ use crate::api_error::ApiError;
 use crate::app_state::AppState;
 use crate::canvas_collaboration::canvas_comment_snapshot;
 use crate::graph_files::blank_graph;
+use crate::layout_routes::{CanvasSnapshot, snapshot_from_record};
 use crate::version_file_consistency::read_version_graph;
 
 pub(crate) async fn workspace_canvas(
@@ -43,12 +44,20 @@ pub(crate) async fn workspace_canvas_value(
     };
     let (comment_seq, comments) =
         canvas_comment_snapshot(&state.store, &state.data_dir, &workspace.id).await?;
+    let snapshot_record = state
+        .store
+        .canvas_snapshot(&workspace.id)
+        .await
+        .map_err(ApiError::store)?;
+    let (revision, snapshot) = snapshot_from_record(snapshot_record.as_ref())?;
 
     Ok(canvas_document_payload(
         &workspace.id,
         &version_id,
         seq.max(comment_seq),
+        revision,
         &graph,
+        &snapshot,
         comments,
     ))
 }
@@ -57,7 +66,9 @@ fn canvas_document_payload(
     workspace_id: &str,
     version_id: &str,
     seq: i64,
+    revision: i64,
     graph: &WorkflowGraph,
+    snapshot: &CanvasSnapshot,
     comments: Vec<crate::canvas_collaboration::CanvasComment>,
 ) -> Value {
     json!({
@@ -65,23 +76,28 @@ fn canvas_document_payload(
         "workspaceId": workspace_id,
         "versionId": version_id,
         "seq": seq,
+        "revision": revision,
+        "viewport": snapshot.viewport,
         "nodes": graph.nodes.iter().map(|(id, node)| {
+            let layout = snapshot.nodes.get(id);
+            let position = layout.map_or(node.pos, |layout| layout.position);
+            let size = layout.and_then(|layout| layout.size).or(node.size);
             json!({
                 "id": id,
                 "nodeType": node.node_type,
                 "title": node.title,
                 "position": {
-                    "x": node.pos[0],
-                    "y": node.pos[1],
+                    "x": position[0],
+                    "y": position[1],
                 },
-                "size": node.size.map(|size| json!({
+                "size": size.map(|size| json!({
                     "width": size[0],
                     "height": size[1],
                 })),
                 "params": node.params,
                 "runtime": Value::Null,
                 "metadata": {
-                    "source": "workflow_graph_compat",
+                    "source": "workflow_graph_with_canvas_snapshot",
                 },
             })
         }).collect::<Vec<_>>(),
@@ -105,7 +121,7 @@ fn canvas_document_payload(
         "comments": comments,
         "runtime": {},
         "metadata": {
-            "source": "workflow_graph_compat",
+            "source": "workflow_graph_with_canvas_snapshot",
             "graphSchemaVersion": graph.schema_version,
         },
     })
@@ -138,13 +154,17 @@ mod tests {
         assert_eq!(body["workspaceId"], workspace_id);
         assert_eq!(body["schemaVersion"], 1);
         assert_eq!(body["seq"], 1);
+        assert_eq!(body["revision"], 0);
         assert_eq!(body["nodes"][0]["id"], "text");
         assert_eq!(body["nodes"][0]["nodeType"], "input.text");
         assert_eq!(body["nodes"][0]["position"]["x"], 10.0);
         assert_eq!(body["nodes"][0]["size"]["width"], 260.0);
         assert_eq!(body["nodes"][0]["size"]["height"], 180.0);
         assert_eq!(body["edges"][0]["from"]["nodeId"], "text");
-        assert_eq!(body["metadata"]["source"], "workflow_graph_compat");
+        assert_eq!(
+            body["metadata"]["source"],
+            "workflow_graph_with_canvas_snapshot"
+        );
     }
 
     #[tokio::test]

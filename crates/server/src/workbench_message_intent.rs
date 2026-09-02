@@ -1,9 +1,8 @@
-//! IntentPlan turn handling (GH130 T6): agent intent → deterministic compile
-//! → validated proposal auto-apply with a persisted semantic layer, or a
-//! structured clarification message. Rollback: HELIXFLOW_AGENT_INTENT_CONTRACT=0
-//! restores the low-level proposal contract.
+//! IntentPlan turn handling: agent intent → deterministic compile → validated
+//! proposal auto-apply with a persisted semantic layer, or a structured
+//! clarification message.
 
-use helixflow_agent::{AgentSessionRequest, TurnMode, ValidatedAgentProposal};
+use helixflow_agent::{AgentSessionRequest, TurnMode};
 use helixflow_compiler::{ClarifyFirst, CompileOutcome, CompiledProposal, compile_for_connector};
 use helixflow_graph::{GraphService, ProposalDraft, ProposalKind, WorkflowGraph};
 use helixflow_registry::NodeRegistry;
@@ -20,18 +19,6 @@ use crate::workbench_message::{
 };
 use crate::workbench_message_intent_readiness::intent_compile_readiness;
 use crate::workbench_message_proposals::persist_and_apply_agent_proposal_observed;
-
-/// GH130 T6 grayscale switch: on unless explicitly disabled. `0` / `false` /
-/// `off` restore the legacy proposal contract for rollback drills.
-pub(crate) fn intent_contract_enabled() -> bool {
-    match std::env::var("HELIXFLOW_AGENT_INTENT_CONTRACT") {
-        Ok(value) => !matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "0" | "false" | "off"
-        ),
-        Err(_) => true,
-    }
-}
 
 pub(crate) async fn handle_intent_turn(
     state: &AppState,
@@ -237,16 +224,10 @@ pub(crate) async fn handle_intent_turn(
                     .await;
                 }
             };
-            let proposal = ValidatedAgentProposal {
-                session_id: validated.session_id.clone(),
-                runtime_identity: validated.runtime_identity.clone(),
-                agent_logs: Vec::new(),
-                proposal: prepared,
-            };
             let applied = persist_and_apply_agent_proposal_observed(
                 state,
                 workspace_id,
-                &proposal,
+                &prepared,
                 Some(&semantics_json),
                 turn.completion(
                     workspace_id,

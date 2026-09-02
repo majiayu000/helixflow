@@ -14,21 +14,28 @@ import type { WorkflowFlowInstance } from './types';
 const VIEWPORT_SLICE_PAN_THRESHOLD = 240;
 const VIEWPORT_SLICE_ZOOM_RATIO = 1.2;
 
-export function useFlowViewport(workspaceId: string) {
+export function useFlowViewport(
+  workspaceId: string,
+  persistedView?: ViewState | null,
+  onViewCommit?: (view: ViewState) => void,
+) {
   const canvasRef = useRef<HTMLElement | null>(null);
   const [instance, setInstance] = useState<WorkflowFlowInstance | null>(null);
-  const [view, setView] = useState<ViewState>(() => loadGraphCanvasView(workspaceId));
-  const [sliceView, setSliceView] = useState<ViewState>(() => loadGraphCanvasView(workspaceId));
+  const initialView = persistedView ?? loadGraphCanvasView(workspaceId);
+  const [view, setView] = useState<ViewState>(initialView);
+  const [sliceView, setSliceView] = useState<ViewState>(initialView);
   const sliceViewRef = useRef(sliceView);
+  const onViewCommitRef = useRef(onViewCommit);
+  onViewCommitRef.current = onViewCommit;
   const [viewportSize, setViewportSize] = useState<ViewportSize>({ width: 900, height: 640 });
 
   useEffect(() => {
-    const next = loadGraphCanvasView(workspaceId);
+    const next = persistedView ?? loadGraphCanvasView(workspaceId);
     setView(next);
     sliceViewRef.current = next;
     setSliceView(next);
     if (instance) void instance.setViewport(toViewport(next));
-  }, [instance, workspaceId]);
+  }, [instance, persistedView?.x, persistedView?.y, persistedView?.z, workspaceId]);
 
   useEffect(() => {
     const timer = setTimeout(() => saveGraphCanvasView(workspaceId, view), 180);
@@ -85,6 +92,7 @@ export function useFlowViewport(workspaceId: string) {
     setView(nextView);
     sliceViewRef.current = nextView;
     setSliceView(nextView);
+    onViewCommitRef.current?.(nextView);
   }, []);
 
   return { canvasRef, instance, onInit, onMove, onMoveEnd, sliceView, view, viewportSize };

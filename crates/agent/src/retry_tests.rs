@@ -10,7 +10,7 @@ use helixflow_run::EventBus;
 use serde_json::{Value, json};
 
 use super::*;
-use crate::service::MAX_PROPOSAL_ROUNDS;
+use crate::service::MAX_INTENT_ROUNDS;
 
 fn sample_graph() -> WorkflowGraph {
     WorkflowGraph {
@@ -68,7 +68,6 @@ fn modify_request(dir: &tempfile::TempDir) -> AgentSessionRequest {
         mode: TurnMode::ModifyWorkflow,
         skill: AgentSkill::ModifyWorkflow,
         canvas_context: None,
-        use_intent_contract: false,
     }
 }
 
@@ -88,54 +87,44 @@ fn chat_request(dir: &tempfile::TempDir) -> AgentSessionRequest {
         mode: TurnMode::Chat,
         skill: AgentSkill::Chat,
         canvas_context: None,
-        use_intent_contract: false,
     }
 }
 
 #[tokio::test]
-async fn retry_loop_recovers_after_invalid_node_type() {
+async fn retry_loop_recovers_after_invalid_intent() {
     let dir = tempfile::tempdir().expect("temp dir");
     let events = EventBus::new(64);
     let _receiver = events.subscribe();
     let runtime = ScriptedRuntime::new(vec![
-        ScriptedRound::Proposal(invalid_node_type_proposal()),
-        ScriptedRound::Proposal(valid_proposal()),
+        ScriptedRound::Intent(invalid_intent()),
+        ScriptedRound::Intent(valid_intent()),
     ]);
-    let service = AgentService::new(runtime.clone(), events.clone()).with_max_proposal_rounds(3);
+    let service = AgentService::new(runtime.clone(), events.clone()).with_max_intent_rounds(3);
 
-    let proposal = service
-        .propose_graph_change(modify_request(&dir))
+    let intent = service
+        .propose_intent(modify_request(&dir))
         .await
-        .expect("proposal");
+        .expect("intent");
 
-    assert_eq!(proposal.proposal.title, "Shorter video");
+    assert_eq!(intent.intent.stages[0].capability_id, "text_to_video");
     assert_eq!(runtime.sent_turns().len(), 2);
     assert_eq!(runtime.sent_turns()[0].message, "make it shorter");
     let retry_message = &runtime.sent_turns()[1].message;
-    assert!(retry_message.contains("Previous proposal validation failed"));
-    assert!(retry_message.contains("Retry round: 2/3"));
-    assert!(retry_message.contains("Current graph context: workspace_id=ws_1"));
-    assert!(retry_message.contains("unknown node type: unknown.node"));
-    assert!(retry_message.contains("Last failed proposal summary: title=Bad node type"));
+    assert!(retry_message.contains("previous out/intent.json was invalid"));
+    assert!(retry_message.contains("unknown field"));
     assert!(!retry_message.contains("/Users/"));
     assert!(!retry_message.contains("/private/"));
     assert!(!retry_message.contains("file://"));
     assert!(!retry_message.contains("Bearer "));
     assert!(!retry_message.contains("SECRET="));
-    assert!(proposal.agent_logs.iter().any(|log| {
-        log.kind == "agent_log:error" && log.text.contains("unknown node type: unknown.node")
-    }));
-    assert!(proposal.agent_logs.iter().any(|log| {
-        log.kind == "agent_log:status"
-            && log
-                .text
-                .contains("retrying proposal generation (round 2/3)")
+    assert!(intent.agent_logs.iter().any(|log| {
+        log.kind == "agent_log:error" && log.text.contains("intent validation failed")
     }));
     assert!(
-        proposal
+        intent
             .agent_logs
             .iter()
-            .any(|log| log.text == "proposal ready after round 2")
+            .any(|log| log.text == "intent ready after round 2")
     );
 }
 
@@ -145,27 +134,23 @@ async fn retry_loop_exhausts_with_last_validation_error() {
     let events = EventBus::new(64);
     let mut receiver = events.subscribe();
     let runtime = ScriptedRuntime::new(vec![
-        ScriptedRound::Proposal(invalid_node_type_proposal()),
-        ScriptedRound::Proposal(invalid_node_type_proposal()),
+        ScriptedRound::Intent(invalid_intent()),
+        ScriptedRound::Intent(invalid_intent()),
     ]);
-    let service = AgentService::new(runtime.clone(), events.clone()).with_max_proposal_rounds(2);
+    let service = AgentService::new(runtime.clone(), events.clone()).with_max_intent_rounds(2);
 
     let err = service
-        .propose_graph_change(modify_request(&dir))
+        .propose_intent(modify_request(&dir))
         .await
         .expect_err("retry exhaustion");
 
     assert!(
         err.to_string()
-            .contains("proposal retry exhausted after 2 rounds")
+            .contains("intent retry exhausted after 2 rounds")
     );
-    assert!(err.to_string().contains("unknown node type: unknown.node"));
+    assert!(err.to_string().contains("unknown field"));
     assert_eq!(runtime.sent_turns().len(), 2);
-    assert!(
-        runtime.sent_turns()[1]
-            .message
-            .contains("unknown node type: unknown.node")
-    );
+    assert!(runtime.sent_turns()[1].message.contains("unknown field"));
 
     let mut statuses = Vec::new();
     while let Ok(event) = receiver.try_recv() {
@@ -176,32 +161,32 @@ async fn retry_loop_exhausts_with_last_validation_error() {
     assert!(
         statuses
             .iter()
-            .any(|status| status == "proposal.retry_exhausted")
+            .any(|status| status == "intent.validation_failed")
     );
 }
 
 #[tokio::test]
-async fn proposal_retry_configuration_is_capped() {
+async fn intent_retry_configuration_is_capped() {
     let dir = tempfile::tempdir().expect("temp dir");
     let events = EventBus::new(64);
     let _receiver = events.subscribe();
     let runtime = ScriptedRuntime::new(
-        (0..MAX_PROPOSAL_ROUNDS)
-            .map(|_| ScriptedRound::Proposal(invalid_node_type_proposal()))
+        (0..MAX_INTENT_ROUNDS)
+            .map(|_| ScriptedRound::Intent(invalid_intent()))
             .collect(),
     );
-    let service = AgentService::new(runtime.clone(), events).with_max_proposal_rounds(usize::MAX);
+    let service = AgentService::new(runtime.clone(), events).with_max_intent_rounds(usize::MAX);
 
     let err = service
-        .propose_graph_change(modify_request(&dir))
+        .propose_intent(modify_request(&dir))
         .await
         .expect_err("bounded retry exhaustion");
 
     assert!(
         err.to_string()
-            .contains("proposal retry exhausted after 10 rounds")
+            .contains("intent retry exhausted after 10 rounds")
     );
-    assert_eq!(runtime.sent_turns().len(), MAX_PROPOSAL_ROUNDS);
+    assert_eq!(runtime.sent_turns().len(), MAX_INTENT_ROUNDS);
 }
 
 #[tokio::test]
@@ -212,7 +197,7 @@ async fn chat_turn_remains_single_round() {
     let runtime = ScriptedRuntime::new(vec![ScriptedRound::Reply(json!({
         "message": "我是 Helixflow agent。"
     }))]);
-    let service = AgentService::new(runtime.clone(), events.clone()).with_max_proposal_rounds(3);
+    let service = AgentService::new(runtime.clone(), events.clone()).with_max_intent_rounds(3);
 
     let reply = service
         .answer_chat(chat_request(&dir))
@@ -224,7 +209,7 @@ async fn chat_turn_remains_single_round() {
     assert!(
         !runtime.sent_turns()[0]
             .message
-            .contains("Previous proposal validation failed")
+            .contains("previous out/intent.json was invalid")
     );
 }
 
@@ -251,7 +236,7 @@ impl ScriptedRuntime {
 
 #[derive(Clone)]
 enum ScriptedRound {
-    Proposal(Value),
+    Intent(Value),
     Reply(Value),
 }
 
@@ -283,8 +268,8 @@ impl AgentRuntime for ScriptedRuntime {
             .ok_or_else(|| RuntimeError::Failed("missing scripted round".to_owned()))?;
 
         match round {
-            ScriptedRound::Proposal(value) => {
-                write_runtime_json(handle.out_dir.join("proposal.json"), value)?
+            ScriptedRound::Intent(value) => {
+                write_runtime_json(handle.out_dir.join("intent.json"), value)?
             }
             ScriptedRound::Reply(value) => {
                 write_runtime_json(handle.out_dir.join("reply.json"), value)?
@@ -317,37 +302,26 @@ fn write_runtime_json(path: impl AsRef<Path>, value: Value) -> RuntimeResult<()>
     .map_err(|err| RuntimeError::Failed(err.to_string()))
 }
 
-fn invalid_node_type_proposal() -> Value {
+fn invalid_intent() -> Value {
     json!({
-        "base_version_id": "ver_1",
-        "kind": "modify",
-        "title": "Bad node type",
-        "summary": "Adds an unsupported node type.",
-        "ops": [{
-            "op": "add_node",
-            "id": "broken",
-            "node": {
-                "node_type": "unknown.node",
-                "title": "Unknown",
-                "params": {},
-                "pos": [480.0, 0.0]
-            }
-        }]
+        "intentVersion": "1",
+        "topology": "linear",
+        "stages": [],
+        "outputStageIds": [],
+        "unexpected": true
     })
 }
 
-fn valid_proposal() -> Value {
+fn valid_intent() -> Value {
     json!({
-        "base_version_id": "ver_1",
-        "kind": "modify",
-        "title": "Shorter video",
-        "summary": "Set duration to three seconds.",
-        "ops": [{
-            "op": "set_param",
-            "id": "video",
-            "key": "duration_sec",
-            "prev": 5,
-            "value": 3
-        }]
+        "intentVersion": "1",
+        "topology": "linear",
+        "stages": [{
+            "stageId": "s1",
+            "capabilityId": "text_to_video",
+            "inputFrom": [],
+            "params": { "prompt": "clean product shot", "duration_sec": 3 }
+        }],
+        "outputStageIds": ["s1"]
     })
 }

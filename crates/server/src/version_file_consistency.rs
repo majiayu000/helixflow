@@ -53,7 +53,6 @@ fn hex_nibble(byte: u8) -> Option<u8> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CandidateKind {
     Initial,
-    Layout,
     Ops,
     ProposalApplied,
     ProposalOps,
@@ -65,7 +64,6 @@ impl CandidateKind {
     fn slug(self) -> &'static str {
         match self {
             Self::Initial => "initial",
-            Self::Layout => "layout",
             Self::Ops => "ops",
             Self::ProposalApplied => "proposal-applied",
             Self::ProposalOps => "proposal-ops",

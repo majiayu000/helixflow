@@ -23,14 +23,6 @@ export function applyRunEvent(state: WorkbenchState, event: RunEventEnvelope): W
     return applyRetryNotice(state, event);
   }
 
-  if (
-    event.ev === 'run.fix_attempt' ||
-    event.ev === 'run.fix_applied' ||
-    event.ev === 'run.fix_exhausted'
-  ) {
-    return applyRunFixNotice(state, event);
-  }
-
   if (event.ev === 'run.remote_cancel_unsupported' || event.ev === 'run.remote_cancel_failed') {
     return applyRemoteCancelNotice(state, event);
   }
@@ -96,8 +88,7 @@ export function preserveRetryNotices(
       (message) =>
       (message.id.startsWith('run-retry-') ||
         message.id.startsWith('run-remote-cancel-') ||
-        message.id.startsWith('run-recovery-') ||
-        message.id.startsWith('run-fix-')) &&
+        message.id.startsWith('run-recovery-')) &&
       !existingIds.has(message.id),
   );
   if (notices.length === 0) {
@@ -108,45 +99,6 @@ export function preserveRetryNotices(
     chat: {
       ...snapshot.chat,
       messages: [...snapshot.chat.messages, ...notices],
-    },
-  };
-}
-
-function applyRunFixNotice(state: WorkbenchState, event: RunEventEnvelope): WorkbenchState {
-  const attempt = numberData(event, 'attempt');
-  const maxAttempts = numberData(event, 'max_attempts');
-  const requiresConfirmation = booleanData(event, 'requires_confirmation');
-  const reasonCode = stringData(event, 'reason_code') ?? 'FIX_EXHAUSTED';
-  const operationId = stringData(event, 'operation_id') ?? event.run_id;
-  const messageId = `run-fix-${event.ev}-${operationId}-${event.seq}`;
-  let text: string;
-  if (event.ev === 'run.fix_attempt') {
-    text = `Agent workflow repair attempt ${attempt ?? '?'} of ${maxAttempts ?? '?'} started.`;
-  } else if (event.ev === 'run.fix_applied') {
-    text = requiresConfirmation
-      ? 'The workflow was repaired as a new version. Its provider run is waiting for cost confirmation.'
-      : 'The workflow was repaired as a new version. Its provider run started automatically; execution has not succeeded yet.';
-  } else {
-    text = `Automatic workflow repair stopped (${reasonCode}). Manual review is required.`;
-  }
-  if (state.chat.messages.some((message) => message.id === messageId)) {
-    return state;
-  }
-  return {
-    ...state,
-    eventSeq: Math.max(state.eventSeq, event.seq),
-    chat: {
-      ...state.chat,
-      messages: [
-        ...state.chat.messages,
-        {
-          id: messageId,
-          role: 'system',
-          kind: event.ev === 'run.fix_exhausted' ? 'run_failed' : 'run_requested',
-          text,
-          time: event.server_time,
-        },
-      ],
     },
   };
 }
@@ -271,8 +223,6 @@ export function shouldRefetchWorkspaceState(
       event.ev === 'run.retry' ||
       event.ev === 'run.retry_pending' ||
       event.ev === 'run.retry_failed' ||
-      event.ev === 'run.fix_applied' ||
-      event.ev === 'run.fix_exhausted' ||
       isRecoveryEvent(event.ev) ||
       event.ev === 'run.succeeded' ||
       event.ev === 'run.failed' ||

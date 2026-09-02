@@ -420,12 +420,9 @@ mod tests {
     use std::sync::Arc;
 
     use async_trait::async_trait;
-    use helixflow_agent::{
-        AgentError, AgentLogEntry, AgentSessionRequest, TurnMode, ValidatedAgentProposal,
-        ValidatedAgentReply,
-    };
+    use helixflow_agent::{AgentError, AgentSessionRequest, TurnMode, ValidatedAgentReply};
     use helixflow_gateway::RuntimeProvider;
-    use helixflow_graph::{GraphEdge, GraphNode, PreparedProposal, WorkflowGraph};
+    use helixflow_graph::{GraphEdge, GraphNode, WorkflowGraph};
     use helixflow_run::EventBus;
     use helixflow_store::{NewVersion, Store, VersionSource};
     use serde_json::json;
@@ -494,7 +491,6 @@ mod tests {
                 mode: TurnMode::RunRequest,
                 skill: TurnMode::RunRequest.agent_skill(),
                 canvas_context: None,
-                use_intent_contract: false,
             },
         )
         .await
@@ -626,31 +622,6 @@ mod tests {
             _request: AgentSessionRequest,
         ) -> Result<ValidatedAgentReply, AgentError> {
             Err(AgentError::Runtime("noop agent".to_owned()))
-        }
-
-        async fn propose_graph_change(
-            &self,
-            request: AgentSessionRequest,
-        ) -> Result<ValidatedAgentProposal, AgentError> {
-            Ok(ValidatedAgentProposal {
-                session_id: "noop".to_owned(),
-                runtime_identity: None,
-                agent_logs: vec![AgentLogEntry {
-                    kind: "agent_log:status".to_owned(),
-                    text: "noop".to_owned(),
-                }],
-                proposal: PreparedProposal {
-                    base_version_id: request.base_version_id,
-                    kind: helixflow_graph::ProposalKind::Modify,
-                    title: "noop".to_owned(),
-                    summary: "noop".to_owned(),
-                    ops: Vec::new(),
-                    diff_summary: Vec::new(),
-                    preview_graph: request.graph,
-                    state: helixflow_graph::ProposalState::Pending,
-                    message_id: None,
-                },
-            })
         }
     }
 }
