@@ -320,8 +320,32 @@ fn materialization_error_is_permanent(err: &RunError) -> bool {
         "invalid declared media",
         "kind and MIME",
         "MIME is invalid",
+        "response MIME does not match payload",
         "no configured validator",
+        "remote artifact target is not allowed",
     ]
     .iter()
     .any(|marker| message.contains(marker))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn security_policy_rejections_are_permanent_materialization_errors() {
+        let error =
+            RunError::ArtifactPersistence("remote artifact target is not allowed".to_owned());
+
+        assert!(materialization_error_is_permanent(&error));
+    }
+
+    #[test]
+    fn response_mime_mismatches_are_permanent_materialization_errors() {
+        let error = RunError::ArtifactPersistence(
+            "remote artifact response MIME does not match payload".to_owned(),
+        );
+
+        assert!(materialization_error_is_permanent(&error));
+    }
 }

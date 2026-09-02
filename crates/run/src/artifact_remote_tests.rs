@@ -88,21 +88,33 @@ fn artifact_remote_rejects_mixed_public_and_private_dns_results() {
 }
 
 #[test]
-fn artifact_remote_allows_clash_fake_ip_only_for_atlas_tos_cdn() {
+fn artifact_remote_allows_clash_fake_ip_only_for_known_atlas_media_hosts() {
     let fake_ip = [IpAddr::V4(Ipv4Addr::new(198, 18, 0, 5))];
-    let atlas = reqwest::Url::parse(
+    let atlas_tos = reqwest::Url::parse(
         "https://ark-content-generation-ap-southeast-1.tos-ap-southeast-1.volces.com/video.mp4",
     )
     .unwrap();
+    let atlas_oss =
+        reqwest::Url::parse("https://atlas-media.oss-us-west-1.aliyuncs.com/generated/image.png")
+            .unwrap();
     let lookalike = reqwest::Url::parse(
         "https://ark-content-generation-ap-southeast-1.tos-ap-southeast-1.volces.com.attacker.example/video.mp4",
+    )
+    .unwrap();
+    let oss_lookalike = reqwest::Url::parse(
+        "https://atlas-media.oss-us-west-1.aliyuncs.com.attacker.example/image.png",
     )
     .unwrap();
     let arbitrary = reqwest::Url::parse("https://example.com/video.mp4").unwrap();
     let literal = reqwest::Url::parse("https://198.18.0.5/video.mp4").unwrap();
 
-    assert!(validate_resolved_addresses_for_url(&atlas, &fake_ip).is_ok());
-    for rejected in [lookalike, arbitrary, literal] {
+    for allowed in [&atlas_tos, &atlas_oss] {
+        assert!(
+            validate_resolved_addresses_for_url(allowed, &fake_ip).is_ok(),
+            "{allowed}"
+        );
+    }
+    for rejected in [lookalike, oss_lookalike, arbitrary, literal] {
         assert!(
             validate_resolved_addresses_for_url(&rejected, &fake_ip).is_err(),
             "{rejected}"
@@ -112,7 +124,8 @@ fn artifact_remote_allows_clash_fake_ip_only_for_atlas_tos_cdn() {
         IpAddr::V4(Ipv4Addr::new(198, 18, 0, 5)),
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
     ];
-    assert!(validate_resolved_addresses_for_url(&atlas, &mixed_private).is_err());
+    assert!(validate_resolved_addresses_for_url(&atlas_tos, &mixed_private).is_err());
+    assert!(validate_resolved_addresses_for_url(&atlas_oss, &mixed_private).is_err());
 }
 
 #[test]

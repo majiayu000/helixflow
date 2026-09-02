@@ -127,6 +127,44 @@ async fn gh130_resolved_operation_drives_request_model() -> Result<(), Box<dyn s
 }
 
 #[tokio::test]
+async fn atlas_image_mime_matches_the_remote_output_extension()
+-> Result<(), Box<dyn std::error::Error>> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let server = capture_request_and_respond(
+        listener,
+        200,
+        r#"{"data":{"outputs":["https://atlas-media.example/generated/image.jpg"]}}"#,
+    );
+    let provider = AtlasProvider::new(ApiProviderConfig::atlas(
+        "test-key".to_owned(),
+        format!("http://{addr}/v1"),
+    ));
+
+    let result = provider
+        .invoke(request(
+            "text_to_image",
+            json!({ "prompt": "hello", "output_format": "png" }),
+        ))
+        .await?;
+    server.await??;
+
+    assert_eq!(result.outputs["image"].mime, "image/jpeg");
+    Ok(())
+}
+
+#[test]
+fn atlas_image_mime_rejects_unknown_outputs_without_exposing_the_url() {
+    let output = "https://atlas-media.example/generated/image.gif?token=secret";
+    let error = image_mime_from_output(output).expect_err("GIF must not be accepted");
+
+    let message = error.to_string();
+    assert!(message.contains("unsupported media type"));
+    assert!(!message.contains(output));
+    assert!(!message.contains("secret"));
+}
+
+#[tokio::test]
 async fn atlas_requests_send_a_stable_user_agent() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
@@ -178,11 +216,11 @@ async fn atlas_live_image_generation_returns_a_remote_artifact()
     let image = result.outputs.get("image").ok_or("missing image output")?;
 
     assert_eq!(image.kind, ArtifactKind::Image);
-    assert_eq!(image.mime, "image/png");
-    assert!(matches!(
-        &image.content,
-        ArtifactContent::RemoteUrl { url } if url.starts_with("https://")
-    ));
+    let ArtifactContent::RemoteUrl { url } = &image.content else {
+        return Err("image output was not a remote URL".into());
+    };
+    assert!(url.starts_with("https://"));
+    assert_eq!(image.mime, image_mime_from_output(url)?);
     Ok(())
 }
 
