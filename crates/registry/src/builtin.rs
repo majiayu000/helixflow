@@ -45,16 +45,18 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
     ];
 
     let catalog = builtin_catalog();
-    definitions.extend(catalog.capabilities.iter().filter_map(|capability| {
+    definitions.extend(
         catalog
-            .bindings
+            .capabilities
             .iter()
-            .any(|binding| {
-                binding.capability_id == capability.capability_id
-                    && binding.availability == BindingAvailability::Enabled
+            .filter(|capability| {
+                catalog.bindings.iter().any(|binding| {
+                    binding.capability_id == capability.capability_id
+                        && binding.availability == BindingAvailability::Enabled
+                })
             })
-            .then(|| capability_node(capability))
-    }));
+            .map(capability_node),
+    );
     definitions
 }
 

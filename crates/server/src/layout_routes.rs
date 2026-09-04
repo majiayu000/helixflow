@@ -244,11 +244,7 @@ fn apply_sizes(
     Ok(())
 }
 
-fn validate_node_id<'a>(
-    id: &str,
-    seen: &mut BTreeSet<String>,
-    field: &str,
-) -> Result<(), ApiError> {
+fn validate_node_id(id: &str, seen: &mut BTreeSet<String>, field: &str) -> Result<(), ApiError> {
     if id.trim().is_empty() {
         return Err(ApiError::bad_request(format!(
             "canvas {field} node id cannot be empty"
