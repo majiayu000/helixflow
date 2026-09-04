@@ -108,7 +108,8 @@ where
                 .materialize_provider_task_once(workspace_id, step, record, &task)
                 .await
             {
-                Ok(execution) => return Ok(Some(execution)),
+                Ok(Some(execution)) => return Ok(Some(execution)),
+                Ok(None) => return Ok(None),
                 Err(err) if materialization_error_is_permanent(&err) => {
                     self.store
                         .finalize_provider_task_failure(ProviderTaskFailureFinalization {
@@ -149,7 +150,10 @@ where
         step: &ExecutionStep,
         record: &RunStepRecord,
         task: &ProviderTaskRecord,
-    ) -> RunResult<ProviderStepExecution> {
+    ) -> RunResult<Option<ProviderStepExecution>> {
+        if !provider_task_is_result_ready(&self.store.provider_task(&task.id).await?) {
+            return Ok(None);
+        }
         let relative = task.result_spool_path.as_deref().ok_or_else(|| {
             RunError::ArtifactPersistence("result_ready task is missing spool path".to_owned())
         })?;
@@ -179,6 +183,9 @@ where
         let mut cache_links = Vec::new();
         let mut journal_keys = Vec::new();
         for (port, payload) in result.outputs {
+            if !provider_task_is_result_ready(&self.store.provider_task(&task.id).await?) {
+                return Ok(None);
+            }
             let artifact = if let Some(artifact_id) = existing.get(&port) {
                 self.store.artifact(artifact_id).await?
             } else {
@@ -217,6 +224,9 @@ where
             .finalize_run_step_success(&record.id, Some(&task.id), Some(&cost_json), &mappings)
             .await?
         {
+            if !provider_task_is_result_ready(&self.store.provider_task(&task.id).await?) {
+                return Ok(None);
+            }
             return Err(RunError::ArtifactPersistence(
                 "provider step finalizer lost its durable state".to_owned(),
             ));
@@ -227,11 +237,11 @@ where
                 .mark_artifact_journal_committed(&operation_key, &owner_id)
                 .await?;
         }
-        Ok(ProviderStepExecution {
+        Ok(Some(ProviderStepExecution {
             outputs,
             cache_links,
             cost_json,
-        })
+        }))
     }
 
     async fn publish_provider_artifact(
@@ -304,6 +314,10 @@ where
 
 fn artifact_journal_owner(task_id: &str) -> String {
     format!("materializer:{task_id}")
+}
+
+fn provider_task_is_result_ready(task: &ProviderTaskRecord) -> bool {
+    task.state == PROVIDER_TASK_RESULT_READY
 }
 
 fn materialization_error_is_permanent(err: &RunError) -> bool {

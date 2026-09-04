@@ -114,7 +114,13 @@ where
                         .await?;
                     }
                     PROVIDER_TASK_RESULT_READY => {
-                        if desired_status == "interrupted" {
+                        let persisted_status = self
+                            .store
+                            .run_terminalization(run_id)
+                            .await?
+                            .map(|work| work.desired_status)
+                            .unwrap_or_else(|| desired_status.to_owned());
+                        if persisted_status == "interrupted" {
                             self.store
                                 .complete_provider_task(
                                     &task.id,

@@ -188,6 +188,109 @@ async fn interrupt_completes_a_provider_result_waiting_for_materialization() {
 }
 
 #[tokio::test]
+async fn failed_settler_honors_persisted_interrupt_for_result_ready() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let database_url = format!("sqlite://{}", dir.path().join("helixflow.sqlite").display());
+    let store = Store::open(&database_url).await.expect("open store");
+    let workspace = store
+        .create_workspace("Persisted interrupt")
+        .await
+        .expect("create workspace");
+    let version = store
+        .create_version(NewVersion {
+            workspace_id: &workspace.id,
+            label: "Persisted interrupt",
+            source: VersionSource::Manual,
+            graph_path: "graphs/persisted-interrupt.json",
+            graph_hash: "sha256:persisted-interrupt",
+            parent_id: None,
+            semantics_json: None,
+        })
+        .await
+        .expect("create version");
+    let run = store
+        .create_run(NewRun {
+            workspace_id: &workspace.id,
+            version_id: &version.id,
+            group_id: None,
+            label: "Persisted interrupt",
+            trigger: "manual",
+            plan_json: None,
+            estimate_json: None,
+            status: "running",
+        })
+        .await
+        .expect("create run");
+    let step = store
+        .create_run_step(NewRunStep {
+            run_id: &run.id,
+            node_id: "image",
+            node_type: "image.generate",
+            provider: Some("mock"),
+            state: "running",
+        })
+        .await
+        .expect("create step");
+    let task = store
+        .insert_or_read_provider_task(NewProviderTask {
+            run_id: &run.id,
+            run_step_id: &step.id,
+            provider: "mock",
+            dispatch_origin: "provider://mock",
+            recovery_scope_fingerprint: "",
+            operation_key: "dispatch:image",
+            dispatch_owner_id: "owner",
+            dispatch_lease_seconds: 30,
+            dispatch_deadline_seconds: 60,
+        })
+        .await
+        .expect("create provider task");
+    store
+        .mark_provider_task_result_ready(ProviderTaskResult {
+            task_id: &task.id,
+            dispatch_owner_id: Some("owner"),
+            terminal_outcome: "succeeded",
+            result_spool_path: "recovery_spool/result.json",
+            result_fingerprint: "sha256:result",
+            materialization_deadline_seconds: 3_600,
+            workspace_id: &workspace.id,
+            provider: "mock",
+            amount: 0.0,
+            currency: "USD",
+            estimated: true,
+        })
+        .await
+        .expect("mark result ready")
+        .expect("provider task transition");
+    store
+        .request_run_terminalization(&run.id, "interrupted", None)
+        .await
+        .expect("persist interrupt");
+    let service = RunService::with_provider(store.clone(), MockProvider::new());
+
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        service.request_and_settle_terminal(
+            &workspace.id,
+            &run.id,
+            "failed",
+            Some(r#"{"error":"late fail"}"#),
+        ),
+    )
+    .await
+    .expect("failed settler must honor persisted interrupt")
+    .expect("settle run");
+
+    assert_eq!(store.run(&run.id).await.expect("run").status, "interrupted");
+    let task = store.provider_task(&task.id).await.expect("provider task");
+    assert_eq!(task.state, "completed");
+    assert_eq!(
+        task.last_error_code.as_deref(),
+        Some("ARTIFACT_MATERIALIZATION_INTERRUPTED")
+    );
+}
+
+#[tokio::test]
 async fn interrupt_waits_for_live_dispatch_then_persists_and_cancels_handle() {
     let dir = tempfile::tempdir().expect("create temp dir");
     let database_url = format!("sqlite://{}", dir.path().join("helixflow.sqlite").display());
