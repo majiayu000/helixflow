@@ -135,14 +135,14 @@ where
                 .await?;
             }
         }
-        if !requires_confirmation && child.status == RunStatus::WaitingConfirmation.as_str() {
-            if let Err(err) = self.start_confirmed_run(&child.id).await
-                && !concurrent_reject_retry_start_lost(&err)
-            {
-                self.emit_retry_failure(&child.workspace_id, &child.id, &err)
-                    .await;
-                return Err(err);
-            }
+        if !requires_confirmation
+            && child.status == RunStatus::WaitingConfirmation.as_str()
+            && let Err(err) = self.start_confirmed_run(&child.id).await
+            && !concurrent_reject_retry_start_lost(&err)
+        {
+            self.emit_retry_failure(&child.workspace_id, &child.id, &err)
+                .await;
+            return Err(err);
         }
         Ok(self.store.run(&child.id).await?)
     }
