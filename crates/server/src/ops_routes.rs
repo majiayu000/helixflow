@@ -153,23 +153,24 @@ pub(crate) async fn apply_workspace_ops(
         ),
     )
     .await;
-    if let Err(VersionCommitError::Consistency(error)) = &version_result {
-        if opaque_digest.is_some() && is_publish_collision(error) {
-            if accepted_idempotent_version(
-                &state,
-                &workspace_id,
-                &input.base_version_id,
-                &graph_path,
-                &graph_hash,
-            )
-            .await?
-            {
-                return Ok(Json(workspace_state_value(&state, &workspace_id).await?));
-            }
-            return Err(ApiError::conflict(
-                "idempotent ops candidate conflicts with existing state",
-            ));
+    if let Err(VersionCommitError::Consistency(error)) = &version_result
+        && opaque_digest.is_some()
+        && is_publish_collision(error)
+    {
+        if accepted_idempotent_version(
+            &state,
+            &workspace_id,
+            &input.base_version_id,
+            &graph_path,
+            &graph_hash,
+        )
+        .await?
+        {
+            return Ok(Json(workspace_state_value(&state, &workspace_id).await?));
         }
+        return Err(ApiError::conflict(
+            "idempotent ops candidate conflicts with existing state",
+        ));
     }
 
     match version_result {

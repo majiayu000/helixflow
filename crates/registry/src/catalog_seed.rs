@@ -384,6 +384,7 @@ fn default_bindings() -> BTreeMap<String, String> {
     ])
 }
 
+#[allow(clippy::too_many_arguments)]
 fn capability(
     capability_id: &str,
     node_type: &str,
