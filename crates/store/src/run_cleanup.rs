@@ -41,7 +41,6 @@ impl Store {
                 r#"
                 UPDATE runs
                 SET status = 'interrupted',
-                    error_json = NULL,
                     ended_at = current_timestamp
                 WHERE id = ? AND status IN ('queued', 'estimating', 'running')
                 "#,

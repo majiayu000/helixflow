@@ -19,7 +19,9 @@ mod service;
 mod turn_mode;
 
 pub use app_server_runtime::{CodexAppServerRuntime, CodexBackendRuntime};
-pub use canvas_ops::{CanvasGateState, CanvasOpsContext, CanvasOpsContract, CanvasSelection};
+pub use canvas_ops::{
+    CanvasGateState, CanvasOpsContext, CanvasOpsContract, CanvasSelection, redact_graph_secrets,
+};
 pub use contract::{
     AgentLogEntry, AgentRuntimeIdentity, RunRequestAction, RunRequestOutput, ValidatedAgentIntent,
     ValidatedAgentReply, ValidatedRoute, ValidatedRunRequest, read_validated_intent,
@@ -124,7 +126,10 @@ pub fn create_session_contract(request: &AgentSessionRequest) -> AgentResult<Age
             fs::create_dir_all(&workflow_backends_dir)?;
             fs::create_dir_all(&runtime_providers_dir)?;
             fs::create_dir_all(&api_connectors_dir)?;
-            write_json(ctx_dir.join("graph.json"), &request.graph)?;
+            write_json(
+                ctx_dir.join("graph.json"),
+                &redact_graph_secrets(&request.graph),
+            )?;
             write_json(
                 node_defs_dir.join("catalog.json"),
                 &NodeRegistry::builtin().export_catalog(),

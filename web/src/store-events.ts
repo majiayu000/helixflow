@@ -224,6 +224,7 @@ export function shouldRefetchWorkspaceState(
       event.ev === 'run.retry_pending' ||
       event.ev === 'run.retry_failed' ||
       isRecoveryEvent(event.ev) ||
+      event.ev === 'ws.lagged' ||
       event.ev === 'run.succeeded' ||
       event.ev === 'run.failed' ||
       event.ev === 'run.interrupted')

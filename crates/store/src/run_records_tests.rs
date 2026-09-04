@@ -119,6 +119,59 @@ async fn create_retry_run_derives_child_and_preserves_parent() {
 }
 
 #[tokio::test]
+async fn create_reject_retry_run_once_is_durable_and_idempotent() {
+    let (store, _dir) = open_temp_store().await;
+    let (workspace_id, version_id, parent) = seed_run(&store, "succeeded").await;
+    store
+        .create_cost_ledger(NewCostLedger {
+            workspace_id: &workspace_id,
+            run_id: Some(&parent.id),
+            run_step_id: None,
+            provider: "mock",
+            amount: 0.42,
+            currency: "USD",
+            estimated: true,
+        })
+        .await
+        .expect("parent estimate");
+
+    let (first, created) = store
+        .create_reject_retry_run_once(&parent.id)
+        .await
+        .expect("create reject retry");
+    assert!(created);
+    assert_eq!(first.parent_run_id.as_deref(), Some(parent.id.as_str()));
+    assert_eq!(first.attempt, 1);
+    assert_eq!(first.status, "waiting_confirmation");
+    assert_eq!(first.version_id, version_id);
+    assert!(first.force_rerun);
+    assert_eq!(
+        store
+            .cost_ledger_for_run(&first.id)
+            .await
+            .expect("copied estimates")
+            .len(),
+        1
+    );
+
+    let (replay, created_again) = store
+        .create_reject_retry_run_once(&parent.id)
+        .await
+        .expect("replay reject retry");
+    assert!(!created_again);
+    assert_eq!(first.id, replay.id);
+
+    let (left, right) = tokio::join!(
+        store.create_reject_retry_run_once(&parent.id),
+        store.create_reject_retry_run_once(&parent.id)
+    );
+    let left = left.expect("concurrent left");
+    let right = right.expect("concurrent right");
+    assert_eq!(left.0.id, first.id);
+    assert_eq!(right.0.id, first.id);
+}
+
+#[tokio::test]
 async fn artifact_review_state_defaults_pending_and_guards_transitions() {
     let (store, _dir) = open_temp_store().await;
     let (workspace_id, _version_id, run) = seed_run(&store, "succeeded").await;

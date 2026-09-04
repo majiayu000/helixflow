@@ -23,6 +23,13 @@ use crate::workbench_message_intent::handle_intent_turn;
 use crate::workbench_message_metadata::turn_metadata_json;
 use crate::workbench_payload::{PendingConfirmationPayload, ProposalPayload, RunPayload};
 
+pub(crate) const MESSAGE_KIND_TEXT: &str = "text";
+pub(crate) const MESSAGE_KIND_CHAT: &str = "chat";
+pub(crate) const MESSAGE_KIND_AGENT_ERROR: &str = "agent_error";
+pub(crate) const MESSAGE_KIND_AGENT_INTERRUPTED: &str = "agent_interrupted";
+
+const MAX_USER_MESSAGE_BYTES: usize = 32 * 1024;
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct WorkspaceMessageRequest {
@@ -79,6 +86,11 @@ pub(crate) async fn post_workspace_message(
     } = verified_message_graph(&state, &workspace_id, &input.base_version_id, &input.graph).await?;
     if input.user_message.trim().is_empty() {
         return Err(ApiError::bad_request("empty agent turn is not allowed"));
+    }
+    if input.user_message.len() > MAX_USER_MESSAGE_BYTES {
+        return Err(ApiError::bad_request(format!(
+            "agent turn exceeds {MAX_USER_MESSAGE_BYTES} bytes"
+        )));
     }
     let conversation = match input.conversation_id.as_deref() {
         Some(conversation_id) => state
@@ -208,7 +220,7 @@ pub(crate) async fn post_workspace_message(
     let user_message = NewMessage {
         workspace_id: &workspace_id,
         role: "user",
-        kind: "text",
+        kind: MESSAGE_KIND_TEXT,
         text: Some(&input.user_message),
         ref_id: None,
         attachment_ids_json: Some(&turn_metadata),
@@ -322,7 +334,7 @@ pub(crate) async fn post_workspace_message(
                 .create_message(NewMessage {
                     workspace_id: &workspace_id,
                     role: "agent",
-                    kind: "chat",
+                    kind: MESSAGE_KIND_CHAT,
                     text: Some(&reply.message),
                     ref_id: Some(&reply.session_id),
                     attachment_ids_json: None,
@@ -540,7 +552,7 @@ pub(crate) async fn terminal_error_response(
         .create_message(NewMessage {
             workspace_id,
             role: "agent",
-            kind: "agent_error",
+            kind: MESSAGE_KIND_AGENT_ERROR,
             text: Some(&text),
             ref_id: execution_id,
             attachment_ids_json: None,
@@ -578,7 +590,7 @@ pub(crate) async fn terminal_interrupted_response(
         .create_message(NewMessage {
             workspace_id,
             role: "agent",
-            kind: "agent_interrupted",
+            kind: MESSAGE_KIND_AGENT_INTERRUPTED,
             text: Some("Agent 已停止。本轮已结束，可以重新发送。"),
             ref_id: None,
             attachment_ids_json: None,

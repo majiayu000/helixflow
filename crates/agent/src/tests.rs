@@ -162,6 +162,26 @@ fn creates_ctx_out_contract_without_provider_secret_values() {
     assert_no_raw_auth_material(&model_catalog);
 }
 
+#[test]
+fn graph_json_redacts_secrets_without_truncating_prompts() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut request = request(&dir);
+    request.graph.nodes.get_mut("video").expect("video").params = json!({
+        "prompt": "clean product shot with a very long description that must remain intact",
+        "duration_sec": 5,
+        "aspect_ratio": "9:16",
+        "api_key": "sk-secret"
+    });
+    let session = create_session_contract(&request).expect("session");
+    let graph_json = fs::read_to_string(session.ctx_dir.join("graph.json")).expect("graph.json");
+    assert!(
+        graph_json
+            .contains("clean product shot with a very long description that must remain intact")
+    );
+    assert!(graph_json.contains("[redacted]"));
+    assert!(!graph_json.contains("sk-secret"));
+}
+
 fn assert_no_raw_auth_material(content: &str) {
     for needle in [
         "PROVIDER_API_KEY",

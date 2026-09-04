@@ -9,7 +9,7 @@ use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::graph_files::{canonical_graph_bytes, graph_hash};
+use crate::graph_files::{canonical_graph_bytes, graph_hash, is_safe_relative_path};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct StrictSha256([u8; 32]);
@@ -269,13 +269,6 @@ fn io_error(operation: &'static str, error: io::Error) -> VersionFileConsistency
         operation,
         kind: error.kind(),
     }
-}
-
-fn is_safe_relative_path(path: &Path) -> bool {
-    !path.as_os_str().is_empty()
-        && path
-            .components()
-            .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
 }
 
 pub(crate) trait CandidateIo {

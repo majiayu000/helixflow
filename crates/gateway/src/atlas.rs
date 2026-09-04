@@ -148,8 +148,13 @@ impl AtlasProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|err| ProviderError::RequestFailed(err.to_string()))?;
-        response_json(response).await
+            .map_err(|err| {
+                ProviderError::RequestFailed(crate::redact::redact_sensitive(
+                    &err.to_string(),
+                    &self.config.api_key,
+                ))
+            })?;
+        response_json(response, &self.config.api_key).await
     }
 
     async fn get_json(&self, url: String) -> ProviderResultValue<Value> {
@@ -160,8 +165,13 @@ impl AtlasProvider {
             .headers(self.extra_headers())
             .send()
             .await
-            .map_err(|err| ProviderError::RequestFailed(err.to_string()))?;
-        response_json(response).await
+            .map_err(|err| {
+                ProviderError::RequestFailed(crate::redact::redact_sensitive(
+                    &err.to_string(),
+                    &self.config.api_key,
+                ))
+            })?;
+        response_json(response, &self.config.api_key).await
     }
 
     fn extra_headers(&self) -> reqwest::header::HeaderMap {
@@ -620,12 +630,12 @@ impl Provider for AtlasProvider {
     }
 }
 
-async fn response_json(response: reqwest::Response) -> ProviderResultValue<Value> {
+async fn response_json(response: reqwest::Response, api_key: &str) -> ProviderResultValue<Value> {
     let status = response.status();
-    let text = response
-        .text()
-        .await
-        .map_err(|err| ProviderError::RequestFailed(err.to_string()))?;
+    let text = response.text().await.map_err(|err| {
+        ProviderError::RequestFailed(crate::redact::redact_sensitive(&err.to_string(), api_key))
+    })?;
+    let text = crate::redact::redact_sensitive(&text, api_key);
     if !status.is_success() {
         return Err(ProviderError::RequestRejected(format!(
             "HTTP {}: {}",
