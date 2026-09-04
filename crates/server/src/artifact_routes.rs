@@ -70,12 +70,8 @@ pub(crate) async fn reject_output(
     Json(request): Json<RejectOutputRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let artifact = artifact_by_id(&state, &output_id).await?;
-    latest_output_scope(&state, &artifact).await?;
-    let allowed_states: &[&str] = if request.rerun {
-        &["pending"]
-    } else {
-        &["pending", "rejected"]
-    };
+    latest_output_scope_for_reject(&state, &artifact, request.rerun).await?;
+    let allowed_states: &[&str] = &["pending", "rejected"];
     let updated = state
         .store
         .set_artifact_review_state(&artifact.id, allowed_states, "rejected")
@@ -179,6 +175,33 @@ fn artifact_content_path(data_dir: &FsPath, storage_uri: &str) -> Result<PathBuf
 enum OutputSelectionScope {
     Run,
     SweepGroup(String),
+}
+
+async fn latest_output_scope_for_reject(
+    state: &AppState,
+    artifact: &ArtifactRecord,
+    rerun: bool,
+) -> Result<OutputSelectionScope, ApiError> {
+    match latest_output_scope(state, artifact).await {
+        Ok(scope) => Ok(scope),
+        Err(scope_err) if rerun => {
+            let Some(latest_run) = state
+                .store
+                .latest_workspace_run(&artifact.workspace_id)
+                .await
+                .map_err(ApiError::store)?
+            else {
+                return Err(scope_err);
+            };
+            if latest_run.force_rerun
+                && latest_run.parent_run_id.as_deref() == artifact.run_id.as_deref()
+            {
+                return Ok(selection_scope_for_run(&latest_run));
+            }
+            Err(scope_err)
+        }
+        Err(err) => Err(err),
+    }
 }
 
 async fn latest_output_scope(
@@ -475,14 +498,20 @@ mod tests {
         assert!(latest.force_rerun);
         assert!(latest.group_id.is_none());
 
-        let err = reject_output(
+        let _ = reject_output(
             Path(first_id),
-            State(state),
+            State(state.clone()),
             axum::Json(RejectOutputRequest { rerun: true }),
         )
         .await
-        .expect_err("repeated reject must not derive another run");
-        assert_eq!(err.status, axum::http::StatusCode::CONFLICT);
+        .expect("repeated reject+rerun reuses the existing child");
+        let again = state
+            .store
+            .latest_workspace_run(&artifact.workspace_id)
+            .await
+            .expect("latest after repeat")
+            .expect("run");
+        assert_eq!(again.id, latest.id);
     }
 
     async fn state_with_two_latest_outputs() -> (AppState, String, String, tempfile::TempDir) {

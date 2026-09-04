@@ -364,11 +364,11 @@ impl CanvasOpsContract {
                 ),
                 CanvasOpSpec::new(
                     "propose_layout",
-                    "Write proposal.json with move_node ops; do not call layout save.",
+                    "Write out/intent.json with move_node ops; do not call layout save.",
                 ),
                 CanvasOpSpec::new(
                     "propose_graph_ops",
-                    "Write proposal.json with bounded proposal ops.",
+                    "Write out/intent.json with bounded graph ops.",
                 ),
                 CanvasOpSpec::new(
                     "run_selected_workflow",
@@ -558,5 +558,27 @@ mod tests {
             "compact canvas is {} bytes",
             bytes.len()
         );
+    }
+
+    #[test]
+    fn canvas_ops_contract_directs_graph_edits_to_intent_json() {
+        let contract = CanvasOpsContract::v1();
+        for op in ["propose_layout", "propose_graph_ops"] {
+            let spec = contract
+                .allowed_ops
+                .iter()
+                .find(|item| item.op == op)
+                .unwrap_or_else(|| panic!("{op} is part of the canvas ops contract"));
+            assert!(
+                spec.behavior.contains("out/intent.json"),
+                "{op} should write intent.json: {}",
+                spec.behavior
+            );
+            assert!(
+                !spec.behavior.contains("proposal.json"),
+                "{op} must not mention proposal.json: {}",
+                spec.behavior
+            );
+        }
     }
 }

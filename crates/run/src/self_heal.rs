@@ -87,6 +87,13 @@ where
     /// same observable retry events used by failure self-repair.
     pub async fn retry_rejected_run(&self, parent_run_id: &str) -> RunResult<RunRecord> {
         let parent = self.store.run(parent_run_id).await?;
+        if matches!(parent.status.as_str(), "queued" | "estimating" | "running") {
+            return Err(RunError::InvalidRunStatus {
+                run_id: parent.id,
+                expected: "terminal",
+                actual: parent.status,
+            });
+        }
         let estimate = parent
             .estimate_json
             .as_deref()
@@ -252,8 +259,6 @@ where
 fn concurrent_reject_retry_start_lost(err: &RunError) -> bool {
     matches!(
         err,
-        RunError::InvalidRunStatus { .. }
-            | RunError::RunClaimContention(_)
-            | RunError::WorkspaceBusy { .. }
+        RunError::InvalidRunStatus { .. } | RunError::RunClaimContention(_)
     )
 }
