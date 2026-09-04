@@ -7,6 +7,7 @@ import '../src/node-library.css';
 
 import { GraphCanvas } from '../src/components/graph-canvas';
 import type {
+  CanvasSnapshotUpdate,
   GraphNodeState,
   ManualProposalInput,
   NodeCatalog,
@@ -18,16 +19,18 @@ declare global {
     __helixflowE2E: {
       logicalNodeCount: number;
       proposals: ManualProposalInput[];
+      snapshots: CanvasSnapshotUpdate[];
       rejectOps: string[];
     };
   }
 }
 
 const proposals: ManualProposalInput[] = [];
+const snapshots: CanvasSnapshotUpdate[] = [];
 const requestedCount = Number.parseInt(new URLSearchParams(location.search).get('nodes') ?? '2', 10);
 const logicalNodeCount = Number.isFinite(requestedCount) ? Math.max(2, requestedCount) : 2;
 const graph = graphFixture(logicalNodeCount);
-window.__helixflowE2E = { logicalNodeCount, proposals, rejectOps: [] };
+window.__helixflowE2E = { logicalNodeCount, proposals, snapshots, rejectOps: [] };
 
 const nativeFetch = window.fetch.bind(window);
 window.fetch = async (input, init) => {
@@ -68,6 +71,15 @@ createRoot(document.getElementById('root')!).render(
         const operation = proposal.ops[0]?.op;
         if (operation && window.__helixflowE2E.rejectOps.includes(operation)) {
           throw new Error(`${operation} rejected`);
+        }
+      }}
+      onSaveCanvasSnapshot={async (update) => {
+        snapshots.push(update);
+        if (update.positions?.length && window.__helixflowE2E.rejectOps.includes('move_node')) {
+          throw new Error('move_node rejected');
+        }
+        if (update.sizes?.length && window.__helixflowE2E.rejectOps.includes('resize_node')) {
+          throw new Error('resize_node rejected');
         }
       }}
     />

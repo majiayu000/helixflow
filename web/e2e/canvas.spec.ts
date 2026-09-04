@@ -29,9 +29,9 @@ test('selects, moves, connects, and deletes through the real React Flow canvas',
   await page.mouse.down();
   await page.mouse.move(textBox.x + 160, textBox.y + 84, { steps: 5 });
   await page.mouse.up();
-  await expect.poll(() => proposalOps(page)).toContain('move_node');
+  await expect.poll(() => snapshotKinds(page)).toContain('move');
 
-  await page.evaluate(() => window.__helixflowE2E.proposals.splice(0));
+  await page.evaluate(() => window.__helixflowE2E.snapshots.splice(0));
   const source = textNode.locator('.react-flow__handle.source');
   const target = videoNode.locator('.react-flow__handle.target');
   const sourceBox = await source.boundingBox();
@@ -65,7 +65,7 @@ test('resizes a selected node through React Flow NodeResizer', async ({ page }) 
   await page.mouse.move(handleBox.x + 80, handleBox.y + 60, { steps: 6 });
   await page.mouse.up();
 
-  await expect.poll(() => proposalOps(page)).toContain('resize_node');
+  await expect.poll(() => snapshotKinds(page)).toContain('resize');
 });
 
 test('reverts transient drag and resize state when persistence rejects', async ({ page }) => {
@@ -118,4 +118,13 @@ async function proposalOps(page: Page): Promise<string[]> {
   return page.evaluate(() => window.__helixflowE2E.proposals.flatMap(
     (proposal) => proposal.ops.map((operation) => operation.op),
   ));
+}
+
+async function snapshotKinds(page: Page): Promise<string[]> {
+  return page.evaluate(() => window.__helixflowE2E.snapshots.flatMap((snapshot) => {
+    const kinds: string[] = [];
+    if (snapshot.positions?.length) kinds.push('move');
+    if (snapshot.sizes?.length) kinds.push('resize');
+    return kinds;
+  }));
 }
