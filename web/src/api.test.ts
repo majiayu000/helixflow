@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { connectWorkspaceEvents } from './api';
+import { connectWorkspaceEvents, workspaceEventReconnectDelayMs } from './api';
 import type { RunEventEnvelope } from './types';
 import { jsonResponse, runEvent as baseRunEvent, waitUntil } from './test-utils';
 
@@ -62,6 +62,49 @@ describe('connectWorkspaceEvents', () => {
     expect(MockWebSocket.sockets[0]?.url).toBe(
       'ws://localhost/ws?workspace_id=ws_test&ticket=ticket_1',
     );
+    cleanup();
+  });
+
+  it('backs off websocket reconnect delay up to 30s', () => {
+    expect(workspaceEventReconnectDelayMs(0, () => 0)).toBe(1000);
+    expect(workspaceEventReconnectDelayMs(1, () => 0)).toBe(2000);
+    expect(workspaceEventReconnectDelayMs(5, () => 0)).toBe(30000);
+  });
+
+  it('forwards ws.lagged events without seq-gap catch-up', async () => {
+    stubBrowser();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith('/api/workspaces/ws_test/events?afterSeq=')) {
+          return jsonResponse({ events: [] });
+        }
+        if (url === '/api/canvases/ws_test/ticket') {
+          return jsonResponse({ mode: 'disabled' });
+        }
+        return new Response('{}', { status: 404 });
+      }),
+    );
+    const applied: string[] = [];
+    const cleanup = connectWorkspaceEvents('ws_test', {
+      getLastSeq: () => 4,
+      onEvent: (event) => applied.push(event.ev),
+      onStatus: () => undefined,
+    });
+    await waitUntil(
+      () => (MockWebSocket.sockets[0]?.listeners.get('message')?.length ?? 0) > 0,
+    );
+    MockWebSocket.sockets[0]?.emitMessage({
+      workspace_id: 'ws_test',
+      run_id: 'ws_test',
+      seq: 0,
+      server_time: '1970-01-01T00:00:00Z',
+      ev: 'ws.lagged',
+      data: { skipped: 9 },
+    });
+    await waitUntil(() => applied.includes('ws.lagged'));
+    expect(applied).toEqual(['ws.lagged']);
     cleanup();
   });
 

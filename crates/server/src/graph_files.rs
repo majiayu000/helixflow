@@ -129,7 +129,7 @@ async fn safe_write_path(
     Ok(full_path)
 }
 
-fn is_safe_relative_path(path: &Path) -> bool {
+pub(crate) fn is_safe_relative_path(path: &Path) -> bool {
     !path.as_os_str().is_empty()
         && path
             .components()

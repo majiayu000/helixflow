@@ -317,7 +317,7 @@ impl Store {
                   AND NOT EXISTS (
                       SELECT 1 FROM run_terminalization_work_items
                       WHERE run_id = artifact_publish_journal.run_id
-                        AND state IN ('settling', 'ready')
+                        AND state = 'settling'
                   )
                 RETURNING operation_key, run_id, run_step_id, staged_path, published_path,
                           artifact_id, content_sha256, state, owner_id, expires_at,

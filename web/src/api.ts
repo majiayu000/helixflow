@@ -43,7 +43,17 @@ type EventHandlers = {
   isPrimaryStream?: (runId: string) => boolean;
 };
 
-const RECONNECT_DELAY_MS = 1000;
+const RECONNECT_BASE_MS = 1000;
+const RECONNECT_MAX_MS = 30_000;
+
+export function workspaceEventReconnectDelayMs(
+  failedAttempts: number,
+  random: () => number = Math.random,
+): number {
+  const exp = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** Math.max(0, failedAttempts));
+  const jitter = Math.floor(random() * exp * 0.25);
+  return Math.min(RECONNECT_MAX_MS, exp + jitter);
+}
 
 export async function fetchWorkspaceState(
   workspaceId: string,
@@ -606,6 +616,8 @@ export function connectWorkspaceEvents(
   const controller = new AbortController();
   const lastSeq = () => handlers.getLastSeq?.() ?? 0;
 
+  let reconnectAttempts = 0;
+
   const fetchMissingEvents = () => {
     if (!catchup) {
       catchup = fetchWorkspaceEvents(workspaceId, lastSeq(), controller.signal)
@@ -625,10 +637,12 @@ export function connectWorkspaceEvents(
 
   const scheduleReconnect = () => {
     if (closed || reconnectTimer) return;
+    const delay = workspaceEventReconnectDelayMs(reconnectAttempts);
+    reconnectAttempts += 1;
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
       void connect();
-    }, RECONNECT_DELAY_MS);
+    }, delay);
   };
 
   const streamSeq = (runId: string) =>
@@ -667,7 +681,10 @@ export function connectWorkspaceEvents(
     }
     socket = new WebSocket(url.toString());
 
-    socket.addEventListener('open', () => handlers.onStatus('live'));
+    socket.addEventListener('open', () => {
+      reconnectAttempts = 0;
+      handlers.onStatus('live');
+    });
     socket.addEventListener('close', () => {
       handlers.onStatus('offline');
       scheduleReconnect();
@@ -681,6 +698,10 @@ export function connectWorkspaceEvents(
         const parsed = RunEventEnvelopeSchema.safeParse(JSON.parse(String(message.data)));
         if (parsed.success) {
           if (parsed.data.workspace_id !== workspaceId) return;
+          if (parsed.data.ev === 'ws.lagged') {
+            handlers.onEvent(parsed.data);
+            return;
+          }
           if (parsed.data.ev === 'canvas.presence') {
             const presence = CanvasPresenceSchema.safeParse(parsed.data.data);
             if (presence.success) {

@@ -87,6 +87,13 @@ where
     /// same observable retry events used by failure self-repair.
     pub async fn retry_rejected_run(&self, parent_run_id: &str) -> RunResult<RunRecord> {
         let parent = self.store.run(parent_run_id).await?;
+        if matches!(parent.status.as_str(), "queued" | "estimating" | "running") {
+            return Err(RunError::InvalidRunStatus {
+                run_id: parent.id,
+                expected: "terminal",
+                actual: parent.status,
+            });
+        }
         let estimate = parent
             .estimate_json
             .as_deref()
@@ -96,38 +103,48 @@ where
             Some(estimate) => run_requires_confirmation(estimate)?,
             None => true,
         };
-        let child = self.store.create_retry_run(parent_run_id, true).await?;
-        self.emit(
-            &parent.workspace_id,
-            &parent.id,
-            "run.retry",
-            json!({
-                "child_run_id": child.id,
-                "attempt": child.attempt,
-                "requires_confirmation": requires_confirmation,
-                "previous_error": parent.error_json,
-                "reason": "output_rejected",
-            }),
-        )
-        .await?;
-        if requires_confirmation {
+        let (child, created) = self
+            .store
+            .create_reject_retry_run_once(parent_run_id)
+            .await?;
+        if created {
             self.emit(
-                &child.workspace_id,
-                &child.id,
-                "run.retry_pending",
+                &parent.workspace_id,
+                &parent.id,
+                "run.retry",
                 json!({
-                    "parent_run_id": parent.id,
-                    "estimate": estimate,
+                    "child_run_id": child.id,
+                    "attempt": child.attempt,
+                    "requires_confirmation": requires_confirmation,
+                    "previous_error": parent.error_json,
                     "reason": "output_rejected",
                 }),
             )
             .await?;
-        } else if let Err(err) = self.start_confirmed_run(&child.id).await {
+            if requires_confirmation {
+                self.emit(
+                    &child.workspace_id,
+                    &child.id,
+                    "run.retry_pending",
+                    json!({
+                        "parent_run_id": parent.id,
+                        "estimate": estimate,
+                        "reason": "output_rejected",
+                    }),
+                )
+                .await?;
+            }
+        }
+        if !requires_confirmation
+            && child.status == RunStatus::WaitingConfirmation.as_str()
+            && let Err(err) = self.start_confirmed_run(&child.id).await
+            && !concurrent_reject_retry_start_lost(&err)
+        {
             self.emit_retry_failure(&child.workspace_id, &child.id, &err)
                 .await;
             return Err(err);
         }
-        Ok(child)
+        Ok(self.store.run(&child.id).await?)
     }
 
     pub(crate) async fn continue_self_heal_from_failed(&self, run: &RunRecord) -> RunResult<()> {
@@ -237,4 +254,11 @@ where
             child_interrupt,
         ))
     }
+}
+
+fn concurrent_reject_retry_start_lost(err: &RunError) -> bool {
+    matches!(
+        err,
+        RunError::InvalidRunStatus { .. } | RunError::RunClaimContention(_)
+    )
 }

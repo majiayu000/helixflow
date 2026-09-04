@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
 use std::io;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use helixflow_graph::{ProposalOp, WorkflowGraph};
 use helixflow_store::{ProposalRecord, Store, VersionRecord};
@@ -9,6 +9,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
+use crate::graph_files::is_safe_relative_path;
 use crate::version_file_consistency::{VersionFileConsistencyError, read_version_graph};
 
 const CANDIDATE_KINDS: [&str; 6] = [
@@ -380,13 +381,6 @@ fn is_simple_uuid(value: &str) -> bool {
         && bytes[12] == b'7'
         && matches!(bytes[16], b'8' | b'9' | b'a' | b'b')
         && Uuid::parse_str(value).is_ok()
-}
-
-fn is_safe_relative_path(path: &Path) -> bool {
-    !path.as_os_str().is_empty()
-        && path
-            .components()
-            .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
 }
 
 fn map_version_error(

@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 mod atlas;
 mod fal;
 mod mock_media;
+mod redact;
 mod registry;
 mod runtime_provider;
 

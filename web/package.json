@@ -8,6 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "lint": "biome check src e2e",
     "test:e2e": "playwright test",
     "test:e2e:performance": "playwright test e2e/canvas.performance.spec.ts"
   },
@@ -15,10 +16,11 @@
     "@xyflow/react": "12.11.5",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "zustand": "^5.0.15",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.2.4",
     "@playwright/test": "1.62.1",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",

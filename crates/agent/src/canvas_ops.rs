@@ -237,6 +237,42 @@ fn is_sensitive_param_value(value: &str) -> bool {
         || value.starts_with("file://")
 }
 
+pub fn redact_graph_secrets(graph: &WorkflowGraph) -> WorkflowGraph {
+    let mut graph = graph.clone();
+    for node in graph.nodes.values_mut() {
+        if is_sensitive_param_value(&node.title) {
+            node.title = "[redacted]".to_owned();
+        }
+        node.params = redact_secret_value(None, &node.params);
+    }
+    graph
+}
+
+fn redact_secret_value(key: Option<&str>, value: &Value) -> Value {
+    if key.is_some_and(is_sensitive_param_key) {
+        return Value::String("[redacted]".to_owned());
+    }
+    match value {
+        Value::Object(object) => {
+            let mut projected = Map::new();
+            for (key, value) in object {
+                projected.insert(key.clone(), redact_secret_value(Some(key), value));
+            }
+            Value::Object(projected)
+        }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| redact_secret_value(None, item))
+                .collect(),
+        ),
+        Value::String(text) if is_sensitive_param_value(text) => {
+            Value::String("[redacted]".to_owned())
+        }
+        other => other.clone(),
+    }
+}
+
 fn looks_like_credential_segment(segment: &str) -> bool {
     let segment = segment.trim_matches(|character: char| {
         !character.is_ascii_alphanumeric() && !matches!(character, '_' | '-' | '.')
@@ -328,11 +364,11 @@ impl CanvasOpsContract {
                 ),
                 CanvasOpSpec::new(
                     "propose_layout",
-                    "Write proposal.json with move_node ops; do not call layout save.",
+                    "Write out/intent.json with move_node ops; do not call layout save.",
                 ),
                 CanvasOpSpec::new(
                     "propose_graph_ops",
-                    "Write proposal.json with bounded proposal ops.",
+                    "Write out/intent.json with bounded graph ops.",
                 ),
                 CanvasOpSpec::new(
                     "run_selected_workflow",
@@ -423,6 +459,48 @@ mod tests {
     }
 
     #[test]
+    fn redact_graph_secrets_keeps_topology_and_prompts() {
+        let graph = WorkflowGraph {
+            schema_version: 1,
+            catalog_revision: None,
+            nodes: BTreeMap::from([(
+                "video".to_owned(),
+                GraphNode {
+                    node_type: "video.text_to_video".to_owned(),
+                    title: "Video".to_owned(),
+                    params: json!({
+                        "prompt": "a long product shot that must survive redaction without truncation",
+                        "duration_sec": 4,
+                        "api_key": "sk-secret",
+                        "storage_uri": "/Users/example/private.mov",
+                    }),
+                    pos: [0.0, 0.0],
+                    size: None,
+                    semantics: None,
+                },
+            )]),
+            edges: vec![GraphEdge {
+                from: ["video".to_owned(), "video".to_owned()],
+                to: ["save".to_owned(), "artifact".to_owned()],
+                edge_type: "artifact".to_owned(),
+            }],
+        };
+
+        let redacted = redact_graph_secrets(&graph);
+        let encoded = serde_json::to_string(&redacted).expect("graph json");
+        assert_eq!(
+            redacted.nodes["video"].params["prompt"],
+            "a long product shot that must survive redaction without truncation"
+        );
+        assert_eq!(redacted.nodes["video"].params["duration_sec"], 4);
+        assert_eq!(redacted.nodes["video"].params["api_key"], "[redacted]");
+        assert_eq!(redacted.nodes["video"].params["storage_uri"], "[redacted]");
+        assert_eq!(redacted.edges.len(), 1);
+        assert!(!encoded.contains("sk-secret"));
+        assert!(!encoded.contains("/Users/example"));
+    }
+
+    #[test]
     fn compact_canvas_stays_within_the_dynamic_tool_byte_limit() {
         let long_text = "x".repeat(500);
         let params = Value::Object(
@@ -480,5 +558,27 @@ mod tests {
             "compact canvas is {} bytes",
             bytes.len()
         );
+    }
+
+    #[test]
+    fn canvas_ops_contract_directs_graph_edits_to_intent_json() {
+        let contract = CanvasOpsContract::v1();
+        for op in ["propose_layout", "propose_graph_ops"] {
+            let spec = contract
+                .allowed_ops
+                .iter()
+                .find(|item| item.op == op)
+                .unwrap_or_else(|| panic!("{op} is part of the canvas ops contract"));
+            assert!(
+                spec.behavior.contains("out/intent.json"),
+                "{op} should write intent.json: {}",
+                spec.behavior
+            );
+            assert!(
+                !spec.behavior.contains("proposal.json"),
+                "{op} must not mention proposal.json: {}",
+                spec.behavior
+            );
+        }
     }
 }

@@ -72,6 +72,8 @@ mod workspace_state_run;
 #[cfg(test)]
 mod workspace_state_tests;
 mod ws;
+#[cfg(test)]
+mod ws_tests;
 
 use agent_contract_observation::agent_contract_evidence;
 use agent_turn_control::interrupt_workspace_agent_turn;
@@ -200,7 +202,7 @@ pub(crate) fn version_file_reconciliation_event(report: &ReconciliationReport) -
     .to_string()
 }
 
-fn app(state: AppState) -> Router {
+pub(crate) fn app(state: AppState) -> Router {
     Router::new()
         .route("/login", get(login_page))
         .route("/api/auth/session", post(create_auth_session))

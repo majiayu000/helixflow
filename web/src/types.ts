@@ -23,7 +23,7 @@ const CostSchema = z.object({
   currency: z.string(),
 });
 
-const PrimaryChatMessageKindSchema = z.enum([
+export const PRIMARY_CHAT_MESSAGE_KINDS = [
   'text',
   'chat',
   'clarify',
@@ -35,7 +35,9 @@ const PrimaryChatMessageKindSchema = z.enum([
   'agent_status',
   'agent_error',
   'agent_interrupted',
-]);
+] as const;
+
+const PrimaryChatMessageKindSchema = z.enum(PRIMARY_CHAT_MESSAGE_KINDS);
 
 const AgentLogMessageKindSchema = z.custom<`agent_log:${string}`>(
   (value) => typeof value === 'string' && value.startsWith('agent_log:'),

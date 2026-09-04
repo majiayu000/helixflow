@@ -85,6 +85,24 @@ where
         interrupt: RunInterrupt,
         force_rerun: bool,
     ) -> RunResult<RunOutcome> {
+        let result = self
+            .execute_created_run_inner(run, workspace_id, plan, interrupt, force_rerun)
+            .await;
+        if let Err(err) = &result {
+            self.fail_active_run_after_error(workspace_id, &run.id, err)
+                .await;
+        }
+        result
+    }
+
+    async fn execute_created_run_inner(
+        &self,
+        run: &RunRecord,
+        workspace_id: &str,
+        plan: &ExecutionPlan,
+        interrupt: RunInterrupt,
+        force_rerun: bool,
+    ) -> RunResult<RunOutcome> {
         let steps = self.ensure_run_steps(&run.id, plan).await?;
         let dag = StepDag::from_plan(plan)?;
         self.ensure_execution_intent(&run.id, plan, run.estimate_json.as_deref())

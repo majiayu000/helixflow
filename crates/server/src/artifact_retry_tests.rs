@@ -98,6 +98,43 @@ async fn reject_with_rerun_executes_provider_bypasses_cache_and_records_actual_c
     assert_eq!(retry_event.data["reason"], "output_rejected");
 }
 
+#[tokio::test]
+async fn reject_rerun_reuses_the_same_child_for_the_same_parent() {
+    let (state, workspace_id, version_id, _dir) = review_state().await;
+    let parent = state
+        .runner
+        .prepare_manual_run(ManualRunRequest {
+            workspace_id: workspace_id.clone(),
+            version_id,
+            group_id: None,
+            label: "Review parent".to_owned(),
+            provider: "mock".to_owned(),
+            graph: review_graph(),
+            force_rerun: false,
+        })
+        .await
+        .expect("prepare parent");
+    state
+        .runner
+        .start_confirmed_run(&parent.run.id)
+        .await
+        .expect("start parent");
+    wait_for_review_status(&state.store, &parent.run.id, "succeeded").await;
+
+    let first = state
+        .runner
+        .retry_rejected_run(&parent.run.id)
+        .await
+        .expect("first reject retry");
+    let second = state
+        .runner
+        .retry_rejected_run(&parent.run.id)
+        .await
+        .expect("second reject retry");
+    assert_eq!(first.id, second.id);
+    assert_eq!(first.parent_run_id.as_deref(), Some(parent.run.id.as_str()));
+}
+
 fn step_was_cached(metadata_json: Option<&str>) -> bool {
     metadata_json
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())

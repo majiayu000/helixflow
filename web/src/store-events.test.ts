@@ -127,6 +127,19 @@ describe('run retry events', () => {
     expect(shouldRefetchWorkspaceState(state, event)).toBe(true);
   });
 
+  it('refetches when the websocket reports lag', () => {
+    expect(
+      shouldRefetchWorkspaceState(state, {
+        workspace_id: 'ws_1',
+        run_id: 'ws_1',
+        seq: 0,
+        server_time: '1970-01-01T00:00:00Z',
+        ev: 'ws.lagged',
+        data: { skipped: 12 },
+      }),
+    ).toBe(true);
+  });
+
   it('refetches when a child retry announces pending confirmation', () => {
     expect(
       shouldRefetchWorkspaceState(state, {

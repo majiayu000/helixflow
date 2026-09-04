@@ -74,3 +74,26 @@ async fn post_message_rejects_empty_text() {
     assert_eq!(err.status, StatusCode::BAD_REQUEST);
     assert!(err.message.contains("empty agent turn"));
 }
+
+#[tokio::test]
+async fn post_message_rejects_oversized_text() {
+    let (state, workspace_id, version_id, _dir) = state_with_workspace().await;
+
+    let err = post_workspace_message(
+        Path(workspace_id),
+        State(state),
+        Json(WorkspaceMessageRequest {
+            base_version_id: version_id,
+            user_message: "x".repeat(32 * 1024 + 1),
+            graph: sample_graph(),
+            canvas_context: None,
+            conversation_id: None,
+            turn_mode: None,
+        }),
+    )
+    .await
+    .expect_err("oversized text should stay invalid");
+
+    assert_eq!(err.status, StatusCode::BAD_REQUEST);
+    assert!(err.message.contains("exceeds"));
+}

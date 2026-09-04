@@ -424,7 +424,7 @@ impl Store {
     }
 }
 
-async fn run_in_transaction(
+pub(crate) async fn run_in_transaction(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     run_id: &str,
 ) -> StoreResult<RunRecord> {

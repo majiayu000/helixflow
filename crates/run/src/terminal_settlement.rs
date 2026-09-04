@@ -8,7 +8,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use super::provider_recovery::durable_task;
-use super::{RunEventEnvelope, RunResult, RunService};
+use super::{RunError, RunEventEnvelope, RunResult, RunService, RunStatus};
 
 const TERMINALIZATION_LEASE_SECONDS: i64 = 60;
 const REMOTE_CANCEL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -180,5 +180,29 @@ where
             }
         }
         Ok(())
+    }
+
+    pub(crate) async fn fail_active_run_after_error(
+        &self,
+        workspace_id: &str,
+        run_id: &str,
+        err: &RunError,
+    ) {
+        let error_json = serde_json::to_string(&json!({ "error": err.public_message() }))
+            .unwrap_or_else(|_| r#"{"error":"run failed"}"#.to_owned());
+        if let Err(settle_err) = self
+            .request_and_settle_terminal(
+                workspace_id,
+                run_id,
+                RunStatus::Failed.as_str(),
+                Some(&error_json),
+            )
+            .await
+        {
+            eprintln!(
+                "run `{run_id}` failed to settle after error `{}`: {settle_err}",
+                err.public_message()
+            );
+        }
     }
 }
