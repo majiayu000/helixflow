@@ -16,6 +16,7 @@ const TOTAL_TIMEOUT: Duration = Duration::from_secs(90);
 const MAX_REDIRECTS: usize = 5;
 const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
 const ATLAS_TOS_TUNNEL_SUFFIX: &str = ".tos-ap-southeast-1.volces.com";
+const ATLAS_OSS_TUNNEL_HOST: &str = "atlas-media.oss-us-west-1.aliyuncs.com";
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RemotePolicy {
@@ -249,8 +250,8 @@ pub(crate) fn validate_resolved_addresses(addresses: &[IpAddr]) -> RunResult<()>
 
 /// Clash-style TUN DNS intentionally maps public names into 198.18.0.0/15.
 /// Keep the default SSRF policy fail-closed and permit that synthetic range
-/// only for Atlas' exact Volcengine TOS CDN suffix. Literal benchmark IPs,
-/// other hostnames, mixed private answers, and redirects remain rejected.
+/// only for Atlas' known media hosts. Literal benchmark IPs, other hostnames,
+/// mixed private answers, and redirects remain rejected.
 pub(crate) fn validate_resolved_addresses_for_url(
     url: &Url,
     addresses: &[IpAddr],
@@ -258,7 +259,7 @@ pub(crate) fn validate_resolved_addresses_for_url(
     if validate_resolved_addresses(addresses).is_ok() {
         return Ok(());
     }
-    if addresses.is_empty() || !is_atlas_tos_tunnel_host(url) {
+    if addresses.is_empty() || !is_atlas_media_tunnel_host(url) {
         return Err(remote_error("remote artifact target is not allowed"));
     }
     if addresses.iter().all(|address| match address {
@@ -270,14 +271,12 @@ pub(crate) fn validate_resolved_addresses_for_url(
     Err(remote_error("remote artifact target is not allowed"))
 }
 
-fn is_atlas_tos_tunnel_host(url: &Url) -> bool {
+fn is_atlas_media_tunnel_host(url: &Url) -> bool {
     let Some(url::Host::Domain(domain)) = url.host() else {
         return false;
     };
-    domain
-        .trim_end_matches('.')
-        .to_ascii_lowercase()
-        .ends_with(ATLAS_TOS_TUNNEL_SUFFIX)
+    let normalized = domain.trim_end_matches('.').to_ascii_lowercase();
+    normalized.ends_with(ATLAS_TOS_TUNNEL_SUFFIX) || normalized == ATLAS_OSS_TUNNEL_HOST
 }
 
 fn is_benchmark_tunnel_ipv4(address: Ipv4Addr) -> bool {

@@ -625,6 +625,23 @@ impl Store {
         .await?)
     }
 
+    pub async fn run_terminalization(
+        &self,
+        run_id: &str,
+    ) -> StoreResult<Option<RunTerminalizationRecord>> {
+        Ok(sqlx::query_as::<_, RunTerminalizationRecord>(
+            r#"
+            SELECT run_id, desired_status, state, error_json, owner_id,
+                   lease_expires_at, created_at, updated_at, completed_at
+            FROM run_terminalization_work_items
+            WHERE run_id = ?
+            "#,
+        )
+        .bind(run_id)
+        .fetch_optional(self.pool())
+        .await?)
+    }
+
     pub async fn request_run_terminalization(
         &self,
         run_id: &str,

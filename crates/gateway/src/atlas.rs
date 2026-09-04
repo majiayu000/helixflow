@@ -256,13 +256,14 @@ impl AtlasProvider {
                     "num_images": req.params.get("num_images").and_then(Value::as_u64).unwrap_or(1),
                     "aspect_ratio": optional_string(&req.params, "aspect_ratio").unwrap_or_else(|| "1:1".to_owned())
                 }),
-            )
+        )
             .await?;
         let output = first_output(&response)?;
+        let mime = image_mime_from_output(&output)?;
         Ok(remote_output_result(
             "image",
             ArtifactKind::Image,
-            "image/png",
+            mime,
             output,
             json!({ "provider": "atlas", "model": model, "capability": req.capability }),
         ))
@@ -700,6 +701,25 @@ fn first_output(response: &Value) -> ProviderResultValue<String> {
     Err(ProviderError::InvalidResponse(
         "Atlas response missing outputs or urls".to_owned(),
     ))
+}
+
+fn image_mime_from_output(output: &str) -> ProviderResultValue<&'static str> {
+    let url = reqwest::Url::parse(output).map_err(|_| {
+        ProviderError::InvalidResponse("Atlas image output URL is invalid".to_owned())
+    })?;
+    let extension = url
+        .path_segments()
+        .and_then(Iterator::last)
+        .and_then(|name| name.rsplit_once('.').map(|(_, extension)| extension))
+        .map(str::to_ascii_lowercase);
+
+    match extension.as_deref() {
+        Some("png") => Ok("image/png"),
+        Some("jpg") | Some("jpeg") => Ok("image/jpeg"),
+        _ => Err(ProviderError::InvalidResponse(
+            "Atlas image output has an unsupported media type".to_owned(),
+        )),
+    }
 }
 
 fn is_safe_task_id(task_id: &str) -> bool {

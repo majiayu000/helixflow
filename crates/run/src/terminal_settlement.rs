@@ -114,7 +114,21 @@ where
                         .await?;
                     }
                     PROVIDER_TASK_RESULT_READY => {
-                        if self
+                        let persisted_status = self
+                            .store
+                            .run_terminalization(run_id)
+                            .await?
+                            .map(|work| work.desired_status)
+                            .unwrap_or_else(|| desired_status.to_owned());
+                        if persisted_status == "interrupted" {
+                            self.store
+                                .complete_provider_task(
+                                    &task.id,
+                                    PROVIDER_TASK_RESULT_READY,
+                                    Some("ARTIFACT_MATERIALIZATION_INTERRUPTED"),
+                                )
+                                .await?;
+                        } else if self
                             .store
                             .provider_task_timing(&task.id)
                             .await?
