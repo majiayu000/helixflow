@@ -185,6 +185,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn run_creation_busy_error_maps_to_http_409() {
+        let error = ApiError::run(
+            StoreError::WorkspaceBusy {
+                workspace_id: "ws_1".to_owned(),
+                active_run_id: "run_1".to_owned(),
+            }
+            .into(),
+        );
+        assert_eq!(error.status, StatusCode::CONFLICT);
+        assert!(error.message.contains("ws_1"));
+        assert!(error.message.contains("run_1"));
+    }
+
+    #[test]
     fn optimistic_store_conflicts_map_to_http_409() {
         let version = ApiError::store(StoreError::VersionConflict {
             workspace_id: "ws_1".to_owned(),

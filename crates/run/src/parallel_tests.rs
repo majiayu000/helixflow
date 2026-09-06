@@ -110,6 +110,43 @@ fn manual_request(workspace_id: &str, version_id: &str) -> ManualRunRequest {
 }
 
 #[tokio::test]
+async fn synchronous_manual_create_rejects_busy_workspace_before_dispatch() {
+    let (store, _dir) = open_temp_store().await;
+    let (workspace_id, version_id) = workspace_version(&store).await;
+    let active = store
+        .create_run(NewRun {
+            workspace_id: &workspace_id,
+            version_id: &version_id,
+            group_id: None,
+            label: "Already queued",
+            trigger: "manual",
+            plan_json: None,
+            estimate_json: None,
+            status: "queued",
+        })
+        .await
+        .expect("active run");
+    let provider = BlockingParallelProvider::default();
+    let service = RunService::with_provider(store.clone(), provider.clone());
+    let err = service
+        .execute_manual_run(manual_request(&workspace_id, &version_id))
+        .await
+        .expect_err("storage rejects a second active create");
+    assert!(matches!(
+        err, RunError::WorkspaceBusy { active_run_id, .. } if active_run_id == active.id
+    ));
+    assert_eq!(provider.started_count(), 0);
+    assert_eq!(
+        store
+            .active_workspace_runs(&workspace_id)
+            .await
+            .expect("active runs")
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn ready_independent_steps_run_concurrently_when_limit_allows() {
     let (store, _dir) = open_temp_store().await;
     let (workspace_id, version_id) = workspace_version(&store).await;

@@ -172,10 +172,19 @@ mod tests {
                 trigger: "manual",
                 plan_json: None,
                 estimate_json: None,
-                status,
+                status: "waiting_confirmation",
             })
             .await
             .expect("create run");
+        // Cleanup must still handle historical overlapping active runs. Seed
+        // those states explicitly now that create_run rejects new overlaps.
+        sqlx::query("UPDATE runs SET status = ? WHERE id = ?")
+            .bind(status)
+            .bind(&run.id)
+            .execute(store.pool())
+            .await
+            .expect("seed historical run status");
+        let run = store.run(&run.id).await.expect("seeded run");
         store
             .create_run_step(NewRunStep {
                 run_id: &run.id,

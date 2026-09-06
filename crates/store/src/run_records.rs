@@ -140,51 +140,6 @@ pub struct CostLedgerRecord {
 }
 
 impl Store {
-    pub async fn create_run(&self, input: NewRun<'_>) -> StoreResult<RunRecord> {
-        let id = new_id("run");
-        let actual_workspace_id: Option<String> = sqlx::query_scalar(
-            r#"
-            SELECT workspace_id
-            FROM versions
-            WHERE id = ?
-            "#,
-        )
-        .bind(input.version_id)
-        .fetch_optional(self.pool())
-        .await?;
-        if actual_workspace_id.as_deref() != Some(input.workspace_id) {
-            return Err(super::StoreError::RunVersionMismatch {
-                workspace_id: input.workspace_id.to_owned(),
-                version_id: input.version_id.to_owned(),
-                actual_workspace_id,
-            });
-        }
-
-        sqlx::query(
-            r#"
-            INSERT INTO runs (
-                id, workspace_id, version_id, group_id, label, trigger, plan_json,
-                estimate_json, status, force_rerun, created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp)
-            "#,
-        )
-        .bind(&id)
-        .bind(input.workspace_id)
-        .bind(input.version_id)
-        .bind(input.group_id)
-        .bind(input.label)
-        .bind(input.trigger)
-        .bind(input.plan_json)
-        .bind(input.estimate_json)
-        .bind(input.status)
-        .bind(0_i64)
-        .execute(self.pool())
-        .await?;
-
-        self.run(&id).await
-    }
-
     pub async fn run(&self, run_id: &str) -> StoreResult<RunRecord> {
         Ok(sqlx::query_as::<_, RunRecord>(
             r#"
@@ -197,22 +152,6 @@ impl Store {
         )
         .bind(run_id)
         .fetch_one(self.pool())
-        .await?)
-    }
-
-    pub async fn active_workspace_runs(&self, workspace_id: &str) -> StoreResult<Vec<RunRecord>> {
-        Ok(sqlx::query_as::<_, RunRecord>(
-            r#"
-            SELECT id, workspace_id, version_id, group_id, label, trigger, plan_json,
-                   estimate_json, status, error_json, started_at, ended_at, created_at,
-                   parent_run_id, attempt, force_rerun
-            FROM runs
-            WHERE workspace_id = ? AND status IN ('queued', 'estimating', 'running')
-            ORDER BY created_at, id
-            "#,
-        )
-        .bind(workspace_id)
-        .fetch_all(self.pool())
         .await?)
     }
 

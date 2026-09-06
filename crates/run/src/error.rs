@@ -142,7 +142,16 @@ impl From<ProviderError> for RunError {
 
 impl From<StoreError> for RunError {
     fn from(err: StoreError) -> Self {
-        Self::Store(err)
+        match err {
+            StoreError::WorkspaceBusy {
+                workspace_id,
+                active_run_id,
+            } => Self::WorkspaceBusy {
+                workspace_id,
+                active_run_id,
+            },
+            other => Self::Store(other),
+        }
     }
 }
 
