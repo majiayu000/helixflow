@@ -330,7 +330,7 @@ where
             .await?;
         let mut claimed: Vec<String> = Vec::new();
         for run in runs {
-            let Some(claimed_run) = self
+            match self
                 .store
                 .update_run_status_if_current(
                     &run.id,
@@ -338,17 +338,23 @@ where
                     RunStatus::Running.as_str(),
                     None,
                 )
-                .await?
-            else {
-                self.revert_claimed_runs(&claimed).await?;
-                let current = self.store.run(&run.id).await?;
-                return Err(RunError::InvalidRunStatus {
-                    run_id: current.id,
-                    expected: RunStatus::WaitingConfirmation.as_str(),
-                    actual: current.status,
-                });
-            };
-            claimed.push(claimed_run.id.clone());
+                .await
+            {
+                Ok(Some(claimed_run)) => claimed.push(claimed_run.id.clone()),
+                Ok(None) => {
+                    self.revert_claimed_runs(&claimed).await?;
+                    let current = self.store.run(&run.id).await?;
+                    return Err(RunError::InvalidRunStatus {
+                        run_id: current.id,
+                        expected: RunStatus::WaitingConfirmation.as_str(),
+                        actual: current.status,
+                    });
+                }
+                Err(err) => {
+                    self.revert_claimed_runs(&claimed).await?;
+                    return Err(err.into());
+                }
+            }
         }
 
         let mut outcomes = Vec::new();

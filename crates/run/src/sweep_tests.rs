@@ -9,7 +9,7 @@ use helixflow_gateway::{
     ProviderResultValue, ProviderTaskHandle,
 };
 use helixflow_graph::{GraphEdge, GraphNode, WorkflowGraph};
-use helixflow_store::{NewVersion, Store, VersionSource};
+use helixflow_store::{NewRun, NewVersion, Store, VersionSource};
 use serde_json::json;
 use tokio::sync::Notify;
 
@@ -259,6 +259,67 @@ async fn invalid_sweep_confirmation_does_not_invoke_provider() {
 
     assert!(err.to_string().contains("unique"));
     assert_eq!(provider.invoke_count(), 0);
+}
+
+#[tokio::test]
+async fn confirm_sweep_runs_rejects_unrelated_active_workspace_run() {
+    let (store, _dir) = open_temp_store().await;
+    let (workspace_id, version_id) = workspace_version(&store).await;
+    let provider = CountingProvider::default();
+    let service = RunService::with_provider(store.clone(), provider.clone());
+    let pending = service
+        .request_sweep_plan(SweepPlan {
+            workspace_id: workspace_id.clone(),
+            version_id: version_id.clone(),
+            label: "Prompt sweep".to_owned(),
+            provider: "mock".to_owned(),
+            variants: vec![
+                SweepVariant {
+                    label: "one".to_owned(),
+                    graph: executable_graph(),
+                },
+                SweepVariant {
+                    label: "two".to_owned(),
+                    graph: executable_graph(),
+                },
+            ],
+        })
+        .await
+        .expect("request sweep");
+    let run_ids: Vec<String> = pending.runs.iter().map(|run| run.run.id.clone()).collect();
+
+    let blocker = store
+        .create_run(NewRun {
+            workspace_id: &workspace_id,
+            version_id: &version_id,
+            group_id: None,
+            label: "Unrelated",
+            trigger: "manual",
+            plan_json: None,
+            estimate_json: None,
+            status: "queued",
+        })
+        .await
+        .expect("occupy workspace");
+
+    let err = service
+        .confirm_sweep_runs(&run_ids, &run_ids[1])
+        .await
+        .expect_err("sweep confirm must respect workspace busy");
+    assert!(
+        matches!(
+            &err,
+            RunError::WorkspaceBusy { active_run_id, .. } if active_run_id == &blocker.id
+        ),
+        "expected WorkspaceBusy, got {err:?}"
+    );
+    assert_eq!(provider.invoke_count(), 0);
+    for run_id in run_ids {
+        assert_eq!(
+            store.run(&run_id).await.expect("sweep member").status,
+            "waiting_confirmation"
+        );
+    }
 }
 
 #[derive(Clone, Default)]
