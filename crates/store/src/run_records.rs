@@ -221,6 +221,10 @@ impl Store {
         self.run(run_id).await
     }
 
+    /// Compare-and-swap a run status. Promotions into `queued` /
+    /// `estimating` / `running` use the same workspace busy admission as
+    /// `create_run` and `claim_run_if_workspace_idle` (same-group sweep
+    /// members may share the slot). Leaving-active transitions are ungated.
     pub async fn update_run_status_if_current(
         &self,
         run_id: &str,
@@ -228,6 +232,52 @@ impl Store {
         next_status: &str,
         error_json: Option<&str>,
     ) -> StoreResult<Option<RunRecord>> {
+        let mut tx = self.pool().begin_with("BEGIN IMMEDIATE").await?;
+        let Some(current) = sqlx::query(
+            r#"
+            SELECT workspace_id, group_id, status
+            FROM runs
+            WHERE id = ?
+            "#,
+        )
+        .bind(run_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        else {
+            return Ok(None);
+        };
+        let workspace_id: String = current.try_get("workspace_id")?;
+        let group_id: Option<String> = current.try_get("group_id")?;
+        let status: String = current.try_get("status")?;
+        if status != expected_status {
+            return Ok(None);
+        }
+
+        if matches!(next_status, "queued" | "estimating" | "running") {
+            let active_run_id: Option<String> = sqlx::query_scalar(
+                r#"
+                SELECT id FROM runs
+                WHERE workspace_id = ?
+                  AND id <> ?
+                  AND status IN ('queued', 'estimating', 'running')
+                  AND (? IS NULL OR group_id IS NULL OR group_id <> ?)
+                LIMIT 1
+                "#,
+            )
+            .bind(&workspace_id)
+            .bind(run_id)
+            .bind(&group_id)
+            .bind(&group_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            if let Some(active_run_id) = active_run_id {
+                return Err(StoreError::WorkspaceBusy {
+                    workspace_id,
+                    active_run_id,
+                });
+            }
+        }
+
         let result = sqlx::query(
             r#"
             UPDATE runs
@@ -244,13 +294,14 @@ impl Store {
         .bind(next_status)
         .bind(run_id)
         .bind(expected_status)
-        .execute(self.pool())
+        .execute(&mut *tx)
         .await?;
 
         if result.rows_affected() == 0 {
             return Ok(None);
         }
 
+        tx.commit().await?;
         self.run(run_id).await.map(Some)
     }
 

@@ -274,3 +274,133 @@ async fn inactive_creates_and_other_workspaces_do_not_take_the_active_slot() {
         .expect("finish active run");
     seed_workspace_run(&store, Some(&workspace_id), None, "estimating").await;
 }
+
+#[tokio::test]
+async fn sweep_status_update_cannot_bypass_an_unrelated_active_run() {
+    let (store, _dir) = open_temp_store().await;
+    let (workspace_id, active) = seed_workspace_run(&store, None, None, "queued").await;
+    let (_, pending) = seed_workspace_run(
+        &store,
+        Some(&workspace_id),
+        Some("sweep_1"),
+        "waiting_confirmation",
+    )
+    .await;
+
+    let err = store
+        .update_run_status_if_current(&pending.id, "waiting_confirmation", "queued", None)
+        .await
+        .expect_err("sweep promote must not bypass the busy gate");
+    assert!(matches!(
+        err,
+        StoreError::WorkspaceBusy { active_run_id, .. } if active_run_id == active.id
+    ));
+    assert_eq!(
+        store.run(&pending.id).await.expect("pending run").status,
+        "waiting_confirmation"
+    );
+    assert_eq!(
+        store
+            .active_workspace_runs(&workspace_id)
+            .await
+            .expect("active runs")
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn same_sweep_group_can_still_promote_together() {
+    let (store, _dir) = open_temp_store().await;
+    let (workspace_id, first) = seed_workspace_run(&store, None, Some("sweep_1"), "queued").await;
+    let (_, pending) = seed_workspace_run(
+        &store,
+        Some(&workspace_id),
+        Some("sweep_1"),
+        "waiting_confirmation",
+    )
+    .await;
+
+    let promoted = store
+        .update_run_status_if_current(&pending.id, "waiting_confirmation", "queued", None)
+        .await
+        .expect("same-group promote")
+        .expect("pending became queued");
+    assert_eq!(promoted.status, "queued");
+    assert_eq!(
+        store
+            .active_workspace_runs(&workspace_id)
+            .await
+            .expect("active runs")
+            .len(),
+        2
+    );
+    assert_eq!(first.status, "queued");
+}
+
+#[tokio::test]
+async fn leaving_active_does_not_use_the_busy_gate() {
+    let (store, _dir) = open_temp_store().await;
+    let (_, active) = seed_workspace_run(&store, None, None, "queued").await;
+    let interrupted = store
+        .update_run_status_if_current(&active.id, "queued", "interrupted", None)
+        .await
+        .expect("leave active")
+        .expect("interrupted");
+    assert_eq!(interrupted.status, "interrupted");
+}
+
+#[tokio::test]
+async fn create_and_sweep_promote_compete_for_the_same_workspace() {
+    let (store, dir) = open_temp_store().await;
+    let other = Store::open(&format!(
+        "sqlite://{}",
+        dir.path().join("helixflow.sqlite").display()
+    ))
+    .await
+    .expect("independent store");
+    let (workspace_id, pending) =
+        seed_workspace_run(&store, None, Some("sweep_1"), "waiting_confirmation").await;
+
+    let (created, promoted) = tokio::join!(
+        store.create_run(NewRun {
+            workspace_id: &workspace_id,
+            version_id: &pending.version_id,
+            group_id: None,
+            label: "Concurrent create",
+            trigger: "manual",
+            plan_json: None,
+            estimate_json: None,
+            status: "queued",
+        }),
+        other.update_run_status_if_current(&pending.id, "waiting_confirmation", "queued", None,)
+    );
+
+    let created_ok = created.is_ok();
+    let promoted_ok = matches!(promoted, Ok(Some(_)));
+    assert_eq!(
+        usize::from(created_ok) + usize::from(promoted_ok),
+        1,
+        "create and sweep promote must not both occupy the workspace: created={created:?} promoted={promoted:?}"
+    );
+    if let Err(err) = created {
+        assert!(matches!(
+            err,
+            StoreError::WorkspaceBusy { active_run_id, .. } if active_run_id == pending.id
+        ));
+    }
+    if let Err(err) = &promoted {
+        assert!(matches!(err, StoreError::WorkspaceBusy { .. }));
+    }
+    if let Ok(None) = promoted {
+        panic!("busy sweep promote must not look like a status mismatch");
+    }
+    assert_eq!(
+        store
+            .active_workspace_runs(&workspace_id)
+            .await
+            .expect("active runs")
+            .len(),
+        1
+    );
+}

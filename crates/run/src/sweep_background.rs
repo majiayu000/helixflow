@@ -23,7 +23,7 @@ where
                 .lock()
                 .await
                 .insert(run.id.clone(), interrupt);
-            let Some(queued_run) = self
+            match self
                 .store
                 .update_run_status_if_current(
                     &run.id,
@@ -31,18 +31,25 @@ where
                     RunStatus::Queued.as_str(),
                     None,
                 )
-                .await?
-            else {
-                self.interrupts.lock().await.remove(&run.id);
-                self.rollback_queued_sweep_runs(&claimed).await?;
-                let current = self.store.run(&run.id).await?;
-                return Err(RunError::InvalidRunStatus {
-                    run_id: current.id,
-                    expected: RunStatus::WaitingConfirmation.as_str(),
-                    actual: current.status,
-                });
-            };
-            claimed.push(queued_run);
+                .await
+            {
+                Ok(Some(queued_run)) => claimed.push(queued_run),
+                Ok(None) => {
+                    self.interrupts.lock().await.remove(&run.id);
+                    self.rollback_queued_sweep_runs(&claimed).await?;
+                    let current = self.store.run(&run.id).await?;
+                    return Err(RunError::InvalidRunStatus {
+                        run_id: current.id,
+                        expected: RunStatus::WaitingConfirmation.as_str(),
+                        actual: current.status,
+                    });
+                }
+                Err(err) => {
+                    self.interrupts.lock().await.remove(&run.id);
+                    self.rollback_queued_sweep_runs(&claimed).await?;
+                    return Err(err.into());
+                }
+            }
         }
 
         let mut outcomes = Vec::new();
