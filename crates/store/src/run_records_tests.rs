@@ -10,6 +10,65 @@ async fn open_temp_store() -> (Store, tempfile::TempDir) {
 }
 
 #[tokio::test]
+async fn concurrent_active_creates_admit_only_one_run() {
+    let (store, dir) = open_temp_store().await;
+    let other = Store::open(&format!(
+        "sqlite://{}",
+        dir.path().join("helixflow.sqlite").display()
+    ))
+    .await
+    .expect("open independent store on the disposable database");
+
+    for status in ["queued", "estimating", "running"] {
+        let (workspace_id, version_id, _) = seed_run(&store, "succeeded").await;
+        let input = NewRun {
+            workspace_id: &workspace_id,
+            version_id: &version_id,
+            group_id: None,
+            label: "Concurrent create",
+            trigger: "manual",
+            plan_json: None,
+            estimate_json: None,
+            status,
+        };
+        let ready = tokio::sync::Barrier::new(2);
+        let create = async |connection: &Store, input: NewRun<'_>| {
+            assert!(
+                connection
+                    .active_workspace_runs(input.workspace_id)
+                    .await
+                    .expect("busy precheck")
+                    .is_empty()
+            );
+            // Both callers observed an idle workspace before either inserts.
+            ready.wait().await;
+            connection.create_run(input).await
+        };
+        let (left, right) = tokio::join!(create(&store, input.clone()), create(&other, input));
+        assert_eq!(
+            usize::from(left.is_ok()) + usize::from(right.is_ok()),
+            1,
+            "only one {status} create may win: left={left:?}, right={right:?}"
+        );
+        let active = store
+            .active_workspace_runs(&workspace_id)
+            .await
+            .expect("active runs");
+        assert_eq!(
+            active.len(),
+            1,
+            "rejected create must not persist an active row"
+        );
+        let rejected = if left.is_err() { left } else { right };
+        assert!(matches!(
+            rejected.expect_err("one create is rejected"),
+            StoreError::WorkspaceBusy { workspace_id: busy_workspace, active_run_id }
+                if busy_workspace == workspace_id && active_run_id == active[0].id
+        ));
+    }
+}
+
+#[tokio::test]
 async fn select_run_artifact_clears_sibling_artifacts() {
     let (store, _dir) = open_temp_store().await;
     let workspace = store

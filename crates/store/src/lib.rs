@@ -100,6 +100,10 @@ pub enum StoreError {
         version_id: String,
         actual_workspace_id: Option<String>,
     },
+    WorkspaceBusy {
+        workspace_id: String,
+        active_run_id: String,
+    },
     ProposalStateConflict {
         proposal_id: String,
         expected_state: String,
@@ -187,6 +191,13 @@ impl fmt::Display for StoreError {
             } => write!(
                 f,
                 "proposal `{proposal_id}` expected state `{expected_state}` but found `{actual_state:?}`"
+            ),
+            Self::WorkspaceBusy {
+                workspace_id,
+                active_run_id,
+            } => write!(
+                f,
+                "workspace `{workspace_id}` already has active run `{active_run_id}`"
             ),
             Self::ProposalWorkspaceMismatch {
                 proposal_id,
