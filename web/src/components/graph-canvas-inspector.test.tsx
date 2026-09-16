@@ -66,6 +66,42 @@ describe('GraphInspector', () => {
     expect(markup).toContain('title="随机 seed"');
     expect(markup).toContain('Ask Agent for node proposal');
     expect(markup).toContain('保存');
+    expect(markup).not.toContain('宫格切分');
+    expect(markup).not.toContain('生成式修图');
+  });
+
+  it('exposes 宫格切分 only when a split handler is provided', () => {
+    const markup = renderToStaticMarkup(
+      <GraphInspector
+        definition={videoDefinition()}
+        node={videoNode()}
+        onClose={() => {}}
+        onSplitImageGrid={async () => undefined}
+        workflowNode={workflowNode()}
+      />,
+    );
+    expect(markup).toContain('宫格切分');
+    expect(markup).toContain('切成 9 张');
+  });
+
+  it('exposes 生成式修图 only when an image-edit handler is provided', () => {
+    const markup = renderToStaticMarkup(
+      <GraphInspector
+        definition={videoDefinition()}
+        node={videoNode()}
+        onClose={() => {}}
+        onApplyImageCanvasTool={async () => undefined}
+        workspaceId="ws_1"
+        workflowNode={workflowNode()}
+      />,
+    );
+    expect(markup).toContain('生成式修图');
+    expect(markup).toContain('扩图');
+    expect(markup).toContain('擦除');
+    expect(markup).toContain('抠图');
+    expect(markup).toContain('超分');
+    expect(markup).toContain('增强');
+    expect(markup).not.toContain('宫格切分');
   });
 
   it('preserves bounded ops opIndex errors for inline callers', async () => {

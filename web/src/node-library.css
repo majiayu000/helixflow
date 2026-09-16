@@ -23,15 +23,17 @@
 }
 
 .flow-canvas .node-library-bar {
-  width: 54px;
+  width: 48px;
   height: auto;
   max-height: min(66vh, 560px);
   flex-direction: column;
   overflow-x: hidden;
   overflow-y: auto;
-  border-radius: 28px;
-  background: rgb(28 28 30 / 96%);
-  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  padding: 6px;
+  box-shadow: 0 12px 32px rgb(0 0 0 / 28%);
 }
 
 .flow-canvas .node-library-divider {
@@ -98,13 +100,13 @@
 }
 
 .node-library-tool.is-primary {
-  width: 42px;
-  min-width: 42px;
-  height: 42px;
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
   border-radius: 12px;
   background: var(--accent);
   color: var(--accent-ink);
-  box-shadow: 0 10px 24px color-mix(in srgb, var(--accent) 24%, transparent);
+  box-shadow: none;
 }
 
 .node-library-tool.is-primary:hover:not(:disabled),

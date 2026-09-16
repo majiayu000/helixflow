@@ -800,6 +800,7 @@ function stateWithRun(
         mime: 'video/mp4',
       },
     })),
+    imageProcessingJobs: [],
     history: [],
     pendingConfirmation: null,
     pendingProposal: null,

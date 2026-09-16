@@ -40,6 +40,10 @@ export function useFlowElements(
     () => new Set(nodes.filter((node) => node.selected).map((node) => node.id)),
     [nodes],
   );
+  const selectedEdgeIds = useMemo(
+    () => new Set(edges.filter((edge) => edge.selected).map((edge) => edge.id)),
+    [edges],
+  );
 
   const setSelection = useCallback((ids: Iterable<string>) => {
     const selected = new Set(ids);
@@ -59,5 +63,33 @@ export function useFlowElements(
     });
   }, []);
 
-  return { edges, nodes, onEdgesChange, onNodesChange, resetNodes, selectedIds, setSelection };
+  const setEdgeSelection = useCallback((ids: Iterable<string>) => {
+    const selected = new Set(ids);
+    setEdges((current) => {
+      let changed = false;
+      const next = current.map((edge) => {
+        const shouldSelect = selected.has(edge.id);
+        if (Boolean(edge.selected) === shouldSelect) return edge;
+        changed = true;
+        return { ...edge, selected: shouldSelect };
+      });
+      return changed ? next : current;
+    });
+    setNodes((current) => {
+      if (!current.some((node) => node.selected)) return current;
+      return current.map((node) => ({ ...node, selected: false }));
+    });
+  }, []);
+
+  return {
+    edges,
+    nodes,
+    onEdgesChange,
+    onNodesChange,
+    resetNodes,
+    selectedEdgeIds,
+    selectedIds,
+    setEdgeSelection,
+    setSelection,
+  };
 }

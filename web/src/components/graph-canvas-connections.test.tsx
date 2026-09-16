@@ -4,8 +4,13 @@ import type { GraphNodeState, NodeDefinition, WorkbenchState } from '../types';
 import {
   buildConnectionProposalInput,
   buildPortHighlights,
+  canvasCardFallbackPorts,
   edgeToRemoveOp,
+  incomingReferenceBag,
+  lineageConnection,
+  matchingConnectionPorts,
   portKey,
+  referenceBagLabel,
 } from './graph-canvas-connections';
 import { WorkflowNode } from './graph-canvas-node';
 
@@ -27,6 +32,156 @@ describe('graph canvas connections', () => {
     expect(highlights.get(portKey('text', 'output', 'text'))).toBe('source');
     expect(highlights.get(portKey('video', 'input', 'prompt'))).toBe('occupied');
     expect(highlights.get(portKey('out', 'input', 'artifact'))).toBe('incompatible');
+  });
+
+  it('keeps many-cardinality image ports connectable after the first edge', () => {
+    const nodes = [
+      node('still_a', 'input.image', 'Still A', 'Input', 40, 80),
+      node('still_b', 'input.image', 'Still B', 'Input', 40, 200),
+      node('r2v', 'video.image_to_video', 'R2V', 'Video', 400, 80),
+    ];
+    const definitions = new Map([
+      ['input.image', definition('input.image', 'Image Input', [], [{ name: 'image', type: 'IMAGE', required: true }])],
+      [
+        'video.image_to_video',
+        definition(
+          'video.image_to_video',
+          'Image To Video',
+          [{ name: 'image', type: 'IMAGE', required: true, cardinality: 'many' }],
+          [{ name: 'video', type: 'VIDEO', required: true }],
+        ),
+      ],
+    ]);
+    const highlights = buildPortHighlights(
+      nodes,
+      definitions,
+      { nodeId: 'still_b', port: 'image', type: 'IMAGE' },
+      [{
+        id: 'e1',
+        from: { nodeId: 'still_a', port: 'image' },
+        to: { nodeId: 'r2v', port: 'image' },
+        kind: 'image',
+      }],
+    );
+    expect(highlights.get(portKey('r2v', 'input', 'image'))).toBe('compatible');
+  });
+
+  it('gives canvas cards fallback in/out handles before the catalog loads', () => {
+    expect(canvasCardFallbackPorts('input.image')).toEqual({
+      inputs: [{ name: 'in', type: 'IMAGE' }],
+      outputs: [{ name: 'image', type: 'IMAGE' }],
+    });
+    expect(canvasCardFallbackPorts('image.generate')?.outputs[0]?.name).toBe('image');
+    expect(canvasCardFallbackPorts('input.text')?.outputs[0]?.name).toBe('text');
+    expect(canvasCardFallbackPorts('llm.prompt_writer')).toBeNull();
+  });
+
+  it('resolves lineage ports from node types instead of feature-specific handles', () => {
+    expect(lineageConnection('input.image', 'image.generate')).toEqual({
+      sourcePort: 'image',
+      targetPort: 'in',
+      type: 'IMAGE',
+    });
+    expect(lineageConnection('input.image', 'image.edit')).toEqual({
+      sourcePort: 'image',
+      targetPort: 'image',
+      type: 'IMAGE',
+    });
+    expect(lineageConnection('image.generate', 'input.image')).toEqual({
+      sourcePort: 'image',
+      targetPort: 'in',
+      type: 'IMAGE',
+    });
+    expect(lineageConnection('input.image', 'input.image')).toEqual({
+      sourcePort: 'image',
+      targetPort: 'in',
+      type: 'IMAGE',
+    });
+    expect(() => lineageConnection('input.text', 'llm.prompt_writer')).toThrow(
+      '连线失败：这两张卡没有可接的端口',
+    );
+  });
+
+  it('connects two image cards through the reference port', () => {
+    const imageDef = definition(
+      'input.image',
+      'Image Input',
+      [{ name: 'in', type: 'IMAGE', required: false, cardinality: 'many' }],
+      [{ name: 'image', type: 'IMAGE', required: true }],
+    );
+    const proposal = buildConnectionProposalInput({
+      baseVersionId: 'ver_1',
+      source: { nodeId: 'still_a', port: 'image', type: 'IMAGE' },
+      target: { nodeId: 'still_b', port: 'in', type: 'IMAGE' },
+      fanIn: true,
+    });
+    expect(proposal?.ops).toEqual([
+      { op: 'add_edge', from: ['still_a', 'image'], to: ['still_b', 'in'], edge_type: 'image' },
+    ]);
+    expect(matchingConnectionPorts(imageDef, imageDef)).toEqual({
+      sourcePort: 'image',
+      targetPort: 'in',
+      type: 'IMAGE',
+    });
+  });
+
+  it('lets an image card reference a video card through in', () => {
+    const imageDef = definition(
+      'input.image',
+      'Image Input',
+      [{ name: 'in', type: 'IMAGE', required: false, cardinality: 'many' }],
+      [{ name: 'image', type: 'IMAGE', required: true }],
+    );
+    const videoDef = definition(
+      'input.video',
+      'Video Input',
+      [{ name: 'in', type: 'VIDEO', required: false, cardinality: 'many' }],
+      [{ name: 'video', type: 'VIDEO', required: true }],
+    );
+    expect(matchingConnectionPorts(imageDef, videoDef)).toEqual({
+      sourcePort: 'image',
+      targetPort: 'in',
+      type: 'IMAGE',
+    });
+    expect(
+      buildConnectionProposalInput({
+        baseVersionId: 'ver_1',
+        source: { nodeId: 'still', port: 'image', type: 'IMAGE' },
+        target: { nodeId: 'clip', port: 'in', type: 'VIDEO' },
+        fanIn: true,
+      })?.ops,
+    ).toEqual([
+      { op: 'add_edge', from: ['still', 'image'], to: ['clip', 'in'], edge_type: 'image' },
+    ]);
+  });
+
+  it('counts incoming image video and audio edges as a reference bag', () => {
+    const edges: WorkbenchState['graph']['edges'] = [
+      {
+        id: 'e1',
+        from: { nodeId: 'still_a', port: 'image' },
+        to: { nodeId: 'r2v', port: 'image' },
+        kind: 'image',
+      },
+      {
+        id: 'e2',
+        from: { nodeId: 'still_b', port: 'image' },
+        to: { nodeId: 'r2v', port: 'image' },
+        kind: 'image',
+      },
+      {
+        id: 'e3',
+        from: { nodeId: 'clip', port: 'video' },
+        to: { nodeId: 'r2v', port: 'video' },
+        kind: 'video',
+      },
+    ];
+    expect(incomingReferenceBag('r2v', edges)).toEqual({
+      images: 2,
+      videos: 1,
+      audios: 0,
+    });
+    expect(referenceBagLabel(incomingReferenceBag('r2v', edges))).toBe('参考袋 2 图 · 1 视频');
   });
 
   it('builds add, replace, no-op, and disconnect ops', () => {
@@ -103,6 +258,52 @@ describe('graph canvas connections', () => {
     expect(markup).toContain('data-port-direction="input"');
     expect(markup).toContain('data-port-direction="output"');
     expect(markup).toContain('port-target--occupied');
+  });
+
+  it('renders media input as a card without node chrome', () => {
+    const markup = renderToStaticMarkup(
+      <WorkflowNode
+        connectionDisabled={false}
+        definition={definition(
+          'input.image',
+          'Image Input',
+          [],
+          [{ name: 'image', type: 'IMAGE', required: true }],
+        )}
+        diffState={null}
+        dirty={false}
+        locked={false}
+        node={node('input_image', 'input.image', 'Image Input', 'Input', 40, 80)}
+        artifactOutputs={[]}
+        portHighlights={new Map()}
+        resizable={false}
+        selected={true}
+        stepState="queued"
+        onOutputPortPointerDown={() => undefined}
+        onPointerCancel={() => undefined}
+        onPointerDown={() => undefined}
+        onPointerMove={() => undefined}
+        onPointerUp={() => undefined}
+        onResizePointerCancel={() => undefined}
+        onResizePointerDown={() => undefined}
+        onResizePointerMove={() => undefined}
+        onResizePointerUp={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain('node--media');
+    expect(markup).toContain('media-card--empty');
+    expect(markup).toContain('media-card-icon');
+    expect(markup).toContain('media-card-kind');
+    expect(markup).toContain('图片');
+    expect(markup).not.toContain('type="file"');
+    expect(markup).toContain('aria-label="图片 (input.image)"');
+    expect(markup).not.toContain('Image Input');
+    expect(markup).not.toContain('点击或拖入文件');
+    expect(markup).not.toContain('p-nid');
+    expect(markup).not.toContain('io-row');
+    expect(markup).not.toContain('SELECTED');
+    expect(markup).not.toContain('class="swatch"');
   });
 });
 

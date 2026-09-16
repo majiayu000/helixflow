@@ -351,6 +351,7 @@ function emptyWorkbenchState(): WorkbenchState {
     graph: { nodes: [], edges: [] },
     run: null,
     outputs: [],
+    imageProcessingJobs: [],
     history: [],
     pendingConfirmation: null,
     pendingProposal: null,

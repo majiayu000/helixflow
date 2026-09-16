@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'react';
-import type { NodeDefinition, RunStepState, WorkbenchState } from '../../types';
+import type { GraphNodeState, NodeDefinition, RunStepState, WorkbenchState } from '../../types';
 import { portColor } from '../../icons';
 import { graphNodeHeight, graphNodeWidth } from '../graph-canvas-navigation';
 import { edgeSignature, nodeDiffState } from '../graph-canvas-rendering';
@@ -18,6 +18,14 @@ type NodeAdapterInput = {
   canResize: boolean;
   onResizeCommit: ResizeCommit;
   onSelectOutput?: (outputId: string) => void;
+  workspaceId?: string;
+  onUploadMedia?: (nodeId: string, file: File) => void;
+  onHandleClick?: (
+    nodeId: string,
+    handleType: 'source' | 'target',
+    clientX: number,
+    clientY: number,
+  ) => void;
 };
 
 export function toWorkflowFlowNodes(input: NodeAdapterInput): WorkflowFlowNode[] {
@@ -28,9 +36,11 @@ export function toWorkflowFlowNodes(input: NodeAdapterInput): WorkflowFlowNode[]
       id: node.id,
       type: 'workflow',
       position: node.position,
+      width,
+      height,
       initialWidth: width,
       initialHeight: height,
-      style: { width, minHeight: height } as CSSProperties,
+      style: { width, height, minHeight: height } as CSSProperties,
       draggable: input.canMove,
       selectable: true,
       connectable: input.canMove,
@@ -52,6 +62,13 @@ export function toWorkflowFlowNodes(input: NodeAdapterInput): WorkflowFlowNode[]
         stepState: input.stepStateByNodeId.get(node.id) ?? node.status,
         onResizeCommit: input.onResizeCommit,
         onSelectOutput: input.onSelectOutput,
+        workspaceId: input.workspaceId,
+        onUploadMedia: input.onUploadMedia
+          ? (file) => input.onUploadMedia?.(node.id, file)
+          : undefined,
+        onHandleClick: input.onHandleClick
+          ? (handleType, clientX, clientY) => input.onHandleClick?.(node.id, handleType, clientX, clientY)
+          : undefined,
       },
     };
   });
@@ -66,8 +83,8 @@ export function toWorkflowFlowEdges(
     const signature = edgeSignature(edge);
     const proposed = hasProposal && !baseEdgeIds.has(signature);
     return {
-      id: signature,
-      type: 'default',
+      id: edge.id,
+      type: 'card',
       source: edge.from.nodeId,
       sourceHandle: edge.from.port,
       target: edge.to.nodeId,
@@ -93,5 +110,29 @@ export function reconcileFlowNodes(
   return next.map((node) => {
     const previous = currentById.get(node.id);
     return previous ? { ...node, selected: previous.selected } : node;
+  });
+}
+
+export function selectedCanvasNodes(
+  graphNodes: GraphNodeState[],
+  selectedIds: Set<string>,
+  liveNodes: Array<{
+    id: string;
+    position: { x: number; y: number };
+    width?: number;
+    height?: number;
+  }>,
+): GraphNodeState[] {
+  const liveById = new Map(liveNodes.map((node) => [node.id, node] as const));
+  return graphNodes.filter((node) => selectedIds.has(node.id)).map((node) => {
+    const live = liveById.get(node.id);
+    if (!live) return node;
+    return {
+      ...node,
+      position: live.position,
+      size: live.width && live.height
+        ? { width: live.width, height: live.height }
+        : node.size,
+    };
   });
 }

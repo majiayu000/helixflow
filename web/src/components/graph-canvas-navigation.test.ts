@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   DEFAULT_GRAPH_VIEW,
+  MEDIA_CARD_HEIGHT,
+  MEDIA_CARD_WIDTH,
   graphNodeHeight,
   graphNodeWidth,
   loadGraphCanvasView,
@@ -17,6 +19,20 @@ import {
 } from './graph-canvas-flow/use-viewport';
 import { edgesForViewport, nodeIdsForViewport } from './graph-canvas-rendering';
 import type { GraphNodeState, WorkbenchState } from '../types';
+
+describe('media card default size', () => {
+  it('uses the empty media card size when input.image has no stored size', () => {
+    const image = {
+      ...node('photo', 0, 0),
+      nodeType: 'input.image',
+      title: 'Image Input',
+    };
+
+    expect(graphNodeWidth(image)).toBe(MEDIA_CARD_WIDTH);
+    expect(graphNodeHeight(image)).toBe(MEDIA_CARD_HEIGHT);
+    expect(graphNodeWidth(node('text', 0, 0))).toBe(240);
+  });
+});
 
 describe('graph canvas view persistence', () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -102,11 +118,15 @@ describe('dense graph viewport slice refresh', () => {
     });
 
     expect(result().view).toEqual(initial);
+    expect(result().liveView).toEqual({ x: 180, y: -120, z: 1.1 });
+    expect(result().moving).toBe(true);
 
     await act(async () => {
       result().onMoveEnd(null, { x: 180, y: -120, zoom: 1.1 });
     });
     expect(result().view).toEqual({ x: 180, y: -120, z: 1.1 });
+    expect(result().liveView).toEqual({ x: 180, y: -120, z: 1.1 });
+    expect(result().moving).toBe(false);
     await act(async () => renderer?.unmount());
   });
 

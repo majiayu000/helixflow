@@ -1,3 +1,4 @@
+import { lineageConnection } from './components/graph-canvas-connections';
 import type {
   ManualEditOp,
   ManualEditSession,
@@ -105,6 +106,28 @@ export function buildSetParamEditInput(
   };
 }
 
+export function graphStateWithWorkflowLayout(
+  graph: WorkbenchState['graph'],
+  workflowGraph: WorkflowGraph | undefined,
+): WorkbenchState['graph'] {
+  if (!workflowGraph) return graph;
+  return {
+    ...graph,
+    nodes: graph.nodes.map((node) => {
+      const workflowNode = workflowGraph.nodes[node.id];
+      if (!workflowNode) return node;
+      const size = workflowNode.size
+        ? { width: workflowNode.size[0], height: workflowNode.size[1] }
+        : node.size ?? undefined;
+      return {
+        ...node,
+        position: { x: workflowNode.pos[0], y: workflowNode.pos[1] },
+        size,
+      };
+    }),
+  };
+}
+
 export function previewWorkbenchStateWithManualEdits(
   state: WorkbenchState,
   session: ManualEditSession | null,
@@ -115,7 +138,7 @@ export function previewWorkbenchStateWithManualEdits(
   const preview = previewManualEditGraph(state.graph, state.workflowGraph, session.ops);
   return {
     ...state,
-    graph: preview.graph,
+    graph: graphStateWithWorkflowLayout(preview.graph, preview.workflowGraph),
     workflowGraph: preview.workflowGraph,
   };
 }
@@ -220,6 +243,14 @@ function previewManualEditGraph(
         workflow.nodes[op.id] = { ...workflow.nodes[op.id], size: op.size };
       }
     }
+    if (op.op === 'set_semantics') {
+      if (workflow?.nodes[op.id]) {
+        workflow.nodes[op.id] = {
+          ...workflow.nodes[op.id],
+          semantics: cloneUnknown(op.semantics),
+        };
+      }
+    }
     if (op.op === 'set_param') {
       if (workflow?.nodes[op.id]) {
         const params = objectParams(workflow.nodes[op.id].params);
@@ -232,7 +263,7 @@ function previewManualEditGraph(
         node.id === op.id ? { ...node, summary: `${op.key}: ${shortValue(op.value)}` } : node,
       );
     }
-    if (op.op === 'add_node') {
+    if (op.op === 'spawn_node') {
       const title = op.title?.trim() || op.id;
       nodes = [
         ...nodes.filter((node) => node.id !== op.id),
@@ -254,6 +285,35 @@ function previewManualEditGraph(
           params: cloneUnknown(op.params),
           pos: op.pos,
         };
+      }
+      if (op.from) {
+        const source = nodes.find((node) => node.id === op.from);
+        const sourceType = source?.nodeType ?? workflow?.nodes[op.from]?.node_type;
+        if (!sourceType) {
+          throw new Error(`连线失败：源节点 ${op.from} 不存在`);
+        }
+        const match = lineageConnection(sourceType, op.node_type);
+        const from = [op.from, match.sourcePort] as [string, string];
+        const to = [op.id, match.targetPort] as [string, string];
+        const edgeType = match.type.toLowerCase();
+        const signature = edgeSignature(from, to, edgeType);
+        if (!edges.some((edge) => edgeSignatureFromGraphEdge(edge) === signature)) {
+          edges = [
+            ...edges,
+            {
+              id: `edge_${from[0]}_${from[1]}_${to[0]}_${to[1]}_${edges.length}`,
+              from: { nodeId: from[0], port: from[1] },
+              to: { nodeId: to[0], port: to[1] },
+              kind: edgeType,
+            },
+          ];
+        }
+        if (workflow && !workflow.edges.some((edge) => edgeSignature(edge.from, edge.to, edge.edge_type) === signature)) {
+          workflow.edges = [
+            ...workflow.edges,
+            { from, to, edge_type: edgeType },
+          ];
+        }
       }
     }
     if (op.op === 'remove_node') {
@@ -304,10 +364,12 @@ function manualEditOpSummary(op: ManualEditOp): string {
       return `Move ${op.id} to ${Math.round(op.pos[0])}, ${Math.round(op.pos[1])}`;
     case 'resize_node':
       return `Resize ${op.id} to ${Math.round(op.size[0])} x ${Math.round(op.size[1])}`;
+    case 'set_semantics':
+      return `Pin model on ${op.id}`;
     case 'set_param':
       return `Set ${op.id}.${op.key}`;
-    case 'add_node':
-      return `Add ${op.id} (${op.node_type})`;
+    case 'spawn_node':
+      return op.from ? `Spawn ${op.id} from ${op.from}` : `Spawn ${op.id}`;
     case 'remove_node':
       return `Remove ${op.id}`;
     case 'add_edge':
@@ -329,6 +391,7 @@ function cloneWorkflowGraph(graph: WorkflowGraph): WorkflowGraph {
           params: cloneUnknown(node.params),
           pos: [...node.pos] as [number, number],
           size: node.size ? ([...node.size] as [number, number]) : undefined,
+          semantics: cloneUnknown(node.semantics),
         },
       ]),
     ),
