@@ -13,7 +13,7 @@ Most AI workflow tools make *you* wire the nodes. In Helixflow the Agent does th
 - **From prompt to pipeline** — "make me a GPT Image 2 + Seedance 2 workflow" produces a wired, runnable graph in one turn. The Agent's edits are auto-applied as validated transactions; manual node editing stays available and the Agent builds on top of your changes instead of fighting them.
 - **Self-healing runs** — failed runs get bounded automatic retries (`HELIXFLOW_RUN_MAX_RETRIES`), cost-gated like any other run: a retry without a cost estimate or above your budget waits for confirmation instead of spending. When a retry isn't enough, ask the Agent why the run failed and it reads the error and repairs the graph.
 - **Autonomy with a seatbelt, not a leash** — every Agent edit is an immutable version, so full rollback is always one click away; and runs are cost-estimated first, so anything above your USD threshold pauses for confirmation while everything below it just runs. Trust the Agent by default, audit it when you care.
-- **Local-first & fail-closed** — SQLite + local storage, binds to loopback by default, refuses to execute runs while the provider is unconfigured, and mock mode requires an explicit double opt-in.
+- **Local-first & fail-closed** — SQLite + local storage, binds to loopback by default, refuses to execute runs while no real provider is configured, and mock mode requires an explicit double opt-in.
 
 The name combines "helix" and "flow": each Agent edit → run → error → fix loop spirals the result tighter.
 
@@ -25,7 +25,11 @@ Requires Rust 1.95.0 (pinned by `rust-toolchain.toml`) and Node.js 22.
 # 1. Build the frontend from the lockfile
 cd web && npm ci && npm run build && cd ..
 
-# 2. Run with the mock provider (no API key needed)
+# 2. Real providers: set credentials only. Helixflow auto-selects atlas (then fal)
+#    when HELIXFLOW_RUNTIME_PROVIDER is unset.
+ATLAS_API_KEY=... cargo run --release -p helixflow-server
+
+# Or local mock (no API key; requires both flags):
 HELIXFLOW_RUNTIME_PROVIDER=mock \
 HELIXFLOW_ENABLE_MOCK_PROVIDER=1 \
 cargo run --release -p helixflow-server
@@ -33,17 +37,10 @@ cargo run --release -p helixflow-server
 # 3. Open http://127.0.0.1:8787/
 ```
 
-To execute against real providers, configure any credentials that should be
-available and choose the default provider. Atlas and FAL can be registered in
-the same process; each workspace can switch between enabled providers in the
-workbench.
-
-```sh
-ATLAS_API_KEY=... \
-FAL_KEY=... \
-HELIXFLOW_RUNTIME_PROVIDER=atlas \
-cargo run --release -p helixflow-server
-```
+Atlas and FAL credentials may coexist in the same process; each workspace can
+switch between enabled providers in the workbench. Set
+`HELIXFLOW_RUNTIME_PROVIDER=fal` (or `atlas`) only when you need to override the
+auto-default.
 
 Health check: `GET /api/ready` verifies database, storage, and provider.
 
@@ -80,7 +77,7 @@ web/         # React workbench
 |---|---|
 | `HELIXFLOW_BIND_ADDR` | Listen address (default `127.0.0.1:8787`). Non-loopback requires `HELIXFLOW_AUTH_TOKEN`. |
 | `HELIXFLOW_AUTH_TOKEN` | Deployment access token. CLI/API clients use `Authorization: Bearer`; browsers exchange it at `/login` for an HttpOnly, SameSite=Strict session cookie. URL query tokens are rejected. |
-| `HELIXFLOW_RUNTIME_PROVIDER` | Default provider: `atlas`, `fal`, or explicitly `mock` (dev/test). Atlas/FAL credentials may coexist and workspaces persist their own enabled-provider selection. Unset fails closed. |
+| `HELIXFLOW_RUNTIME_PROVIDER` | Optional override for the default provider: `atlas`, `fal`, or explicitly `mock` (dev/test). When unset, Helixflow picks the first enabled real provider (`atlas`, then `fal`); with none configured it stays on synthetic `unconfigured` (fail closed, never auto-mock). Workspaces may still switch among enabled providers. |
 | `HELIXFLOW_ENABLE_MOCK_PROVIDER` | Required to actually enable the `mock` provider. |
 | `HELIXFLOW_WEB_DIST` | Frontend build dir served by the backend (default `web/dist`). |
 | `HELIXFLOW_DATA_DIR` | Durable data root (default `$HOME/.helixflow`; never process cwd). |

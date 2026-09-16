@@ -223,6 +223,207 @@ fn rejects_duplicate_input_edges_before_plan_compilation() {
 }
 
 #[test]
+fn media_cards_accept_same_type_reference_edges() {
+    let graph = WorkflowGraph {
+        schema_version: 1,
+        catalog_revision: None,
+        nodes: BTreeMap::from([
+            (
+                "a".to_string(),
+                GraphNode {
+                    node_type: "input.image".to_string(),
+                    title: "A".to_string(),
+                    params: json!({ "storage_uri": "upload://a" }),
+                    pos: [0.0, 0.0],
+                    size: None,
+                    semantics: None,
+                },
+            ),
+            (
+                "b".to_string(),
+                GraphNode {
+                    node_type: "input.image".to_string(),
+                    title: "B".to_string(),
+                    params: json!({ "storage_uri": "upload://b" }),
+                    pos: [320.0, 0.0],
+                    size: None,
+                    semantics: None,
+                },
+            ),
+        ]),
+        edges: vec![GraphEdge {
+            from: ["a".to_string(), "image".to_string()],
+            to: ["b".to_string(), "in".to_string()],
+            edge_type: "image".to_string(),
+        }],
+    };
+
+    service()
+        .validate_graph(&graph)
+        .expect("image cards can reference each other");
+}
+
+#[test]
+fn media_cards_accept_cross_type_reference_edges() {
+    let graph = WorkflowGraph {
+        schema_version: 1,
+        catalog_revision: None,
+        nodes: BTreeMap::from([
+            (
+                "still".to_string(),
+                GraphNode {
+                    node_type: "input.image".to_string(),
+                    title: "Still".to_string(),
+                    params: json!({ "storage_uri": "upload://a" }),
+                    pos: [0.0, 0.0],
+                    size: None,
+                    semantics: None,
+                },
+            ),
+            (
+                "clip".to_string(),
+                GraphNode {
+                    node_type: "input.video".to_string(),
+                    title: "Clip".to_string(),
+                    params: json!({ "storage_uri": "upload://b" }),
+                    pos: [320.0, 0.0],
+                    size: None,
+                    semantics: None,
+                },
+            ),
+        ]),
+        edges: vec![GraphEdge {
+            from: ["still".to_string(), "image".to_string()],
+            to: ["clip".to_string(), "in".to_string()],
+            edge_type: "image".to_string(),
+        }],
+    };
+
+    service()
+        .validate_graph(&graph)
+        .expect("image cards can reference a video card");
+}
+
+#[test]
+fn many_image_ports_accept_fan_in_and_keep_every_edge_in_the_plan() {
+    let graph = WorkflowGraph {
+        schema_version: 1,
+        catalog_revision: None,
+        nodes: BTreeMap::from([
+            (
+                "still_a".to_string(),
+                GraphNode {
+                    node_type: "input.image".to_string(),
+                    title: "Still A".to_string(),
+                    params: json!({ "storage_uri": "upload://a" }),
+                    pos: [0.0, 0.0],
+                    size: None,
+                    semantics: None,
+                },
+            ),
+            (
+                "still_b".to_string(),
+                GraphNode {
+                    node_type: "input.image".to_string(),
+                    title: "Still B".to_string(),
+                    params: json!({ "storage_uri": "upload://b" }),
+                    pos: [0.0, 160.0],
+                    size: None,
+                    semantics: None,
+                },
+            ),
+            (
+                "clip".to_string(),
+                GraphNode {
+                    node_type: "input.video".to_string(),
+                    title: "Clip".to_string(),
+                    params: json!({ "storage_uri": "upload://c" }),
+                    pos: [0.0, 320.0],
+                    size: None,
+                    semantics: None,
+                },
+            ),
+            (
+                "voice".to_string(),
+                GraphNode {
+                    node_type: "input.audio".to_string(),
+                    title: "Voice".to_string(),
+                    params: json!({ "storage_uri": "upload://d" }),
+                    pos: [0.0, 480.0],
+                    size: None,
+                    semantics: None,
+                },
+            ),
+            (
+                "r2v".to_string(),
+                GraphNode {
+                    node_type: "video.image_to_video".to_string(),
+                    title: "R2V".to_string(),
+                    params: json!({ "duration_sec": 5 }),
+                    pos: [280.0, 160.0],
+                    size: None,
+                    semantics: None,
+                },
+            ),
+        ]),
+        edges: vec![
+            GraphEdge {
+                from: ["still_a".to_string(), "image".to_string()],
+                to: ["r2v".to_string(), "image".to_string()],
+                edge_type: "image".to_string(),
+            },
+            GraphEdge {
+                from: ["still_b".to_string(), "image".to_string()],
+                to: ["r2v".to_string(), "image".to_string()],
+                edge_type: "image".to_string(),
+            },
+            GraphEdge {
+                from: ["clip".to_string(), "video".to_string()],
+                to: ["r2v".to_string(), "video".to_string()],
+                edge_type: "video".to_string(),
+            },
+            GraphEdge {
+                from: ["voice".to_string(), "audio".to_string()],
+                to: ["r2v".to_string(), "audio".to_string()],
+                edge_type: "audio".to_string(),
+            },
+        ],
+    };
+
+    service()
+        .validate_graph(&graph)
+        .expect("r2v fan-in is valid");
+    let plan = service()
+        .compile_plan(&graph, "ver_r2v", "mock")
+        .expect("compile r2v");
+    let r2v = plan
+        .steps
+        .iter()
+        .find(|step| step.node_id == "r2v")
+        .expect("r2v step");
+    assert_eq!(r2v.inputs["image"].len(), 2);
+    assert_eq!(r2v.inputs["video"].len(), 1);
+    assert_eq!(r2v.inputs["audio"].len(), 1);
+}
+
+#[test]
+fn plan_json_still_reads_legacy_single_pair_inputs() {
+    let step: ExecutionStep = serde_json::from_value(json!({
+        "node_id": "writer",
+        "node_type": "llm.prompt_writer",
+        "provider": "mock",
+        "capability": "prompt_writer",
+        "inputs": { "text": ["input", "text"] },
+        "params": { "style": "plain" }
+    }))
+    .expect("legacy plan");
+    assert_eq!(
+        step.inputs["text"],
+        vec![["input".to_string(), "text".to_string()]]
+    );
+}
+
+#[test]
 fn rejects_invalid_edge_type_label() {
     let mut graph = sample_graph();
     graph.edges[0].edge_type = "bogus".to_string();

@@ -27,7 +27,7 @@
     "outcome": "compiled",
     "resolvedModels": {
       "s1": "google/nano-banana-2",
-      "s2": "bytedance/seedance-v1.5-pro"
+      "s2": "bytedance/seedance-2.0-fast"
     },
     "topologyShape": "single_main_chain",
     "notes": "若 catalog 中 Seedance 只有 text_to_video 而无 image_to_video binding，必须转为 clarify_first 或 BINDING_NOT_FOUND，不得改成并行 text_to_video"

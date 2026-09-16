@@ -27,7 +27,7 @@
     "outcome": "compiled",
     "resolvedModels": {
       "s1": "openai/gpt-image-2",
-      "s2": "bytedance/seedance-v1.5-pro"
+      "s2": "bytedance/seedance-2.0-fast"
     },
     "topologyShape": "single_main_chain",
     "notes": "与 intent-nano-banana-seedance.json 相比只有 s1 的 binding/model 不同，edge topology 必须完全一致"

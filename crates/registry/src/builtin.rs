@@ -4,7 +4,8 @@
 use crate::catalog::{BindingAvailability, CapabilityDefinition, MediaCategory};
 use crate::catalog_seed::builtin_catalog;
 use crate::types::{
-    EstimatedCostRef, NodeDefinition, ParamSpec, ParamsSchema, PortDefinition, PortType,
+    EstimatedCostRef, NodeDefinition, ParamSpec, ParamsSchema, PortCardinality, PortDefinition,
+    PortType,
 };
 
 pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
@@ -16,7 +17,7 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
             provider: None,
             capability: None,
             description: "A user-provided text value.",
-            inputs: vec![],
+            inputs: vec![port_many("in", PortType::Text, false)],
             outputs: vec![port("text", PortType::Text, true)],
             params_schema: schema(&["text"], [("text", ParamSpec::string())]),
         }),
@@ -27,8 +28,30 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
             provider: None,
             capability: None,
             description: "A user-uploaded image artifact.",
-            inputs: vec![],
+            inputs: vec![port_many("in", PortType::Image, false)],
             outputs: vec![port("image", PortType::Image, true)],
+            params_schema: schema(&["storage_uri"], [("storage_uri", ParamSpec::string())]),
+        }),
+        node(NodeSpec {
+            node_type: "input.video",
+            title: "Video Input",
+            category: "input",
+            provider: None,
+            capability: None,
+            description: "A user-uploaded video artifact.",
+            inputs: vec![port_many("in", PortType::Video, false)],
+            outputs: vec![port("video", PortType::Video, true)],
+            params_schema: schema(&["storage_uri"], [("storage_uri", ParamSpec::string())]),
+        }),
+        node(NodeSpec {
+            node_type: "input.audio",
+            title: "Audio Input",
+            category: "audio",
+            provider: None,
+            capability: None,
+            description: "A user-uploaded audio artifact.",
+            inputs: vec![port_many("in", PortType::Audio, false)],
+            outputs: vec![port("audio", PortType::Audio, true)],
             params_schema: schema(&["storage_uri"], [("storage_uri", ParamSpec::string())]),
         }),
         node(NodeSpec {
@@ -118,6 +141,16 @@ pub(crate) fn port(name: &str, port_type: PortType, required: bool) -> PortDefin
         name: name.to_owned(),
         port_type,
         required,
+        cardinality: PortCardinality::One,
+    }
+}
+
+pub(crate) fn port_many(name: &str, port_type: PortType, required: bool) -> PortDefinition {
+    PortDefinition {
+        name: name.to_owned(),
+        port_type,
+        required,
+        cardinality: PortCardinality::Many,
     }
 }
 

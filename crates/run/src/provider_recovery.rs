@@ -240,7 +240,7 @@ where
                 && step.provider.is_none()
                 && !matches!(
                     step.node_type.as_str(),
-                    "input.text" | "input.image" | "output.save"
+                    "input.text" | "input.image" | "input.video" | "input.audio" | "output.save"
                 )
         });
         let all_steps_queued = !steps.is_empty() && steps.iter().all(|step| step.state == "queued");
@@ -515,6 +515,7 @@ where
                                 return Ok(None);
                             }
                         };
+                        let error_json = provider_failure_error_json(&failure.error);
                         self.store
                             .finalize_provider_task_failure(ProviderTaskFailureFinalization {
                                 provider_task_id: &task.id,
@@ -522,7 +523,7 @@ where
                                 terminal_task_state: "completed",
                                 error_code: code,
                                 desired_run_status: "failed",
-                                error_json: Some(r#"{"error":"provider execution failed"}"#),
+                                error_json: Some(&error_json),
                                 required_expired_foreign_owner: None,
                             })
                             .await?;
@@ -614,6 +615,9 @@ where
                     let ready = self
                         .spool_provider_result(workspace_id, task, &result, "failed")
                         .await?;
+                    let provider_error =
+                        helixflow_gateway::ProviderError::RequestRejected(reason_code.clone());
+                    let error_json = provider_failure_error_json(&provider_error);
                     self.store
                         .finalize_provider_task_failure(ProviderTaskFailureFinalization {
                             provider_task_id: &ready.id,
@@ -621,13 +625,11 @@ where
                             terminal_task_state: "completed",
                             error_code: &reason_code,
                             desired_run_status: "failed",
-                            error_json: Some(r#"{"error":"provider execution failed"}"#),
+                            error_json: Some(&error_json),
                             required_expired_foreign_owner: None,
                         })
                         .await?;
-                    return Err(RunError::Provider(
-                        helixflow_gateway::ProviderError::RequestRejected(reason_code),
-                    ));
+                    return Err(RunError::Provider(provider_error));
                 }
                 ProviderResume::Pending { retry_after_ms } => {
                     tokio::select! {
@@ -703,6 +705,11 @@ where
         self.persist_billing_risk(workspace_id, run_id, provider, reason_code)
             .await
     }
+}
+
+fn provider_failure_error_json(error: &helixflow_gateway::ProviderError) -> String {
+    serde_json::to_string(&json!({ "error": error.to_string() }))
+        .unwrap_or_else(|_| r#"{"error":"provider execution failed"}"#.to_owned())
 }
 
 pub(crate) fn durable_task(task: &ProviderTaskRecord) -> RunResult<DurableProviderTask> {

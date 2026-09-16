@@ -99,6 +99,16 @@ fn seed_catalog_covers_all_v2_capabilities() {
         );
     }
     assert!(catalog.workflow_backends.is_empty());
+    assert_eq!(
+        catalog
+            .binding("google.nano-banana-2.image-edit.atlas.v1")
+            .expect("atlas image_edit")
+            .implementation,
+        crate::catalog::ImplementationTarget::ApiConnector {
+            connector_id: "atlas".to_owned(),
+            operation_id: "google/nano-banana-2/edit".to_owned(),
+        }
+    );
 }
 
 #[test]

@@ -5,6 +5,7 @@ use axum::{
     Json,
     extract::{Path as AxumPath, State},
 };
+use helixflow_graph::semantics::{NodeSemanticsEntry, migrate_v1};
 use helixflow_graph::{GraphEdge, GraphError, GraphNode, GraphService, ProposalOp, WorkflowGraph};
 use helixflow_registry::NodeRegistry;
 use helixflow_store::{NewVersion, StoreError, VersionSource};
@@ -14,6 +15,7 @@ use sha2::{Digest, Sha256};
 
 use crate::api_error::ApiError;
 use crate::app_state::AppState;
+use crate::catalog_routes::shared_catalog;
 use crate::version_commit::{VersionCommitError, commit_version_candidate};
 use crate::version_file_consistency::{
     CandidateKind, VersionFileCandidate, VersionFileConsistencyError, read_version_graph,
@@ -33,13 +35,6 @@ pub(crate) struct OpsRequest {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 enum ManualOpRequest {
-    AddNode {
-        id: String,
-        node_type: String,
-        title: Option<String>,
-        params: Value,
-        pos: [f32; 2],
-    },
     RemoveNode {
         id: String,
     },
@@ -66,6 +61,19 @@ enum ManualOpRequest {
     ResizeNode {
         id: String,
         size: [f32; 2],
+    },
+    SetSemantics {
+        id: String,
+        semantics: Option<NodeSemanticsEntry>,
+    },
+    SpawnNode {
+        id: String,
+        node_type: String,
+        title: Option<String>,
+        params: Value,
+        pos: [f32; 2],
+        #[serde(default)]
+        from: Option<String>,
     },
 }
 
@@ -197,6 +205,17 @@ fn prepare_ops(
                 format!("duplicate set_param for `{id}.{key}`"),
             ));
         }
+        if matches!(&request, ManualOpRequest::SetSemantics { .. })
+            && graph.catalog_revision.is_none()
+        {
+            let (migrated, _report) = migrate_v1(&graph, registry, shared_catalog());
+            graph = migrated.ok_or_else(|| {
+                op_error(
+                    index,
+                    "cannot pin a model until the graph can carry catalog semantics",
+                )
+            })?;
+        }
         let op = manual_op_to_proposal_op(request, &graph, registry)
             .map_err(|err| op_error(index, err.message))?;
         graph_service
@@ -213,32 +232,6 @@ fn manual_op_to_proposal_op(
     registry: &NodeRegistry,
 ) -> Result<ProposalOp, ApiError> {
     match op {
-        ManualOpRequest::AddNode {
-            id,
-            node_type,
-            title,
-            params,
-            pos,
-        } => {
-            ensure_non_empty("node id", &id)?;
-            ensure_finite_pos(pos)?;
-            let definition = registry
-                .definition(&node_type)
-                .map_err(|err| ApiError::bad_request(err.to_string()))?;
-            Ok(ProposalOp::AddNode {
-                id,
-                node: GraphNode {
-                    node_type,
-                    title: title
-                        .filter(|value| !value.trim().is_empty())
-                        .unwrap_or_else(|| definition.title.clone()),
-                    params,
-                    pos,
-                    size: None,
-                    semantics: None,
-                },
-            })
-        }
         ManualOpRequest::RemoveNode { id } => {
             ensure_non_empty("node id", &id)?;
             Ok(ProposalOp::RemoveNode { id })
@@ -298,6 +291,42 @@ fn manual_op_to_proposal_op(
         ManualOpRequest::ResizeNode { id, size } => Err(ApiError::bad_request(format!(
             "resize_node for `{id}` at {size:?} must use the canvas snapshot endpoint"
         ))),
+        ManualOpRequest::SetSemantics { id, semantics } => {
+            ensure_non_empty("node id", &id)?;
+            Ok(ProposalOp::SetSemantics { id, semantics })
+        }
+        ManualOpRequest::SpawnNode {
+            id,
+            node_type,
+            title,
+            params,
+            pos,
+            from,
+        } => {
+            ensure_non_empty("node id", &id)?;
+            ensure_finite_pos(pos)?;
+            let definition = registry
+                .definition(&node_type)
+                .map_err(|err| ApiError::bad_request(err.to_string()))?;
+            let title = title
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| definition.title.clone());
+            let node = GraphNode {
+                node_type,
+                title,
+                params,
+                pos,
+                size: None,
+                semantics: None,
+            };
+            match from {
+                Some(from) => {
+                    ensure_non_empty("source node id", &from)?;
+                    Ok(ProposalOp::SpawnNode { id, from, node })
+                }
+                None => Ok(ProposalOp::AddNode { id, node }),
+            }
+        }
     }
 }
 
@@ -379,6 +408,7 @@ fn manual_title(op: &ProposalOp) -> String {
         ProposalOp::MoveNode { id, .. } => format!("Move node {id}"),
         ProposalOp::ResizeNode { id, .. } => format!("Resize node {id}"),
         ProposalOp::SetSemantics { id, .. } => format!("Rebind node {id}"),
+        ProposalOp::SpawnNode { id, from, .. } => format!("Spawn {id} from {from}"),
     }
 }
 

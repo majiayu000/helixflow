@@ -53,7 +53,7 @@ fn pinned_alias_resolves_to_canonical_model_via_default_binding() {
             &avail(&[("atlas", true)]),
         )
         .expect("resolved");
-    assert_eq!(seedance.resolved_model_id, "bytedance/seedance-v1.5-pro");
+    assert_eq!(seedance.resolved_model_id, "bytedance/seedance-2.0-fast");
 }
 
 #[test]
@@ -240,10 +240,10 @@ fn image_to_video_uses_the_seedance_default_binding() {
         .resolve(&policy("image_to_video"), &avail(&[("atlas", true)]))
         .expect("image-to-video default");
 
-    assert_eq!(resolved.resolved_model_id, "bytedance/seedance-v1.5-pro");
+    assert_eq!(resolved.resolved_model_id, "bytedance/seedance-2.0-fast");
     assert_eq!(
         resolved.binding_id,
-        "bytedance.seedance-v1-5-pro.image-to-video.atlas.v1"
+        "bytedance.seedance-2-0-fast.reference-to-video.atlas.v1"
     );
 }
 

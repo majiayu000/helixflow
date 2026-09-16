@@ -19,6 +19,6 @@
   "expected": {
     "outcome": "error",
     "reasonCode": "BINDING_NOT_FOUND",
-    "notes": "Seedance 解析为 bytedance/seedance-v1.5-pro（视频模型），无 (text_to_image, seedance) binding；不得静默换成任何图像模型，也不得由 provider 默认值兜底。对照基线：T0 时 provider 会静默使用内部默认模型（见 gh130_baseline_* 测试），T4 后此路径必须 fail-closed"
+    "notes": "Seedance 2 解析为 bytedance/seedance-2.0-fast（视频模型），无 (text_to_image, seedance) binding；不得静默换成任何图像模型，也不得由 provider 默认值兜底。对照基线：T0 时 provider 会静默使用内部默认模型（见 gh130_baseline_* 测试），T4 后此路径必须 fail-closed"
   }
 }

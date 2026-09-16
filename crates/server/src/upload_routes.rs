@@ -1,8 +1,11 @@
-use std::path::PathBuf;
+use std::path::{Component, Path as FsPath, PathBuf};
 
 use axum::{
     Json,
+    body::Body,
     extract::{Multipart, Path, State},
+    http::{HeaderValue, header},
+    response::Response,
 };
 use helixflow_store::NewUpload;
 use serde::Serialize;
@@ -70,10 +73,10 @@ mod config_tests {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UploadResponse {
-    id: String,
-    storage_uri: String,
-    filename: String,
-    mime: String,
+    pub(crate) id: String,
+    pub(crate) storage_uri: String,
+    pub(crate) filename: String,
+    pub(crate) mime: String,
 }
 
 /// Accept a local image upload, persist it under the data dir, and register
@@ -121,76 +124,7 @@ pub(crate) async fn upload_workspace_image(
             }
             bytes.extend_from_slice(&chunk);
         }
-        if bytes.is_empty() {
-            return Err(ApiError::bad_request("uploaded file is empty"));
-        }
-        let (mime, extension) = detect_image_type(&bytes).ok_or_else(|| {
-            ApiError::bad_request("uploaded file is not a supported image (png, jpeg, webp)")
-        })?;
-
-        let upload_uuid = uuid::Uuid::now_v7();
-        let relative = PathBuf::from("uploads")
-            .join(&workspace_id)
-            .join(format!("{upload_uuid}.{extension}"));
-        let full_path = state.data_dir.join(&relative);
-        let parent = full_path
-            .parent()
-            .ok_or_else(|| ApiError::server_error("upload path has no parent"))?;
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|err| ApiError::io("create upload directory", err))?;
-        let tmp_path = full_path.with_extension("tmp");
-        tokio::fs::write(&tmp_path, &bytes)
-            .await
-            .map_err(|err| ApiError::io("write upload temp file", err))?;
-        if let Err(commit_error) = tokio::fs::rename(&tmp_path, &full_path).await {
-            let cleanup_error = match tokio::fs::remove_file(&tmp_path).await {
-                Ok(()) => None,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                Err(error) => Some(error),
-            };
-            return Err(match cleanup_error {
-                Some(cleanup_error) => ApiError::server_error(format!(
-                    "commit upload file failed: {commit_error}; temporary upload cleanup failed: {cleanup_error}"
-                )),
-                None => ApiError::io("commit upload file", commit_error),
-            });
-        }
-
-        let sha256 = format!("sha256:{}", hex::encode(Sha256::digest(&bytes)));
-        let relative_string = relative.to_string_lossy().into_owned();
-        let record = match state
-            .store
-            .create_upload(NewUpload {
-                workspace_id: &workspace_id,
-                filename: &filename,
-                file_path: &relative_string,
-                sha256: &sha256,
-                mime: Some(mime),
-            })
-            .await
-        {
-            Ok(record) => record,
-            Err(store_error) => {
-                let cleanup_error = match tokio::fs::remove_file(&full_path).await {
-                    Ok(()) => None,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                    Err(error) => Some(error),
-                };
-                return Err(match cleanup_error {
-                    Some(cleanup_error) => ApiError::server_error(format!(
-                        "upload record commit failed: {store_error}; published upload cleanup failed: {cleanup_error}"
-                    )),
-                    None => ApiError::store(store_error),
-                });
-            }
-        };
-        uploaded = Some(UploadResponse {
-            storage_uri: format!("upload://{}", record.id),
-            id: record.id,
-            filename,
-            mime: mime.to_owned(),
-        });
+        uploaded = Some(persist_workspace_upload(&state, &workspace_id, &filename, &bytes).await?);
         break;
     }
 
@@ -199,7 +133,144 @@ pub(crate) async fn upload_workspace_image(
     Ok(Json(json!(uploaded)))
 }
 
-fn detect_image_type(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
+pub(crate) async fn persist_workspace_upload(
+    state: &AppState,
+    workspace_id: &str,
+    filename: &str,
+    bytes: &[u8],
+) -> Result<UploadResponse, ApiError> {
+    if bytes.is_empty() {
+        return Err(ApiError::bad_request("uploaded file is empty"));
+    }
+    let limit = max_upload_bytes();
+    if bytes.len() > limit {
+        return Err(ApiError::bad_request(format!(
+            "uploaded file exceeds the {limit} byte limit"
+        )));
+    }
+    let (mime, extension) = detect_media_type(bytes).ok_or_else(|| {
+        ApiError::bad_request(
+            "uploaded file is not a supported image, video, or audio (png, jpeg, webp, mp4, webm, wav, mp3)",
+        )
+    })?;
+    let upload_uuid = uuid::Uuid::now_v7();
+    let relative = PathBuf::from("uploads")
+        .join(workspace_id)
+        .join(format!("{upload_uuid}.{extension}"));
+    let full_path = state.data_dir.join(&relative);
+    let parent = full_path
+        .parent()
+        .ok_or_else(|| ApiError::server_error("upload path has no parent"))?;
+    tokio::fs::create_dir_all(parent)
+        .await
+        .map_err(|err| ApiError::io("create upload directory", err))?;
+    let tmp_path = full_path.with_extension("tmp");
+    tokio::fs::write(&tmp_path, bytes)
+        .await
+        .map_err(|err| ApiError::io("write upload temp file", err))?;
+    if let Err(commit_error) = tokio::fs::rename(&tmp_path, &full_path).await {
+        let cleanup_error = match tokio::fs::remove_file(&tmp_path).await {
+            Ok(()) => None,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => Some(error),
+        };
+        return Err(match cleanup_error {
+            Some(cleanup_error) => ApiError::server_error(format!(
+                "commit upload file failed: {commit_error}; temporary upload cleanup failed: {cleanup_error}"
+            )),
+            None => ApiError::io("commit upload file", commit_error),
+        });
+    }
+
+    let sha256 = format!("sha256:{}", hex::encode(Sha256::digest(bytes)));
+    let relative_string = relative.to_string_lossy().into_owned();
+    let record = match state
+        .store
+        .create_upload(NewUpload {
+            workspace_id,
+            filename,
+            file_path: &relative_string,
+            sha256: &sha256,
+            mime: Some(mime),
+        })
+        .await
+    {
+        Ok(record) => record,
+        Err(store_error) => {
+            let cleanup_error = match tokio::fs::remove_file(&full_path).await {
+                Ok(()) => None,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => Some(error),
+            };
+            return Err(match cleanup_error {
+                Some(cleanup_error) => ApiError::server_error(format!(
+                    "upload record commit failed: {store_error}; published upload cleanup failed: {cleanup_error}"
+                )),
+                None => ApiError::store(store_error),
+            });
+        }
+    };
+    Ok(UploadResponse {
+        storage_uri: format!("upload://{}", record.id),
+        id: record.id,
+        filename: filename.to_owned(),
+        mime: mime.to_owned(),
+    })
+}
+
+pub(crate) async fn download_workspace_upload(
+    Path((workspace_id, upload_id)): Path<(String, String)>,
+    State(state): State<AppState>,
+) -> Result<Response<Body>, ApiError> {
+    let upload = match state
+        .store
+        .workspace_upload(&workspace_id, &upload_id)
+        .await
+    {
+        Ok(record) => record,
+        Err(err) if err.is_not_found() => return Err(ApiError::not_found("upload was not found")),
+        Err(err) => return Err(ApiError::store(err)),
+    };
+    let path = upload_content_path(&state.data_dir, &workspace_id, &upload.file_path)?;
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(ApiError::not_found("upload content was not found"));
+        }
+        Err(err) => return Err(ApiError::io("read upload content", err)),
+    };
+    let mut response = Response::new(Body::from(bytes));
+    if let Some(mime) = upload.mime.as_deref()
+        && let Ok(value) = HeaderValue::from_str(mime)
+    {
+        response.headers_mut().insert(header::CONTENT_TYPE, value);
+    }
+    Ok(response)
+}
+
+fn upload_content_path(
+    data_dir: &FsPath,
+    workspace_id: &str,
+    file_path: &str,
+) -> Result<PathBuf, ApiError> {
+    let relative = FsPath::new(file_path);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(ApiError::not_found("upload content was not found"));
+    }
+    let mut components = relative.components();
+    match (components.next(), components.next()) {
+        (Some(Component::Normal(prefix)), Some(Component::Normal(workspace)))
+            if prefix == "uploads" && workspace == workspace_id => {}
+        _ => return Err(ApiError::not_found("upload content was not found")),
+    }
+    Ok(data_dir.join(relative))
+}
+
+fn detect_media_type(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
     if bytes.len() > 16
         && bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
         && bytes[12..16] == *b"IHDR"
@@ -211,6 +282,21 @@ fn detect_image_type(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
     }
     if bytes.len() > 12 && bytes.starts_with(b"RIFF") && bytes[8..12] == *b"WEBP" {
         return Some(("image/webp", "webp"));
+    }
+    if bytes.len() > 12 && bytes[4..8] == *b"ftyp" {
+        return Some(("video/mp4", "mp4"));
+    }
+    if bytes.len() > 4 && bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
+        return Some(("video/webm", "webm"));
+    }
+    if bytes.len() > 12 && bytes.starts_with(b"RIFF") && bytes[8..12] == *b"WAVE" {
+        return Some(("audio/wav", "wav"));
+    }
+    if bytes.len() > 3 && bytes.starts_with(b"ID3") {
+        return Some(("audio/mpeg", "mp3"));
+    }
+    if bytes.len() > 2 && bytes[0] == 0xFF && (bytes[1] & 0xE0) == 0xE0 {
+        return Some(("audio/mpeg", "mp3"));
     }
     None
 }
@@ -225,11 +311,20 @@ mod tests {
         png.extend_from_slice(&[0, 0, 0, 13]);
         png.extend_from_slice(b"IHDR");
         png.extend_from_slice(&[0; 8]);
-        assert_eq!(detect_image_type(&png), Some(("image/png", "png")));
+        assert_eq!(detect_media_type(&png), Some(("image/png", "png")));
         let mut jpg = vec![0xFF, 0xD8, 0xFF, 0xE0];
         jpg.extend_from_slice(&[0; 8]);
-        assert_eq!(detect_image_type(&jpg), Some(("image/jpeg", "jpg")));
-        assert_eq!(detect_image_type(b"not an image"), None);
+        assert_eq!(detect_media_type(&jpg), Some(("image/jpeg", "jpg")));
+        assert_eq!(detect_media_type(b"not an image"), None);
+        let mut mp4 = vec![0, 0, 0, 24];
+        mp4.extend_from_slice(b"ftypisom");
+        mp4.extend_from_slice(&[0; 8]);
+        assert_eq!(detect_media_type(&mp4), Some(("video/mp4", "mp4")));
+        let mut wav = Vec::from(*b"RIFF");
+        wav.extend_from_slice(&[0; 4]);
+        wav.extend_from_slice(b"WAVE");
+        wav.extend_from_slice(&[0; 8]);
+        assert_eq!(detect_media_type(&wav), Some(("audio/wav", "wav")));
     }
 }
 
@@ -320,6 +415,54 @@ mod route_tests {
         let record = state.store.upload(upload_id).await.expect("upload record");
         assert!(state.data_dir.join(&record.file_path).exists());
         assert!(record.sha256.starts_with("sha256:"));
+
+        let content = reqwest::Client::new()
+            .get(format!(
+                "http://{addr}/api/workspaces/{workspace_id}/uploads/{upload_id}/content"
+            ))
+            .send()
+            .await
+            .expect("download request");
+        assert_eq!(content.status(), 200);
+        assert_eq!(content.headers().get("content-type").unwrap(), "image/png");
+        assert_eq!(content.bytes().await.expect("bytes").as_ref(), valid_png());
+    }
+
+    #[tokio::test]
+    async fn upload_content_is_scoped_to_workspace() {
+        let (_dir, state, addr, workspace_id) = serve_app().await;
+        let (content_type, body) = multipart_body(&valid_png(), "photo.png");
+        let payload: serde_json::Value = reqwest::Client::new()
+            .post(format!(
+                "http://{addr}/api/workspaces/{workspace_id}/uploads"
+            ))
+            .header("content-type", content_type)
+            .body(body)
+            .send()
+            .await
+            .expect("upload request")
+            .json()
+            .await
+            .expect("upload json");
+        let upload_id = payload["storageUri"]
+            .as_str()
+            .expect("storageUri")
+            .trim_start_matches("upload://");
+        let other = state
+            .store
+            .create_workspace("Other")
+            .await
+            .expect("other workspace");
+
+        let response = reqwest::Client::new()
+            .get(format!(
+                "http://{addr}/api/workspaces/{}/uploads/{upload_id}/content",
+                other.id
+            ))
+            .send()
+            .await
+            .expect("cross-workspace download");
+        assert_eq!(response.status(), 404);
     }
 
     #[tokio::test]
