@@ -1,6 +1,15 @@
-import type { CSSProperties, KeyboardEvent, PointerEvent } from 'react';
+import { useEffect, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react';
 import { Icon, Port } from '../icons';
+import {
+  fetchWorkspaceUploadContent,
+  isCanvasCardType,
+  isMediaNodeType,
+  isVisualMediaCardType,
+  mediaKindLabel,
+  parseUploadUri,
+} from '../grid-split';
 import type { GraphNodeState, NodeDefinition, RunStepState, WorkflowGraph } from '../types';
+import { markdownToHtml } from '../text-card-markdown';
 import type { CanvasNodeArtifact } from './graph-canvas-artifacts';
 import { portKey, type PortHighlight } from './graph-canvas-connections';
 import { graphNodeHeight, graphNodeWidth } from './graph-canvas-navigation';
@@ -21,9 +30,13 @@ type WorkflowNodeProps = {
   portHighlights: Map<string, PortHighlight>;
   selected: boolean;
   stepState: RunStepState;
+  stepError?: string | null;
+  referenceBagLabel?: string | null;
   artifactOutputs: CanvasNodeArtifact[];
   resizable: boolean;
   embedded?: boolean;
+  workspaceId?: string;
+  onUploadMedia?: (file: File) => void;
   onSelectOutput?: (outputId: string) => void;
   onKeyboardSelect?: (additive: boolean) => void;
   onOutputPortPointerDown: (
@@ -53,9 +66,12 @@ export function WorkflowNode({
   portHighlights,
   selected,
   stepState,
+  stepError,
+  referenceBagLabel,
   artifactOutputs,
   resizable,
   embedded = false,
+  workspaceId,
   onSelectOutput,
   onKeyboardSelect,
   onOutputPortPointerDown,
@@ -76,6 +92,9 @@ export function WorkflowNode({
   const inputs = definition?.inputs ?? [];
   const outputs = definition?.outputs ?? [];
   const primaryTextParam = selected ? primaryNodeTextParam(workflowNode?.params) : null;
+  const media = isCanvasCardType(node.nodeType);
+  const title = mediaCardTitle(node);
+  const textValue = stringNodeParam(workflowNode?.params, 'text');
   const classes = [
     'node',
     diffState === 'add' ? 'node--add' : '',
@@ -83,6 +102,7 @@ export function WorkflowNode({
     dirty ? 'node--dirty' : '',
     locked ? 'node--locked' : '',
     embedded ? 'node--embedded' : '',
+    media ? 'node--media' : '',
     selected ? 'p-sel' : '',
     active ? 'p-active' : '',
     failed ? 'node--err' : '',
@@ -92,7 +112,7 @@ export function WorkflowNode({
 
   return (
     <div
-      aria-label={`${node.title} (${node.nodeType})`}
+      aria-label={`${title} (${node.nodeType})`}
       aria-current={selected ? 'true' : undefined}
       className={classes}
       onKeyDown={(event: KeyboardEvent<HTMLDivElement>) => {
@@ -116,8 +136,9 @@ export function WorkflowNode({
       style={{
         left: embedded ? undefined : node.position.x,
         top: embedded ? undefined : node.position.y,
-        width: graphNodeWidth(node),
-        minHeight: graphNodeHeight(node),
+        width: embedded ? undefined : graphNodeWidth(node),
+        height: embedded ? undefined : graphNodeHeight(node),
+        minHeight: embedded ? undefined : graphNodeHeight(node),
         '--swatch': categorySwatch(node.category),
       } as CSSProperties}
       tabIndex={embedded ? -1 : 0}
@@ -132,13 +153,18 @@ export function WorkflowNode({
       {diffState === 'upd' && <span className="node-flag upd">~ 修改</span>}
       {cached && <span className="node-flag cache">缓存</span>}
       {failed && <span className="node-flag err">失败</span>}
-      {selected && <span className="node-flag selected">SELECTED</span>}
-      <div className="node-title">
-        <span className="swatch" />
-        {node.title}
-        <span className="p-nid">{node.id}</span>
-      </div>
+      {selected && !media && (
+        <span className="node-flag selected">SELECTED</span>
+      )}
+      {!media && (
+        <div className="node-title">
+          <span className="swatch" />
+          {title}
+          <span className="p-nid">{node.id}</span>
+        </div>
+      )}
       <div className="node-body">
+        {!media && (
         <div className="io-row">
           <span className="port-stack port-stack--input">
             {inputs.length === 0 ? (
@@ -196,6 +222,32 @@ export function WorkflowNode({
             )}
           </span>
         </div>
+        )}
+        {referenceBagLabel && <div className="node-refbag">{referenceBagLabel}</div>}
+        {stepError && <div className="node-step-error">{stepError}</div>}
+        {node.nodeType === 'input.text' ? (
+          <div className={textValue ? 'text-card' : 'text-card text-card--empty'}>
+            <div className="text-card-kicker">Text</div>
+            {textValue ? (
+              <div
+                className="text-card-body"
+                dangerouslySetInnerHTML={{ __html: markdownToHtml(textValue) }}
+              />
+            ) : null}
+          </div>
+        ) : media ? (
+          <MediaCard
+            artifacts={artifactOutputs}
+            nodeType={node.nodeType}
+            storageUri={
+              workflowNode?.params && typeof workflowNode.params === 'object'
+                ? (workflowNode.params as Record<string, unknown>).storage_uri
+                : undefined
+            }
+            workspaceId={workspaceId}
+          />
+        ) : (
+          <>
         {primaryTextParam && (
           <div className="node-inline-editor">
             <span className="node-inline-label">{primaryTextParam.key}</span>
@@ -215,7 +267,9 @@ export function WorkflowNode({
             </div>
           ))
         )}
-        {artifactOutputs.length > 0 && (
+          </>
+        )}
+        {artifactOutputs.length > 0 && !media && (
           <div className="node-artifacts">
             {artifactOutputs.slice(0, 1).map((output) => (
               <button
@@ -304,4 +358,103 @@ function portTargetClass(
   ]
     .filter(Boolean)
     .join(' ');
+}
+
+function stringNodeParam(params: unknown, key: string): string {
+  if (!params || typeof params !== 'object' || Array.isArray(params)) return '';
+  const value = (params as Record<string, unknown>)[key];
+  return typeof value === 'string' ? value : '';
+}
+
+function mediaCardTitle(node: GraphNodeState): string {
+  if (!isMediaNodeType(node.nodeType)) return node.title;
+  const kind = mediaKindLabel(node.nodeType);
+  const generic = new Set([
+    kind,
+    'Image Input',
+    'image.input',
+    'Video Input',
+    'video.input',
+    'Audio Input',
+    'audio.input',
+  ]);
+  return generic.has(node.title) ? kind : node.title;
+}
+
+function MediaCard({
+  artifacts,
+  nodeType,
+  storageUri,
+  workspaceId,
+}: {
+  artifacts: CanvasNodeArtifact[];
+  nodeType: string;
+  storageUri: unknown;
+  workspaceId?: string;
+}) {
+  const url = useMediaPreviewUrl(workspaceId, storageUri, artifacts, nodeType);
+  if (!url) {
+    const icon = nodeType === 'input.video' ? 'play' : nodeType === 'input.audio' ? 'music' : 'image';
+    return (
+      <div className="media-card media-card--empty">
+        <span aria-hidden="true" className="media-card-icon">
+          <Icon n={icon} s={32} sw={1.4} />
+        </span>
+        <span className="media-card-kind">{mediaKindLabel(nodeType)}</span>
+      </div>
+    );
+  }
+  if (nodeType === 'input.video') {
+    return <video className="media-card-frame" controls src={url} />;
+  }
+  if (nodeType === 'input.audio') {
+    return (
+      <div className="media-card media-card--audio">
+        <audio controls src={url} />
+      </div>
+    );
+  }
+  return <img alt="" className="media-card-frame" draggable={false} src={url} />;
+}
+
+function useMediaPreviewUrl(
+  workspaceId: string | undefined,
+  storageUri: unknown,
+  artifacts: CanvasNodeArtifact[],
+  nodeType: string,
+): string | null {
+  const artifactPreview = artifacts.find((item) => {
+    if (nodeType === 'input.video') return item.preview?.kind === 'video' || item.kind === 'video';
+    if (nodeType === 'input.audio') return item.kind === 'audio';
+    return item.preview?.kind === 'image' || item.kind === 'image';
+  });
+  const immediate =
+    artifactPreview?.preview && 'content' in artifactPreview.preview
+      ? artifactPreview.preview.content
+      : null;
+  const uploadId = parseUploadUri(storageUri);
+  const [uploadUrl, setUploadUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!workspaceId || !uploadId) {
+      setUploadUrl(null);
+      return;
+    }
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    void fetchWorkspaceUploadContent(workspaceId, uploadId)
+      .then((blob) => {
+        objectUrl = URL.createObjectURL(blob);
+        if (!cancelled) setUploadUrl(objectUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setUploadUrl(null);
+      });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [uploadId, workspaceId]);
+
+  return uploadUrl ?? immediate;
 }

@@ -143,6 +143,7 @@ const state: WorkbenchState = {
       meta: '1080 x 1920',
     },
   ],
+  imageProcessingJobs: [],
   history: [
     {
       id: 'hist_1',
@@ -210,7 +211,7 @@ describe('App', () => {
 
     expect(markup).toContain('helixflow');
     expect(markup).toContain('Test Workspace');
-    expect(markup).toContain('对话');
+    expect(markup).toContain('Chat');
     expect(markup).not.toContain('2 节点');
     expect(markup).toContain('Mock Provider');
     expect(markup).toContain('本地测试');
@@ -843,6 +844,12 @@ describe('App', () => {
         localPath: '/Users/example/private',
       }).success,
     ).toBe(false);
+    expect(
+      CanvasMessageContextSchema.safeParse({
+        selection: { nodeIds: ['video'] },
+        requestedModel: 'google/nano-banana-2',
+      }).success,
+    ).toBe(true);
   });
 
   it('applies run request responses to pending confirmation state', async () => {
@@ -1130,7 +1137,7 @@ describe('App', () => {
 
     expect(markup).toContain('flow-view-controls');
     expect(markup).toContain('2 nodes');
-    expect(markup).not.toContain('canvas-minimap');
+    expect(markup).toContain('canvas-minimap');
   });
 
   it('sandboxes HTML artifact previews without script permissions', () => {
@@ -1821,7 +1828,7 @@ describe('GraphCanvas navigation', () => {
     expect(loadGraphCanvasView('ws-b')).toEqual(DEFAULT_GRAPH_VIEW);
 
     store.set(viewStorageKey('ws-a'), '{"x":10,"y":20,"z":99}');
-    expect(loadGraphCanvasView('ws-a')).toEqual({ x: 10, y: 20, z: 1.4 });
+    expect(loadGraphCanvasView('ws-a')).toEqual({ x: 10, y: 20, z: 5 });
 
     store.set(viewStorageKey('ws-a'), 'not-json');
     expect(loadGraphCanvasView('ws-a')).toEqual(DEFAULT_GRAPH_VIEW);
@@ -1876,7 +1883,7 @@ describe('GraphCanvas navigation', () => {
     expect(markup).toContain('node--upd');
     expect(markup).toContain('node--locked');
     expect(markup).toContain('flow-view-controls');
-    expect(markup).not.toContain('canvas-minimap');
+    expect(markup).toContain('canvas-minimap');
     expect(markup).not.toContain('canvas-toolbar');
     expect(markup).not.toContain('保存布局');
   });
@@ -2183,6 +2190,11 @@ describe('GraphCanvas selection and clipboard helpers', () => {
     expect(graphShortcutFromEvent({ key: 'a', metaKey: true })).toBe('select_all');
     expect(graphShortcutFromEvent({ key: '0', ctrlKey: true })).toBe('fit_view');
     expect(graphShortcutFromEvent({ key: 'c', ctrlKey: true })).toBe('copy_selection');
+    expect(graphShortcutFromEvent({ key: 'd', metaKey: true })).toBe('duplicate_selection');
+    expect(graphShortcutFromEvent({ key: 'g', metaKey: true })).toBe('group_selection');
+    expect(graphShortcutFromEvent({ key: 'g', metaKey: true, shiftKey: true })).toBe('ungroup_selection');
+    expect(graphShortcutFromEvent({ key: 'z', metaKey: true })).toBe('undo');
+    expect(graphShortcutFromEvent({ key: 'z', metaKey: true, shiftKey: true })).toBe('redo');
     expect(graphShortcutFromEvent({ key: 'c' })).toBeNull();
     expect(graphShortcutFromEvent({ key: 'c', ctrlKey: true, nativeEvent: { isComposing: true } })).toBeNull();
     expect(graphShortcutFromEvent({ key: 'a', metaKey: true, nativeEvent: { keyCode: 229 } })).toBeNull();
@@ -2192,7 +2204,7 @@ describe('GraphCanvas selection and clipboard helpers', () => {
     const next = fitViewToNodes(state.graph.nodes, { width: 900, height: 640 });
 
     expect(next.z).toBeGreaterThan(0.4);
-    expect(next.z).toBeLessThanOrEqual(1.4);
+    expect(next.z).toBeLessThanOrEqual(5);
     expect(next.x).not.toBe(DEFAULT_GRAPH_VIEW.x);
   });
 

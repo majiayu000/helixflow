@@ -172,7 +172,7 @@ const GraphStateSchema = z.object({
         x: z.number(),
         y: z.number(),
       }),
-      size: CanvasSizeSchema.optional(),
+      size: CanvasSizeSchema.nullish(),
       provider: z.string().nullable(),
       summary: z.string(),
       cached: z.boolean().optional(),
@@ -375,6 +375,24 @@ const OutputSchema = z.object({
   preview: OutputPreviewSchema.optional(),
 });
 
+export const ImageProcessingJobSchema = z.object({
+  id: z.string(),
+  workspaceId: z.string(),
+  sourceNodeId: z.string(),
+  resultNodeId: z.string().nullable(),
+  intent: z.enum(['outpaint', 'inpaint', 'cutout', 'upscale', 'enhance']),
+  profile: z.string().nullable(),
+  providerTaskId: z.string().nullable(),
+  provider: z.string().nullable(),
+  model: z.string().nullable(),
+  outputUploadId: z.string().nullable(),
+  status: z.enum(['queued', 'running', 'succeeded', 'failed', 'interrupted']),
+  error: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  completedAt: z.string().nullable(),
+});
+
 const PendingConfirmationSchema = z.object({
   id: z.string(),
   title: z.string(),
@@ -402,6 +420,7 @@ const PortDefinitionSchema = z.object({
   name: z.string(),
   type: z.enum(['TEXT', 'IMAGE', 'VIDEO', 'AUDIO', 'MASK', 'JSON']),
   required: z.boolean(),
+  cardinality: z.enum(['one', 'many']).optional(),
 });
 
 const ParamSpecSchema = z.object({
@@ -505,6 +524,7 @@ export const CanvasSelectionContextSchema = z
 export const CanvasMessageContextSchema = z
   .object({
     selection: CanvasSelectionContextSchema,
+    requestedModel: z.string().trim().min(1).max(96).optional(),
   })
   .strict();
 
@@ -550,6 +570,7 @@ export const WorkbenchStateSchema = z.object({
   graph: GraphStateSchema,
   run: RunSchema.nullable(),
   outputs: z.array(OutputSchema),
+  imageProcessingJobs: z.array(ImageProcessingJobSchema).default([]),
   history: z.array(
     z.object({
       id: z.string(),
@@ -563,6 +584,24 @@ export const WorkbenchStateSchema = z.object({
   pendingConfirmation: PendingConfirmationSchema.nullable(),
   pendingProposal: ProposalSchema.nullable(),
   workflowGraph: WorkflowGraphSchema.optional(),
+  catalogReadiness: z
+    .object({
+      selectedConnectorId: z.string(),
+      catalogRevision: z.string(),
+      connectors: z.record(z.string(), z.boolean()),
+      availableBindingIds: z.array(z.string()),
+      capabilities: z.record(
+        z.string(),
+        z.object({
+          status: z.enum(['resolved', 'unresolvable']),
+          code: z.string().optional(),
+          bindingId: z.string().optional(),
+          modelId: z.string().optional(),
+          connectorId: z.string().optional(),
+        }),
+      ),
+    })
+    .optional(),
 });
 
 export const WorkspaceMessageResponseSchema = z.object({
@@ -612,6 +651,7 @@ export const CanvasTicketResponseSchema = z.object({
 });
 
 export type WorkbenchState = z.infer<typeof WorkbenchStateSchema>;
+export type ImageProcessingJob = z.infer<typeof ImageProcessingJobSchema>;
 export type CanvasDocument = z.infer<typeof CanvasDocumentSchema>;
 export type CanvasActor = z.infer<typeof CanvasActorSchema>;
 export type CanvasComment = z.infer<typeof CanvasCommentSchema>;
@@ -649,20 +689,22 @@ export type ManualProposalInput = {
   idempotencyKey?: string;
   label?: string;
   ops: Array<
-    | {
-        op: 'add_node';
-        id: string;
-        node_type: string;
-        title?: string;
-        params: unknown;
-        pos: [number, number];
-      }
     | { op: 'remove_node'; id: string }
     | { op: 'set_param'; id: string; key: string; prev?: unknown; value: unknown }
     | { op: 'add_edge'; from: [string, string]; to: [string, string]; edge_type: string }
     | { op: 'remove_edge'; from: [string, string]; to: [string, string]; edge_type: string }
     | { op: 'move_node'; id: string; pos: [number, number] }
     | { op: 'resize_node'; id: string; size: [number, number] }
+    | { op: 'set_semantics'; id: string; semantics: unknown }
+    | {
+        op: 'spawn_node';
+        id: string;
+        node_type: string;
+        title?: string;
+        params: unknown;
+        pos: [number, number];
+        from?: string;
+      }
   >;
 };
 export type ManualEditOp = ManualProposalInput['ops'][number];
@@ -726,7 +768,7 @@ export function graphStateFromCanvasDocument(
         category: fallbackNode?.category ?? nodeCategory(node.nodeType),
         status: fallbackNode?.status ?? 'queued',
         position: node.position,
-        size: node.size ?? undefined,
+        size: node.size ?? fallbackNode?.size ?? undefined,
         provider: fallbackNode?.provider ?? null,
         summary: nodeSummary(node.nodeType, node.params),
         cached: fallbackNode?.cached,

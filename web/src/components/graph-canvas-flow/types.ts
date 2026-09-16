@@ -21,8 +21,11 @@ export type WorkflowFlowNodeData = {
   locked: boolean;
   resizable: boolean;
   stepState: RunStepState;
+  workspaceId?: string;
   onResizeCommit: ResizeCommit;
   onSelectOutput?: (outputId: string) => void;
+  onUploadMedia?: (file: File) => void;
+  onHandleClick?: (handleType: 'source' | 'target', clientX: number, clientY: number) => void;
 };
 
 export type WorkflowFlowNode = Node<WorkflowFlowNodeData, 'workflow'>;
@@ -32,5 +35,5 @@ export type WorkflowFlowEdgeData = {
   proposed: boolean;
 };
 
-export type WorkflowFlowEdge = Edge<WorkflowFlowEdgeData, 'default'>;
+export type WorkflowFlowEdge = Edge<WorkflowFlowEdgeData, 'card'>;
 export type WorkflowFlowInstance = ReactFlowInstance<WorkflowFlowNode, WorkflowFlowEdge>;

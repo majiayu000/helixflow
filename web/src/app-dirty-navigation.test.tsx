@@ -233,6 +233,7 @@ function stateForVersion(versionId: string): WorkbenchState {
       cost: { estimate: 0, actual: 0, currency: 'USD' },
     },
     outputs: [],
+    imageProcessingJobs: [],
     history: [
       { id: 'ver_old', kind: 'version', label: 'Old', time: 'unix:1', summary: 'old' },
       { id: versionId, kind: 'version', label: 'Current', time: 'unix:2', summary: 'current' },

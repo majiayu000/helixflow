@@ -9,6 +9,7 @@ export type IconName =
   | 'eraser'
   | 'export'
   | 'folder'
+  | 'grid'
   | 'hand'
   | 'image'
   | 'layers'
@@ -69,6 +70,12 @@ const icons: Record<IconName, ReactNode> = {
       <path d="M5.7 6V3a.8.8 0 0 1 1.6 0v3" />
       <path d="M7.3 6.1V3.7a.8.8 0 0 1 1.6 0v2.7" />
       <path d="M8.9 6.8V5.3a.8.8 0 0 1 1.6 0v3.1A3.6 3.6 0 0 1 6.9 12h-.5a3.4 3.4 0 0 1-2.6-1.2L2.2 8.9a.8.8 0 0 1 1.1-1.1l.8.7" />
+    </g>
+  ),
+  grid: (
+    <g>
+      <rect x="2.5" y="2.5" width="9" height="9" rx="1" />
+      <path d="M2.5 5.5h9M2.5 8.5h9M5.5 2.5v9M8.5 2.5v9" />
     </g>
   ),
   image: (

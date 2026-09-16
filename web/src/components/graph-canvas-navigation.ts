@@ -45,10 +45,12 @@ export const GRAPH_NODE_MIN_WIDTH = 180;
 export const GRAPH_NODE_MIN_HEIGHT = 116;
 export const GRAPH_NODE_MAX_WIDTH = 420;
 export const GRAPH_NODE_MAX_HEIGHT = 360;
+export const MEDIA_CARD_WIDTH = 280;
+export const MEDIA_CARD_HEIGHT = 280;
 export const MINIMAP_WIDTH = 188;
 export const MINIMAP_HEIGHT = 124;
 export const GRAPH_CANVAS_MIN_ZOOM = 0.02;
-export const GRAPH_CANVAS_MAX_ZOOM = 1.4;
+export const GRAPH_CANVAS_MAX_ZOOM = 5;
 
 const minimapPadding = 260;
 
@@ -198,13 +200,19 @@ export function minimapViewportRect(
 
 export function graphNodeWidth(node: GraphNodeState): number {
   const width = node.size?.width;
-  return typeof width === 'number' && Number.isFinite(width)
-    ? Math.min(GRAPH_NODE_MAX_WIDTH, Math.max(GRAPH_NODE_MIN_WIDTH, width))
-    : GRAPH_NODE_WIDTH;
+  if (typeof width === 'number' && Number.isFinite(width)) {
+    return Math.min(GRAPH_NODE_MAX_WIDTH, Math.max(GRAPH_NODE_MIN_WIDTH, width));
+  }
+  return isMediaCardNodeType(node.nodeType) ? MEDIA_CARD_WIDTH : GRAPH_NODE_WIDTH;
 }
 
 export function graphNodeHeight(node: GraphNodeState): number {
   const height = node.size?.height;
+  if (isMediaCardNodeType(node.nodeType)) {
+    return typeof height === 'number' && Number.isFinite(height)
+      ? Math.min(GRAPH_NODE_MAX_HEIGHT, Math.max(GRAPH_NODE_MIN_HEIGHT, height))
+      : MEDIA_CARD_HEIGHT;
+  }
   const contentHeight =
     GRAPH_NODE_HEAD_HEIGHT +
     GRAPH_NODE_ROW_HEIGHT +
@@ -212,6 +220,16 @@ export function graphNodeHeight(node: GraphNodeState): number {
   return typeof height === 'number' && Number.isFinite(height)
     ? Math.min(GRAPH_NODE_MAX_HEIGHT, Math.max(contentHeight, height))
     : contentHeight;
+}
+
+function isMediaCardNodeType(nodeType: string): boolean {
+  return (
+    nodeType === 'input.image' ||
+    nodeType === 'input.video' ||
+    nodeType === 'input.audio' ||
+    nodeType === 'image.generate' ||
+    nodeType === 'image.edit'
+  );
 }
 
 function summaryParamCount(summary: string): number {

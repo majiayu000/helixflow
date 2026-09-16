@@ -7,6 +7,7 @@ import type { WorkbenchState } from './types';
 import {
   buildSetParamEditInput,
   deriveQueueLockReason,
+  graphStateWithWorkflowLayout,
   previewWorkbenchStateWithManualEdits,
 } from './workbench-edit-session';
 
@@ -70,6 +71,7 @@ const state: WorkbenchState = {
   },
   run: null,
   outputs: [],
+  imageProcessingJobs: [],
   history: [],
   pendingConfirmation: null,
   pendingProposal: null,
@@ -369,6 +371,24 @@ describe('manual edit session workbench flow', () => {
     expect(markup).not.toContain('title="先提交或放弃 1 个手动编辑"');
   });
 
+  it('fills missing graph node sizes from the workflow graph', () => {
+    const graph = graphStateWithWorkflowLayout(state.graph, {
+      ...state.workflowGraph!,
+      nodes: {
+        ...state.workflowGraph!.nodes,
+        video: {
+          ...state.workflowGraph!.nodes.video,
+          size: [320, 200],
+        },
+      },
+    });
+    expect(graph.nodes.find((node) => node.id === 'video')?.size).toEqual({
+      width: 320,
+      height: 200,
+    });
+    expect(state.graph.nodes.find((node) => node.id === 'video')?.size).toBeUndefined();
+  });
+
   it('previews manual edit ops without mutating the committed state', () => {
     const preview = previewWorkbenchStateWithManualEdits(state, {
       baseVersionId: 'ver_test_1',
@@ -396,6 +416,89 @@ describe('manual edit session workbench flow', () => {
       x: 486,
       y: 156,
     });
+  });
+
+  it('previews 宫格切分 spawn_node ops with source-to-tile lineage edges', () => {
+    const photoState: WorkbenchState = {
+      ...state,
+      graph: {
+        nodes: [
+          {
+            id: 'photo',
+            nodeType: 'input.image',
+            title: '产品主图',
+            category: 'Input',
+            status: 'succeeded',
+            position: { x: 0, y: 0 },
+            provider: null,
+            summary: 'input.image',
+          },
+        ],
+        edges: [],
+      },
+      workflowGraph: {
+        schema_version: 1,
+        nodes: {
+          photo: {
+            node_type: 'input.image',
+            title: '产品主图',
+            params: { storage_uri: 'upload://a' },
+            pos: [0, 0],
+          },
+        },
+        edges: [],
+      },
+    };
+    const preview = previewWorkbenchStateWithManualEdits(photoState, {
+      baseVersionId: 'ver_test_1',
+      idempotencyKey: 'canvas_op_split',
+      source: 'user',
+      startedAt: '2026-07-02T00:00:00Z',
+      ops: [
+        {
+          op: 'spawn_node',
+          id: 'image_grid_r1c1',
+          node_type: 'input.image',
+          title: '产品主图 r1c1',
+          params: { storage_uri: 'upload://t1' },
+          pos: [400, 0],
+          from: 'photo',
+        },
+        {
+          op: 'spawn_node',
+          id: 'image_grid_r1c2',
+          node_type: 'input.image',
+          title: '产品主图 r1c2',
+          params: { storage_uri: 'upload://t2' },
+          pos: [680, 0],
+          from: 'photo',
+        },
+      ],
+    });
+
+    expect(preview.graph.nodes.map((node) => node.id).sort()).toEqual([
+      'image_grid_r1c1',
+      'image_grid_r1c2',
+      'photo',
+    ]);
+    expect(preview.graph.edges).toEqual([
+      {
+        id: 'edge_photo_image_image_grid_r1c1_in_0',
+        from: { nodeId: 'photo', port: 'image' },
+        to: { nodeId: 'image_grid_r1c1', port: 'in' },
+        kind: 'image',
+      },
+      {
+        id: 'edge_photo_image_image_grid_r1c2_in_1',
+        from: { nodeId: 'photo', port: 'image' },
+        to: { nodeId: 'image_grid_r1c2', port: 'in' },
+        kind: 'image',
+      },
+    ]);
+    expect(preview.workflowGraph?.edges).toEqual([
+      { from: ['photo', 'image'], to: ['image_grid_r1c1', 'in'], edge_type: 'image' },
+      { from: ['photo', 'image'], to: ['image_grid_r1c2', 'in'], edge_type: 'image' },
+    ]);
   });
 
   it('builds inspector set_param edits with prev from the preview workflow graph', () => {

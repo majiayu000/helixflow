@@ -47,6 +47,7 @@ export function ManualProposalPanel({
   const [paramKey, setParamKey] = useState('duration_sec');
   const [paramValue, setParamValue] = useState('4');
   const [fromNode, setFromNode] = useState(state.graph.nodes[0]?.id ?? '');
+  const [spawnFrom, setSpawnFrom] = useState('');
   const [fromPort, setFromPort] = useState('text');
   const [toNode, setToNode] = useState(state.graph.nodes[1]?.id ?? '');
   const [toPort, setToPort] = useState('prompt');
@@ -103,7 +104,7 @@ export function ManualProposalPanel({
           baseVersionId: state.workspace.versionId,
           edgeIndex,
           edgeType,
-          fromNode,
+          fromNode: operation === 'spawn_node' ? spawnFrom : fromNode,
           fromPort,
           nodeId,
           nodeTitle,
@@ -143,13 +144,13 @@ export function ManualProposalPanel({
             onChange={(event) => setOperation(event.target.value as Operation)}
           >
             <option value="set_param">edit param</option>
-            <option value="add_node">add node</option>
+            <option value="spawn_node">spawn node</option>
             <option value="remove_node">remove node</option>
             <option value="add_edge">connect edge</option>
             <option value="remove_edge">disconnect edge</option>
           </select>
         </label>
-        {operation === 'add_node' && (
+        {operation === 'spawn_node' && (
           <>
             <label>
               type
@@ -168,6 +169,15 @@ export function ManualProposalPanel({
             <label>
               id
               <input disabled={busy} value={nodeId} onChange={(event) => setNodeId(event.target.value)} />
+            </label>
+            <label>
+              from
+              <input
+                disabled={busy}
+                placeholder="source node id"
+                value={spawnFrom}
+                onChange={(event) => setSpawnFrom(event.target.value)}
+              />
             </label>
             <label>
               title

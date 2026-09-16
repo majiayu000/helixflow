@@ -10,6 +10,7 @@ import type { CanvasCapabilities } from './graph-canvas-capabilities';
 import {
   buildAddNodeProposalInput,
   buildDeleteNodesProposalInput,
+  buildDuplicateNodeProposalInput,
   buildPasteProposalInput,
   buildSelectionClipboardText,
 } from './graph-canvas-editing';
@@ -47,7 +48,11 @@ export function createCanvasEditActions(input: CanvasEditActionsInput) {
       });
   };
 
-  const addNode = (definition: NodeDefinition, position?: Point) => {
+  const addNode = (
+    definition: NodeDefinition,
+    position?: Point,
+    connectFrom?: { nodeId: string; definition: NodeDefinition; direction?: 'in' | 'out' },
+  ) => {
     if (!input.capabilities.paste) {
       input.setClipboardStatus('当前模式不允许添加节点');
       return;
@@ -58,6 +63,7 @@ export function createCanvasEditActions(input: CanvasEditActionsInput) {
         definition,
         existingNodeIds: input.drawGraph.nodes.map((node) => node.id),
         position: position ?? nextAvailableNodePosition(viewportCenterWorld(), input.drawGraph.nodes),
+        connectFrom,
       }),
       `已添加 ${definition.title}`,
       '添加节点失败',
@@ -109,6 +115,23 @@ export function createCanvasEditActions(input: CanvasEditActionsInput) {
     }
   };
 
+  const duplicateNode = (node: GraphNodeState) => {
+    if (!input.capabilities.paste) {
+      input.setClipboardStatus('当前模式不允许添加节点');
+      return;
+    }
+    submit(
+      buildDuplicateNodeProposalInput({
+        baseVersionId: input.versionId,
+        existingNodeIds: input.drawGraph.nodes.map((item) => item.id),
+        source: node,
+        params: input.workflowGraph?.nodes[node.id]?.params,
+      }),
+      `已复制 ${node.title}`,
+      '复制节点失败',
+    );
+  };
+
   const deleteSelection = (selectedNodeIds: Iterable<string>) => {
     if (!input.capabilities.delete) {
       input.setClipboardStatus('当前模式不允许删除');
@@ -122,7 +145,7 @@ export function createCanvasEditActions(input: CanvasEditActionsInput) {
     );
   };
 
-  return { addNode, copySelection, deleteSelection, pasteSelection };
+  return { addNode, copySelection, deleteSelection, duplicateNode, pasteSelection };
 }
 
 const NODE_GAP = 24;

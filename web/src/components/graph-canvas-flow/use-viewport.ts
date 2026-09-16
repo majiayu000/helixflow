@@ -23,6 +23,8 @@ export function useFlowViewport(
   const [instance, setInstance] = useState<WorkflowFlowInstance | null>(null);
   const initialView = persistedView ?? loadGraphCanvasView(workspaceId);
   const [view, setView] = useState<ViewState>(initialView);
+  const [liveView, setLiveView] = useState<ViewState>(initialView);
+  const [moving, setMoving] = useState(false);
   const [sliceView, setSliceView] = useState<ViewState>(initialView);
   const sliceViewRef = useRef(sliceView);
   const onViewCommitRef = useRef(onViewCommit);
@@ -32,6 +34,7 @@ export function useFlowViewport(
   useEffect(() => {
     const next = persistedView ?? loadGraphCanvasView(workspaceId);
     setView(next);
+    setLiveView(next);
     sliceViewRef.current = next;
     setSliceView(next);
     if (instance) void instance.setViewport(toViewport(next));
@@ -81,6 +84,8 @@ export function useFlowViewport(
 
   const onMove = useCallback((_event: MouseEvent | TouchEvent | null, next: Viewport) => {
     const nextView = { x: next.x, y: next.y, z: next.zoom };
+    setLiveView(nextView);
+    setMoving(true);
     if (shouldRefreshViewportSlice(sliceViewRef.current, nextView)) {
       sliceViewRef.current = nextView;
       setSliceView(nextView);
@@ -90,12 +95,14 @@ export function useFlowViewport(
   const onMoveEnd = useCallback((_event: MouseEvent | TouchEvent | null, next: Viewport) => {
     const nextView = { x: next.x, y: next.y, z: next.zoom };
     setView(nextView);
+    setLiveView(nextView);
+    setMoving(false);
     sliceViewRef.current = nextView;
     setSliceView(nextView);
     onViewCommitRef.current?.(nextView);
   }, []);
 
-  return { canvasRef, instance, onInit, onMove, onMoveEnd, sliceView, view, viewportSize };
+  return { canvasRef, instance, liveView, moving, onInit, onMove, onMoveEnd, sliceView, view, viewportSize };
 }
 
 export async function setFlowViewportToNodes(

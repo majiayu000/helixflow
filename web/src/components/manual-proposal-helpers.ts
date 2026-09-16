@@ -2,7 +2,7 @@ import type { ManualProposalInput, WorkflowGraph } from '../types';
 import { defaultParamsForDefinition } from './graph-canvas-editing';
 
 export type ManualProposalOperation =
-  | 'add_node'
+  | 'spawn_node'
   | 'remove_node'
   | 'set_param'
   | 'add_edge'
@@ -34,17 +34,18 @@ export function buildManualProposalInput(input: ManualFormInput): ManualProposal
   if (!input.workflowGraph) {
     throw new Error('Current workflow graph is unavailable.');
   }
-  if (input.operation === 'add_node') {
+  if (input.operation === 'spawn_node') {
     return {
       baseVersionId: input.baseVersionId,
       label,
       ops: [{
-        op: 'add_node',
+        op: 'spawn_node',
         id: requiredValue(input.nodeId, 'node id'),
         node_type: requiredValue(input.nodeType, 'node type'),
         title: input.nodeTitle.trim() || undefined,
         params: parseManualJson(input.paramsText),
         pos: [finiteNumber(input.x, 'x'), finiteNumber(input.y, 'y')],
+        from: input.fromNode.trim() || undefined,
       }],
     };
   }

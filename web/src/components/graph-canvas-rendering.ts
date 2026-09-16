@@ -1,4 +1,9 @@
-import type { GraphNodeState, RunStepState, WorkbenchState } from '../types';
+import type {
+  GraphNodeState,
+  ImageProcessingJob,
+  RunStepState,
+  WorkbenchState,
+} from '../types';
 import {
   GRAPH_NODE_HEAD_HEIGHT,
   GRAPH_NODE_ROW_HEIGHT,
@@ -23,6 +28,39 @@ export function buildRunStepStateMap(
   steps: NonNullable<WorkbenchState['run']>['steps'],
 ): Map<string, RunStepState> {
   return new Map(steps.map((step) => [step.nodeId, step.state] as const));
+}
+
+export function applyImageProcessingNodeStates(
+  states: Map<string, RunStepState>,
+  jobs: ImageProcessingJob[],
+): Map<string, RunStepState> {
+  const next = new Map(states);
+  const seenSources = new Set<string>();
+  for (const job of jobs) {
+    if (!seenSources.has(job.sourceNodeId)) {
+      seenSources.add(job.sourceNodeId);
+      if (job.status === 'queued' || job.status === 'running') {
+        next.set(job.sourceNodeId, 'running');
+      } else if (job.status === 'failed') {
+        next.set(job.sourceNodeId, 'failed');
+      }
+    }
+    if (job.status === 'succeeded' && job.resultNodeId) {
+      next.set(job.resultNodeId, 'succeeded');
+    }
+  }
+  return next;
+}
+
+export function buildRunStepErrorMap(
+  steps: NonNullable<WorkbenchState['run']>['steps'],
+): Map<string, string> {
+  return new Map(
+    steps.flatMap((step) => {
+      const summary = step.error?.summary?.trim();
+      return summary ? [[step.nodeId, summary] as const] : [];
+    }),
+  );
 }
 
 export function buildEdgeSignatureSet(edges: WorkbenchState['graph']['edges']): Set<string> {
