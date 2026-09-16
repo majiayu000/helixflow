@@ -13,7 +13,7 @@ use crate::catalog::{
     ConnectorDefinition, ConnectorKind, ConnectorStatus, ImplementationTarget, MediaCategory,
     ModelDefinition, ModelLifecycle,
 };
-use crate::{ParamSpec, ParamsSchema, PortDefinition, PortType, port, schema};
+use crate::{ParamSpec, ParamsSchema, PortDefinition, PortType, port, port_many, schema};
 
 pub fn builtin_catalog() -> CatalogSnapshot {
     CatalogSnapshot::build(
@@ -50,7 +50,10 @@ fn capabilities() -> Vec<CapabilityDefinition> {
             MediaCategory::Image,
             "Text To Image",
             "Generates an image artifact from a prompt.",
-            vec![port("prompt", PortType::Text, true)],
+            vec![
+                port("prompt", PortType::Text, true),
+                port_many("in", PortType::Image, false),
+            ],
             vec![port("image", PortType::Image, true)],
             schema(
                 &["prompt", "aspect_ratio"],
@@ -105,7 +108,9 @@ fn capabilities() -> Vec<CapabilityDefinition> {
             "Image To Video",
             "Animates an input image into a video artifact.",
             vec![
-                port("image", PortType::Image, true),
+                port_many("image", PortType::Image, true),
+                port_many("video", PortType::Video, false),
+                port_many("audio", PortType::Audio, false),
                 port("prompt", PortType::Text, false),
             ],
             vec![port("video", PortType::Video, true)],
@@ -199,7 +204,19 @@ fn models() -> Vec<ModelDefinition> {
                 "seedance".to_owned(),
                 "seedance 1.5".to_owned(),
                 "seedance 1.5 pro".to_owned(),
+            ],
+        },
+        ModelDefinition {
+            model_id: "bytedance/seedance-2.0-fast".to_owned(),
+            family_id: "seedance".to_owned(),
+            display_name: "Seedance 2.0 Fast".to_owned(),
+            vendor: "bytedance".to_owned(),
+            lifecycle: ModelLifecycle::Active,
+            aliases: vec![
                 "seedance 2".to_owned(),
+                "seedance 2.0".to_owned(),
+                "seedance 2.0 fast".to_owned(),
+                "seedance 2 fast".to_owned(),
             ],
         },
     ]
@@ -248,6 +265,31 @@ fn bindings() -> Vec<CapabilityBinding> {
             ),
             output_schema: schema(&[], [("image", ParamSpec::string())]),
             defaults: json!({ "aspect_ratio": "1:1" }),
+            availability: BindingAvailability::Enabled,
+            binding_revision: "v1".to_owned(),
+        },
+        CapabilityBinding {
+            binding_id: "google.nano-banana-2.image-edit.atlas.v1".to_owned(),
+            capability_id: "image_edit".to_owned(),
+            model_id: "google/nano-banana-2".to_owned(),
+            implementation: ImplementationTarget::ApiConnector {
+                connector_id: "atlas".to_owned(),
+                operation_id: "google/nano-banana-2/edit".to_owned(),
+            },
+            mode: "image_edit".to_owned(),
+            input_schema: schema(
+                &["image", "prompt"],
+                [
+                    ("image", ParamSpec::string()),
+                    ("prompt", ParamSpec::string()),
+                    (
+                        "aspect_ratio",
+                        ParamSpec::string_enum(&["1:1", "9:16", "16:9"]),
+                    ),
+                ],
+            ),
+            output_schema: schema(&[], [("image", ParamSpec::string())]),
+            defaults: json!({}),
             availability: BindingAvailability::Enabled,
             binding_revision: "v1".to_owned(),
         },
@@ -360,6 +402,68 @@ fn bindings() -> Vec<CapabilityBinding> {
             availability: BindingAvailability::Enabled,
             binding_revision: "v1".to_owned(),
         },
+        CapabilityBinding {
+            binding_id: "bytedance.seedance-2-0-fast.text-to-video.atlas.v1".to_owned(),
+            capability_id: "text_to_video".to_owned(),
+            model_id: "bytedance/seedance-2.0-fast".to_owned(),
+            implementation: ImplementationTarget::ApiConnector {
+                connector_id: "atlas".to_owned(),
+                operation_id: "bytedance/seedance-2.0-fast/text-to-video".to_owned(),
+            },
+            mode: "text_to_video".to_owned(),
+            input_schema: schema(
+                &["prompt", "duration_sec"],
+                [
+                    ("prompt", ParamSpec::string()),
+                    ("duration_sec", ParamSpec::integer_range(4, 15)),
+                    (
+                        "aspect_ratio",
+                        ParamSpec::string_enum(&["1:1", "9:16", "16:9"]),
+                    ),
+                ],
+            ),
+            output_schema: schema(&[], [("video", ParamSpec::string())]),
+            defaults: json!({ "duration_sec": 5 }),
+            availability: BindingAvailability::Enabled,
+            binding_revision: "v1".to_owned(),
+        },
+        CapabilityBinding {
+            binding_id: "bytedance.seedance-2-0-fast.reference-to-video.atlas.v1".to_owned(),
+            capability_id: "image_to_video".to_owned(),
+            model_id: "bytedance/seedance-2.0-fast".to_owned(),
+            implementation: ImplementationTarget::ApiConnector {
+                connector_id: "atlas".to_owned(),
+                operation_id: "bytedance/seedance-2.0-fast/reference-to-video".to_owned(),
+            },
+            mode: "image_to_video".to_owned(),
+            input_schema: schema(
+                &["image", "duration_sec"],
+                [
+                    ("image", ParamSpec::string()),
+                    ("prompt", ParamSpec::string()),
+                    ("duration_sec", ParamSpec::integer_range(4, 15)),
+                    (
+                        "aspect_ratio",
+                        ParamSpec::string_enum(&[
+                            "21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive",
+                        ]),
+                    ),
+                    ("resolution", ParamSpec::string_enum(&["480p", "720p"])),
+                    ("generate_audio", ParamSpec::boolean()),
+                    ("camera_fixed", ParamSpec::boolean()),
+                    ("seed", ParamSpec::integer()),
+                ],
+            ),
+            output_schema: schema(&[], [("video", ParamSpec::string())]),
+            defaults: json!({
+                "duration_sec": 5,
+                "resolution": "720p",
+                "generate_audio": true,
+                "seed": -1
+            }),
+            availability: BindingAvailability::Enabled,
+            binding_revision: "v1".to_owned(),
+        },
     ]
 }
 
@@ -374,12 +478,16 @@ fn default_bindings() -> BTreeMap<String, String> {
             "google.nano-banana-2.text-to-image.atlas.v1".to_owned(),
         ),
         (
+            "image_edit".to_owned(),
+            "google.nano-banana-2.image-edit.atlas.v1".to_owned(),
+        ),
+        (
             "text_to_video".to_owned(),
             "bytedance.seedance-v1-5-pro.text-to-video.atlas.v1".to_owned(),
         ),
         (
             "image_to_video".to_owned(),
-            "bytedance.seedance-v1-5-pro.image-to-video.atlas.v1".to_owned(),
+            "bytedance.seedance-2-0-fast.reference-to-video.atlas.v1".to_owned(),
         ),
     ])
 }

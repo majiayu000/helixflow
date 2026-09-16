@@ -25,7 +25,7 @@ async fn ops_route_applies_multiple_ops_as_one_manual_version() {
         "baseVersionId": base_version_id,
         "ops": [
             { "op": "set_param", "id": "text", "key": "text", "value": "updated" },
-            { "op": "add_node", "id": "alt", "node_type": "input.text", "title": null, "params": { "text": "alt" }, "pos": [120, 0] },
+            { "op": "spawn_node", "id": "alt", "node_type": "input.text", "title": null, "params": { "text": "alt" }, "pos": [120, 0] },
             { "op": "remove_edge", "from": ["text", "text"], "to": ["writer", "text"], "edge_type": "text" },
             { "op": "add_edge", "from": ["alt", "text"], "to": ["writer", "text"], "edge_type": "text" },
             { "op": "remove_node", "id": "text" }
@@ -61,6 +61,53 @@ async fn ops_route_applies_multiple_ops_as_one_manual_version() {
         2
     );
     assert!(response["graph"]["nodes"].to_string().contains("alt"));
+}
+
+#[tokio::test]
+async fn ops_route_pins_catalog_semantics_on_a_generate_node() {
+    let (state, workspace_id, base_version_id, _dir) = state_with_graph().await;
+    let body = json!({
+        "baseVersionId": base_version_id,
+        "ops": [
+            {
+                "op": "spawn_node",
+                "id": "image_generate",
+                "node_type": "image.generate",
+                "title": "图片",
+                "params": { "prompt": "hero", "aspect_ratio": "1:1" },
+                "pos": [80, 40]
+            },
+            {
+                "op": "set_semantics",
+                "id": "image_generate",
+                "semantics": {
+                    "capabilityId": "text_to_image",
+                    "mode": "text_to_image",
+                    "implementation": {
+                        "pinned": {
+                            "requestedModelId": "google/nano-banana-2",
+                            "bindingId": "google.nano-banana-2.text-to-image.atlas.v1"
+                        }
+                    }
+                }
+            }
+        ]
+    });
+
+    let response = apply_workspace_ops(Path(workspace_id.clone()), State(state), body.to_string())
+        .await
+        .expect("ops response")
+        .0;
+
+    assert_eq!(
+        response["workflowGraph"]["nodes"]["image_generate"]["semantics"]["capabilityId"],
+        "text_to_image"
+    );
+    assert_eq!(
+        response["workflowGraph"]["nodes"]["image_generate"]["semantics"]["implementation"]["pinned"]
+            ["requestedModelId"],
+        "google/nano-banana-2"
+    );
 }
 
 #[tokio::test]
@@ -609,7 +656,7 @@ async fn ops_route_rejects_graph_level_failures_with_null_op_index() {
     let body = json!({
         "baseVersionId": base_version_id,
         "ops": [
-            { "op": "add_node", "id": "alt", "node_type": "input.text", "title": null, "params": { "text": "alt" }, "pos": [120, 0] },
+            { "op": "spawn_node", "id": "alt", "node_type": "input.text", "title": null, "params": { "text": "alt" }, "pos": [120, 0] },
             { "op": "add_edge", "from": ["alt", "text"], "to": ["writer", "text"], "edge_type": "text" }
         ]
     });
@@ -652,6 +699,82 @@ async fn ops_route_rejects_pending_proposal_and_stale_base_without_writes() {
             .as_deref(),
         Some(base_version_id.as_str())
     );
+}
+
+#[tokio::test]
+async fn ops_route_rejects_add_node() {
+    let (state, workspace_id, base_version_id, _dir) = state_with_graph().await;
+    let body = json!({
+        "baseVersionId": base_version_id,
+        "ops": [{
+            "op": "add_node",
+            "id": "photo",
+            "node_type": "input.image",
+            "params": { "storage_uri": "upload://a" },
+            "pos": [0, 0]
+        }]
+    });
+
+    let err = apply_workspace_ops(Path(workspace_id), State(state), body.to_string())
+        .await
+        .expect_err("add_node is not a canvas op");
+    let body = error_body(err).await;
+    assert!(
+        body["error"]
+            .as_str()
+            .expect("error")
+            .contains("unknown variant `add_node`")
+    );
+}
+
+#[tokio::test]
+async fn ops_route_spawn_node_resolves_lineage_edge() {
+    let (state, workspace_id, base_version_id, _dir) = state_with_graph().await;
+    let body = json!({
+        "baseVersionId": base_version_id,
+        "ops": [
+            {
+                "op": "spawn_node",
+                "id": "photo",
+                "node_type": "input.image",
+                "title": "Photo",
+                "params": { "storage_uri": "upload://a" },
+                "pos": [0, 0]
+            },
+            {
+                "op": "spawn_node",
+                "id": "image_generate",
+                "from": "photo",
+                "node_type": "image.generate",
+                "title": "Hero",
+                "params": { "prompt": "hero", "aspect_ratio": "1:1" },
+                "pos": [320, 0]
+            }
+        ]
+    });
+
+    let response = apply_workspace_ops(
+        Path(workspace_id.clone()),
+        State(state.clone()),
+        body.to_string(),
+    )
+    .await
+    .expect("ops response")
+    .0;
+    let next_version_id = response["workspace"]["versionId"]
+        .as_str()
+        .expect("version id");
+    let version = state.store.version(next_version_id).await.expect("version");
+    let graph = read_version_graph(&state.data_dir, &version)
+        .await
+        .expect("read graph");
+
+    assert!(graph.nodes.contains_key("image_generate"));
+    assert!(graph.edges.iter().any(|edge| {
+        edge.from == ["photo".to_owned(), "image".to_owned()]
+            && edge.to == ["image_generate".to_owned(), "in".to_owned()]
+            && edge.edge_type == "image"
+    }));
 }
 
 #[tokio::test]

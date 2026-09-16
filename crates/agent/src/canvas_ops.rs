@@ -25,6 +25,8 @@ pub struct CanvasOpsContext {
     pub graph: CompactCanvasGraph,
     pub selection: CanvasSelection,
     pub gates: CanvasGateState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_model_id: Option<String>,
 }
 
 impl CanvasOpsContext {
@@ -48,7 +50,20 @@ impl CanvasOpsContext {
             graph: compact_graph,
             selection: selection.filtered(&node_ids),
             gates,
+            preferred_model_id: None,
         }
+    }
+
+    pub fn with_preferred_model_id(mut self, model_id: Option<String>) -> Self {
+        self.preferred_model_id = model_id.and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_owned())
+            }
+        });
+        self
     }
 }
 
@@ -580,5 +595,33 @@ mod tests {
                 spec.behavior
             );
         }
+    }
+
+    #[test]
+    fn omits_empty_preferred_model_and_keeps_named_model() {
+        let graph = WorkflowGraph {
+            schema_version: 1,
+            catalog_revision: None,
+            nodes: BTreeMap::new(),
+            edges: Vec::new(),
+        };
+        let empty = CanvasOpsContext::from_graph(
+            "ws_1",
+            "ver_1",
+            &graph,
+            CanvasSelection::default(),
+            CanvasGateState::default(),
+        )
+        .with_preferred_model_id(Some("  ".to_owned()));
+        let named = empty
+            .clone()
+            .with_preferred_model_id(Some("google/nano-banana-2".to_owned()));
+        let empty_json = serde_json::to_value(&empty).expect("empty json");
+        assert_eq!(empty.preferred_model_id, None);
+        assert!(empty_json.get("preferred_model_id").is_none());
+        assert_eq!(
+            named.preferred_model_id.as_deref(),
+            Some("google/nano-banana-2")
+        );
     }
 }

@@ -117,7 +117,7 @@ fn golden_nano_banana_seedance_compiles_to_single_chain() {
 
     let expected: BTreeMap<&str, &str> = BTreeMap::from([
         ("s1", "google/nano-banana-2"),
-        ("s2", "bytedance/seedance-v1.5-pro"),
+        ("s2", "bytedance/seedance-2.0-fast"),
     ]);
     for stage in &proposal.resolved_stages {
         assert_eq!(
@@ -162,7 +162,7 @@ fn golden_seed_catalog_without_i2v_binding_clarifies_without_fallback() {
     assert_eq!(clarify.missing_fields, ["s2.model"]);
     assert_eq!(
         clarify.safe_context["requestedModelId"],
-        "bytedance/seedance-v1.5-pro"
+        "bytedance/seedance-2.0-fast"
     );
     assert_eq!(
         clarify.safe_context["availableModels"],

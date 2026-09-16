@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use helixflow_registry::{NodeRegistry, PortType};
+use helixflow_registry::{NodeRegistry, PortCardinality, PortType};
 use helixflow_store::{NewVersion, Store, VersionRecord, VersionSource};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -9,6 +9,7 @@ use serde_json::Value;
 pub mod semantics;
 
 use semantics::NodeSemanticsEntry;
+pub use semantics::{LineagePorts, matching_connection_ports};
 
 pub fn module_name() -> &'static str {
     "graph"
@@ -116,13 +117,6 @@ impl GraphService {
 
         let mut input_connections = BTreeSet::new();
         for edge in &graph.edges {
-            if !input_connections.insert(edge.to.clone()) {
-                return Err(GraphError::DuplicateInputConnection {
-                    node_id: edge.to[0].clone(),
-                    port: edge.to[1].clone(),
-                });
-            }
-
             let from_node = graph
                 .nodes
                 .get(&edge.from[0])
@@ -158,7 +152,23 @@ impl GraphService {
                     port: edge.to[1].clone(),
                 })?;
 
-            if !edge_type_matches(from_port.port_type, to_port.port_type, &edge.edge_type) {
+            if to_port.cardinality == PortCardinality::One
+                && !input_connections.insert(edge.to.clone())
+            {
+                return Err(GraphError::DuplicateInputConnection {
+                    node_id: edge.to[0].clone(),
+                    port: edge.to[1].clone(),
+                });
+            }
+
+            if is_reference_input(to_port) {
+                if edge.edge_type != port_type_label(from_port.port_type) {
+                    return Err(GraphError::PortTypeMismatch {
+                        from: edge.from.clone(),
+                        to: edge.to.clone(),
+                    });
+                }
+            } else if !edge_type_matches(from_port.port_type, to_port.port_type, &edge.edge_type) {
                 return Err(GraphError::PortTypeMismatch {
                     from: edge.from.clone(),
                     to: edge.to.clone(),
@@ -327,6 +337,9 @@ impl GraphService {
                     .ok_or_else(|| GraphError::MissingNode(id.clone()))?
                     .semantics = semantics.clone();
             }
+            ProposalOp::SpawnNode { id, node, from } => {
+                self.spawn_derived(graph, id, node, from)?;
+            }
         }
         Ok(())
     }
@@ -346,12 +359,13 @@ impl GraphService {
                 .get(&node_id)
                 .ok_or_else(|| GraphError::MissingNode(node_id.clone()))?;
             let definition = self.registry.definition(&node.node_type)?;
-            let inputs = graph
-                .edges
-                .iter()
-                .filter(|edge| edge.to[0] == node_id)
-                .map(|edge| (edge.to[1].clone(), edge.from.clone()))
-                .collect();
+            let mut inputs: BTreeMap<String, Vec<[String; 2]>> = BTreeMap::new();
+            for edge in graph.edges.iter().filter(|edge| edge.to[0] == node_id) {
+                inputs
+                    .entry(edge.to[1].clone())
+                    .or_default()
+                    .push(edge.from.clone());
+            }
 
             steps.push(ExecutionStep {
                 node_id,
@@ -475,6 +489,13 @@ pub enum ProposalOp {
         id: String,
         semantics: Option<NodeSemanticsEntry>,
     },
+    /// Adds a derived node and the lineage edge from `from` in one op.
+    /// Ports are resolved from the registry; callers never pick `in` vs `image`.
+    SpawnNode {
+        id: String,
+        node: GraphNode,
+        from: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -495,7 +516,11 @@ pub struct ExecutionStep {
     pub node_type: String,
     pub provider: Option<String>,
     pub capability: Option<String>,
-    pub inputs: BTreeMap<String, [String; 2]>,
+    /// Incoming edges grouped by input port. A `one` port has length 1; a
+    /// `many` port may have several. Older plan JSON stored a single pair
+    /// per port and is still accepted.
+    #[serde(deserialize_with = "deserialize_step_inputs")]
+    pub inputs: BTreeMap<String, Vec<[String; 2]>>,
     pub params: Value,
     /// Immutable implementation resolved at run creation. `None` only for
     /// steps whose provider is not a catalog connector (e.g. mock) or for
@@ -556,6 +581,10 @@ pub enum GraphError {
     },
     ProposalNotPending,
     Store(String),
+    NoLineageConnection {
+        from: String,
+        to: String,
+    },
 }
 
 impl From<helixflow_registry::RegistryError> for GraphError {
@@ -610,6 +639,9 @@ impl fmt::Display for GraphError {
             ),
             Self::ProposalNotPending => write!(f, "proposal is not pending"),
             Self::Store(err) => write!(f, "store error while applying proposal: {err}"),
+            Self::NoLineageConnection { from, to } => {
+                write!(f, "cannot spawn `{to}` from `{from}`: no lineage ports")
+            }
         }
     }
 }
@@ -632,6 +664,33 @@ fn ensure_proposal_applies_to_current(
     }
 
     Ok(())
+}
+
+fn deserialize_step_inputs<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, Vec<[String; 2]>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One([String; 2]),
+        Many(Vec<[String; 2]>),
+    }
+
+    let raw = BTreeMap::<String, OneOrMany>::deserialize(deserializer)?;
+    Ok(raw
+        .into_iter()
+        .map(|(port, value)| match value {
+            OneOrMany::One(source) => (port, vec![source]),
+            OneOrMany::Many(sources) => (port, sources),
+        })
+        .collect())
+}
+
+fn is_reference_input(port: &helixflow_registry::PortDefinition) -> bool {
+    port.name == "in" && !port.required && port.cardinality == PortCardinality::Many
 }
 
 fn edge_type_matches(from: PortType, to: PortType, edge_type: &str) -> bool {

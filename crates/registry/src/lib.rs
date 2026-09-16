@@ -12,11 +12,11 @@ mod error;
 mod types;
 
 pub use builtin::builtin_node_definitions;
-pub(crate) use builtin::{port, schema};
+pub(crate) use builtin::{port, port_many, schema};
 pub use error::RegistryError;
 pub use types::{
-    EstimatedCostRef, NodeDefinition, ParamSpec, ParamValueType, ParamsSchema, PortDefinition,
-    PortType,
+    EstimatedCostRef, NodeDefinition, ParamSpec, ParamValueType, ParamsSchema, PortCardinality,
+    PortDefinition, PortType,
 };
 
 pub fn module_name() -> &'static str {

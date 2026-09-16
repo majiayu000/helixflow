@@ -43,6 +43,14 @@ impl ApiError {
         }
     }
 
+    pub(crate) fn bad_gateway(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_GATEWAY,
+            message: message.into(),
+            details: None,
+        }
+    }
+
     pub(crate) fn service_unavailable_with_details(
         message: impl Into<String>,
         details: serde_json::Value,
@@ -101,7 +109,9 @@ impl ApiError {
         }
         if matches!(
             err,
-            StoreError::VersionConflict { .. } | StoreError::ProposalStateConflict { .. }
+            StoreError::VersionConflict { .. }
+                | StoreError::ProposalStateConflict { .. }
+                | StoreError::ImageProcessingJobStateConflict { .. }
         ) {
             return Self::conflict(err.to_string());
         }

@@ -320,7 +320,7 @@ pub(crate) async fn complete_observation_in_tx(
     })
 }
 
-async fn insert_message(
+pub(crate) async fn insert_message(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
     input: &NewMessage<'_>,
@@ -348,7 +348,7 @@ async fn insert_message(
     Ok(())
 }
 
-async fn message_in_tx(
+pub(crate) async fn message_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
     message_id: &str,
 ) -> StoreResult<MessageRecord> {

@@ -8,15 +8,17 @@
 
 use std::collections::BTreeMap;
 
-use helixflow_registry::NodeRegistry;
 use helixflow_registry::catalog::{CatalogSnapshot, ImplementationSelection};
 use helixflow_registry::resolver::{
     CapabilityResolver, ConnectorAvailability, ResolveError, ResolveRequest,
 };
+use helixflow_registry::{NodeDefinition, NodeRegistry};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{GraphService, WorkflowGraph};
+use crate::{
+    GraphEdge, GraphError, GraphNode, GraphResult, GraphService, WorkflowGraph, port_type_label,
+};
 
 pub const MIGRATION_VERSION: &str = "1";
 
@@ -645,6 +647,99 @@ fn resolve_error_action(
             code: MigrationReasonCode::BindingAmbiguous,
             reason: "multiple catalog bindings match the node capability".to_owned(),
         },
+    }
+}
+
+pub const MEDIA_REF_PORT: &str = "in";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineagePorts {
+    pub source_port: String,
+    pub target_port: String,
+    pub edge_type: String,
+}
+
+pub fn matching_connection_ports(
+    source: &NodeDefinition,
+    target: &NodeDefinition,
+) -> Option<LineagePorts> {
+    let outputs = &source.outputs;
+    let ref_port = target
+        .inputs
+        .iter()
+        .find(|input| input.name == MEDIA_REF_PORT);
+    let execution_inputs: Vec<_> = target
+        .inputs
+        .iter()
+        .filter(|input| input.name != MEDIA_REF_PORT)
+        .collect();
+    for output in outputs {
+        if let Some(input) = execution_inputs
+            .iter()
+            .find(|port| port.port_type == output.port_type)
+        {
+            return Some(lineage_ports(output, &input.name));
+        }
+    }
+    for output in outputs {
+        if let Some(ref_port) = ref_port
+            && ref_port.port_type == output.port_type
+        {
+            return Some(lineage_ports(output, &ref_port.name));
+        }
+    }
+    if let (Some(ref_port), Some(output)) = (ref_port, outputs.first()) {
+        return Some(lineage_ports(output, &ref_port.name));
+    }
+    None
+}
+
+fn lineage_ports(output: &helixflow_registry::PortDefinition, target_port: &str) -> LineagePorts {
+    LineagePorts {
+        source_port: output.name.clone(),
+        target_port: target_port.to_owned(),
+        edge_type: port_type_label(output.port_type).to_owned(),
+    }
+}
+
+impl GraphService {
+    pub(crate) fn spawn_derived(
+        &self,
+        graph: &mut WorkflowGraph,
+        id: &str,
+        node: &GraphNode,
+        from: &str,
+    ) -> GraphResult<()> {
+        if from == id {
+            return Err(GraphError::NoLineageConnection {
+                from: from.to_owned(),
+                to: id.to_owned(),
+            });
+        }
+        let source_type = graph
+            .nodes
+            .get(from)
+            .ok_or_else(|| GraphError::MissingNode(from.to_owned()))?
+            .node_type
+            .clone();
+        if graph.nodes.contains_key(id) {
+            return Err(GraphError::DuplicateNode(id.to_owned()));
+        }
+        let source_def = self.registry().definition(&source_type)?;
+        let target_def = self.registry().definition(&node.node_type)?;
+        let ports = matching_connection_ports(source_def, target_def).ok_or_else(|| {
+            GraphError::NoLineageConnection {
+                from: from.to_owned(),
+                to: id.to_owned(),
+            }
+        })?;
+        graph.nodes.insert(id.to_owned(), node.clone());
+        graph.edges.push(GraphEdge {
+            from: [from.to_owned(), ports.source_port],
+            to: [id.to_owned(), ports.target_port],
+            edge_type: ports.edge_type,
+        });
+        Ok(())
     }
 }
 

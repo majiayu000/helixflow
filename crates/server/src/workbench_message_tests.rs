@@ -1397,6 +1397,6 @@ async fn intent_turn_compiles_seedance_image_to_video_binding() {
         helixflow_registry::catalog::ImplementationSelection::Pinned {
             ref requested_model_id,
             ..
-        } if requested_model_id == "bytedance/seedance-v1.5-pro"
+        } if requested_model_id == "bytedance/seedance-2.0-fast"
     ));
 }

@@ -35,6 +35,28 @@ pub struct PortDefinition {
     #[serde(rename = "type")]
     pub port_type: PortType,
     pub required: bool,
+    /// `one` is the default and keeps the historical single-edge contract.
+    /// `many` is a list: several same-type edges may land on this port.
+    #[serde(default, skip_serializing_if = "is_one_cardinality")]
+    pub cardinality: PortCardinality,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PortCardinality {
+    #[default]
+    One,
+    Many,
+}
+
+impl PortCardinality {
+    pub fn allows_fan_in(self) -> bool {
+        matches!(self, Self::Many)
+    }
+}
+
+fn is_one_cardinality(cardinality: &PortCardinality) -> bool {
+    matches!(cardinality, PortCardinality::One)
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

@@ -325,7 +325,7 @@ fn intent_output_contract() -> &'static str {
 - Top-level keys must be exactly: "intentVersion" (always "1"), "topology" ("linear" or "parallel"), "stages", "outputStageIds", optional "assumptions".
 - Each stage: {"stageId":"s1","capabilityId":"text_to_image","requestedModel":"Nano Banana","inputFrom":[],"params":{"prompt":"..."}}.
 - Valid capabilityId values come from `ctx/node_defs/catalog.json`. Before pairing a capability with a model, check `ctx/models/catalog.json`; only an enabled binding makes that exact pair executable.
-- "requestedModel": set ONLY when the user named a model; otherwise omit it and the backend applies the configured default. Never invent model names.
+- "requestedModel": set when the user named a model in the current message, or when `ctx/canvas_ops.json` has a non-empty `preferred_model_id`. Otherwise omit it and the backend applies the configured default. Never invent model names.
 - If the user names a model-capability pair with no enabled binding, preserve the requested model and capability in the intent. Never silently substitute another model or capability; the backend will return a structured clarification with available choices.
 - "inputFrom" references earlier stages only: [{"stageId":"s1","output":"image"}]. Use "linear" unless the user explicitly asked for parallel branches.
 - When the user supplies a literal value for a required input port, put that value in the stage "params" under the exact input port name; the compiler materializes the corresponding input node. Use "inputFrom" instead when an earlier stage supplies it.
@@ -342,6 +342,7 @@ fn canvas_ops_contract(mode: TurnMode, _output_contract: OutputContract) -> &'st
 - Prefer `canvas.get_state` to read current compact state and `canvas.submit_intent` to submit a high-level IntentPlan when those tools are available.
 - `read_state` means inspect only the declared compact graph state.
 - `read_selection` means inspect only `selection.node_ids`; an empty selection is valid.
+- If `preferred_model_id` is present, treat it as the user-named model unless the current message names a different model.
 - Never write low-level node ids, edges, coordinates, binding ids, or connector names in the intent.
 - Never restore, save layout, call provider execution, or mutate graph state directly."#
         }

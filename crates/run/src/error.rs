@@ -118,7 +118,7 @@ impl std::error::Error for RunError {}
 impl RunError {
     pub fn public_message(&self) -> String {
         match self {
-            Self::Provider(_) => "provider execution failed".to_owned(),
+            Self::Provider(error) => error.to_string(),
             Self::Store(_) => "run persistence failed".to_owned(),
             Self::Json(_) => "run data could not be decoded".to_owned(),
             Self::ArtifactPersistence(_) => "artifact materialization failed".to_owned(),
@@ -158,5 +158,23 @@ impl From<StoreError> for RunError {
 impl From<serde_json::Error> for RunError {
     fn from(err: serde_json::Error) -> Self {
         Self::Json(err)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_public_message_keeps_safe_rejection_text() {
+        let err = RunError::Provider(ProviderError::RequestRejected(
+            "A reference image could not be processed.".to_owned(),
+        ));
+        let message = err.public_message();
+        assert!(
+            message.contains("reference image could not be processed"),
+            "{message}"
+        );
+        assert!(!message.to_lowercase().contains("bearer"));
     }
 }

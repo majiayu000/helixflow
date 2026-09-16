@@ -75,7 +75,7 @@ fn graph_payload_populates_provider_from_node_registry_before_run_steps() {
                     "aspect_ratio": "9:16"
                 }),
                 pos: [10.0, 20.0],
-                size: None,
+                size: Some([260.0, 180.0]),
                 semantics: None,
             },
         )]),
@@ -87,6 +87,8 @@ fn graph_payload_populates_provider_from_node_registry_before_run_steps() {
 
     assert_eq!(body["nodes"][0]["provider"], "mock");
     assert_eq!(body["nodes"][0]["status"], "queued");
+    assert_eq!(body["nodes"][0]["size"]["width"], 260.0);
+    assert_eq!(body["nodes"][0]["size"]["height"], 180.0);
 }
 
 #[tokio::test]

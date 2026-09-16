@@ -15,16 +15,8 @@ fn serializes_node_definition_boundary() {
         provider: Some("mock".to_string()),
         capability: Some("text_to_image".to_string()),
         description: "A mock image node.".to_string(),
-        inputs: vec![PortDefinition {
-            name: "prompt".to_string(),
-            port_type: PortType::Text,
-            required: true,
-        }],
-        outputs: vec![PortDefinition {
-            name: "image".to_string(),
-            port_type: PortType::Image,
-            required: true,
-        }],
+        inputs: vec![port("prompt", PortType::Text, true)],
+        outputs: vec![port("image", PortType::Image, true)],
         params_schema: schema(&["prompt"], [("prompt", ParamSpec::string())]),
         estimated_cost: Some(EstimatedCostRef {
             unit: "call".to_string(),
@@ -101,6 +93,28 @@ fn exports_catalog_for_agent_context() {
             .iter()
             .any(|node| node.node_type == "video.text_to_video")
     );
+    assert!(
+        catalog
+            .nodes
+            .iter()
+            .any(|node| node.node_type == "input.video")
+    );
+    assert!(
+        catalog
+            .nodes
+            .iter()
+            .any(|node| node.node_type == "input.audio")
+    );
+    let i2v = catalog
+        .nodes
+        .iter()
+        .find(|node| node.node_type == "video.image_to_video")
+        .expect("i2v");
+    assert!(
+        i2v.inputs
+            .iter()
+            .any(|port| port.name == "image" && port.cardinality.allows_fan_in())
+    );
 }
 
 #[test]
@@ -144,7 +158,12 @@ fn gh130_baseline_params_model_is_rejected_as_unknown() {
 fn executable_nodes_are_provider_neutral() {
     let registry = NodeRegistry::builtin();
 
-    for node_type in ["llm.prompt_writer", "image.generate", "video.text_to_video"] {
+    for node_type in [
+        "llm.prompt_writer",
+        "image.generate",
+        "image.edit",
+        "video.text_to_video",
+    ] {
         let definition = registry.definition(node_type).expect("definition");
         assert_eq!(definition.provider, None);
         assert!(!definition.title.contains("Mock"));

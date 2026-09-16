@@ -3,10 +3,11 @@ use std::collections::BTreeMap;
 use async_trait::async_trait;
 
 use crate::{
-    ApiConnectorSummary, CostEstimate, Provider, ProviderCatalog, ProviderCatalogSnapshot,
-    ProviderError, ProviderHealth, ProviderRequest, ProviderResult, ProviderResultValue,
-    ProviderTaskHandle, RuntimeProvider, RuntimeProviderSummary, WorkflowBackendSummary,
-    sanitize_provider_id,
+    ApiConnectorSummary, CostEstimate, ImageProcessingCapabilities, ImageProcessingOutput,
+    ImageProcessingRequest, ImageProcessingSubmission, Provider, ProviderCatalog,
+    ProviderCatalogSnapshot, ProviderError, ProviderHealth, ProviderRequest, ProviderResult,
+    ProviderResultValue, ProviderTaskHandle, RuntimeProvider, RuntimeProviderSummary,
+    WorkflowBackendSummary, sanitize_provider_id,
 };
 
 #[derive(Debug, Clone)]
@@ -33,10 +34,10 @@ impl ProviderRegistry {
         atlas: RuntimeProvider,
         fal: RuntimeProvider,
     ) -> Self {
-        let default_provider = runtime_provider
+        let requested = runtime_provider
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .unwrap_or("unconfigured");
+            .map(sanitize_provider_id);
         let mut providers = vec![
             RuntimeProvider::unavailable(
                 "unconfigured",
@@ -45,7 +46,7 @@ impl ProviderRegistry {
             atlas,
             fal,
         ];
-        if sanitize_provider_id(default_provider) == "mock" {
+        if requested.as_deref() == Some("mock") {
             providers.push(if mock_provider_enabled(enable_mock_provider) {
                 RuntimeProvider::mock()
             } else {
@@ -55,6 +56,10 @@ impl ProviderRegistry {
                 )
             });
         }
+        // Prefer an already-configured real provider when the env default is unset.
+        // That keeps fail-closed (no silent mock) while making `ATLAS_API_KEY=... cargo run`
+        // enough to boot — no separate HELIXFLOW_RUNTIME_PROVIDER required.
+        let default_provider = resolve_default_provider(requested.as_deref(), &providers);
         Self::new(default_provider, providers)
     }
 
@@ -167,6 +172,51 @@ impl ProviderRegistry {
                 reason: "provider is not registered in this build".to_owned(),
             })
     }
+
+    pub fn image_processing_capabilities(
+        &self,
+        provider_id: &str,
+    ) -> ProviderResultValue<ImageProcessingCapabilities> {
+        self.provider_for(provider_id)?
+            .image_processing_capabilities()
+    }
+
+    pub async fn process_image(
+        &self,
+        provider_id: &str,
+        request: ImageProcessingRequest,
+    ) -> ProviderResultValue<ImageProcessingOutput> {
+        self.provider_for(provider_id)?.process_image(request).await
+    }
+
+    pub async fn submit_image(
+        &self,
+        provider_id: &str,
+        request: ImageProcessingRequest,
+    ) -> ProviderResultValue<ImageProcessingSubmission> {
+        self.provider_for(provider_id)?.submit_image(request).await
+    }
+}
+
+/// Resolve the process default provider id.
+///
+/// Explicit `HELIXFLOW_RUNTIME_PROVIDER` always wins. When unset, pick the first
+/// enabled real provider in preference order (`atlas`, then `fal`). With no
+/// enabled real provider, stay on synthetic `unconfigured` (fail closed; never
+/// auto-enable mock).
+fn resolve_default_provider(requested: Option<&str>, providers: &[RuntimeProvider]) -> String {
+    if let Some(id) = requested.filter(|value| !value.is_empty()) {
+        return id.to_owned();
+    }
+    for preferred in ["atlas", "fal"] {
+        if providers
+            .iter()
+            .any(|provider| provider.safe_id() == preferred && provider.is_enabled())
+        {
+            return preferred.to_owned();
+        }
+    }
+    "unconfigured".to_owned()
 }
 
 fn mock_provider_enabled(value: Option<&str>) -> bool {
@@ -275,6 +325,7 @@ impl Provider for ProviderRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ApiProviderConfig, AtlasProvider, FalProvider, FalProviderConfig};
 
     fn registry_from_test_config(
         runtime_provider: Option<&str>,
@@ -288,6 +339,20 @@ mod tests {
         )
     }
 
+    fn enabled_atlas() -> RuntimeProvider {
+        RuntimeProvider::Atlas(AtlasProvider::new(ApiProviderConfig::atlas(
+            "test-key".to_owned(),
+            "https://example.test".to_owned(),
+        )))
+    }
+
+    fn enabled_fal() -> RuntimeProvider {
+        RuntimeProvider::Fal(FalProvider::new(FalProviderConfig::new(
+            "test-key".to_owned(),
+            "https://example.test".to_owned(),
+        )))
+    }
+
     #[test]
     fn production_config_without_provider_fails_closed() {
         let registry = registry_from_test_config(None, None);
@@ -296,6 +361,50 @@ mod tests {
         assert!(!registry.contains_provider("mock"));
         assert!(!registry.provider_enabled("unconfigured"));
         assert_eq!(registry.selected_provider(None), "unconfigured");
+    }
+
+    #[test]
+    fn unset_env_defaults_to_enabled_atlas() {
+        let registry = ProviderRegistry::from_config(
+            None,
+            None,
+            enabled_atlas(),
+            RuntimeProvider::unavailable("fal", "FAL_KEY is not configured"),
+        );
+
+        assert_eq!(registry.default_provider(), "atlas");
+        assert!(registry.provider_enabled("atlas"));
+        assert_eq!(registry.selected_provider(None), "atlas");
+        assert!(!registry.provider_enabled("unconfigured"));
+    }
+
+    #[test]
+    fn unset_env_prefers_atlas_when_both_real_providers_are_enabled() {
+        let registry = ProviderRegistry::from_config(None, None, enabled_atlas(), enabled_fal());
+
+        assert_eq!(registry.default_provider(), "atlas");
+        assert!(registry.provider_enabled("fal"));
+    }
+
+    #[test]
+    fn unset_env_defaults_to_fal_when_only_fal_is_enabled() {
+        let registry = ProviderRegistry::from_config(
+            None,
+            None,
+            RuntimeProvider::unavailable("atlas", "Atlas provider is not configured"),
+            enabled_fal(),
+        );
+
+        assert_eq!(registry.default_provider(), "fal");
+        assert_eq!(registry.selected_provider(None), "fal");
+    }
+
+    #[test]
+    fn explicit_runtime_provider_overrides_auto_default() {
+        let registry =
+            ProviderRegistry::from_config(Some("fal"), None, enabled_atlas(), enabled_fal());
+
+        assert_eq!(registry.default_provider(), "fal");
     }
 
     #[test]

@@ -10,11 +10,14 @@ durable state under one data root.
    `cd web && npm ci && npm run build`.
 2. Set an explicit `HELIXFLOW_DATA_DIR` for managed deployments. The default is
    `$HOME/.helixflow`, never the process working directory.
-3. Configure one default runtime provider with `HELIXFLOW_RUNTIME_PROVIDER`.
-   Atlas and FAL credentials may coexist; the registry exposes every configured
-   provider and each workspace persists its own enabled-provider selection.
-   Mock mode requires both `HELIXFLOW_RUNTIME_PROVIDER=mock` and
-   `HELIXFLOW_ENABLE_MOCK_PROVIDER=1`.
+3. Configure provider credentials (`ATLAS_API_KEY` and/or `FAL_KEY`). When
+   `HELIXFLOW_RUNTIME_PROVIDER` is unset, the registry auto-selects the first
+   enabled real provider (`atlas`, then `fal`). With no credentials it stays on
+   synthetic `unconfigured` and refuses runs. Set
+   `HELIXFLOW_RUNTIME_PROVIDER` only to override that default (or to enable
+   mock). Mock mode requires both `HELIXFLOW_RUNTIME_PROVIDER=mock` and
+   `HELIXFLOW_ENABLE_MOCK_PROVIDER=1`. Workspaces may still switch among enabled
+   providers in the workbench.
 4. Set `HELIXFLOW_AUTH_TOKEN` before any non-loopback bind. Startup refuses an
    unauthenticated non-loopback address.
 5. Run `./scripts/smoke-release.sh` to exercise the built web bundle, database,

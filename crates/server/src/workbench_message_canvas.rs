@@ -9,6 +9,8 @@ use crate::app_state::AppState;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct WorkspaceCanvasContext {
     pub(crate) selection: WorkspaceCanvasSelection,
+    #[serde(default)]
+    pub(crate) requested_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -40,20 +42,42 @@ pub(crate) async fn prepare_agent_canvas_context(
         return Ok(None);
     }
 
-    Ok(Some(CanvasOpsContext::from_graph(
-        workspace_id,
-        base_version_id,
-        graph,
-        CanvasSelection {
-            node_ids: input
-                .map(|context| context.selection.node_ids)
-                .unwrap_or_default(),
-        },
-        CanvasGateState {
-            pending_proposal: has_pending_proposal,
-            pending_confirmation: workspace_has_pending_confirmation(state, workspace_id).await?,
-        },
-    )))
+    let requested_model = input
+        .as_ref()
+        .and_then(|context| context.requested_model.clone());
+    validate_requested_model(requested_model.as_deref())?;
+
+    Ok(Some(
+        CanvasOpsContext::from_graph(
+            workspace_id,
+            base_version_id,
+            graph,
+            CanvasSelection {
+                node_ids: input
+                    .map(|context| context.selection.node_ids)
+                    .unwrap_or_default(),
+            },
+            CanvasGateState {
+                pending_proposal: has_pending_proposal,
+                pending_confirmation: workspace_has_pending_confirmation(state, workspace_id)
+                    .await?,
+            },
+        )
+        .with_preferred_model_id(requested_model),
+    ))
+}
+
+fn validate_requested_model(value: Option<&str>) -> Result<(), ApiError> {
+    let Some(model) = value.map(str::trim).filter(|item| !item.is_empty()) else {
+        return Ok(());
+    };
+    if model.chars().count() > 96 {
+        return Err(ApiError::bad_request("requestedModel is too long"));
+    }
+    if model.chars().any(|ch| ch.is_control()) {
+        return Err(ApiError::bad_request("requestedModel is invalid"));
+    }
+    Ok(())
 }
 
 fn turn_mode_uses_proposal(turn_mode: TurnMode) -> bool {
@@ -150,6 +174,7 @@ mod tests {
                         "node_a".to_owned(),
                     ],
                 },
+                requested_model: None,
             }),
         )
         .await
@@ -158,6 +183,33 @@ mod tests {
 
         assert_eq!(context.selection.node_ids, vec!["node_a"]);
         assert!(!context.gates.pending_proposal);
+        assert_eq!(context.preferred_model_id, None);
+    }
+
+    #[tokio::test]
+    async fn forwards_requested_model_into_canvas_ops_context() {
+        let (state, workspace_id, version_id, _dir) = state_with_workspace().await;
+        let context = prepare_agent_canvas_context(
+            &state,
+            &workspace_id,
+            TurnMode::CreateWorkflow,
+            &version_id,
+            &sample_graph(),
+            Some(WorkspaceCanvasContext {
+                selection: WorkspaceCanvasSelection {
+                    node_ids: vec!["node_a".to_owned()],
+                },
+                requested_model: Some("google/nano-banana-2".to_owned()),
+            }),
+        )
+        .await
+        .expect("canvas context")
+        .expect("graph context");
+
+        assert_eq!(
+            context.preferred_model_id.as_deref(),
+            Some("google/nano-banana-2")
+        );
     }
 
     async fn state_with_workspace() -> (AppState, String, String, tempfile::TempDir) {
