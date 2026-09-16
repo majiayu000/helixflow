@@ -21,6 +21,9 @@ The name combines "helix" and "flow": each Agent edit → run → error → fix 
 
 Requires Rust 1.95.0 (pinned by `rust-toolchain.toml`) and Node.js 22.
 
+Image preprocessing uses the [bundled Cuter snapshot](web/vendor/cuter/README.md).
+The frontend build does not require a separate Cuter checkout.
+
 ```sh
 # 1. Build the frontend from the lockfile
 cd web && npm ci && npm run build && cd ..

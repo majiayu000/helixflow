@@ -12,20 +12,6 @@ const wsTarget = apiTarget.replace(/^http/, 'ws');
 const here = path.dirname(fileURLToPath(import.meta.url));
 const UMD_ROOT = '(typeof window !== "undefined" ? window : globalThis, () => {';
 
-function findCuterImageProcessors(): string {
-  let dir = here;
-  for (let index = 0; index < 8; index += 1) {
-    const candidate = path.resolve(dir, 'cuter/01/image-processors.js');
-    if (fs.existsSync(candidate)) return candidate;
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  throw new Error(
-    'Cuter image-processors.js not found. Helixflow 宫格/扩图/擦除引用该文件，不复制算法。',
-  );
-}
-
 function cuterImageProcessors(): Plugin {
   const virtualId = 'virtual:cuter-image-processors';
   return {
@@ -36,7 +22,7 @@ function cuterImageProcessors(): Plugin {
     },
     load(id) {
       if (id !== virtualId) return undefined;
-      const sourcePath = findCuterImageProcessors();
+      const sourcePath = path.resolve(here, 'vendor/cuter/image-processors.js');
       const source = fs.readFileSync(sourcePath, 'utf8');
       if (!source.includes(UMD_ROOT)) {
         throw new Error('Cuter image-processors UMD shape changed; update the Helixflow adapter');
