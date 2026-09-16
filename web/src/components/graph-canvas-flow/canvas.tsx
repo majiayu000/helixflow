@@ -663,7 +663,7 @@ function CanvasMinimapHost({
   view: { x: number; y: number; z: number };
   viewportSize: { width: number; height: number };
 }) {
-  const layout = computeMinimapLayout(nodes);
+  const layout = useMemo(() => computeMinimapLayout(nodes), [nodes]);
   if (!layout) return null;
   return (
     <CanvasMinimap
