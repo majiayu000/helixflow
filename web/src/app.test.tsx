@@ -49,6 +49,7 @@ import {
 import { ConfirmModal, HistoryPanel } from './components/run-panels';
 import { TopBar } from './components/top-bar';
 import { applyRunEvent, useWorkbenchStore } from './store';
+import { resetWorkbenchLayoutStoreForTests } from './workbench-layout/store';
 import { CanvasMessageContextSchema, graphStateFromCanvasDocument } from './types';
 import type { CanvasDocument, NodeCatalog, WorkbenchState } from './types';
 
@@ -202,6 +203,7 @@ describe('App', () => {
   });
 
   afterEach(() => {
+    resetWorkbenchLayoutStoreForTests(null);
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -211,7 +213,7 @@ describe('App', () => {
 
     expect(markup).toContain('helixflow');
     expect(markup).toContain('Test Workspace');
-    expect(markup).toContain('Chat');
+    expect(markup).toContain('aria-label="展开右侧栏"');
     expect(markup).not.toContain('2 节点');
     expect(markup).toContain('Mock Provider');
     expect(markup).toContain('本地测试');
@@ -1137,7 +1139,7 @@ describe('App', () => {
 
     expect(markup).toContain('flow-view-controls');
     expect(markup).toContain('2 nodes');
-    expect(markup).toContain('canvas-minimap');
+    expect(markup).toContain('flow-view-zoom-slider');
   });
 
   it('sandboxes HTML artifact previews without script permissions', () => {
@@ -1883,7 +1885,6 @@ describe('GraphCanvas navigation', () => {
     expect(markup).toContain('node--upd');
     expect(markup).toContain('node--locked');
     expect(markup).toContain('flow-view-controls');
-    expect(markup).toContain('canvas-minimap');
     expect(markup).not.toContain('canvas-toolbar');
     expect(markup).not.toContain('保存布局');
   });
@@ -1978,7 +1979,7 @@ describe('GraphCanvas navigation', () => {
     );
 
     expect(markup).toContain('Needs review');
-    expect(markup).toContain('Reviewer');
+    expect(markup).toContain('Comments <strong>1</strong>');
     expect(markup).toContain('Remote');
     expect(markup).toContain('collab-selection');
     expect(markup).toContain('comment-marker');

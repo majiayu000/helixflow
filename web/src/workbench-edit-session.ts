@@ -1,5 +1,6 @@
 import { lineageConnection } from './components/graph-canvas-connections';
 import type {
+  CanvasSnapshotUpdate,
   ManualEditOp,
   ManualEditSession,
   ManualProposalInput,
@@ -19,6 +20,52 @@ export type QueueLockReason =
 
 export function hasDirtyEdits(session: ManualEditSession | null): session is ManualEditSession {
   return Boolean(session && session.ops.length > 0);
+}
+
+/** Layout lives on the canvas snapshot API; graph structure still uses versions/ops. */
+export function partitionManualEditOps(ops: ManualEditOp[]): {
+  graphOps: ManualEditOp[];
+  snapshot: CanvasSnapshotUpdate | null;
+} {
+  const graphOps: ManualEditOp[] = [];
+  const positions = new Map<string, { id: string; x: number; y: number }>();
+  const sizes = new Map<string, { id: string; width: number; height: number }>();
+  for (const op of ops) {
+    if (op.op === 'move_node') {
+      positions.set(op.id, { id: op.id, x: op.pos[0], y: op.pos[1] });
+      continue;
+    }
+    if (op.op === 'resize_node') {
+      sizes.set(op.id, { id: op.id, width: op.size[0], height: op.size[1] });
+      continue;
+    }
+    graphOps.push(op);
+  }
+  if (positions.size === 0 && sizes.size === 0) {
+    return { graphOps, snapshot: null };
+  }
+  return {
+    graphOps,
+    snapshot: {
+      ...(positions.size > 0 ? { positions: [...positions.values()] } : {}),
+      ...(sizes.size > 0 ? { sizes: [...sizes.values()] } : {}),
+    },
+  };
+}
+
+export function layoutOpsFromSnapshot(snapshot: CanvasSnapshotUpdate): ManualEditOp[] {
+  return [
+    ...(snapshot.positions ?? []).map((position) => ({
+      op: 'move_node' as const,
+      id: position.id,
+      pos: [position.x, position.y] as [number, number],
+    })),
+    ...(snapshot.sizes ?? []).map((size) => ({
+      op: 'resize_node' as const,
+      id: size.id,
+      size: [size.width, size.height] as [number, number],
+    })),
+  ];
 }
 
 export function appendManualEditInput(

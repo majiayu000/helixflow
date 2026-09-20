@@ -1,10 +1,9 @@
-import { useEffect, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react';
 import { Icon, Port } from '../icons';
 import {
   fetchWorkspaceUploadContent,
   isCanvasCardType,
   isMediaNodeType,
-  isVisualMediaCardType,
   mediaKindLabel,
   parseUploadUri,
 } from '../grid-split';
@@ -18,6 +17,10 @@ import {
   paramsFromSummary,
   type DiffState,
 } from './graph-canvas-rendering';
+import {
+  CANVAS_VIDEO_DECODER_PRIORITY,
+  useCanvasVideoDecoder,
+} from './graph-canvas-video-decoder';
 
 type WorkflowNodeProps = {
   node: GraphNodeState;
@@ -156,6 +159,7 @@ export function WorkflowNode({
       {selected && !media && (
         <span className="node-flag selected">SELECTED</span>
       )}
+      {media && <div className="node-head">{title}</div>}
       {!media && (
         <div className="node-title">
           <span className="swatch" />
@@ -235,6 +239,18 @@ export function WorkflowNode({
               />
             ) : null}
           </div>
+        ) : node.nodeType === 'input.video' ? (
+          <VideoMediaCard
+            artifacts={artifactOutputs}
+            nodeId={node.id}
+            selected={selected}
+            storageUri={
+              workflowNode?.params && typeof workflowNode.params === 'object'
+                ? (workflowNode.params as Record<string, unknown>).storage_uri
+                : undefined
+            }
+            workspaceId={workspaceId}
+          />
         ) : media ? (
           <MediaCard
             artifacts={artifactOutputs}
@@ -394,7 +410,7 @@ function MediaCard({
 }) {
   const url = useMediaPreviewUrl(workspaceId, storageUri, artifacts, nodeType);
   if (!url) {
-    const icon = nodeType === 'input.video' ? 'play' : nodeType === 'input.audio' ? 'music' : 'image';
+    const icon = nodeType === 'input.audio' ? 'music' : 'image';
     return (
       <div className="media-card media-card--empty">
         <span aria-hidden="true" className="media-card-icon">
@@ -404,17 +420,102 @@ function MediaCard({
       </div>
     );
   }
-  if (nodeType === 'input.video') {
-    return <video className="media-card-frame" controls src={url} />;
-  }
   if (nodeType === 'input.audio') {
     return (
       <div className="media-card media-card--audio">
-        <audio controls src={url} />
+        <audio controls preload="metadata" src={url} />
       </div>
     );
   }
-  return <img alt="" className="media-card-frame" draggable={false} src={url} />;
+  return <img alt="" className="media-card-frame" decoding="async" draggable={false} loading="lazy" src={url} />;
+}
+
+function VideoMediaCard({
+  artifacts,
+  nodeId,
+  selected,
+  storageUri,
+  workspaceId,
+}: {
+  artifacts: CanvasNodeArtifact[];
+  nodeId: string;
+  selected: boolean;
+  storageUri: unknown;
+  workspaceId?: string;
+}) {
+  const [hover, setHover] = useState(false);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const poster = videoPosterUrl(artifacts);
+  const hasSource = videoHasSource(artifacts, storageUri);
+  const priority = hover
+    ? CANVAS_VIDEO_DECODER_PRIORITY.hover
+    : selected
+      ? CANVAS_VIDEO_DECODER_PRIORITY.selected
+      : CANVAS_VIDEO_DECODER_PRIORITY.visible;
+  const decode = useCanvasVideoDecoder(nodeId, priority, hasSource);
+  const url = useMediaPreviewUrl(workspaceId, storageUri, artifacts, 'input.video', decode);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (hover) {
+      void video.play().catch(() => undefined);
+      return;
+    }
+    video.pause();
+  }, [hover, url]);
+
+  if (!hasSource) {
+    return (
+      <div className="media-card media-card--empty">
+        <span aria-hidden="true" className="media-card-icon">
+          <Icon n="play" s={32} sw={1.4} />
+        </span>
+        <span className="media-card-kind">{mediaKindLabel('input.video')}</span>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="media-card-video"
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+    >
+      {decode && url ? (
+        <video
+          className="media-card-frame"
+          controls={hover}
+          data-canvas-video="live"
+          muted
+          playsInline
+          poster={poster ?? undefined}
+          preload="metadata"
+          ref={videoRef}
+          src={url}
+        />
+      ) : (
+        <div className="media-card-frame media-card-frame--poster" data-canvas-video="poster">
+          {poster ? (
+            <img alt="" decoding="async" draggable={false} src={poster} />
+          ) : (
+            <span aria-hidden="true" className="media-card-poster-play" />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function videoHasSource(artifacts: CanvasNodeArtifact[], storageUri: unknown): boolean {
+  if (parseUploadUri(storageUri)) return true;
+  if (videoPosterUrl(artifacts)) return true;
+  return artifacts.some((item) => item.preview?.kind === 'video' || item.kind === 'video');
+}
+
+function videoPosterUrl(artifacts: CanvasNodeArtifact[]): string | null {
+  const image = artifacts.find((item) => item.preview?.kind === 'image');
+  return image?.preview && 'content' in image.preview ? image.preview.content : null;
 }
 
 function useMediaPreviewUrl(
@@ -422,6 +523,7 @@ function useMediaPreviewUrl(
   storageUri: unknown,
   artifacts: CanvasNodeArtifact[],
   nodeType: string,
+  enabled = true,
 ): string | null {
   const artifactPreview = artifacts.find((item) => {
     if (nodeType === 'input.video') return item.preview?.kind === 'video' || item.kind === 'video';
@@ -436,7 +538,7 @@ function useMediaPreviewUrl(
   const [uploadUrl, setUploadUrl] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!workspaceId || !uploadId) {
+    if (!enabled || !workspaceId || !uploadId || immediate) {
       setUploadUrl(null);
       return;
     }
@@ -454,7 +556,8 @@ function useMediaPreviewUrl(
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [uploadId, workspaceId]);
+  }, [enabled, immediate, uploadId, workspaceId]);
 
+  if (!enabled) return null;
   return uploadUrl ?? immediate;
 }

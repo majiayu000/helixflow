@@ -84,7 +84,7 @@ export function WorkbenchShell({ panes, overlays }: WorkbenchShellProps) {
     ? compactOpenZone === 'panel'
     : document.zones.panel.visible;
   const primaryInset = showPrimary && primaryExpanded ? primarySize + 24 : 14;
-  const secondaryInset = showSecondary && secondaryExpanded ? secondarySize + 24 : 14;
+  const secondaryInset = 14;
   const panelInset = showPanel && panelExpanded ? panelSize + 24 : 14;
   const shellStyle = {
     '--workbench-primary-inset': `${primaryInset}px`,
@@ -221,7 +221,7 @@ export function WorkbenchShell({ panes, overlays }: WorkbenchShellProps) {
       {showSecondary && (
         <div
           className={`workbench-drawer-layer workbench-drawer-layer--secondary${secondaryExpanded ? '' : ' is-collapsed'}`}
-          style={{ width: secondaryExpanded ? secondarySize : 44 }}
+          style={{ width: secondaryExpanded ? Math.min(secondarySize, 380) : 48 }}
         >
           {secondaryExpanded && (
             <WorkbenchSash
@@ -295,33 +295,13 @@ function WorkbenchZone({
   );
   const collapsed = zoneId !== 'editor' && (compact ? compactOpenZone !== zoneId : !zone.visible);
   const style = zoneStyle(zoneId, collapsed, sizePx);
-
-  if (collapsed) {
-    return (
-      <aside
-        className={`workbench-zone-rail workbench-zone-rail--${zoneId}`}
-        data-workbench-zone={zoneId}
-        style={style}
-      >
-        <button
-          aria-label={`展开${zoneLabel(zoneId)}`}
-          onClick={() => compact
-            ? onCompactToggle(zoneId as ResizableWorkbenchZoneId)
-            : dispatch({ type: 'zone/toggle', zoneId })}
-          title={`展开${zoneLabel(zoneId)}`}
-          type="button"
-        >
-          {zoneShortLabel(zoneId)}
-        </button>
-      </aside>
-    );
-  }
-
-  return (
+  const keepAlive = collapsed && zoneId === 'secondarySidebar';
+  const zoneBody = (
     <section
       className={`workbench-zone workbench-zone--${zoneId} workbench-zone--${orientation}`}
-      data-workbench-zone={zoneId}
-      style={style}
+      data-workbench-zone={collapsed ? undefined : zoneId}
+      hidden={collapsed}
+      style={collapsed ? undefined : style}
     >
       {zoneId !== 'editor' && hiddenPaneIds.length > 0 && (
         <div className="workbench-zone-restore-actions" aria-label="恢复隐藏面板">
@@ -358,6 +338,32 @@ function WorkbenchZone({
       </div>
     </section>
   );
+
+  if (collapsed) {
+    return (
+      <>
+        <aside
+          className={`workbench-zone-rail workbench-zone-rail--${zoneId}${zoneId === 'secondarySidebar' ? ' workbench-agent-fab' : ''}`}
+          data-workbench-zone={zoneId}
+          style={style}
+        >
+          <button
+            aria-label={`展开${zoneLabel(zoneId)}`}
+            onClick={() => compact
+              ? onCompactToggle(zoneId as ResizableWorkbenchZoneId)
+              : dispatch({ type: 'zone/toggle', zoneId })}
+            title={`展开${zoneLabel(zoneId)}`}
+            type="button"
+          >
+            {zoneShortLabel(zoneId)}
+          </button>
+        </aside>
+        {keepAlive ? zoneBody : null}
+      </>
+    );
+  }
+
+  return zoneBody;
 }
 
 type ViewContainerProps = {

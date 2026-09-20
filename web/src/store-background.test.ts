@@ -405,7 +405,7 @@ describe('background run state reconciliation', () => {
           idempotencyKey: 'canvas_op_a',
           source: 'user',
           startedAt: '2026-07-11T00:00:00Z',
-          ops: [{ op: 'move_node', id: 'video', pos: [10, 20] }],
+          ops: [{ op: 'set_param', id: 'video', key: 'duration_sec', value: 3 }],
         },
       });
       return useWorkbenchStore.getState().commitManualEdits();

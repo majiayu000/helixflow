@@ -18,6 +18,8 @@ describe('WorkbenchShell', () => {
     expect(markup).toContain('data-workbench-zone="editor"');
     expect(markup).toContain('data-workbench-zone="secondarySidebar"');
     expect(markup).toContain('data-workbench-zone="panel"');
+    expect(markup).toContain('aria-label="展开右侧栏"');
+    expect(markup).toContain('hidden=""');
     expect(markup).toContain('chat-content');
     expect(markup).toContain('canvas-content');
   });
@@ -27,6 +29,8 @@ describe('WorkbenchShell', () => {
     resetWorkbenchLayoutStoreForTests(memoryStorage(values));
     let renderer: ReactTestRenderer;
     await act(async () => { renderer = create(<WorkbenchShell panes={paneBindings()} />); });
+    const open = renderer!.root.findByProps({ 'aria-label': '展开右侧栏' });
+    await act(async () => open.props.onClick());
 
     const chatPane = renderer!.root.findByProps({ 'data-pane-id': 'chat' });
     const toggle = chatPane.findByProps({ className: 'workbench-pane-toggle' });
@@ -92,14 +96,16 @@ describe('WorkbenchShell', () => {
     resetWorkbenchLayoutStoreForTests(memoryStorage(values));
     let renderer: ReactTestRenderer;
     await act(async () => { renderer = create(<WorkbenchShell panes={paneBindings()} />); });
+    const open = renderer!.root.findByProps({ 'aria-label': '展开右侧栏' });
+    await act(async () => open.props.onClick());
     const sash = renderer!.root.findByProps({ 'aria-label': '调整右侧栏大小' });
 
     await act(async () => sash.props.onKeyDown({
       key: 'ArrowLeft', shiftKey: false, preventDefault: () => undefined,
     }));
 
-    expect(useWorkbenchLayoutStore.getState().document.zones.secondarySidebar.sizePx).toBe(490);
-    expect([...values.values()].join('')).toContain('"sizePx":490');
+    expect(useWorkbenchLayoutStore.getState().document.zones.secondarySidebar.sizePx).toBe(390);
+    expect([...values.values()].join('')).toContain('"sizePx":390');
     await act(async () => renderer!.unmount());
   });
 

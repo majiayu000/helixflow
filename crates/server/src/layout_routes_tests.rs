@@ -94,6 +94,57 @@ async fn stale_canvas_revision_fails_clearly() {
     assert!(error.message.contains("current revision is `1`"));
 }
 
+#[tokio::test]
+async fn sequential_spatial_updates_advance_canvas_revision() {
+    let (state, workspace_id, version_id, _dir) = state_with_graph().await;
+
+    let first = save_canvas_snapshot(
+        Path(workspace_id.clone()),
+        State(state.clone()),
+        Json(SaveCanvasSnapshotRequest {
+            version_id: version_id.clone(),
+            base_revision: 0,
+            positions: vec![NodePositionUpdate {
+                id: "input".to_owned(),
+                x: 12.0,
+                y: 34.0,
+            }],
+            sizes: vec![],
+            viewport: None,
+        }),
+    )
+    .await
+    .expect("first save")
+    .0;
+    assert_eq!(first["revision"], 1);
+
+    let second = save_canvas_snapshot(
+        Path(workspace_id),
+        State(state),
+        Json(SaveCanvasSnapshotRequest {
+            version_id,
+            base_revision: 1,
+            positions: vec![NodePositionUpdate {
+                id: "input".to_owned(),
+                x: 80.0,
+                y: 90.0,
+            }],
+            sizes: vec![NodeSizeUpdate {
+                id: "input".to_owned(),
+                width: 280.0,
+                height: 280.0,
+            }],
+            viewport: None,
+        }),
+    )
+    .await
+    .expect("second save")
+    .0;
+    assert_eq!(second["revision"], 2);
+    assert_eq!(second["nodes"][0]["position"]["x"], 80.0);
+    assert_eq!(second["nodes"][0]["size"]["width"], 280.0);
+}
+
 async fn state_with_graph() -> (AppState, String, String, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("temp dir");
     let data_dir = dir.path().to_path_buf();

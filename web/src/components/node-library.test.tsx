@@ -34,9 +34,9 @@ describe('NodeLibrary', () => {
     );
 
     expect(markup).toContain('aria-label="节点工具条"');
-    expect(markup).toContain('title="文本"');
-    expect(markup).toContain('title="视频"');
-    expect(markup).toContain('title="上传图片/视频/音频"');
+    expect(markup).toContain('title="添加"');
+    expect(markup).toContain('title="素材库"');
+    expect(markup).toContain('title="评论"');
     expect(markup).toContain('disabled=""');
   });
 
@@ -56,7 +56,7 @@ describe('NodeLibrary', () => {
       );
     });
 
-    await act(async () => renderer!.root.findByProps({ title: '打开节点库' }).props.onClick());
+    await act(async () => renderer!.root.findByProps({ title: '添加' }).props.onClick());
     const item = renderer!.root.findAllByProps({ className: 'node-library-item' })[0]!;
     await act(async () => item.props.onClick());
 
@@ -81,7 +81,14 @@ describe('NodeLibrary', () => {
       );
     });
 
-    await act(async () => renderer!.root.findByProps({ title: '图片' }).props.onClick());
+    await act(async () => renderer!.root.findByProps({ title: '添加' }).props.onClick());
+    const item = renderer!.root.findAllByProps({ className: 'node-library-item' }).find((entry) =>
+      String(entry.children).includes('图片') || String(entry.props.children).includes('图片'),
+    );
+    await act(async () => {
+      const target = item ?? renderer!.root.findAllByProps({ className: 'node-library-item' })[0]!;
+      target.props.onClick();
+    });
 
     expect(added).toEqual(['input.image']);
     expect(renderer!.root.findAllByProps({ className: 'node-library-tray' })).toHaveLength(0);

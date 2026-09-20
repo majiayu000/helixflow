@@ -83,6 +83,18 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const rejectOutput = useWorkbenchStore((store) => store.rejectOutput);
   const selectProvider = useWorkbenchStore((store) => store.selectProvider);
   const dispatchWorkbenchLayout = useWorkbenchLayoutStore((store) => store.dispatch);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'j') return;
+      if (event.target instanceof Element && event.target.closest('input,textarea,select,[contenteditable="true"]')) {
+        return;
+      }
+      event.preventDefault();
+      dispatchWorkbenchLayout({ type: 'zone/toggle', zoneId: 'secondarySidebar' });
+    };
+    globalThis.addEventListener?.('keydown', onKey);
+    return () => globalThis.removeEventListener?.('keydown', onKey);
+  }, [dispatchWorkbenchLayout]);
   const activeState = initialState ?? state;
   const openArtifactOutput = (outputId: string) => {
     dispatchWorkbenchLayout({ type: 'pane/show', paneId: 'artifact' });

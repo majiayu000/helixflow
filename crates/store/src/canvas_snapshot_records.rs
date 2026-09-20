@@ -45,26 +45,27 @@ impl Store {
         &self,
         input: CommitCanvasSnapshot<'_>,
     ) -> StoreResult<CanvasSnapshotCommitResult> {
+        let next_revision = input.expected_revision + 1;
         let committed = sqlx::query(
             r#"
             INSERT INTO canvas_snapshots (
                 workspace_id, revision, nodes_json, viewport_json, updated_at
             )
-            SELECT id, 1, ?, ?, current_timestamp
+            SELECT id, ?, ?, ?, current_timestamp
             FROM workspaces
-            WHERE id = ? AND ? = 0
+            WHERE id = ?
             ON CONFLICT(workspace_id) DO UPDATE SET
-                revision = canvas_snapshots.revision + 1,
+                revision = excluded.revision,
                 nodes_json = excluded.nodes_json,
                 viewport_json = excluded.viewport_json,
                 updated_at = current_timestamp
             WHERE canvas_snapshots.revision = ?
             "#,
         )
+        .bind(next_revision)
         .bind(input.nodes_json)
         .bind(input.viewport_json)
         .bind(input.workspace_id)
-        .bind(input.expected_revision)
         .bind(input.expected_revision)
         .execute(self.pool())
         .await?;
@@ -139,6 +140,28 @@ mod tests {
             CanvasSnapshotCommitResult::Stale {
                 current_revision: 1
             }
+        );
+
+        let second = store
+            .commit_canvas_snapshot(CommitCanvasSnapshot {
+                workspace_id: &workspace.id,
+                expected_revision: 1,
+                nodes_json: r#"{"node":{"position":[3.0,4.0]}}"#,
+                viewport_json: Some(r#"{"x":8.0,"y":9.0,"zoom":1.5}"#),
+            })
+            .await
+            .expect("second commit");
+        assert!(
+            matches!(second, CanvasSnapshotCommitResult::Applied(record) if record.revision == 2)
+        );
+        assert_eq!(
+            store
+                .canvas_snapshot(&workspace.id)
+                .await
+                .expect("updated snapshot")
+                .expect("snapshot row")
+                .nodes_json,
+            r#"{"node":{"position":[3.0,4.0]}}"#
         );
     }
 

@@ -112,8 +112,16 @@ export function ChatPane({
       <div className="chat-msgs" ref={scrollRef}>
         {messages.length === 0 && !pendingProposal && (
           <div className="chat-empty">
-            <strong>从画布或这里开始</strong>
+            <h2>今天一起创作点什么?</h2>
             <span>选中一张图，或直接说你要做什么。</span>
+            <div className="chat-empty-chips">
+              <button disabled={busy} onClick={() => void submit('讲清这个项目的创作思路')} type="button">
+                讲清这个项目的创作思路
+              </button>
+              <button disabled={busy} onClick={() => void submit('把我的创作流程做成可运行的画布')} type="button">
+                把创作流程做成画布
+              </button>
+            </div>
           </div>
         )}
         <MessageTimeline messages={messages} turns={turns} />
@@ -146,7 +154,7 @@ export function ChatPane({
                 void submit();
               }
             }}
-            placeholder="说说要做什么"
+            placeholder="随心输入"
             rows={2}
             value={draft}
           />

@@ -5,6 +5,7 @@ import {
   fetchArtifactBlob,
   fetchWorkspaceUploadContent,
   isVisualMediaCardType,
+  parseUploadUri,
   resolveGridSplitSource,
   TAPNOW_SPLIT_PRESETS,
   type PixelCropRect,
@@ -17,7 +18,7 @@ import {
 import { useWorkbenchStore } from '../../store';
 import type { AlignKind } from '../graph-canvas-align';
 import { CanvasBrowsePanel, buildTemplateOps, type BrowseTab } from './canvas-browse-panel';
-import { EraseStage, OutpaintFrame, TextCardEditor } from './canvas-image-modes';
+import { EraseStage, OutpaintFrame, TextCardEditor, CameraToolPanel } from './canvas-image-modes';
 import { downloadCardMedia, saveCardAsset } from './canvas-card-media';
 import { EmptyCardUpload, MediaCardComposer, mentionItemsFromNodes } from './media-card-overlays';
 import type {
@@ -98,6 +99,7 @@ export function CanvasOverlays(props: CanvasOverlaysProps) {
   const selectedNode = props.selectedNodes.length === 1 ? props.selectedNodes[0] : undefined;
   const selectedNodeId = selectedNode?.id;
   const applyImageCanvasTool = useWorkbenchStore((state) => state.applyImageCanvasTool);
+  const generateFromMediaCard = useWorkbenchStore((state) => state.generateFromMediaCard);
   const splitImageGrid = useWorkbenchStore((state) => state.splitImageGrid);
   const ingestMediaFiles = useWorkbenchStore((state) => state.ingestMediaFiles);
   const cropImageNode = useWorkbenchStore((state) => state.cropImageNode);
@@ -105,18 +107,34 @@ export function CanvasOverlays(props: CanvasOverlaysProps) {
   const [cropOpen, setCropOpen] = useState(false);
   const [splitOpen, setSplitOpen] = useState(false);
   const [scaleOpen, setScaleOpen] = useState(false);
-  const [imageMode, setImageMode] = useState<'outpaint' | 'erase' | null>(null);
+  const [imageMode, setImageMode] = useState<'outpaint' | 'erase' | 'relight' | 'multi-angle' | null>(null);
   const [browseTab, setBrowseTab] = useState<BrowseTab | null>(null);
+  const [commentsOpen, setCommentsOpen] = useState(false);
   useEffect(() => {
     setImageMode(null);
   }, [selectedNodeId]);
+  const selectedParams = selectedNode ? props.workflowGraph?.nodes[selectedNode.id]?.params : undefined;
+  const selectedArtifacts = selectedNode ? artifactsForNode(props.outputs, selectedNode.id) : [];
   const hasImageSource = Boolean(
     selectedNode &&
       resolveGridSplitSource({
         nodeType: selectedNode.nodeType,
-        params: props.workflowGraph?.nodes[selectedNode.id]?.params,
-        artifacts: artifactsForNode(props.outputs, selectedNode.id),
+        params: selectedParams,
+        artifacts: selectedArtifacts,
       }),
+  );
+  const hasMediaSource = Boolean(
+    hasImageSource
+    || parseUploadUri(stringParam(selectedParams, 'storage_uri'))
+    || selectedArtifacts.some((item) => item.kind === 'image' || item.kind === 'video' || item.kind === 'audio'),
+  );
+  const showComposer = Boolean(
+    selectedNode &&
+      props.canEdit &&
+      !imageMode &&
+      ['input.image', 'input.video', 'input.audio', 'input.text', 'image.generate', 'image.edit'].includes(
+        selectedNode.nodeType,
+      ),
   );
   const runImageTool = async (nodeId: string, request: ImageCanvasToolRequest) => {
     const label = imageCanvasToolLabel(request.kind);
@@ -139,6 +157,7 @@ export function CanvasOverlays(props: CanvasOverlaysProps) {
         providers={props.providers}
         onAddNode={props.editActions.addNode}
         onOpenBrowse={props.canEdit ? setBrowseTab : undefined}
+        onOpenComments={props.canEdit ? () => setCommentsOpen(true) : undefined}
         onRedo={props.onRedo}
         onUndo={props.onUndo}
         onUploadFiles={props.canEdit ? (files) => void ingestMediaFiles(files) : undefined}
@@ -147,9 +166,18 @@ export function CanvasOverlays(props: CanvasOverlaysProps) {
         <div className="canvas-ref-banner">点一张图当参考 · Esc 取消</div>
       ) : null}
       {props.drawGraph.nodes.length === 0 && (
-        <div className="canvas-drop-hint" aria-hidden="true">
+        <div className="canvas-empty">
+          <span className="canvas-empty-badge">双击</span>
           <strong>把图片拖进画布</strong>
-          <span>也可以粘贴，或点左下角上传</span>
+          <span>也可以粘贴，或点左侧 + 添加节点</span>
+          {props.onStartFromPrompt && props.canEdit && (
+            <div className="canvas-empty-recipes">
+              <button type="button" onClick={() => props.onStartFromPrompt?.('用文字生成一段产品视频')}>文字生视频</button>
+              <button type="button" onClick={() => props.onStartFromPrompt?.('把产品图换成新的场景背景')}>图片换背景</button>
+              <button type="button" onClick={() => props.onStartFromPrompt?.('用首帧图片生成视频')}>首帧生成视频</button>
+              <button type="button" onClick={() => props.onStartFromPrompt?.('用音频驱动生成视频')}>音频生视频</button>
+            </div>
+          )}
         </div>
       )}
       <CanvasStatusToast
@@ -197,22 +225,27 @@ export function CanvasOverlays(props: CanvasOverlaysProps) {
       )}
       {!props.chromeHidden && props.canEdit && selectedNode && isVisualMediaCardType(selectedNode.nodeType) && (
         <>
-          {!hasImageSource ? (
+          {!hasMediaSource ? (
             <EmptyCardUpload
               node={selectedNode}
               view={props.view}
               onUpload={(file) => void replaceNodeMedia(selectedNode.id, file)}
             />
-          ) : (
+          ) : hasImageSource && (selectedNode.nodeType === 'input.image' ||
+            selectedNode.nodeType === 'image.generate' ||
+            selectedNode.nodeType === 'image.edit') ? (
           <ImageCardToolbar
             hasImage={hasImageSource}
             node={selectedNode}
             splitOpen={splitOpen}
             view={props.view}
             onCrop={() => setCropOpen(true)}
-            onEnhance={() => void runImageTool(selectedNode.id, defaultImageCanvasToolRequest('enhance'))}
             onErase={() => setImageMode('erase')}
             onOutpaint={() => setImageMode('outpaint')}
+            onRelight={() => setImageMode('relight')}
+            onMultiAngle={() => setImageMode('multi-angle')}
+            onRedraw={() => setImageMode('erase')}
+            onEnhance={() => void runImageTool(selectedNode.id, defaultImageCanvasToolRequest('enhance'))}
             onScaleOpen={() => setScaleOpen((open) => !open)}
             onUpscale={(scale) => {
               setScaleOpen(false);
@@ -256,10 +289,10 @@ export function CanvasOverlays(props: CanvasOverlaysProps) {
             onSplitOpen={() => setSplitOpen((open) => !open)}
             onTool={(kind) => void runImageTool(selectedNode.id, defaultImageCanvasToolRequest(kind))}
           />
-          )}
-          {!imageMode && (selectedNode.nodeType === 'input.image' ||
-            selectedNode.nodeType === 'image.generate' ||
-            selectedNode.nodeType === 'image.edit') && (
+          ) : null}
+        </>
+      )}
+      {showComposer && selectedNode && (
             <MediaCardComposer
               mentionItems={mentionItemsFromNodes(props.drawGraph.nodes, selectedNode.id)}
               modelCatalog={props.modelCatalog}
@@ -271,8 +304,6 @@ export function CanvasOverlays(props: CanvasOverlaysProps) {
               onMention={(item) => props.onConnectReference?.(item.id, selectedNode.id)}
               onPickReference={() => props.onStartReferencePicker?.(selectedNode.id)}
             />
-          )}
-        </>
       )}
       {props.canEdit && selectedNode?.nodeType === 'input.text' && props.editingTextNodeId === selectedNode.id && (
         <TextCardEditor
@@ -322,6 +353,23 @@ export function CanvasOverlays(props: CanvasOverlaysProps) {
               ...options,
               maskBlob,
             });
+          }}
+        />
+      )}
+      {(imageMode === 'relight' || imageMode === 'multi-angle') && selectedNode && (
+        <CameraToolPanel
+          kind={imageMode}
+          node={selectedNode}
+          view={props.view}
+          onCancel={() => setImageMode(null)}
+          onRun={(prompt) => {
+            setImageMode(null);
+            props.setEditStatus('生成中…');
+            void generateFromMediaCard(selectedNode.id, prompt, '1:1')
+              .then(() => props.setEditStatus('已在右侧生成新卡'))
+              .catch((error) => {
+                props.setEditStatus(error instanceof Error ? error.message : '生成失败');
+              });
           }}
         />
       )}
@@ -406,6 +454,8 @@ export function CanvasOverlays(props: CanvasOverlaysProps) {
         edges={props.drawGraph.edges}
         nodes={props.drawGraph.nodes}
         onCommentOp={props.canEdit ? props.onCommentOp : undefined}
+        open={commentsOpen}
+        onOpenChange={setCommentsOpen}
         selectedNodeId={selectedNodeId}
         view={props.view}
         viewportSize={props.viewportSize}
@@ -426,7 +476,10 @@ function ImageCardToolbar({
   onDuplicate,
   onEnhance,
   onErase,
+  onMultiAngle,
   onOutpaint,
+  onRedraw,
+  onRelight,
   onReplace,
   onSaveAsset,
   onScaleOpen,
@@ -446,7 +499,10 @@ function ImageCardToolbar({
   onDuplicate: () => void;
   onEnhance: () => void;
   onErase: () => void;
+  onMultiAngle: () => void;
   onOutpaint: () => void;
+  onRedraw: () => void;
+  onRelight: () => void;
   onReplace: (file: File) => void;
   onSaveAsset: () => void;
   onScaleOpen: () => void;
@@ -456,6 +512,7 @@ function ImageCardToolbar({
   onUpscale: (scale: 2 | 4) => void;
 }) {
   const replaceRef = useRef<HTMLInputElement | null>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
   const left = node.position.x * view.z + view.x + (graphNodeWidth(node) * view.z) / 2;
   const top = node.position.y * view.z + view.y - 10;
   return (
@@ -465,8 +522,22 @@ function ImageCardToolbar({
       onPointerDown={(event) => event.stopPropagation()}
     >
       <button disabled={!hasImage} onClick={onCrop} type="button">裁剪</button>
+      <button disabled={!hasImage} onClick={onMultiAngle} type="button">多角度</button>
+      <button disabled={!hasImage} onClick={onRedraw} type="button">重绘</button>
+      <button disabled={!hasImage} onClick={onRelight} type="button">打光</button>
       <div className="canvas-image-toolbar-split">
-        <button disabled={!hasImage} onClick={onSplitOpen} type="button">切分</button>
+        <button disabled={!hasImage} onClick={() => setMoreOpen((open) => !open)} type="button">···</button>
+        {moreOpen && (
+          <div className="canvas-image-toolbar-menu">
+            <button onClick={onOutpaint} type="button">扩图</button>
+            <button onClick={onErase} type="button">擦除</button>
+            <button onClick={onEnhance} type="button">增强</button>
+            <button onClick={() => onTool('cutout')} type="button">抠图</button>
+            <button onClick={onScaleOpen} type="button">超分</button>
+            <button onClick={onSplitOpen} type="button">快速切分</button>
+            <button onClick={onSaveAsset} type="button">入库</button>
+          </div>
+        )}
         {splitOpen && (
           <div className="canvas-image-toolbar-menu">
             {TAPNOW_SPLIT_PRESETS.map((preset) => (
@@ -480,12 +551,6 @@ function ImageCardToolbar({
             ))}
           </div>
         )}
-      </div>
-      <button disabled={!hasImage} onClick={onOutpaint} type="button">扩图</button>
-      <button disabled={!hasImage} onClick={onErase} type="button">擦除</button>
-      <button disabled={!hasImage} onClick={() => onTool('cutout')} type="button">抠图</button>
-      <div className="canvas-image-toolbar-split">
-        <button disabled={!hasImage} onClick={onScaleOpen} type="button">2×</button>
         {scaleOpen && (
           <div className="canvas-image-toolbar-menu">
             <button onClick={() => onUpscale(2)} type="button">2×</button>
@@ -493,8 +558,6 @@ function ImageCardToolbar({
           </div>
         )}
       </div>
-      <button disabled={!hasImage} onClick={onEnhance} type="button">增强</button>
-      <button disabled={!hasImage} onClick={onSaveAsset} type="button">存素材</button>
       {hasImage ? (
         <button onClick={() => replaceRef.current?.click()} type="button">替换</button>
       ) : null}
@@ -686,10 +749,10 @@ function CanvasAddMenuPanel({
   onClose: () => void;
 }) {
   const items = [
-    ['input.text', '文本'],
-    ['input.image', '图片'],
-    ['input.video', '视频'],
-    ['input.audio', '音频'],
+    ['input.text', '文本', '脚本、广告词、品牌文案'],
+    ['input.image', '图片', '参考图、生成图'],
+    ['input.video', '视频', '首帧、成片'],
+    ['input.audio', '音频', '旁白、音效'],
   ] as const;
   return (
     <div
@@ -701,12 +764,13 @@ function CanvasAddMenuPanel({
       onPointerDown={(event) => event.stopPropagation()}
     >
       <div className="canvas-add-menu-head">添加节点</div>
-      {items.map(([type, label]) => {
+      {items.map(([type, label, hint]) => {
         const definition = definitions.get(type);
         if (!definition) return null;
         return (
           <button key={type} onClick={() => onAdd(definition)} type="button">
             {label}
+            <small>{hint}</small>
           </button>
         );
       })}

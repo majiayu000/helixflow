@@ -207,7 +207,7 @@ function dirtySession(): ManualEditSession {
     idempotencyKey: 'canvas_op_dirty',
     source: 'user',
     startedAt: '2026-07-11T00:00:00Z',
-    ops: [{ op: 'move_node', id: 'video', pos: [120, 80] }],
+    ops: [{ op: 'set_param', id: 'video', key: 'duration_sec', value: 3 }],
   };
 }
 

@@ -56,6 +56,18 @@ export function CanvasViewControls({
       <button aria-label="缩小画布" onClick={() => void instance?.zoomOut({ duration: 160 })}>
         −
       </button>
+      <input
+        aria-label="画布缩放"
+        className="flow-view-zoom-slider"
+        max={2}
+        min={0.15}
+        onChange={(event) => {
+          void instance?.zoomTo(Number(event.currentTarget.value), { duration: 0 });
+        }}
+        step={0.01}
+        type="range"
+        value={Math.min(2, Math.max(0.15, view.z))}
+      />
       <button
         aria-label="重置画布缩放"
         className="flow-view-zoom"

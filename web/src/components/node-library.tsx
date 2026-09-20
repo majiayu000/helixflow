@@ -14,6 +14,7 @@ type NodeLibraryProps = {
   providers?: WorkbenchState['providers'];
   onAddNode: (definition: NodeDefinition) => void;
   onOpenBrowse?: (tab: BrowseTab) => void;
+  onOpenComments?: () => void;
   onRedo?: () => void;
   onUndo?: () => void;
   onUploadFiles?: (files: File[]) => void;
@@ -29,6 +30,7 @@ export function NodeLibrary({
   providers,
   onAddNode,
   onOpenBrowse,
+  onOpenComments,
   onRedo,
   onUndo,
   onUploadFiles,
@@ -39,8 +41,8 @@ export function NodeLibrary({
   const [open, setOpen] = useState(false);
   const definitions = catalog?.nodes ?? [];
   const tools = useMemo(
-    () => toolbarItems(definitions, disabled || !onUploadFiles, !onUndo, !onRedo),
-    [definitions, disabled, onRedo, onUndo, onUploadFiles],
+    () => toolbarItems(definitions),
+    [definitions],
   );
   const activeCategory = category === 'select' ? 'all' : category;
   const filtered = useMemo(
@@ -62,6 +64,12 @@ export function NodeLibrary({
     }
     if (tool.category === 'redo') {
       onRedo?.();
+      return;
+    }
+    if (tool.category === 'comments') {
+      onOpenComments?.();
+      setCategory('select');
+      setOpen(false);
       return;
     }
     if (
@@ -128,7 +136,7 @@ export function NodeLibrary({
         {tools.map((tool) => (
           <FragmentedToolButton
             active={tool.category === category}
-            disabled={Boolean(tool.disabled)}
+            disabled={disabled || Boolean(tool.disabled)}
             key={tool.key}
             leadingDivider={Boolean(tool.dividerBefore)}
             onClick={() => selectTool(tool)}
@@ -266,29 +274,16 @@ function mediaCardDefinition(definitions: NodeDefinition[], category: string): N
 
 function toolbarItems(
   definitions: NodeDefinition[],
-  uploadDisabled: boolean,
-  undoDisabled: boolean,
-  redoDisabled: boolean,
 ): ToolbarItem[] {
   const available = new Set(definitions.map((item) => item.category));
   const types = new Set(definitions.map((item) => item.type));
   const items: ToolbarItem[] = [
-    { category: 'all', icon: 'layers', key: 'node-menu', label: '打开节点库', primary: true },
-    { category: 'select', icon: 'hand', key: 'select', label: '选择画布' },
-    { category: 'undo', disabled: undoDisabled, icon: 'undo', key: 'undo', label: '撤销' },
-    { category: 'redo', disabled: redoDisabled, icon: 'redo', key: 'redo', label: '重做' },
-    { category: 'text', dividerBefore: true, icon: 'text', key: 'text', label: '文本' },
-    { category: 'image', icon: 'image', key: 'image', label: '图片' },
-    { category: 'video', icon: 'play', key: 'video', label: '视频' },
-    { category: 'audio', icon: 'music', key: 'audio', label: '音频' },
-    { category: 'models', icon: 'folder', key: 'models', label: '模型目录', text: '模型' },
-    { category: 'upload', disabled: uploadDisabled, dividerBefore: true, icon: 'paperclip', key: 'upload', label: '上传图片/视频/音频', text: '上传' },
-    { category: 'input', icon: 'export', key: 'input', label: '导入节点', text: '导入' },
+    { category: 'all', icon: 'layers', key: 'node-menu', label: '添加', primary: true },
     { category: 'search', icon: 'layers', key: 'search', label: '节点搜索', text: '搜索' },
     { category: 'output', icon: 'folder', key: 'output', label: '素材库', text: '素材库' },
-    { category: 'prompts', icon: 'text', key: 'prompts', label: '提示词库', text: '提示词' },
+    { category: 'templates', icon: 'grid', key: 'templates', label: '模板', text: '模板' },
+    { category: 'comments', icon: 'spark', key: 'comments', label: '评论', text: '评论' },
     { category: 'history', icon: 'undo', key: 'history', label: '历史', text: '历史' },
-    { category: 'templates', icon: 'layers', key: 'templates', label: '模板', text: '模板' },
   ];
   return items.map((item) => ({
     ...item,
@@ -296,7 +291,7 @@ function toolbarItems(
       item.disabled ||
       (MEDIA_CARD_TYPE[item.category]
         ? !types.has(MEDIA_CARD_TYPE[item.category]!)
-        : !['select', 'all', 'undo', 'redo', 'style', 'erase', 'models', 'upload', 'search', 'history', 'templates', 'output', 'prompts'].includes(item.category) &&
+        : !['select', 'all', 'undo', 'redo', 'style', 'erase', 'models', 'upload', 'search', 'history', 'templates', 'output', 'prompts', 'comments'].includes(item.category) &&
           !available.has(item.category)),
   }));
 }

@@ -104,6 +104,8 @@ type CanvasCommentsPanelProps = {
   edges: WorkbenchState['graph']['edges'];
   nodes: GraphNodeState[];
   onCommentOp?: (input: CanvasCommentOpInput) => Promise<void>;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   selectedNodeId?: string;
   view: ViewState;
   viewportSize: ViewportSize;
@@ -114,12 +116,19 @@ export function CanvasCommentsPanel({
   edges,
   nodes,
   onCommentOp,
+  open: openProp,
+  onOpenChange,
   selectedNodeId,
   view,
   viewportSize,
 }: CanvasCommentsPanelProps) {
   const [draft, setDraft] = useState('');
-  const [open, setOpen] = useState(comments.length > 0);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(comments.length > 0);
+  const open = openProp ?? uncontrolledOpen;
+  const setOpen = (next: boolean) => {
+    onOpenChange?.(next);
+    if (openProp === undefined) setUncontrolledOpen(next);
+  };
   const targetOptions = useMemo(
     () => commentTargetOptions(nodes, edges, selectedNodeId, view, viewportSize),
     [edges, nodes, selectedNodeId, view, viewportSize],

@@ -93,7 +93,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
   const layoutRedoRef = useRef<CanvasSnapshotUpdate[]>([]);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [referencePickerNodeId, setReferencePickerNodeId] = useState<string | null>(null);
-  const [minimapOpen, setMinimapOpen] = useState(true);
+  const [minimapOpen, setMinimapOpen] = useState(false);
   const [groups, setGroups] = useState<CanvasGroup[]>(() => loadCanvasGroups(props.workspaceId));
   const resetRejectedMutation = useCallback(() => resetFlowNodesRef.current(), []);
   const sourceGraph = props.canvasGraph ?? props.graph;
@@ -492,6 +492,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
         nodesDraggable={capabilities.move}
         onlyRenderVisibleElements={typeof ResizeObserver !== 'undefined'}
         panOnDrag={pointerTools.panOnDrag}
+        panOnScroll
+        zoomOnScroll={false}
         zoomOnDoubleClick={false}
         connectOnClick={false}
         selectionMode={SelectionMode.Partial}
@@ -610,7 +612,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
           handleFlowDragOver(event, capabilities.paste);
         }}
       >
-        <Background color="rgba(255,255,255,.22)" gap={20} size={1} variant={BackgroundVariant.Dots} />
+        <Background color="rgba(255,255,255,.16)" gap={22} size={1.1} variant={BackgroundVariant.Dots} />
         <ViewportPortal>
           {useOverview ? <CanvasOverview nodes={drawGraph.nodes} /> : null}
           {frames.map((frame) => (

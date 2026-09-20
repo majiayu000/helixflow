@@ -20,7 +20,8 @@ describe('ChatPane terminal agent turns', () => {
     expect(markup).not.toContain('UNCOMMITTED');
     expect(markup).not.toContain('提交编辑');
     expect(markup).toContain('>Chat</span>');
-    expect(markup).toContain('从画布或这里开始');
+    expect(markup).toContain('今天一起创作点什么?');
+    expect(markup).toContain('随心输入');
     expect(markup).toContain('aria-label="选择模型"');
     expect(markup).not.toContain('解锁');
     expect(markup).not.toContain('CONVERSATION');

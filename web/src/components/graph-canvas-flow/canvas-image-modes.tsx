@@ -539,3 +539,77 @@ export function TextCardEditor({
     </>
   );
 }
+
+export function CameraToolPanel({
+  kind,
+  node,
+  onCancel,
+  onRun,
+  view,
+}: {
+  kind: 'relight' | 'multi-angle';
+  node: WorkbenchState['graph']['nodes'][number];
+  onCancel: () => void;
+  onRun: (prompt: string) => void;
+  view: ViewState;
+}) {
+  const [dir, setDir] = useState('左');
+  const [brightness, setBrightness] = useState(50);
+  const [temp, setTemp] = useState(5600);
+  const [yaw, setYaw] = useState(0);
+  const [pitch, setPitch] = useState(0);
+  const [distance, setDistance] = useState(50);
+  const width = graphNodeWidth(node) * view.z;
+  const left = node.position.x * view.z + view.x + width / 2;
+  const top = (node.position.y + graphNodeHeight(node)) * view.z + view.y + 12;
+  const prompt = kind === 'relight'
+    ? `Relight this image. Key light from the ${dir} at ${brightness}% brightness and ${temp}K. Keep the subject, pose, and background.`
+    : `Rephotograph this scene. Camera yaw ${yaw}°, pitch ${pitch}°, distance ${distance}%. Keep identity and wardrobe.`;
+  return (
+    <div
+      className="canvas-tool-panel"
+      style={{ left, top, transform: 'translateX(-50%)' } as CSSProperties}
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      <strong>{kind === 'relight' ? '打光' : '多角度'}</strong>
+      {kind === 'relight' ? (
+        <>
+          <div className="canvas-tool-panel-dirs">
+            {['左', '顶', '右', '前', '底', '后'].map((item) => (
+              <button className={dir === item ? 'on' : undefined} key={item} onClick={() => setDir(item)} type="button">
+                {item}
+              </button>
+            ))}
+          </div>
+          <label>
+            亮度 {brightness}%
+            <input max={100} min={0} onChange={(event) => setBrightness(Number(event.target.value))} type="range" value={brightness} />
+          </label>
+          <label>
+            色温 {temp}K
+            <input max={9000} min={2800} onChange={(event) => setTemp(Number(event.target.value))} step={100} type="range" value={temp} />
+          </label>
+        </>
+      ) : (
+        <>
+          <label>
+            旋转 {yaw}°
+            <input max={180} min={-180} onChange={(event) => setYaw(Number(event.target.value))} type="range" value={yaw} />
+          </label>
+          <label>
+            倾斜 {pitch}°
+            <input max={60} min={-60} onChange={(event) => setPitch(Number(event.target.value))} type="range" value={pitch} />
+          </label>
+          <label>
+            距离 {distance}%
+            <input max={100} min={10} onChange={(event) => setDistance(Number(event.target.value))} type="range" value={distance} />
+          </label>
+        </>
+      )}
+      <div className="op-actions">
+        <button className="op-cancel" onClick={onCancel} type="button">取消</button>
+        <button className="op-run" onClick={() => onRun(prompt)} type="button">生成</button>
+      </div>
+    </div>
+  );
+}

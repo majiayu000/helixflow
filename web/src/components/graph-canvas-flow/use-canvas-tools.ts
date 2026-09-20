@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 export type CanvasPointerTool = 'pan' | 'select';
 
 export function useCanvasPointerTools(enabled: boolean) {
-  const [tool, setTool] = useState<CanvasPointerTool>('pan');
+  const [tool, setTool] = useState<CanvasPointerTool>('select');
   const [spaceHeld, setSpaceHeld] = useState(false);
   const [ctrlHeld, setCtrlHeld] = useState(false);
 
