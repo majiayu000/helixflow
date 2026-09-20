@@ -436,6 +436,44 @@ describe('graph canvas editing helpers', () => {
       '当前模式不允许粘贴',
     ]);
   });
+
+  it('places library and paste nodes at the last canvas pointer', async () => {
+    const onCreateProposal = vi.fn(async () => undefined);
+    vi.stubGlobal('navigator', {
+      clipboard: {
+        readText: vi.fn(async () => buildSelectionClipboardText({
+          sourceVersionId: 'ver_1',
+          nodes: [textNode()],
+          edges: [],
+          workflowGraph: workflowGraph(),
+        })),
+      },
+    });
+    const actions = createCanvasEditActions({
+      capabilities: canvasCapabilities('edit', true),
+      drawGraph: { nodes: [textNode()], edges: [] },
+      onCreateProposal,
+      pointerWorld: () => ({ x: 640, y: 220 }),
+      setClipboardStatus: vi.fn(),
+      versionId: 'ver_1',
+      view: { x: 0, y: 0, z: 1 },
+      viewportSize: { width: 800, height: 600 },
+      workflowGraph: workflowGraph(),
+    });
+
+    actions.addNode(definition('input.image', 'Image Input', []));
+    await actions.pasteSelection();
+
+    expect(onCreateProposal.mock.calls[0]?.[0].ops[0]).toMatchObject({
+      op: 'spawn_node',
+      node_type: 'input.image',
+      pos: [640, 220],
+    });
+    expect(onCreateProposal.mock.calls[1]?.[0].ops[0]).toMatchObject({
+      op: 'spawn_node',
+      pos: [640, 220],
+    });
+  });
 });
 
 describe('derived media cards always inherit a lineage edge', () => {

@@ -2190,6 +2190,9 @@ describe('GraphCanvas selection and clipboard helpers', () => {
     expect(graphShortcutFromEvent({ key: 'Escape' })).toBe('clear_selection');
     expect(graphShortcutFromEvent({ key: 'a', metaKey: true })).toBe('select_all');
     expect(graphShortcutFromEvent({ key: '0', ctrlKey: true })).toBe('fit_view');
+    expect(graphShortcutFromEvent({ key: 'f', metaKey: true })).toBe('find_nodes');
+    expect(graphShortcutFromEvent({ key: '=', metaKey: true })).toBe('zoom_in');
+    expect(graphShortcutFromEvent({ key: '-', ctrlKey: true })).toBe('zoom_out');
     expect(graphShortcutFromEvent({ key: 'c', ctrlKey: true })).toBe('copy_selection');
     expect(graphShortcutFromEvent({ key: 'd', metaKey: true })).toBe('duplicate_selection');
     expect(graphShortcutFromEvent({ key: 'g', metaKey: true })).toBe('group_selection');

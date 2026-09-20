@@ -28,6 +28,8 @@ import type {
   NodeDefinition,
   WorkbenchState,
 } from '../../types';
+import { CanvasAddMenuPanel, type CanvasAddMenu } from './canvas-add-menu';
+import { MediaCardToolbar } from './media-card-toolbar';
 import { CanvasCommentsPanel } from '../graph-canvas-collaboration';
 import type { createCanvasEditActions } from '../graph-canvas-edit-actions';
 import { GraphInspector, GraphSelectionInspector } from '../graph-canvas-inspector';
@@ -43,13 +45,6 @@ import { CanvasStatusToast } from './controls';
 type Readiness = NonNullable<WorkbenchState['providers']['capabilityReadiness']>[number];
 type EditActions = ReturnType<typeof createCanvasEditActions>;
 
-export type CanvasAddMenu = {
-  clientX: number;
-  clientY: number;
-  flow: { x: number; y: number };
-  connectFrom?: { nodeId: string; handleType: 'source' | 'target' };
-};
-
 type CanvasOverlaysProps = Pick<
   GraphCanvasProps,
   | 'comments'
@@ -62,6 +57,7 @@ type CanvasOverlaysProps = Pick<
   | 'workspaceId'
 > & {
   addMenu: CanvasAddMenu | null;
+  browseTab?: BrowseTab | null;
   canEdit: boolean;
   chromeHidden?: boolean;
   onAlign?: (kind: AlignKind) => void;
@@ -76,10 +72,13 @@ type CanvasOverlaysProps = Pick<
   modelCatalog: ModelCatalog | null;
   modelCatalogError: string | null;
   pendingProposal: boolean;
+  pointerWorld?: () => { x: number; y: number };
   readiness?: Readiness;
   resolution: ImplementationResolution | null;
+  onBrowseTab?: (tab: BrowseTab | null) => void;
   onConnectReference?: (sourceId: string, targetId: string) => void;
   onJumpNode?: (nodeId: string) => void;
+  onPasteMedia?: () => Promise<void>;
   onRedo?: () => void;
   onStartReferencePicker?: (nodeId: string) => void;
   onUndo?: () => void;
@@ -108,8 +107,10 @@ export function CanvasOverlays(props: CanvasOverlaysProps) {
   const [splitOpen, setSplitOpen] = useState(false);
   const [scaleOpen, setScaleOpen] = useState(false);
   const [imageMode, setImageMode] = useState<'outpaint' | 'erase' | 'relight' | 'multi-angle' | null>(null);
-  const [browseTab, setBrowseTab] = useState<BrowseTab | null>(null);
+  const [localBrowseTab, setLocalBrowseTab] = useState<BrowseTab | null>(null);
   const [commentsOpen, setCommentsOpen] = useState(false);
+  const browseTab = props.browseTab === undefined ? localBrowseTab : props.browseTab;
+  const setBrowseTab = props.onBrowseTab ?? setLocalBrowseTab;
   useEffect(() => {
     setImageMode(null);
   }, [selectedNodeId]);
@@ -160,7 +161,7 @@ export function CanvasOverlays(props: CanvasOverlaysProps) {
         onOpenComments={props.canEdit ? () => setCommentsOpen(true) : undefined}
         onRedo={props.onRedo}
         onUndo={props.onUndo}
-        onUploadFiles={props.canEdit ? (files) => void ingestMediaFiles(files) : undefined}
+        onUploadFiles={props.canEdit ? (files) => void ingestMediaFiles(files, props.pointerWorld?.()) : undefined}
       />
       {props.referencePickerNodeId ? (
         <div className="canvas-ref-banner">点一张图当参考 · Esc 取消</div>
@@ -169,7 +170,7 @@ export function CanvasOverlays(props: CanvasOverlaysProps) {
         <div className="canvas-empty">
           <span className="canvas-empty-badge">双击</span>
           <strong>把图片拖进画布</strong>
-          <span>也可以粘贴，或点左侧 + 添加节点</span>
+          <span>也可以粘贴，或点左侧 +、空白处双击 / 右键添加节点</span>
           {props.onStartFromPrompt && props.canEdit && (
             <div className="canvas-empty-recipes">
               <button type="button" onClick={() => props.onStartFromPrompt?.('用文字生成一段产品视频')}>文字生视频</button>
@@ -289,7 +290,40 @@ export function CanvasOverlays(props: CanvasOverlaysProps) {
             onSplitOpen={() => setSplitOpen((open) => !open)}
             onTool={(kind) => void runImageTool(selectedNode.id, defaultImageCanvasToolRequest(kind))}
           />
-          ) : null}
+          ) : (
+            <MediaCardToolbar
+              canDownload={hasMediaSource}
+              node={selectedNode}
+              view={props.view}
+              onDelete={() => props.editActions.deleteSelection([selectedNode.id])}
+              onDownload={() => {
+                if (!props.workspaceId) return;
+                void downloadCardMedia({
+                  node: selectedNode,
+                  outputs: props.outputs,
+                  params: props.workflowGraph?.nodes[selectedNode.id]?.params,
+                  workspaceId: props.workspaceId,
+                }).catch((error) => {
+                  props.setEditStatus(error instanceof Error ? error.message : '下载失败');
+                });
+              }}
+              onDuplicate={() => props.editActions.duplicateNode(selectedNode)}
+              onReplace={(file) => void replaceNodeMedia(selectedNode.id, file)}
+              onSaveAsset={() => {
+                if (!props.workspaceId) return;
+                void saveCardAsset({
+                  node: selectedNode,
+                  outputs: props.outputs,
+                  params: props.workflowGraph?.nodes[selectedNode.id]?.params,
+                  workspaceId: props.workspaceId,
+                }).then(() => {
+                  props.setEditStatus('已存进素材库');
+                }).catch((error) => {
+                  props.setEditStatus(error instanceof Error ? error.message : '存素材失败');
+                });
+              }}
+            />
+          )}
         </>
       )}
       {showComposer && selectedNode && (
@@ -381,7 +415,7 @@ export function CanvasOverlays(props: CanvasOverlaysProps) {
           workflowGraph={props.workflowGraph}
           onClose={() => setBrowseTab(null)}
           onDuplicate={(node) => props.editActions.duplicateNode(node)}
-          onPlaceFile={(file) => void ingestMediaFiles(file)}
+          onPlaceFile={(file) => void ingestMediaFiles(file, props.pointerWorld?.())}
           onJump={(nodeId) => {
             props.onJumpNode?.(nodeId);
             setBrowseTab(null);
@@ -447,6 +481,17 @@ export function CanvasOverlays(props: CanvasOverlaysProps) {
             props.setAddMenu(null);
           }}
           onClose={() => props.setAddMenu(null)}
+          onPaste={props.onPasteMedia
+            ? () => {
+                props.setAddMenu(null);
+                void props.onPasteMedia?.();
+              }
+            : undefined}
+          onUpload={(files) => {
+            const origin = props.addMenu?.flow;
+            props.setAddMenu(null);
+            void ingestMediaFiles(files, origin);
+          }}
         />
       )}
       <CanvasCommentsPanel
@@ -733,50 +778,4 @@ function stringParam(params: unknown, key: string): string {
   if (!params || typeof params !== 'object' || Array.isArray(params)) return '';
   const value = (params as Record<string, unknown>)[key];
   return typeof value === 'string' ? value : '';
-}
-
-function CanvasAddMenuPanel({
-  definitions,
-  menu,
-  view,
-  onAdd,
-  onClose,
-}: {
-  definitions: Map<string, NodeDefinition>;
-  menu: CanvasAddMenu;
-  view: ViewState;
-  onAdd: (definition: NodeDefinition) => void;
-  onClose: () => void;
-}) {
-  const items = [
-    ['input.text', '文本', '脚本、广告词、品牌文案'],
-    ['input.image', '图片', '参考图、生成图'],
-    ['input.video', '视频', '首帧、成片'],
-    ['input.audio', '音频', '旁白、音效'],
-  ] as const;
-  return (
-    <div
-      className="canvas-add-menu"
-      style={{
-        left: menu.flow.x * view.z + view.x,
-        top: menu.flow.y * view.z + view.y,
-      } as CSSProperties}
-      onPointerDown={(event) => event.stopPropagation()}
-    >
-      <div className="canvas-add-menu-head">添加节点</div>
-      {items.map(([type, label, hint]) => {
-        const definition = definitions.get(type);
-        if (!definition) return null;
-        return (
-          <button key={type} onClick={() => onAdd(definition)} type="button">
-            {label}
-            <small>{hint}</small>
-          </button>
-        );
-      })}
-      <button className="canvas-add-menu-cancel" onClick={onClose} type="button">
-        取消
-      </button>
-    </div>
-  );
 }

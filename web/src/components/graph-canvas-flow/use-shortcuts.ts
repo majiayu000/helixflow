@@ -15,6 +15,7 @@ type ShortcutInput = {
   setSelection: (ids: Iterable<string>) => void;
   viewportSize: ViewportSize;
   pasteMedia?: () => Promise<void>;
+  onFindNodes?: () => void;
   onUndo?: () => void;
   onRedo?: () => void;
   onDuplicate?: () => void;
@@ -35,6 +36,9 @@ export function useCanvasShortcuts(input: ShortcutInput) {
     if (shortcut === 'fit_view') {
       void setFlowViewportToNodes(input.instance, input.nodes, input.viewportSize);
     }
+    if (shortcut === 'find_nodes') input.onFindNodes?.();
+    if (shortcut === 'zoom_in') void input.instance?.zoomIn({ duration: 160 });
+    if (shortcut === 'zoom_out') void input.instance?.zoomOut({ duration: 160 });
     if (shortcut === 'copy_selection') {
       void input.editActions.copySelection(input.selectedNodes);
     }

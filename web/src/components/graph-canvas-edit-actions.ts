@@ -26,6 +26,7 @@ type CanvasEditActionsInput = {
   capabilities: CanvasCapabilities;
   drawGraph: WorkbenchState['graph'];
   onCreateProposal?: (input: ManualProposalInput) => Promise<void>;
+  pointerWorld?: () => Point;
   setClipboardStatus: (value: string | null) => void;
   versionId: string;
   view: ViewState;
@@ -38,6 +39,7 @@ export function createCanvasEditActions(input: CanvasEditActionsInput) {
     x: (input.viewportSize.width / 2 - input.view.x) / input.view.z,
     y: (input.viewportSize.height / 2 - input.view.y) / input.view.z,
   });
+  const spawnOrigin = (): Point => input.pointerWorld?.() ?? viewportCenterWorld();
 
   const submit = (proposal: ManualProposalInput | null, success: string, failure: string) => {
     if (!proposal || !input.onCreateProposal) return;
@@ -62,7 +64,7 @@ export function createCanvasEditActions(input: CanvasEditActionsInput) {
         baseVersionId: input.versionId,
         definition,
         existingNodeIds: input.drawGraph.nodes.map((node) => node.id),
-        position: position ?? nextAvailableNodePosition(viewportCenterWorld(), input.drawGraph.nodes),
+        position: position ?? nextAvailableNodePosition(spawnOrigin(), input.drawGraph.nodes),
         connectFrom,
       }),
       `已添加 ${definition.title}`,
@@ -103,7 +105,7 @@ export function createCanvasEditActions(input: CanvasEditActionsInput) {
         baseVersionId: input.versionId,
         existingNodeIds: input.drawGraph.nodes.map((node) => node.id),
         text: await navigator.clipboard.readText(),
-        position: viewportCenterWorld(),
+        position: spawnOrigin(),
       });
       if (!proposal) {
         input.setClipboardStatus('粘贴失败：无效选区');

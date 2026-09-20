@@ -49,34 +49,50 @@ async fn stream_events(
     workspace_id: String,
 ) {
     loop {
-        let event = match receiver.recv().await {
-            Ok(event) => event,
-            Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                let Ok(text) = serde_json::to_string(&json!({
-                    "workspace_id": workspace_id,
-                    "run_id": workspace_id,
-                    "seq": 0,
-                    "server_time": "1970-01-01T00:00:00Z",
-                    "ev": "ws.lagged",
-                    "data": { "skipped": skipped },
-                })) else {
-                    break;
-                };
-                if socket.send(Message::Text(text.into())).await.is_err() {
-                    break;
+        tokio::select! {
+            incoming = socket.recv() => {
+                match incoming {
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(Message::Ping(payload))) => {
+                        if socket.send(Message::Pong(payload)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(Ok(_)) => {}
+                    Some(Err(_)) => break,
                 }
-                continue;
             }
-            Err(broadcast::error::RecvError::Closed) => break,
-        };
-        if event.workspace_id != workspace_id {
-            continue;
-        }
-        let Ok(text) = serde_json::to_string(&event) else {
-            break;
-        };
-        if socket.send(Message::Text(text.into())).await.is_err() {
-            break;
+            event = receiver.recv() => {
+                match event {
+                    Ok(event) => {
+                        if event.workspace_id != workspace_id {
+                            continue;
+                        }
+                        if send_text(&mut socket, &event).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        let lagged = json!({
+                            "workspace_id": workspace_id,
+                            "run_id": workspace_id,
+                            "seq": 0,
+                            "server_time": "1970-01-01T00:00:00Z",
+                            "ev": "ws.lagged",
+                            "data": { "skipped": skipped },
+                        });
+                        if send_text(&mut socket, &lagged).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
         }
     }
+}
+
+async fn send_text(socket: &mut WebSocket, value: &impl serde::Serialize) -> Result<(), ()> {
+    let text = serde_json::to_string(value).map_err(|_| ())?;
+    socket.send(Message::Text(text.into())).await.map_err(|_| ())
 }

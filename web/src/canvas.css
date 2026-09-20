@@ -240,6 +240,14 @@
   border-radius: 2px;
 }
 
+.workflow-flow-resize-line--hidden {
+  display: none !important;
+}
+
+.flow-canvas .react-flow__node:has(.workflow-flow-node--media) {
+  border-radius: 16px;
+}
+
 .flow-view-controls {
   position: absolute;
   left: 15px;
@@ -1776,6 +1784,8 @@
   min-height: 0;
   height: 100%;
   padding: 0;
+  border-radius: 16px;
+  overflow: hidden;
 }
 
 .node--media .p-done,
@@ -1805,6 +1815,8 @@
   object-fit: contain;
   object-position: center;
   background: transparent;
+  border-radius: 16px;
+  overflow: hidden;
 }
 
 .media-card-frame {
@@ -1814,6 +1826,8 @@
 .media-card-video {
   position: absolute;
   inset: 0;
+  border-radius: 16px;
+  overflow: hidden;
 }
 
 .media-card-frame--poster {
@@ -2180,6 +2194,36 @@ body.connecting .workflow-flow-handle--plus {
 .canvas-add-menu button:hover {
   background: rgb(255 255 255 / 8%);
   color: var(--text);
+}
+
+.canvas-add-menu button small {
+  display: block;
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.canvas-add-menu-k {
+  float: right;
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.canvas-add-menu-sep {
+  height: 1px;
+  margin: 4px 8px;
+  background: rgb(255 255 255 / 8%);
+}
+
+.flow-canvas--hide-edges .react-flow__edge {
+  display: none;
+}
+
+.flow-view-controls button.is-label {
+  width: auto;
+  min-width: 32px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 650;
 }
 
 .canvas-image-toolbar button,

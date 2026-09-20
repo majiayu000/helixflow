@@ -14,6 +14,9 @@ export type GraphShortcut =
   | 'clear_selection'
   | 'select_all'
   | 'fit_view'
+  | 'find_nodes'
+  | 'zoom_in'
+  | 'zoom_out'
   | 'copy_selection'
   | 'paste_selection'
   | 'duplicate_selection'
@@ -114,6 +117,9 @@ export function graphShortcutFromEvent(event: {
   if (!command) return null;
   if (key === 'a') return 'select_all';
   if (key === '0') return 'fit_view';
+  if (key === 'f') return 'find_nodes';
+  if (key === '=' || key === '+') return 'zoom_in';
+  if (key === '-') return 'zoom_out';
   if (key === 'c') return 'copy_selection';
   if (key === 'v') return 'paste_selection';
   if (key === 'd') return 'duplicate_selection';

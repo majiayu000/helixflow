@@ -133,3 +133,35 @@ async fn websocket_survives_broadcast_lag_and_keeps_workspace_filter() {
         "lagged websocket must keep streaming later events"
     );
 }
+
+#[tokio::test]
+async fn websocket_finishes_when_the_client_closes_without_events() {
+    let events = EventBus::new(16);
+    let (_dir, state) = test_app_state(events).await;
+    let app = crate::app(state);
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test listener");
+    let addr = listener.local_addr().expect("listener addr");
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve test app");
+    });
+
+    let (mut socket, _) =
+        tokio_tungstenite::connect_async(format!("ws://{addr}/ws?workspace_id=ws_1"))
+            .await
+            .expect("connect websocket");
+    socket.close(None).await.expect("client close");
+    let mut ended = false;
+    while !ended {
+        let next = timeout(Duration::from_secs(1), socket.next())
+            .await
+            .expect("server must observe client close without waiting for a broadcast");
+        match next {
+            None => ended = true,
+            Some(Ok(message)) if message.is_close() => {}
+            Some(Err(_)) => ended = true,
+            other => panic!("unexpected websocket frame after client close: {other:?}"),
+        }
+    }
+}

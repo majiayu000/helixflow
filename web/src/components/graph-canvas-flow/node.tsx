@@ -105,6 +105,7 @@ export const ReactFlowWorkflowNode = memo(function ReactFlowWorkflowNode({
           color={media ? 'rgb(255 255 255 / 55%)' : 'var(--accent)'}
           handleClassName="workflow-flow-resize-handle"
           keepAspectRatio={media}
+          lineClassName={media ? 'workflow-flow-resize-line--hidden' : undefined}
           maxHeight={GRAPH_NODE_MAX_HEIGHT}
           maxWidth={GRAPH_NODE_MAX_WIDTH}
           minHeight={media ? 200 : 120}

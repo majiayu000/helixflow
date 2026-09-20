@@ -92,6 +92,7 @@ export function CanvasBrowsePanel({
       {(tab === 'library' || tab === 'search' || tab === 'prompts') && (
         <input
           onChange={(event) => setQuery(event.currentTarget.value)}
+          autoFocus={tab === 'search'}
           placeholder={
             tab === 'search' ? '搜索标题 / Prompt' : tab === 'prompts' ? '搜索提示词' : '搜索素材'
           }

@@ -5,24 +5,37 @@ import type { WorkflowFlowInstance } from './types';
 import type { CanvasPointerTool } from './use-canvas-tools';
 import { setFlowViewportToNodes } from './use-viewport';
 
+export const CANVAS_SHORTCUT_HELP =
+  '⌘Z 撤销 · ⌘C/V 复制粘贴 · ⌘F 搜索 · ⌘+/- 缩放 · ⌘0 适应 · ⌘J Agent · Delete 删除 · 空格拖动画布';
+
 export function CanvasViewControls({
   activeTool,
   canEdit,
+  hideEdges,
   instance,
   minimapOpen,
   nodes,
-  onToolChange,
+  onHelp,
+  onToggleHideEdges,
   onToggleMinimap,
+  onToggleSnap,
+  onToolChange,
+  snapToGrid,
   view,
   viewportSize,
 }: {
   activeTool?: CanvasPointerTool;
   canEdit?: boolean;
+  hideEdges?: boolean;
   instance: WorkflowFlowInstance | null;
   minimapOpen?: boolean;
   nodes: GraphNodeState[];
-  onToolChange?: (tool: CanvasPointerTool) => void;
+  onHelp?: () => void;
+  onToggleHideEdges?: () => void;
   onToggleMinimap?: () => void;
+  onToggleSnap?: () => void;
+  onToolChange?: (tool: CanvasPointerTool) => void;
+  snapToGrid?: boolean;
   view: ViewState;
   viewportSize: { width: number; height: number };
 }) {
@@ -53,6 +66,29 @@ export function CanvasViewControls({
           <span className="flow-view-divider" />
         </>
       ) : null}
+      {onToggleHideEdges ? (
+        <button
+          aria-label="隐藏连线"
+          aria-pressed={hideEdges}
+          className={hideEdges ? 'is-active is-label' : 'is-label'}
+          onClick={onToggleHideEdges}
+          type="button"
+        >
+          连线
+        </button>
+      ) : null}
+      {onToggleSnap ? (
+        <button
+          aria-label="网格吸附"
+          aria-pressed={snapToGrid}
+          className={snapToGrid ? 'is-active is-label' : 'is-label'}
+          onClick={onToggleSnap}
+          type="button"
+        >
+          吸附
+        </button>
+      ) : null}
+      {onToggleHideEdges || onToggleSnap ? <span className="flow-view-divider" /> : null}
       <button aria-label="缩小画布" onClick={() => void instance?.zoomOut({ duration: 160 })}>
         −
       </button>
@@ -95,6 +131,11 @@ export function CanvasViewControls({
           type="button"
         >
           <Icon n="layers" s={13} />
+        </button>
+      ) : null}
+      {onHelp ? (
+        <button aria-label="快捷键说明" onClick={onHelp} type="button">
+          ?
         </button>
       ) : null}
       <span className="flow-node-count">{nodeCount.toLocaleString()} nodes</span>

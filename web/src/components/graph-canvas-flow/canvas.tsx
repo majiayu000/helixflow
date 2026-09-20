@@ -49,9 +49,12 @@ import {
 } from '../graph-canvas-groups';
 import { CanvasMinimap } from '../graph-canvas-minimap';
 import { relatedHighlight } from '../graph-canvas-relations';
-import { CanvasViewControls } from './controls';
+import { graphShortcutFromEvent, isEditableShortcutTarget } from '../graph-canvas-selection';
+import { CANVAS_SHORTCUT_HELP, CanvasViewControls } from './controls';
+import { type CanvasAddMenu } from './canvas-add-menu';
+import { type BrowseTab } from './canvas-browse-panel';
 import { ReactFlowWorkflowNode } from './node';
-import { CanvasOverlays, type CanvasAddMenu } from './overlays';
+import { CanvasOverlays } from './overlays';
 import { CanvasOverview, shouldUseCanvasOverview } from './overview';
 import { StaticFlowContent } from './static-content';
 import { useCanvasCatalog, useImplementationResolution } from './use-catalog';
@@ -94,6 +97,10 @@ export function GraphCanvas(props: GraphCanvasProps) {
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [referencePickerNodeId, setReferencePickerNodeId] = useState<string | null>(null);
   const [minimapOpen, setMinimapOpen] = useState(false);
+  const [browseTab, setBrowseTab] = useState<BrowseTab | null>(null);
+  const [hideEdges, setHideEdges] = useState(false);
+  const [snapToGrid, setSnapToGrid] = useState(false);
+  const pointerWorldRef = useRef<{ x: number; y: number } | null>(null);
   const [groups, setGroups] = useState<CanvasGroup[]>(() => loadCanvasGroups(props.workspaceId));
   const resetRejectedMutation = useCallback(() => resetFlowNodesRef.current(), []);
   const sourceGraph = props.canvasGraph ?? props.graph;
@@ -118,6 +125,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
   ) => {
     const flow = viewport.instance?.screenToFlowPosition({ x: clientX, y: clientY });
     if (!flow) return;
+    pointerWorldRef.current = flow;
     setAddMenu({ clientX, clientY, flow, connectFrom });
   }, [viewport.instance]);
   const catalogState = useCanvasCatalog();
@@ -273,10 +281,18 @@ export function GraphCanvas(props: GraphCanvasProps) {
     props.providers,
     selectedCapability,
   );
+  const pointerWorld = useCallback(() => {
+    if (pointerWorldRef.current) return pointerWorldRef.current;
+    return {
+      x: (viewport.viewportSize.width / 2 - viewport.view.x) / viewport.view.z,
+      y: (viewport.viewportSize.height / 2 - viewport.view.y) / viewport.view.z,
+    };
+  }, [viewport.view.x, viewport.view.y, viewport.view.z, viewport.viewportSize.height, viewport.viewportSize.width]);
   const editActions = createCanvasEditActions({
     capabilities,
     drawGraph,
     onCreateProposal: props.onCreateProposal,
+    pointerWorld,
     setClipboardStatus: setEditStatus,
     versionId: props.versionId,
     view: viewport.view,
@@ -296,10 +312,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
           files.push(new File([blob], clipboardFilename(type), { type }));
         }
         if (files.length > 0) {
-          await ingestMediaFiles(files, viewport.instance?.screenToFlowPosition({
-            x: viewport.viewportSize.width / 2,
-            y: viewport.viewportSize.height / 2,
-          }));
+          await ingestMediaFiles(files, pointerWorld());
           return;
         }
       }
@@ -307,7 +320,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
       // Browser may deny clipboard.read(); subgraph paste still applies.
     }
     await editActions.pasteSelection();
-  }, [capabilities.paste, editActions, ingestMediaFiles, viewport.instance, viewport.viewportSize]);
+  }, [capabilities.paste, editActions, ingestMediaFiles, pointerWorld]);
   const persistGroups = useCallback((next: CanvasGroup[]) => {
     setGroups(next);
     saveCanvasGroups(props.workspaceId, next);
@@ -392,6 +405,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
     nodes: drawGraph.nodes,
     onDeleteEdges: deleteSelectedEdges,
     onDuplicate: duplicateSelection,
+    onFindNodes: () => setBrowseTab('search'),
     onGroup: groupSelection,
     onRedo: redoCanvas,
     onUndo: undoCanvas,
@@ -442,6 +456,33 @@ export function GraphCanvas(props: GraphCanvasProps) {
     }
   }, [editingTextNodeId, elements.selectedIds]);
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const canvas = viewport.canvasRef.current;
+    const onKey = (event: KeyboardEvent) => {
+      if (isEditableShortcutTarget(event.target)) return;
+      if (canvas && event.target instanceof Node && canvas.contains(event.target)) return;
+      const shortcut = graphShortcutFromEvent(event);
+      if (shortcut === 'find_nodes') {
+        event.preventDefault();
+        setBrowseTab('search');
+      }
+      if (shortcut === 'zoom_in') {
+        event.preventDefault();
+        void viewport.instance?.zoomIn({ duration: 160 });
+      }
+      if (shortcut === 'zoom_out') {
+        event.preventDefault();
+        void viewport.instance?.zoomOut({ duration: 160 });
+      }
+      if (shortcut === 'fit_view') {
+        event.preventDefault();
+        void setFlowViewportToNodes(viewport.instance, drawGraph.nodes, viewport.viewportSize);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [drawGraph.nodes, viewport.canvasRef, viewport.instance, viewport.viewportSize]);
+  useEffect(() => {
     const expanded = expandSelectionWithGroups(elements.selectedIds, groups);
     if (expanded.size === elements.selectedIds.size
       && [...expanded].every((id) => elements.selectedIds.has(id))) {
@@ -455,10 +496,21 @@ export function GraphCanvas(props: GraphCanvasProps) {
       ref={viewport.canvasRef}
       className={typeof window === 'undefined'
         ? 'p-canvas cv-bold'
-        : `p-canvas cv-bold flow-canvas${pointerTools.activeTool === 'pan' ? ' flow-canvas--pan' : ''}`}
+        : `p-canvas cv-bold flow-canvas${pointerTools.activeTool === 'pan' ? ' flow-canvas--pan' : ''}${hideEdges ? ' flow-canvas--hide-edges' : ''}`}
       aria-label="Workflow graph canvas"
       tabIndex={0}
       onKeyDown={shortcuts}
+      onPointerMove={(event) => {
+        if (!(event.target instanceof Element)) return;
+        if (event.target.closest('.node-library-bar, .canvas-add-menu, .flow-view-controls, .canvas-minimap, input, textarea, [contenteditable="true"]')) {
+          return;
+        }
+        const next = viewport.instance?.screenToFlowPosition({
+          x: event.clientX,
+          y: event.clientY,
+        });
+        if (next) pointerWorldRef.current = next;
+      }}
       onDoubleClick={(event) => {
         if (!capabilities.paste) return;
         const target = event.target;
@@ -493,12 +545,14 @@ export function GraphCanvas(props: GraphCanvasProps) {
         onlyRenderVisibleElements={typeof ResizeObserver !== 'undefined'}
         panOnDrag={pointerTools.panOnDrag}
         panOnScroll
+        zoomActivationKeyCode={['Meta', 'Control']}
         zoomOnScroll={false}
         zoomOnDoubleClick={false}
         connectOnClick={false}
         selectionMode={SelectionMode.Partial}
         selectionOnDrag={pointerTools.selectionOnDrag}
-        snapGrid={[20, 20]}
+        snapGrid={[22, 22]}
+        snapToGrid={snapToGrid}
         onConnect={flowActions.connect}
         onConnectStart={(event, params) => {
           document.body.classList.add('connecting');
@@ -553,6 +607,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
           if (!capabilities.paste) return;
           openAddMenu(event.clientX, event.clientY);
         }}
+        onNodeContextMenu={(event) => event.preventDefault()}
         onEdgeClick={(_event, edge) => elements.setEdgeSelection([edge.id])}
         onEdgeDoubleClick={(_event, edge) => capabilities.connect && flowActions.disconnect(edge)}
         onEdgesChange={elements.onEdgesChange}
@@ -629,11 +684,16 @@ export function GraphCanvas(props: GraphCanvasProps) {
         <CanvasViewControls
           activeTool={pointerTools.activeTool}
           canEdit={activeMode === 'edit'}
+          hideEdges={hideEdges}
           instance={viewport.instance}
           minimapOpen={minimapOpen}
           nodes={drawGraph.nodes}
-          onToolChange={pointerTools.setTool}
+          onHelp={() => setEditStatus(CANVAS_SHORTCUT_HELP)}
+          onToggleHideEdges={() => setHideEdges((open) => !open)}
           onToggleMinimap={() => setMinimapOpen((open) => !open)}
+          onToggleSnap={() => setSnapToGrid((open) => !open)}
+          onToolChange={pointerTools.setTool}
+          snapToGrid={snapToGrid}
           view={overlayView}
           viewportSize={viewport.viewportSize}
         />
@@ -649,7 +709,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
           }}
         />
       ) : null}
-      <CanvasOverlays {...props} addMenu={addMenu} canEdit={capabilities.move} catalog={catalogState.catalog} catalogError={catalogState.catalogError} chromeHidden={chromeHidden} definitionByType={catalogState.definitionByType} drawGraph={drawGraph} editActions={editActions} editingTextNodeId={editingTextNodeId} editStatus={editStatus} modelCatalog={catalogState.modelCatalog} modelCatalogError={catalogState.modelCatalogError} onAlign={alignSelection} onConnectReference={(sourceId, targetId) => flowActions.connectNodes(sourceId, targetId)} onGroup={groupSelection} onUngroup={ungroupSelection} onJumpNode={(nodeId) => { const node = drawGraph.nodes.find((item) => item.id === nodeId); if (node) void setFlowViewportToNodes(viewport.instance, [node], viewport.viewportSize); }} onRedo={redoCanvas} onStartReferencePicker={(nodeId) => setReferencePickerNodeId((current) => current === nodeId ? null : nodeId)} onUndo={undoCanvas} pendingProposal={Boolean(props.pendingProposal)} readiness={implementation.readiness} referencePickerNodeId={referencePickerNodeId} resolution={implementation.resolution} selectedIds={elements.selectedIds} selectedNodes={selectedNodes} setAddMenu={setAddMenu} setEditStatus={setEditStatus} setSelection={elements.setSelection} view={overlayView} viewportSize={viewport.viewportSize} />
+      <CanvasOverlays {...props} addMenu={addMenu} browseTab={browseTab} canEdit={capabilities.move} catalog={catalogState.catalog} catalogError={catalogState.catalogError} chromeHidden={chromeHidden} definitionByType={catalogState.definitionByType} drawGraph={drawGraph} editActions={editActions} editingTextNodeId={editingTextNodeId} editStatus={editStatus} modelCatalog={catalogState.modelCatalog} modelCatalogError={catalogState.modelCatalogError} onAlign={alignSelection} onBrowseTab={setBrowseTab} onConnectReference={(sourceId, targetId) => flowActions.connectNodes(sourceId, targetId)} onGroup={groupSelection} onUngroup={ungroupSelection} onJumpNode={(nodeId) => { const node = drawGraph.nodes.find((item) => item.id === nodeId); if (!node) return; elements.setSelection([nodeId]); void setFlowViewportToNodes(viewport.instance, [node], viewport.viewportSize); }} onPasteMedia={pasteMedia} onRedo={redoCanvas} onStartReferencePicker={(nodeId) => setReferencePickerNodeId((current) => current === nodeId ? null : nodeId)} onUndo={undoCanvas} pendingProposal={Boolean(props.pendingProposal)} pointerWorld={pointerWorld} readiness={implementation.readiness} referencePickerNodeId={referencePickerNodeId} resolution={implementation.resolution} selectedIds={elements.selectedIds} selectedNodes={selectedNodes} setAddMenu={setAddMenu} setEditStatus={setEditStatus} setSelection={elements.setSelection} view={overlayView} viewportSize={viewport.viewportSize} />
     </section>
   );
 }
