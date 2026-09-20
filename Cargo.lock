@@ -627,7 +627,6 @@ name = "helixflow-agent"
 version = "0.2.0"
 dependencies = [
  "async-trait",
- "helixflow-compiler",
  "helixflow-gateway",
  "helixflow-graph",
  "helixflow-registry",

@@ -11,7 +11,9 @@ use serde_json::json;
 use uuid::Uuid;
 
 mod app_server_runtime;
+mod canvas_edit;
 mod canvas_ops;
+mod canvas_tools;
 mod contract;
 mod prompt_stack;
 mod runtime;
@@ -19,12 +21,16 @@ mod service;
 mod turn_mode;
 
 pub use app_server_runtime::{CodexAppServerRuntime, CodexBackendRuntime};
+pub use canvas_edit::{
+    CanvasEditError, CanvasEditOp, CanvasEditPlan, CompiledCanvasEdit, compile_canvas_edit,
+    compile_canvas_edit_with,
+};
 pub use canvas_ops::{
     CanvasGateState, CanvasOpsContext, CanvasOpsContract, CanvasSelection, redact_graph_secrets,
 };
 pub use contract::{
-    AgentLogEntry, AgentRuntimeIdentity, RunRequestAction, RunRequestOutput, ValidatedAgentIntent,
-    ValidatedAgentReply, ValidatedRoute, ValidatedRunRequest, read_validated_intent,
+    AgentLogEntry, AgentRuntimeIdentity, RunRequestAction, RunRequestOutput, ValidatedAgentReply,
+    ValidatedCanvasEdit, ValidatedRoute, ValidatedRunRequest, read_validated_canvas_edit,
     read_validated_reply, read_validated_route, read_validated_run_request,
 };
 pub use prompt_stack::{
@@ -230,12 +236,14 @@ fn selected_skill(skill: AgentSkill) -> &'static str {
     match skill {
         AgentSkill::Chat => "# Chat\nWrite a concise assistant reply to out/reply.json.\n",
         AgentSkill::CreateWorkflow => {
-            "# Create Workflow\nDescribe the workflow as a valid IntentPlan.\n"
+            "# Create Workflow\nOperate the live canvas with catalog, inspect, and edit. Submit one canvas_edit.json covering the whole workflow.\n"
         }
         AgentSkill::ModifyWorkflow => {
-            "# Modify Workflow\nDescribe the smallest valid IntentPlan change.\n"
+            "# Modify Workflow\nInspect the current canvas, then submit the smallest canvas_edit.json that makes the requested change.\n"
         }
-        AgentSkill::FixError => "# Fix Error\nDescribe the smallest graph fix as an IntentPlan.\n",
+        AgentSkill::FixError => {
+            "# Fix Error\nInspect the failed graph, then submit a canvas_edit.json that repairs it.\n"
+        }
         AgentSkill::RunRequest => {
             "# Run Request\nWrite a backend run request to out/run_request.json.\n"
         }

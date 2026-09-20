@@ -3,9 +3,9 @@ use std::fs;
 use serde_json::{Value, json};
 
 use super::{
-    canvas_state_tool_result, completed_item_status, helixflow_dynamic_tools,
+    canvas_inspect_tool_result, completed_item_status, helixflow_dynamic_tools,
     notification_matches_turn, request_run_tool_result, required_string, started_item_status,
-    submit_intent_tool_result, submit_reply_tool_result, submit_route_tool_result,
+    submit_edit_tool_result, submit_reply_tool_result, submit_route_tool_result,
 };
 
 #[test]
@@ -17,10 +17,10 @@ fn parses_thread_identity_and_completed_items() {
     );
     assert_eq!(
         completed_item_status(&json!({
-            "params": { "item": { "type": "dynamicToolCall", "tool": "canvas.get_state" } }
+            "params": { "item": { "type": "dynamicToolCall", "tool": "canvas.inspect" } }
         }))
         .as_deref(),
-        Some("Tool completed: canvas.get_state")
+        Some("Tool completed: canvas.inspect")
     );
     assert_eq!(
         started_item_status(&json!({
@@ -71,21 +71,18 @@ async fn exposes_bounded_canvas_state_as_a_dynamic_tool() {
     )
     .expect("node catalog");
 
-    let tools = helixflow_dynamic_tools(dir.path(), Some(crate::OutputContract::IntentJson));
+    let tools = helixflow_dynamic_tools(dir.path(), Some(crate::OutputContract::CanvasEditJson));
     assert_eq!(tools[0]["name"], "canvas");
-    assert_eq!(tools[0]["tools"][0]["name"], "get_state");
-    assert_eq!(tools[0]["tools"][1]["name"], "submit_intent");
-    assert_eq!(
-        tools[0]["tools"][1]["inputSchema"]["properties"]["stages"]["items"]["properties"]["capabilityId"]
-            ["enum"],
-        json!(["prompt_writer", "text_to_image"])
-    );
+    assert_eq!(tools[0]["tools"][0]["name"], "catalog");
+    assert_eq!(tools[0]["tools"][1]["name"], "inspect");
+    assert_eq!(tools[0]["tools"][2]["name"], "edit");
     let run_tools =
         helixflow_dynamic_tools(dir.path(), Some(crate::OutputContract::RunRequestJson));
-    assert_eq!(run_tools[0]["tools"][1]["name"], "request_run");
+    assert_eq!(run_tools[0]["tools"][1]["name"], "run");
+    assert_eq!(run_tools[0]["tools"][2]["name"], "wait");
     let reply_tools = helixflow_dynamic_tools(dir.path(), Some(crate::OutputContract::ReplyJson));
     assert_eq!(reply_tools[0]["tools"][1]["name"], "submit_reply");
-    let result = canvas_state_tool_result(dir.path()).await;
+    let result = canvas_inspect_tool_result(dir.path(), &json!({})).await;
     assert_eq!(result["success"], true);
     assert!(
         result["contentItems"][0]["text"]
@@ -136,29 +133,39 @@ async fn exposes_and_captures_semantic_routing_without_canvas_access() {
 }
 
 #[tokio::test]
-async fn captures_intents_without_mutating_the_canvas() {
+async fn captures_canvas_edits_and_refreshes_live_state() {
     let dir = tempfile::tempdir().expect("temp dir");
     let out_dir = dir.path().join("out");
     fs::create_dir(&out_dir).expect("out dir");
-    let intent = json!({
-        "intentVersion": "1",
-        "topology": "linear",
-        "stages": [{
-            "stageId": "s1",
-            "capabilityId": "text_to_image",
-            "inputFrom": [],
+    fs::create_dir(dir.path().join("ctx")).expect("ctx dir");
+    fs::write(
+        dir.path().join("ctx/graph.json"),
+        r#"{"schema_version":1,"nodes":{},"edges":[]}"#,
+    )
+    .expect("graph");
+    fs::write(
+        dir.path().join("ctx/canvas_state.json"),
+        r#"{"schema_version":1,"workspace_id":"ws_1","base_version_id":"ver_1","graph":{"node_count":0,"edge_count":0,"nodes":[],"edges":[]},"selection":{"node_ids":[]},"gates":{"pending_proposal":false,"pending_confirmation":false}}"#,
+    )
+    .expect("canvas state");
+    let edit = json!({
+        "operations": [{
+            "op": "add_node",
+            "id": "s1",
+            "node_type": "image.generate",
             "params": { "prompt": "a paper fox" }
-        }],
-        "outputStageIds": ["s1"]
+        }]
     });
 
-    let result = submit_intent_tool_result(&out_dir, &intent).await;
+    let result = submit_edit_tool_result(dir.path(), &out_dir, &edit).await;
 
     assert_eq!(result["success"], true);
     let captured: Value =
-        serde_json::from_slice(&fs::read(out_dir.join("intent.json")).expect("captured intent"))
-            .expect("intent json");
-    assert_eq!(captured, intent);
+        serde_json::from_slice(&fs::read(out_dir.join("canvas_edit.json")).expect("captured edit"))
+            .expect("edit json");
+    assert_eq!(captured, edit);
+    let live = fs::read_to_string(dir.path().join("ctx/canvas_state.json")).expect("live canvas");
+    assert!(live.contains("\"id\": \"s1\"") || live.contains("\"id\":\"s1\""));
 }
 
 #[tokio::test]
@@ -167,7 +174,7 @@ async fn captures_run_requests_without_dispatching_providers() {
     let out_dir = dir.path().join("out");
     fs::create_dir(&out_dir).expect("out dir");
     let request = json!({
-        "action": "request_confirmation",
+        "node_ids": ["s1"],
         "summary": "Run the current workflow."
     });
 
@@ -184,7 +191,14 @@ async fn captures_run_requests_without_dispatching_providers() {
         &fs::read(out_dir.join("run_request.json")).expect("captured run request"),
     )
     .expect("run request json");
-    assert_eq!(captured, request);
+    assert_eq!(
+        captured,
+        json!({
+            "action": "request_confirmation",
+            "summary": "Run the current workflow.",
+            "node_ids": ["s1"]
+        })
+    );
 }
 
 #[tokio::test]

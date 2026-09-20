@@ -160,9 +160,9 @@ impl CodexRuntime {
 
 pub(crate) fn codex_turn_prompt(turn: &AgentTurn) -> String {
     let context_hint = if turn.mode.uses_graph_context() {
-        "Read ctx/instructions.md. Use the canvas.get_state tool for current canvas state when available, plus declared catalog files under ctx/."
+        "Read ctx/instructions.md. Use canvas.catalog / canvas.inspect / canvas.edit for the live board when available, plus declared catalog files under ctx/."
     } else if turn.mode.uses_canvas_context() {
-        "Read ctx/instructions.md. Use only the canvas.get_state tool for current canvas state when available; do not inspect graph or catalog files."
+        "Read ctx/instructions.md. Use only canvas.inspect for current canvas state when available; do not inspect graph or catalog files."
     } else {
         "Read ctx/instructions.md only. Do not inspect graph/catalog files or the filesystem."
     };
