@@ -275,8 +275,7 @@ database. Synthetic traffic, fixtures, and smoke requests do not count.
 A point-in-time SQLite online backup was created outside the repository at:
 
 ```text
-/Users/lifcc/Desktop/code/AI/tools/graph/reports/transfer/
-  helixflow-handoff-20260813/gh146-v020-canary.sqlite
+<private-transfer-dir>/helixflow-handoff-20260813/gh146-v020-canary.sqlite
 ```
 
 SHA-256 at creation:
