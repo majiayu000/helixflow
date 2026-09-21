@@ -1,14 +1,17 @@
-import { useRef, type CSSProperties } from 'react';
+import { useRef, useState } from 'react';
 import type { WorkbenchState } from '../../types';
-import { graphNodeWidth, type ViewState } from '../graph-canvas-navigation';
+import type { ViewState } from '../graph-canvas-navigation';
+import { flowAboveCenterStyle } from './overlay-anchor';
+import type { VideoFrameKind } from '../../video-frame';
 
 export function MediaCardToolbar({
   canDownload,
   node,
-  view,
+  view: _view,
   onDelete,
   onDownload,
   onDuplicate,
+  onExtractFrame,
   onReplace,
   onSaveAsset,
 }: {
@@ -18,18 +21,31 @@ export function MediaCardToolbar({
   onDelete: () => void;
   onDownload: () => void;
   onDuplicate: () => void;
+  onExtractFrame?: (kind: VideoFrameKind) => void;
   onReplace: (file: File) => void;
   onSaveAsset: () => void;
 }) {
   const replaceRef = useRef<HTMLInputElement | null>(null);
-  const left = node.position.x * view.z + view.x + (graphNodeWidth(node) * view.z) / 2;
-  const top = node.position.y * view.z + view.y - 10;
+  const [extractOpen, setExtractOpen] = useState(false);
+  const video = Boolean(onExtractFrame);
   return (
     <div
-      className="canvas-image-toolbar"
-      style={{ left, top } as CSSProperties}
+      className="canvas-image-toolbar nodrag nopan"
+      style={flowAboveCenterStyle(node, 10)}
       onPointerDown={(event) => event.stopPropagation()}
     >
+      {video ? (
+        <div className="canvas-image-toolbar-split">
+          <button onClick={() => setExtractOpen((open) => !open)} type="button">抽帧</button>
+          {extractOpen && (
+            <div className="canvas-image-toolbar-menu">
+              <button onClick={() => { setExtractOpen(false); onExtractFrame?.('current'); }} type="button">当前帧</button>
+              <button onClick={() => { setExtractOpen(false); onExtractFrame?.('first'); }} type="button">首帧</button>
+              <button onClick={() => { setExtractOpen(false); onExtractFrame?.('last'); }} type="button">末帧</button>
+            </div>
+          )}
+        </div>
+      ) : null}
       <button onClick={() => replaceRef.current?.click()} type="button">替换</button>
       <button onClick={onDuplicate} type="button">复制</button>
       <button disabled={!canDownload} onClick={onDownload} type="button">下载</button>
@@ -49,4 +65,3 @@ export function MediaCardToolbar({
     </div>
   );
 }
-

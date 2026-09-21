@@ -14,6 +14,7 @@ export type IconName =
   | 'image'
   | 'layers'
   | 'lock'
+  | 'map'
   | 'music'
   | 'paperclip'
   | 'palette'
@@ -95,6 +96,12 @@ const icons: Record<IconName, ReactNode> = {
     <g>
       <rect x="3.2" y="6.2" width="7.6" height="5.3" rx="1.2" />
       <path d="M4.8 6.2V4.6a2.2 2.2 0 0 1 4.4 0v1.6" />
+    </g>
+  ),
+  map: (
+    <g>
+      <rect x="2.2" y="3.2" width="9.6" height="7.6" rx="1.4" />
+      <rect x="4.1" y="4.8" width="3.4" height="2.4" rx=".5" />
     </g>
   ),
   music: (

@@ -1096,7 +1096,8 @@ describe('App', () => {
     expect(markup).toContain('data-pane-id="artifact"');
     expect(markup).toContain('data-workbench-zone="secondarySidebar"');
     expect(markup).toContain('canvas-grid');
-    expect(markup).toContain('node-artifact--selected');
+    expect(markup).toContain('media-card-video');
+    expect(markup).not.toContain('node-artifact--selected');
   });
 
   it('keeps the graph canvas when the selected output has no preview', () => {
@@ -1926,8 +1927,9 @@ describe('GraphCanvas navigation', () => {
     );
 
     expect(markup).not.toContain('canvas-toolbar');
-    expect(markup).toContain('node-artifact');
-    expect(markup).toContain('node-artifact--selected');
+    expect(markup).toContain('media-card-video');
+    expect(markup).toContain('data-canvas-video="poster"');
+    expect(markup).not.toContain('node-artifact');
   });
 
   it('keeps proposal preview ahead of CanvasDocument rendering', () => {
@@ -2071,8 +2073,9 @@ describe('GraphCanvas navigation', () => {
     expect(markup).toContain('Canvas video');
     expect(markup).toContain('Approved result after reload');
     expect(markup).toContain('comment-marker');
-    expect(markup).toContain('node-artifact--selected');
-    expect(markup).toContain('node-artifact-icon');
+    expect(markup).toContain('media-card-video');
+    expect(markup).toContain('data-canvas-video="poster"');
+    expect(markup).not.toContain('node-artifact');
     expect(markup).not.toContain('<video');
     expect(markup).not.toContain('canvas-toolbar');
     expect(storyGraph.nodes.find((node) => node.id === 'canvas_video')?.position).toEqual({

@@ -56,8 +56,14 @@ export type WorkbenchStore = {
   ingestMediaFiles: (files: File | File[], position?: { x: number; y: number }) => Promise<void>;
   splitImageGrid: (nodeId: string, rows: number, columns: number) => Promise<void>;
   applyImageCanvasTool: (nodeId: string, request: ImageCanvasToolRequest) => Promise<void>;
-  generateFromMediaCard: (nodeId: string, prompt: string, aspectRatio: string) => Promise<void>;
+  generateFromMediaCard: (
+    nodeId: string,
+    prompt: string,
+    aspectRatio: string,
+    options?: { durationSec?: number; count?: number; mediaKind?: 'image' | 'video' },
+  ) => Promise<void>;
   cropImageNode: (nodeId: string, crop: PixelCropRect) => Promise<void>;
+  extractVideoFrame: (nodeId: string, kind: 'current' | 'first' | 'last') => Promise<void>;
   replaceNodeMedia: (nodeId: string, file: File) => Promise<void>;
   queueRun: (options?: QueueRunOptions) => Promise<void>;
   interruptRun: (runId?: string) => Promise<void>;

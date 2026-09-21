@@ -23,6 +23,26 @@ describe('MediaCardToolbar', () => {
     expect(markup).toContain('下载');
     expect(markup).toContain('删除');
     expect(markup).toContain('入库');
+    expect(markup).not.toContain('抽帧');
+  });
+
+  it('offers current, first, and last frame extraction on video cards', () => {
+    const markup = renderToStaticMarkup(
+      <MediaCardToolbar
+        canDownload
+        node={videoNode()}
+        onDelete={vi.fn()}
+        onDownload={vi.fn()}
+        onDuplicate={vi.fn()}
+        onExtractFrame={vi.fn()}
+        onReplace={vi.fn()}
+        onSaveAsset={vi.fn()}
+        view={{ x: 0, y: 0, z: 1 }}
+      />,
+    );
+
+    expect(markup).toContain('抽帧');
+    expect(markup).not.toContain('当前帧');
   });
 });
 

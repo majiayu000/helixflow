@@ -40,6 +40,8 @@ export const DEFAULT_IMAGE_EDIT_PROMPTS = {
     'Fill only the transparent padded border. Keep the original subject, lighting, and details unchanged.',
   inpaint:
     'Fill only the transparent region. Match surrounding texture, lighting, and perspective. Do not change unmasked pixels.',
+  redraw:
+    'Redraw only the masked region according to the prompt. Keep unmasked pixels unchanged.',
 } as const;
 
 export function defaultImageCanvasToolRequest(kind: ImageCanvasToolKind): ImageCanvasToolRequest {

@@ -239,7 +239,7 @@ export function WorkflowNode({
               />
             ) : null}
           </div>
-        ) : node.nodeType === 'input.video' ? (
+        ) : node.nodeType === 'input.video' || node.nodeType.startsWith('video.') ? (
           <VideoMediaCard
             artifacts={artifactOutputs}
             nodeId={node.id}
@@ -421,13 +421,45 @@ function MediaCard({
     );
   }
   if (nodeType === 'input.audio') {
-    return (
-      <div className="media-card media-card--audio">
-        <audio controls preload="metadata" src={url} />
-      </div>
-    );
+    return <AudioMediaCard url={url} />;
   }
   return <img alt="" className="media-card-frame" decoding="async" draggable={false} loading="lazy" src={url} />;
+}
+
+function AudioMediaCard({ url }: { url: string }) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [playing, setPlaying] = useState(false);
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const onEnded = () => setPlaying(false);
+    audio.addEventListener('ended', onEnded);
+    return () => audio.removeEventListener('ended', onEnded);
+  }, [url]);
+  return (
+    <div className="media-card media-card--audio">
+      <audio preload="metadata" ref={audioRef} src={url} />
+      <button
+        aria-label={playing ? '暂停' : '播放'}
+        className="media-card-play nodrag nopan"
+        onClick={(event) => {
+          event.stopPropagation();
+          const audio = audioRef.current;
+          if (!audio) return;
+          if (playing) {
+            audio.pause();
+            setPlaying(false);
+            return;
+          }
+          void audio.play().then(() => setPlaying(true)).catch(() => setPlaying(false));
+        }}
+        onPointerDown={(event) => event.stopPropagation()}
+        type="button"
+      >
+        <Icon n={playing ? 'stop' : 'play'} s={14} />
+      </button>
+    </div>
+  );
 }
 
 function VideoMediaCard({
@@ -444,6 +476,7 @@ function VideoMediaCard({
   workspaceId?: string;
 }) {
   const [hover, setHover] = useState(false);
+  const [playing, setPlaying] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const poster = videoPosterUrl(artifacts);
   const hasSource = videoHasSource(artifacts, storageUri);
@@ -456,14 +489,19 @@ function VideoMediaCard({
   const url = useMediaPreviewUrl(workspaceId, storageUri, artifacts, 'input.video', decode);
 
   useEffect(() => {
+    if (!selected) setPlaying(false);
+  }, [selected]);
+
+  useEffect(() => {
     const video = videoRef.current;
-    if (!video) return;
+    if (!video || playing) return;
+    video.muted = true;
     if (hover) {
       void video.play().catch(() => undefined);
       return;
     }
     video.pause();
-  }, [hover, url]);
+  }, [hover, playing, url]);
 
   if (!hasSource) {
     return (
@@ -485,9 +523,8 @@ function VideoMediaCard({
       {decode && url ? (
         <video
           className="media-card-frame"
-          controls={hover}
           data-canvas-video="live"
-          muted
+          muted={!playing}
           playsInline
           poster={poster ?? undefined}
           preload="metadata"
@@ -503,6 +540,29 @@ function VideoMediaCard({
           )}
         </div>
       )}
+      {selected && decode && url ? (
+        <button
+          aria-label={playing ? '暂停' : '播放'}
+          className="media-card-play nodrag nopan"
+          onClick={(event) => {
+            event.stopPropagation();
+            const video = videoRef.current;
+            const next = !playing;
+            setPlaying(next);
+            if (!video) return;
+            video.muted = !next;
+            if (next) {
+              void video.play().catch(() => setPlaying(false));
+              return;
+            }
+            video.pause();
+          }}
+          onPointerDown={(event) => event.stopPropagation()}
+          type="button"
+        >
+          <Icon n={playing ? 'stop' : 'play'} s={14} />
+        </button>
+      ) : null}
     </div>
   );
 }

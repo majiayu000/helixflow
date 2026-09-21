@@ -34,7 +34,8 @@ describe('image canvas generative tools', () => {
     expect(imageCanvasToolLabel('cutout')).toBe('抠图');
     expect(imageCanvasToolLabel('upscale')).toBe('超分');
     expect(imageCanvasToolLabel('enhance')).toBe('增强');
-    expect(DEFAULT_IMAGE_EDIT_PROMPTS.outpaint).toMatch(/transparent padded border/);
+    expect(DEFAULT_IMAGE_EDIT_PROMPTS.inpaint).toMatch(/transparent region/);
+    expect(DEFAULT_IMAGE_EDIT_PROMPTS.redraw).toMatch(/masked region/);
   });
 
   it('names prepared canvases without overwriting the source file', () => {
@@ -313,6 +314,47 @@ describe('generate from media card', () => {
         }),
       ]),
     }));
+    expect(queueRun).toHaveBeenCalledOnce();
+  });
+
+  it('spawns stacked video cards from a text card with duration and count', async () => {
+    const appendManualEdit = vi.fn().mockResolvedValue(undefined);
+    const queueRun = vi.fn().mockResolvedValue(undefined);
+    const action = createGenerateFromMediaCardAction(
+      vi.fn() as never,
+      (() => ({
+        state: {
+          workspace: { id: 'ws_1', versionId: 'ver_1' },
+          graph: {
+            nodes: [{
+              id: 'copy',
+              nodeType: 'input.text',
+              title: '文案',
+              position: { x: 40, y: 80 },
+              size: { width: 280, height: 280 },
+            }],
+            edges: [],
+          },
+          workflowGraph: { nodes: { copy: { params: { text: 'hero' } } } },
+          outputs: [],
+        },
+        editSession: null,
+        appendManualEdit,
+        queueRun,
+      })) as never,
+      { currentGeneration: () => 1, signal: () => undefined, isActive: () => true } as never,
+    );
+
+    await action('copy', 'product video', '16:9', { mediaKind: 'video', durationSec: 8, count: 2 });
+
+    const proposal = appendManualEdit.mock.calls[0]?.[0] as {
+      ops: Array<{ op: string; id?: string; node_type?: string; from?: string; params?: { duration_sec?: number } }>;
+    };
+    const spawned = proposal.ops.filter((op) => op.op === 'spawn_node');
+    expect(spawned).toHaveLength(2);
+    expect(spawned.map((op) => op.id)).toEqual(['video_text_to_video', 'video_text_to_video_2']);
+    expect(spawned.every((op) => op.node_type === 'video.text_to_video' && op.from === 'copy')).toBe(true);
+    expect(spawned[0]?.params?.duration_sec).toBe(8);
     expect(queueRun).toHaveBeenCalledOnce();
   });
 });

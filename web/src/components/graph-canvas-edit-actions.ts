@@ -53,7 +53,12 @@ export function createCanvasEditActions(input: CanvasEditActionsInput) {
   const addNode = (
     definition: NodeDefinition,
     position?: Point,
-    connectFrom?: { nodeId: string; definition: NodeDefinition; direction?: 'in' | 'out' },
+    connectFrom?: {
+      nodeId: string;
+      definition: NodeDefinition;
+      direction?: 'in' | 'out';
+      extra?: Array<{ nodeId: string; definition: NodeDefinition }>;
+    },
   ) => {
     if (!input.capabilities.paste) {
       input.setClipboardStatus('当前模式不允许添加节点');

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { isMediaNodeType, type GridSplitTilePlacement } from '../grid-split';
+import { isMediaNodeType, isVisualMediaCardType, type GridSplitTilePlacement } from '../grid-split';
 import { matchingConnectionPorts } from './graph-canvas-connections';
 import { imageCanvasToolLabel, type ImageCanvasToolKind } from '../image-canvas-tools';
 import type {
@@ -48,19 +48,32 @@ export function buildAddNodeProposalInput(input: {
   existingNodeIds: Iterable<string>;
   position: Point;
   suffix?: string;
-  connectFrom?: { nodeId: string; definition: NodeDefinition; direction?: 'in' | 'out' };
+  connectFrom?: {
+    nodeId: string;
+    definition: NodeDefinition;
+    direction?: 'in' | 'out';
+    extra?: Array<{ nodeId: string; definition: NodeDefinition }>;
+  };
 }): ManualProposalInput {
   const id = uniqueNodeId(
     input.existingNodeIds,
     `${slugFromType(input.definition.type)}_${input.suffix ?? randomSuffix()}`,
   );
   const inbound = input.connectFrom?.direction === 'in';
-  const match = input.connectFrom
-    ? inbound
-      ? matchingConnectionPorts(input.definition, input.connectFrom.definition)
-      : matchingConnectionPorts(input.connectFrom.definition, input.definition)
-    : null;
-  if (input.connectFrom && !match) {
+  const sources = input.connectFrom
+    ? [
+        { nodeId: input.connectFrom.nodeId, definition: input.connectFrom.definition },
+        ...(input.connectFrom.extra ?? []),
+      ]
+    : [];
+  const matches = sources.map((source) => ({
+    source,
+    match: inbound
+      ? matchingConnectionPorts(input.definition, source.definition)
+      : matchingConnectionPorts(source.definition, input.definition),
+  }));
+  const primary = matches[0];
+  if (input.connectFrom && !primary?.match) {
     throw new Error('连线失败：这两张卡没有可接的端口');
   }
   const ops: ManualProposalInput['ops'] = [{
@@ -70,7 +83,7 @@ export function buildAddNodeProposalInput(input: {
     title: input.definition.title,
     params: defaultParamsForDefinition(input.definition),
     pos: [input.position.x, input.position.y],
-    ...(inbound || !input.connectFrom ? {} : { from: input.connectFrom.nodeId }),
+    ...(inbound || !primary?.match ? {} : { from: primary.source.nodeId }),
   }];
   if (isMediaNodeType(input.definition.type) || input.definition.type === 'input.text') {
     ops.push({
@@ -79,12 +92,18 @@ export function buildAddNodeProposalInput(input: {
       size: [MEDIA_CARD_WIDTH, MEDIA_CARD_HEIGHT],
     });
   }
-  if (input.connectFrom && inbound && match) {
+  for (const item of matches) {
+    if (!item.match) continue;
+    if (!inbound && item === primary) continue;
     ops.push({
       op: 'add_edge',
-      from: [id, match.sourcePort],
-      to: [input.connectFrom.nodeId, match.targetPort],
-      edge_type: match.type.toLowerCase(),
+      from: inbound
+        ? [id, item.match.sourcePort]
+        : [item.source.nodeId, item.match.sourcePort],
+      to: inbound
+        ? [item.source.nodeId, item.match.targetPort]
+        : [id, item.match.targetPort],
+      edge_type: item.match.type.toLowerCase(),
     });
   }
   return {
@@ -230,6 +249,64 @@ export function buildCropResultProposalInput(input: {
   };
 }
 
+export function mediaGenerateTarget(input: {
+  nodeType: string;
+  hasImage: boolean;
+  mediaKind?: 'image' | 'video';
+}): {
+  capabilityId: string;
+  mediaKind: 'image' | 'video';
+  nodeType: string;
+  idBase: string;
+  connectFrom: boolean;
+} | null {
+  if (input.nodeType === 'input.audio') return null;
+  if (input.nodeType === 'input.text') {
+    if (input.mediaKind === 'video') {
+      return {
+        capabilityId: 'text_to_video',
+        mediaKind: 'video',
+        nodeType: 'video.text_to_video',
+        idBase: 'video_text_to_video',
+        connectFrom: true,
+      };
+    }
+    return {
+      capabilityId: 'text_to_image',
+      mediaKind: 'image',
+      nodeType: 'image.generate',
+      idBase: 'image_generate',
+      connectFrom: true,
+    };
+  }
+  if (!isVisualMediaCardType(input.nodeType)) return null;
+  if (input.nodeType === 'input.video' || input.nodeType.startsWith('video.')) {
+    return {
+      capabilityId: 'text_to_video',
+      mediaKind: 'video',
+      nodeType: 'video.text_to_video',
+      idBase: 'video_text_to_video',
+      connectFrom: false,
+    };
+  }
+  if (input.hasImage) {
+    return {
+      capabilityId: 'image_edit',
+      mediaKind: 'image',
+      nodeType: 'image.edit',
+      idBase: 'image_edit',
+      connectFrom: true,
+    };
+  }
+  return {
+    capabilityId: 'text_to_image',
+    mediaKind: 'image',
+    nodeType: 'image.generate',
+    idBase: 'image_generate',
+    connectFrom: true,
+  };
+}
+
 export function buildMediaGenerateProposalInput(input: {
   baseVersionId: string;
   existingNodeIds: Iterable<string>;
@@ -241,33 +318,45 @@ export function buildMediaGenerateProposalInput(input: {
   prompt: string;
   aspectRatio: string;
   hasImage: boolean;
+  sourceNodeType?: string;
   semantics?: unknown;
+  durationSec?: number;
+  count?: number;
+  mediaKind?: 'image' | 'video';
 }): ManualProposalInput {
   const usedIds = new Set(input.existingNodeIds);
   const ops: ManualProposalInput['ops'] = [];
   const x = input.sourceX + input.sourceWidth + 48;
   const prompt = input.prompt.trim();
-  if (input.hasImage) {
+  const count = Math.min(4, Math.max(1, Math.round(input.count ?? 1)));
+  const durationSec = Math.min(10, Math.max(1, Math.round(input.durationSec ?? 5)));
+  const target = mediaGenerateTarget({
+    nodeType: input.sourceNodeType ?? (input.hasImage ? 'image.edit' : 'image.generate'),
+    hasImage: input.hasImage,
+    mediaKind: input.mediaKind,
+  }) ?? {
+    capabilityId: 'text_to_image',
+    mediaKind: 'image' as const,
+    nodeType: 'image.generate',
+    idBase: 'image_generate',
+    connectFrom: true,
+  };
+  const params = target.mediaKind === 'video'
+    ? { prompt, aspect_ratio: input.aspectRatio, duration_sec: durationSec }
+    : target.nodeType === 'image.edit'
+      ? { prompt }
+      : { prompt, aspect_ratio: input.aspectRatio };
+  for (let index = 0; index < count; index += 1) {
     appendDerivedMediaCard(ops, usedIds, {
       sourceNodeId: input.sourceNodeId,
-      idBase: 'image_edit',
-      nodeType: 'image.edit',
-      title: `${input.sourceTitle} 生成`,
-      params: { prompt },
-      pos: [x, input.sourceY],
+      idBase: target.idBase,
+      nodeType: target.nodeType,
+      title: target.nodeType === 'image.edit' ? `${input.sourceTitle} 生成` : input.sourceTitle,
+      params,
+      pos: [x, input.sourceY + index * 24],
       size: [MEDIA_CARD_WIDTH, MEDIA_CARD_HEIGHT],
       semantics: input.semantics,
-    });
-  } else {
-    appendDerivedMediaCard(ops, usedIds, {
-      sourceNodeId: input.sourceNodeId,
-      idBase: 'image_generate',
-      nodeType: 'image.generate',
-      title: input.sourceTitle,
-      params: { prompt, aspect_ratio: input.aspectRatio },
-      pos: [x, input.sourceY],
-      size: [MEDIA_CARD_WIDTH, MEDIA_CARD_HEIGHT],
-      semantics: input.semantics,
+      connectFrom: target.connectFrom,
     });
   }
   return {
@@ -275,6 +364,44 @@ export function buildMediaGenerateProposalInput(input: {
     label: `生成 ${input.sourceTitle}`,
     ops,
   };
+}
+
+export function buildVideoFrameProposalInput(input: {
+  baseVersionId: string;
+  existingNodeIds: Iterable<string>;
+  sourceNodeId: string;
+  sourceTitle: string;
+  sourceX: number;
+  sourceY: number;
+  sourceWidth: number;
+  storageUri: string;
+  size: { width: number; height: number };
+  kind: 'current' | 'first' | 'last';
+}): ManualProposalInput {
+  const usedIds = new Set(input.existingNodeIds);
+  const ops: ManualProposalInput['ops'] = [];
+  const label = videoFrameLabel(input.kind);
+  appendDerivedMediaCard(ops, usedIds, {
+    sourceNodeId: input.sourceNodeId,
+    idBase: `image_frame_${input.kind}`,
+    nodeType: 'input.image',
+    title: `${input.sourceTitle} ${label}`,
+    params: { storage_uri: input.storageUri },
+    pos: [input.sourceX + input.sourceWidth + 24, input.sourceY],
+    size: [input.size.width, input.size.height],
+    connectFrom: false,
+  });
+  return {
+    baseVersionId: input.baseVersionId,
+    label: `${label} ${input.sourceTitle}`,
+    ops,
+  };
+}
+
+export function videoFrameLabel(kind: 'current' | 'first' | 'last'): string {
+  if (kind === 'first') return '首帧';
+  if (kind === 'last') return '末帧';
+  return '当前帧';
 }
 
 export function buildImageCanvasToolResultProposalInput(input: {
@@ -434,6 +561,7 @@ function appendDerivedMediaCard(
     pos: [number, number];
     size?: [number, number];
     semantics?: unknown;
+    connectFrom?: boolean;
   },
 ): string {
   const id = uniqueNodeId(usedIds, input.idBase);
@@ -445,7 +573,7 @@ function appendDerivedMediaCard(
     title: input.title,
     params: input.params,
     pos: input.pos,
-    from: input.sourceNodeId,
+    ...(input.connectFrom === false ? {} : { from: input.sourceNodeId }),
   });
   if (input.size) {
     ops.push({ op: 'resize_node', id, size: input.size });
@@ -454,6 +582,35 @@ function appendDerivedMediaCard(
     ops.push({ op: 'set_semantics', id, semantics: input.semantics });
   }
   return id;
+}
+
+export function fanInConnectFrom(
+  selectedIds: Iterable<string>,
+  nodes: Array<{ id: string; nodeType: string }>,
+  definitionByType: Map<string, NodeDefinition>,
+  primaryId?: string,
+): {
+  nodeId: string;
+  definition: NodeDefinition;
+  extra: Array<{ nodeId: string; definition: NodeDefinition }>;
+} | undefined {
+  const selected = new Set(selectedIds);
+  const orderedIds = primaryId
+    ? [primaryId, ...[...selected].filter((id) => id !== primaryId)]
+    : [...selected];
+  const items = orderedIds.flatMap((id) => {
+    const node = nodes.find((item) => item.id === id);
+    const definition = node ? definitionByType.get(node.nodeType) : undefined;
+    return node && definition ? [{ nodeId: id, definition }] : [];
+  });
+  const primary = items[0];
+  if (!primary) return undefined;
+  if (!primaryId && items.length < 2) return undefined;
+  return {
+    nodeId: primary.nodeId,
+    definition: primary.definition,
+    extra: items.slice(1),
+  };
 }
 
 export function uniqueNodeId(existingNodeIds: Iterable<string>, base: string): string {

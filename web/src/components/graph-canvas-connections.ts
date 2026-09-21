@@ -85,6 +85,26 @@ export function lineagePortDefinition(nodeType: string): LineagePorts | null {
         inputs: [port(MEDIA_REF_PORT, 'AUDIO', false, 'many')],
         outputs: [port('audio', 'AUDIO', true)],
       };
+    case 'video.text_to_video':
+      return {
+        inputs: [port('prompt', 'TEXT', true)],
+        outputs: [port('video', 'VIDEO', true)],
+      };
+    case 'video.image_to_video':
+      return {
+        inputs: [
+          port('image', 'IMAGE', true, 'many'),
+          port('video', 'VIDEO', false, 'many'),
+          port('audio', 'AUDIO', false, 'many'),
+          port('prompt', 'TEXT', false),
+        ],
+        outputs: [port('video', 'VIDEO', true)],
+      };
+    case 'video.extend':
+      return {
+        inputs: [port('video', 'VIDEO', true)],
+        outputs: [port('video', 'VIDEO', true)],
+      };
     default:
       return null;
   }

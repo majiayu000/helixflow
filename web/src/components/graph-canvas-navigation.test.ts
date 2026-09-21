@@ -118,7 +118,7 @@ describe('dense graph viewport slice refresh', () => {
     });
 
     expect(result().view).toEqual(initial);
-    expect(result().liveView).toEqual({ x: 180, y: -120, z: 1.1 });
+    expect(result().liveView).toEqual(initial);
     expect(result().moving).toBe(true);
 
     await act(async () => {

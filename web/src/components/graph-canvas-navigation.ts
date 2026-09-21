@@ -228,7 +228,8 @@ function isMediaCardNodeType(nodeType: string): boolean {
     nodeType === 'input.video' ||
     nodeType === 'input.audio' ||
     nodeType === 'image.generate' ||
-    nodeType === 'image.edit'
+    nodeType === 'image.edit' ||
+    nodeType.startsWith('video.')
   );
 }
 

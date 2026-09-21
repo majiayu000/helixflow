@@ -72,6 +72,7 @@ describe('graph canvas connections', () => {
       outputs: [{ name: 'image', type: 'IMAGE' }],
     });
     expect(canvasCardFallbackPorts('image.generate')?.outputs[0]?.name).toBe('image');
+    expect(canvasCardFallbackPorts('video.text_to_video')?.outputs[0]?.name).toBe('video');
     expect(canvasCardFallbackPorts('input.text')?.outputs[0]?.name).toBe('text');
     expect(canvasCardFallbackPorts('llm.prompt_writer')).toBeNull();
   });
@@ -228,15 +229,15 @@ describe('graph canvas connections', () => {
   });
 
   it('renders catalog ports as hit targets with highlight classes', () => {
-    const highlights = new Map([[portKey('video', 'input', 'prompt'), 'occupied' as const]]);
+    const highlights = new Map([[portKey('out', 'input', 'artifact'), 'occupied' as const]]);
     const markup = renderToStaticMarkup(
       <WorkflowNode
         connectionDisabled={false}
-        definition={videoDefinition()}
+        definition={outputDefinition()}
         diffState={null}
         dirty={false}
         locked={false}
-        node={videoNode()}
+        node={outputNode()}
         artifactOutputs={[]}
         portHighlights={highlights}
         resizable={false}
@@ -254,9 +255,8 @@ describe('graph canvas connections', () => {
       />,
     );
 
-    expect(markup).toContain('data-port-node-id="video"');
+    expect(markup).toContain('data-port-node-id="out"');
     expect(markup).toContain('data-port-direction="input"');
-    expect(markup).toContain('data-port-direction="output"');
     expect(markup).toContain('port-target--occupied');
   });
 
@@ -304,6 +304,38 @@ describe('graph canvas connections', () => {
     expect(markup).not.toContain('io-row');
     expect(markup).not.toContain('SELECTED');
     expect(markup).not.toContain('class="swatch"');
+  });
+
+  it('renders video cards without native playback controls', () => {
+    const markup = renderToStaticMarkup(
+      <WorkflowNode
+        connectionDisabled={false}
+        definition={videoDefinition()}
+        diffState={null}
+        dirty={false}
+        locked={false}
+        node={videoNode()}
+        artifactOutputs={[]}
+        portHighlights={new Map()}
+        resizable={false}
+        selected={true}
+        stepState="queued"
+        onOutputPortPointerDown={() => undefined}
+        onPointerCancel={() => undefined}
+        onPointerDown={() => undefined}
+        onPointerMove={() => undefined}
+        onPointerUp={() => undefined}
+        onResizePointerCancel={() => undefined}
+        onResizePointerDown={() => undefined}
+        onResizePointerMove={() => undefined}
+        onResizePointerUp={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain('node--media');
+    expect(markup).toContain('视频');
+    expect(markup).not.toContain('controls');
+    expect(markup).not.toContain('<video');
   });
 });
 

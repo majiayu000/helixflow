@@ -197,6 +197,39 @@
   pointer-events: none;
 }
 
+.comment-compose-pin {
+  position: absolute;
+  z-index: 14;
+  display: grid;
+  gap: 8px;
+  width: 220px;
+  transform: translate(-50%, -100%);
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 18px 40px rgb(0 0 0 / 45%);
+}
+
+.comment-compose-pin textarea {
+  width: 100%;
+  min-height: 56px;
+  resize: none;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.comment-compose-pin-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
 .collab-cursor {
   position: absolute;
   top: 0;
