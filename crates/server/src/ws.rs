@@ -94,5 +94,8 @@ async fn stream_events(
 
 async fn send_text(socket: &mut WebSocket, value: &impl serde::Serialize) -> Result<(), ()> {
     let text = serde_json::to_string(value).map_err(|_| ())?;
-    socket.send(Message::Text(text.into())).await.map_err(|_| ())
+    socket
+        .send(Message::Text(text.into()))
+        .await
+        .map_err(|_| ())
 }
