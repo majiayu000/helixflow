@@ -98,7 +98,7 @@ succeeded、failed 或 interrupted，只能在 succeeded 后关联画布 result 
 
 ## 非目标
 
-- 不修改 `/Users/lifcc/Desktop/code/AI/tools/media-processor`。
+- 不修改独立的 media-processor 仓库。
 - 不保留 `/media-processor-api` 兼容代理或双路执行。
 - 不把本次工作扩展成通用视频/音频处理平台。
 - 不在本次迁移 `input.image` 为 `image.asset`。
