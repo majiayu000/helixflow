@@ -13,6 +13,10 @@ import {
   buildGridSplitProposalInput,
   buildImageCanvasToolResultProposalInput,
   buildMediaGenerateProposalInput,
+  buildVideoFrameProposalInput,
+  fanInConnectFrom,
+  mediaGenerateTarget,
+  videoFrameLabel,
   buildMediaIngestProposalInput,
   buildPasteProposalInput,
   buildSelectionClipboardText,
@@ -98,6 +102,76 @@ describe('graph canvas editing helpers', () => {
       from: 'photo',
     });
     expect(input.ops.some((op) => op.op === 'add_edge')).toBe(false);
+  });
+
+  it('fans extra selected sources into the new card', () => {
+    const imageDef = definition('input.image', 'Image Input', []);
+    imageDef.inputs = [{ name: 'in', type: 'IMAGE', required: false, cardinality: 'many' }];
+    imageDef.outputs = [{ name: 'image', type: 'IMAGE', required: true }];
+    const input = buildAddNodeProposalInput({
+      baseVersionId: 'ver_1',
+      definition: imageDef,
+      existingNodeIds: ['photo', 'still'],
+      position: { x: 400, y: 40 },
+      suffix: 'fan',
+      connectFrom: {
+        nodeId: 'photo',
+        definition: imageDef,
+        extra: [{ nodeId: 'still', definition: imageDef }],
+      },
+    });
+    expect(input.ops).toContainEqual({
+      op: 'spawn_node',
+      id: 'input_image_fan',
+      node_type: 'input.image',
+      title: 'Image Input',
+      params: {},
+      pos: [400, 40],
+      from: 'photo',
+    });
+    expect(input.ops).toContainEqual({
+      op: 'add_edge',
+      from: ['still', 'image'],
+      to: ['input_image_fan', 'in'],
+      edge_type: 'image',
+    });
+  });
+
+  it('skips extra selected sources that cannot wire into the new card', () => {
+    const imageDef = definition('input.image', 'Image Input', []);
+    imageDef.inputs = [{ name: 'in', type: 'IMAGE', required: false, cardinality: 'many' }];
+    imageDef.outputs = [{ name: 'image', type: 'IMAGE', required: true }];
+    const seedDef = numberDefinition();
+    const input = buildAddNodeProposalInput({
+      baseVersionId: 'ver_1',
+      definition: imageDef,
+      existingNodeIds: ['photo', 'seed'],
+      position: { x: 400, y: 40 },
+      suffix: 'skip',
+      connectFrom: {
+        nodeId: 'photo',
+        definition: imageDef,
+        extra: [{ nodeId: 'seed', definition: seedDef }],
+      },
+    });
+    expect(input.ops.some((op) => op.op === 'add_edge')).toBe(false);
+  });
+
+  it('fans in every selected source when adding from the dock', () => {
+    const imageDef = definition('input.image', 'Image Input', []);
+    imageDef.outputs = [{ name: 'image', type: 'IMAGE', required: true }];
+    const connectFrom = fanInConnectFrom(
+      ['photo', 'still'],
+      [
+        { id: 'photo', nodeType: 'input.image' },
+        { id: 'still', nodeType: 'input.image' },
+      ],
+      new Map([['input.image', imageDef]]),
+    );
+    expect(connectFrom?.nodeId).toBe('photo');
+    expect(connectFrom?.extra).toEqual([{ nodeId: 'still', definition: imageDef }]);
+    expect(fanInConnectFrom(['photo'], [{ id: 'photo', nodeType: 'input.image' }], new Map([['input.image', imageDef]])))
+      .toBeUndefined();
   });
 
   it('wires a new image card into the source when adding from the left handle', () => {
@@ -236,6 +310,141 @@ describe('graph canvas editing helpers', () => {
         },
       },
     });
+  });
+
+  it('spawns a video generate card without wiring an incompatible lineage edge', () => {
+    expect(mediaGenerateTarget({ nodeType: 'input.video', hasImage: false })).toEqual({
+      capabilityId: 'text_to_video',
+      mediaKind: 'video',
+      nodeType: 'video.text_to_video',
+      idBase: 'video_text_to_video',
+      connectFrom: false,
+    });
+    expect(mediaGenerateTarget({ nodeType: 'input.audio', hasImage: false })).toBeNull();
+    expect(mediaGenerateTarget({ nodeType: 'input.text', hasImage: false })).toEqual({
+      capabilityId: 'text_to_image',
+      mediaKind: 'image',
+      nodeType: 'image.generate',
+      idBase: 'image_generate',
+      connectFrom: true,
+    });
+    expect(mediaGenerateTarget({ nodeType: 'input.text', hasImage: false, mediaKind: 'video' })).toEqual({
+      capabilityId: 'text_to_video',
+      mediaKind: 'video',
+      nodeType: 'video.text_to_video',
+      idBase: 'video_text_to_video',
+      connectFrom: true,
+    });
+    expect(mediaGenerateTarget({ nodeType: 'output.save', hasImage: true })).toBeNull();
+    const input = buildMediaGenerateProposalInput({
+      baseVersionId: 'ver_1',
+      existingNodeIds: ['clip'],
+      sourceNodeId: 'clip',
+      sourceTitle: '视频',
+      sourceX: 80,
+      sourceY: 40,
+      sourceWidth: 320,
+      prompt: 'product video',
+      aspectRatio: '16:9',
+      hasImage: false,
+      sourceNodeType: 'input.video',
+    });
+    expect(input.ops).toEqual([
+      {
+        op: 'spawn_node',
+        id: 'video_text_to_video',
+        node_type: 'video.text_to_video',
+        title: '视频',
+        params: { prompt: 'product video', aspect_ratio: '16:9', duration_sec: 5 },
+        pos: [448, 40],
+      },
+      { op: 'resize_node', id: 'video_text_to_video', size: [280, 280] },
+    ]);
+  });
+
+  it('stacks multiple generate cards and keeps the chosen video duration', () => {
+    const input = buildMediaGenerateProposalInput({
+      baseVersionId: 'ver_1',
+      existingNodeIds: ['copy'],
+      sourceNodeId: 'copy',
+      sourceTitle: '文案',
+      sourceX: 40,
+      sourceY: 80,
+      sourceWidth: 280,
+      prompt: 'product video',
+      aspectRatio: '16:9',
+      hasImage: false,
+      sourceNodeType: 'input.text',
+      mediaKind: 'video',
+      durationSec: 8,
+      count: 4,
+    });
+    expect(input.ops.filter((op) => op.op === 'spawn_node')).toEqual([
+      {
+        op: 'spawn_node',
+        id: 'video_text_to_video',
+        node_type: 'video.text_to_video',
+        title: '文案',
+        params: { prompt: 'product video', aspect_ratio: '16:9', duration_sec: 8 },
+        pos: [368, 80],
+        from: 'copy',
+      },
+      {
+        op: 'spawn_node',
+        id: 'video_text_to_video_2',
+        node_type: 'video.text_to_video',
+        title: '文案',
+        params: { prompt: 'product video', aspect_ratio: '16:9', duration_sec: 8 },
+        pos: [368, 104],
+        from: 'copy',
+      },
+      {
+        op: 'spawn_node',
+        id: 'video_text_to_video_3',
+        node_type: 'video.text_to_video',
+        title: '文案',
+        params: { prompt: 'product video', aspect_ratio: '16:9', duration_sec: 8 },
+        pos: [368, 128],
+        from: 'copy',
+      },
+      {
+        op: 'spawn_node',
+        id: 'video_text_to_video_4',
+        node_type: 'video.text_to_video',
+        title: '文案',
+        params: { prompt: 'product video', aspect_ratio: '16:9', duration_sec: 8 },
+        pos: [368, 152],
+        from: 'copy',
+      },
+    ]);
+  });
+
+  it('extracts a video frame as a disconnected image card', () => {
+    expect(videoFrameLabel('first')).toBe('首帧');
+    const input = buildVideoFrameProposalInput({
+      baseVersionId: 'ver_1',
+      existingNodeIds: ['clip'],
+      sourceNodeId: 'clip',
+      sourceTitle: '成片',
+      sourceX: 80,
+      sourceY: 40,
+      sourceWidth: 320,
+      storageUri: 'upload://frame',
+      size: { width: 360, height: 203 },
+      kind: 'last',
+    });
+    expect(input.ops).toEqual([
+      {
+        op: 'spawn_node',
+        id: 'image_frame_last',
+        node_type: 'input.image',
+        title: '成片 末帧',
+        params: { storage_uri: 'upload://frame' },
+        pos: [424, 40],
+      },
+      { op: 'resize_node', id: 'image_frame_last', size: [360, 203] },
+    ]);
+    expect(input.ops.some((op) => 'from' in op && op.from)).toBe(false);
   });
 
   it('adds 宫格切片 as input.image nodes without removing the source', () => {
@@ -438,7 +647,7 @@ describe('graph canvas editing helpers', () => {
   });
 
   it('places library and paste nodes at the last canvas pointer', async () => {
-    const onCreateProposal = vi.fn(async () => undefined);
+    const onCreateProposal = vi.fn<(input: ManualProposalInput) => Promise<void>>(async () => undefined);
     vi.stubGlobal('navigator', {
       clipboard: {
         readText: vi.fn(async () => buildSelectionClipboardText({
@@ -464,15 +673,17 @@ describe('graph canvas editing helpers', () => {
     actions.addNode(definition('input.image', 'Image Input', []));
     await actions.pasteSelection();
 
-    expect(onCreateProposal.mock.calls[0]?.[0].ops[0]).toMatchObject({
-      op: 'spawn_node',
-      node_type: 'input.image',
-      pos: [640, 220],
-    });
-    expect(onCreateProposal.mock.calls[1]?.[0].ops[0]).toMatchObject({
-      op: 'spawn_node',
-      pos: [640, 220],
-    });
+    expect(onCreateProposal.mock.calls.map((call) => call[0]?.ops[0])).toEqual([
+      expect.objectContaining({
+        op: 'spawn_node',
+        node_type: 'input.image',
+        pos: [640, 220],
+      }),
+      expect.objectContaining({
+        op: 'spawn_node',
+        pos: [640, 220],
+      }),
+    ]);
   });
 });
 

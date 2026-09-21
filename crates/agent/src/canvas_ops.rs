@@ -372,22 +372,25 @@ impl CanvasOpsContract {
         Self {
             schema_version: 1,
             allowed_ops: vec![
-                CanvasOpSpec::new("read_state", "Read ctx/canvas_state.json."),
                 CanvasOpSpec::new(
-                    "read_selection",
-                    "Read ctx/canvas_state.json selection.node_ids.",
+                    "catalog",
+                    "List node types available on the canvas right now.",
                 ),
                 CanvasOpSpec::new(
-                    "propose_layout",
-                    "Write out/intent.json with move_node ops; do not call layout save.",
+                    "inspect",
+                    "Read the current canvas. Filter by type, query, or ids; prefer a narrow read.",
                 ),
                 CanvasOpSpec::new(
-                    "propose_graph_ops",
-                    "Write out/intent.json with bounded graph ops.",
+                    "edit",
+                    "Write out/canvas_edit.json with add_node, update_node, move_node, remove_node, connect, and disconnect operations.",
                 ),
                 CanvasOpSpec::new(
-                    "run_selected_workflow",
-                    "Write run_request.json; backend estimates cost and decides auto-start or confirmation.",
+                    "run",
+                    "Write out/run_request.json naming the target node ids. Backend estimates cost.",
+                ),
+                CanvasOpSpec::new(
+                    "wait",
+                    "Follow a run only when the user asked to wait or the turn cannot continue without the result.",
                 ),
             ],
         }
@@ -576,25 +579,23 @@ mod tests {
     }
 
     #[test]
-    fn canvas_ops_contract_directs_graph_edits_to_intent_json() {
+    fn canvas_ops_contract_directs_graph_edits_to_canvas_edit_json() {
         let contract = CanvasOpsContract::v1();
-        for op in ["propose_layout", "propose_graph_ops"] {
-            let spec = contract
-                .allowed_ops
-                .iter()
-                .find(|item| item.op == op)
-                .unwrap_or_else(|| panic!("{op} is part of the canvas ops contract"));
-            assert!(
-                spec.behavior.contains("out/intent.json"),
-                "{op} should write intent.json: {}",
-                spec.behavior
-            );
-            assert!(
-                !spec.behavior.contains("proposal.json"),
-                "{op} must not mention proposal.json: {}",
-                spec.behavior
-            );
-        }
+        let spec = contract
+            .allowed_ops
+            .iter()
+            .find(|item| item.op == "edit")
+            .expect("edit is part of the canvas ops contract");
+        assert!(
+            spec.behavior.contains("out/canvas_edit.json"),
+            "edit should write canvas_edit.json: {}",
+            spec.behavior
+        );
+        assert!(
+            !spec.behavior.contains("proposal.json") && !spec.behavior.contains("intent.json"),
+            "edit must not mention proposal.json or intent.json: {}",
+            spec.behavior
+        );
     }
 
     #[test]

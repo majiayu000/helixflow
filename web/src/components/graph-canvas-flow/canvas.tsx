@@ -95,11 +95,14 @@ export function GraphCanvas(props: GraphCanvasProps) {
   const layoutUndoRef = useRef<CanvasSnapshotUpdate[]>([]);
   const layoutRedoRef = useRef<CanvasSnapshotUpdate[]>([]);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const [cardOverlayHost, setCardOverlayHost] = useState<HTMLDivElement | null>(null);
   const [referencePickerNodeId, setReferencePickerNodeId] = useState<string | null>(null);
   const [minimapOpen, setMinimapOpen] = useState(false);
   const [browseTab, setBrowseTab] = useState<BrowseTab | null>(null);
   const [hideEdges, setHideEdges] = useState(false);
   const [snapToGrid, setSnapToGrid] = useState(false);
+  const [commentMode, setCommentMode] = useState(false);
+  const [commentDraftAt, setCommentDraftAt] = useState<{ x: number; y: number } | null>(null);
   const pointerWorldRef = useRef<{ x: number; y: number } | null>(null);
   const [groups, setGroups] = useState<CanvasGroup[]>(() => loadCanvasGroups(props.workspaceId));
   const resetRejectedMutation = useCallback(() => resetFlowNodesRef.current(), []);
@@ -208,12 +211,11 @@ export function GraphCanvas(props: GraphCanvasProps) {
     ),
     [drawGraph.nodes, renderEdges, viewport.sliceView, viewport.viewportSize],
   );
+  const relatedFocusId = hoveredNodeId
+    ?? (elements.selectedIds.size === 1 ? [...elements.selectedIds][0] : null);
   const related = useMemo(
-    () => relatedHighlight(
-      hoveredNodeId ?? (elements.selectedIds.size === 1 ? [...elements.selectedIds][0] : null),
-      drawGraph.edges,
-    ),
-    [drawGraph.edges, elements.selectedIds, hoveredNodeId],
+    () => relatedHighlight(relatedFocusId, drawGraph.edges),
+    [drawGraph.edges, relatedFocusId],
   );
   const flowNodes = useMemo(
     () => {
@@ -225,14 +227,13 @@ export function GraphCanvas(props: GraphCanvasProps) {
       return visible.map((node) => {
         const classes = [
           node.className,
-          related.nodeIds.has(node.id) ? 'is-related' : '',
           referencePickerNodeId === node.id ? 'is-ref-target' : '',
           referencePickerNodeId && referencePickerNodeId !== node.id ? 'is-ref-available' : '',
         ].filter(Boolean);
         return classes.length > 0 ? { ...node, className: classes.join(' ') } : node;
       });
     },
-    [elements.nodes, referencePickerNodeId, related.nodeIds, renderNodeIds, useOverview],
+    [elements.nodes, referencePickerNodeId, renderNodeIds, useOverview],
   );
   const flowEdges = useMemo(
     () => {
@@ -268,7 +269,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
   );
   const frames = useMemo(() => groupFrames(groups, liveGraphNodes), [groups, liveGraphNodes]);
   const chromeHidden = viewport.moving;
-  const overlayView = viewport.liveView;
+  const overlayView = viewport.view;
   const selectedNodes = useMemo(
     () => selectedCanvasNodes(drawGraph.nodes, elements.selectedIds, elements.nodes),
     [drawGraph.nodes, elements.nodes, elements.selectedIds],
@@ -451,6 +452,16 @@ export function GraphCanvas(props: GraphCanvasProps) {
     return () => window.removeEventListener('keydown', onKey);
   }, [referencePickerNodeId]);
   useEffect(() => {
+    if (!commentMode && !commentDraftAt) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setCommentDraftAt(null);
+      setCommentMode(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [commentDraftAt, commentMode]);
+  useEffect(() => {
     if (editingTextNodeId && !elements.selectedIds.has(editingTextNodeId)) {
       setEditingTextNodeId(null);
     }
@@ -496,7 +507,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
       ref={viewport.canvasRef}
       className={typeof window === 'undefined'
         ? 'p-canvas cv-bold'
-        : `p-canvas cv-bold flow-canvas${pointerTools.activeTool === 'pan' ? ' flow-canvas--pan' : ''}${hideEdges ? ' flow-canvas--hide-edges' : ''}`}
+        : `p-canvas cv-bold flow-canvas${pointerTools.activeTool === 'pan' ? ' flow-canvas--pan' : ''}${hideEdges ? ' flow-canvas--hide-edges' : ''}${commentMode ? ' flow-canvas--comment' : ''}`}
       aria-label="Workflow graph canvas"
       tabIndex={0}
       onKeyDown={shortcuts}
@@ -512,7 +523,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
         if (next) pointerWorldRef.current = next;
       }}
       onDoubleClick={(event) => {
-        if (!capabilities.paste) return;
+        if (commentMode || !capabilities.paste) return;
         const target = event.target;
         if (!(target instanceof Element)) return;
         if (!target.closest('.react-flow__pane')) return;
@@ -590,6 +601,14 @@ export function GraphCanvas(props: GraphCanvasProps) {
             setReferencePickerNodeId(null);
             return;
           }
+          if (commentMode) {
+            const flow = viewport.instance?.screenToFlowPosition({
+              x: event.clientX,
+              y: event.clientY,
+            });
+            if (flow) setCommentDraftAt(flow);
+            return;
+          }
           if (event.detail === 2 && capabilities.paste) {
             openAddMenu(event.clientX, event.clientY);
             return;
@@ -604,7 +623,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
         }}
         onPaneContextMenu={(event) => {
           event.preventDefault();
-          if (!capabilities.paste) return;
+          if (commentMode || !capabilities.paste) return;
           openAddMenu(event.clientX, event.clientY);
         }}
         onNodeContextMenu={(event) => event.preventDefault()}
@@ -676,10 +695,11 @@ export function GraphCanvas(props: GraphCanvasProps) {
             </div>
           ))}
           {props.presenceByActor ? (
-            <CanvasCollaborationWorld comments={props.comments ?? []} hiddenActorId={LOCAL_CANVAS_ACTOR.actorId} nodes={drawGraph.nodes} presenceByActor={props.presenceByActor} />
+            <CanvasCollaborationWorld comments={props.comments ?? []} hiddenActorId={LOCAL_CANVAS_ACTOR.actorId} nodes={liveGraphNodes} presenceByActor={props.presenceByActor} />
           ) : (
-            <ConnectedCanvasCollaborationWorld comments={props.comments ?? []} nodes={drawGraph.nodes} />
+            <ConnectedCanvasCollaborationWorld comments={props.comments ?? []} nodes={liveGraphNodes} />
           )}
+          <div className="canvas-card-overlay-root" ref={setCardOverlayHost} />
         </ViewportPortal>
         <CanvasViewControls
           activeTool={pointerTools.activeTool}
@@ -709,7 +729,7 @@ export function GraphCanvas(props: GraphCanvasProps) {
           }}
         />
       ) : null}
-      <CanvasOverlays {...props} addMenu={addMenu} browseTab={browseTab} canEdit={capabilities.move} catalog={catalogState.catalog} catalogError={catalogState.catalogError} chromeHidden={chromeHidden} definitionByType={catalogState.definitionByType} drawGraph={drawGraph} editActions={editActions} editingTextNodeId={editingTextNodeId} editStatus={editStatus} modelCatalog={catalogState.modelCatalog} modelCatalogError={catalogState.modelCatalogError} onAlign={alignSelection} onBrowseTab={setBrowseTab} onConnectReference={(sourceId, targetId) => flowActions.connectNodes(sourceId, targetId)} onGroup={groupSelection} onUngroup={ungroupSelection} onJumpNode={(nodeId) => { const node = drawGraph.nodes.find((item) => item.id === nodeId); if (!node) return; elements.setSelection([nodeId]); void setFlowViewportToNodes(viewport.instance, [node], viewport.viewportSize); }} onPasteMedia={pasteMedia} onRedo={redoCanvas} onStartReferencePicker={(nodeId) => setReferencePickerNodeId((current) => current === nodeId ? null : nodeId)} onUndo={undoCanvas} pendingProposal={Boolean(props.pendingProposal)} pointerWorld={pointerWorld} readiness={implementation.readiness} referencePickerNodeId={referencePickerNodeId} resolution={implementation.resolution} selectedIds={elements.selectedIds} selectedNodes={selectedNodes} setAddMenu={setAddMenu} setEditStatus={setEditStatus} setSelection={elements.setSelection} view={overlayView} viewportSize={viewport.viewportSize} />
+      <CanvasOverlays {...props} addMenu={addMenu} browseTab={browseTab} canEdit={capabilities.move} cardOverlayHost={cardOverlayHost} catalog={catalogState.catalog} catalogError={catalogState.catalogError} chromeHidden={chromeHidden} commentDraftAt={commentDraftAt} commentMode={commentMode} definitionByType={catalogState.definitionByType} drawGraph={drawGraph} editActions={editActions} editingTextNodeId={editingTextNodeId} editStatus={editStatus} modelCatalog={catalogState.modelCatalog} modelCatalogError={catalogState.modelCatalogError} onAlign={alignSelection} onBrowseTab={setBrowseTab} onCommentDraftAt={setCommentDraftAt} onCommentModeChange={setCommentMode} onConnectReference={(sourceId, targetId) => flowActions.connectNodes(sourceId, targetId)} onGroup={groupSelection} onUngroup={ungroupSelection} onJumpNode={(nodeId) => { const node = drawGraph.nodes.find((item) => item.id === nodeId); if (!node) return; elements.setSelection([nodeId]); void setFlowViewportToNodes(viewport.instance, [node], viewport.viewportSize); }} onPasteMedia={pasteMedia} onRedo={redoCanvas} onStartReferencePicker={(nodeId) => setReferencePickerNodeId((current) => current === nodeId ? null : nodeId)} onUndo={undoCanvas} pendingProposal={Boolean(props.pendingProposal)} pointerWorld={pointerWorld} readiness={implementation.readiness} referencePickerNodeId={referencePickerNodeId} resolution={implementation.resolution} selectedIds={elements.selectedIds} selectedNodes={selectedNodes} setAddMenu={setAddMenu} setEditStatus={setEditStatus} setSelection={elements.setSelection} view={overlayView} viewportSize={viewport.viewportSize} />
     </section>
   );
 }

@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use axum::extract::{Path, State};
-use helixflow_agent::{AgentError, AgentSessionRequest, ValidatedAgentIntent, ValidatedAgentReply};
+use helixflow_agent::{AgentError, AgentSessionRequest, ValidatedAgentReply, ValidatedCanvasEdit};
 use helixflow_graph::{GraphNode, WorkflowGraph};
 use helixflow_run::EventBus;
 use helixflow_store::{NewVersion, Store, VersionSource};
@@ -364,14 +364,14 @@ impl WorkbenchAgent for RecordingAgent {
         })
     }
 
-    async fn propose_intent(
+    async fn propose_canvas_edit(
         &self,
         request: AgentSessionRequest,
-    ) -> Result<ValidatedAgentIntent, AgentError> {
+    ) -> Result<ValidatedCanvasEdit, AgentError> {
         self.invocations.fetch_add(1, Ordering::SeqCst);
         self.graphs.lock().await.push(request.graph);
         Err(AgentError::Runtime(
-            "intent result is not expected in graph ingress tests".to_owned(),
+            "canvas edit result is not expected in graph ingress tests".to_owned(),
         ))
     }
 }

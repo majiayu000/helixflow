@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import {
   artifactsForNode,
   clampPixelCrop,
@@ -28,9 +29,11 @@ import type {
   NodeDefinition,
   WorkbenchState,
 } from '../../types';
+import { fanInConnectFrom, mediaGenerateTarget } from '../graph-canvas-editing';
 import { CanvasAddMenuPanel, type CanvasAddMenu } from './canvas-add-menu';
+import { flowAboveCenterStyle } from './overlay-anchor';
 import { MediaCardToolbar } from './media-card-toolbar';
-import { CanvasCommentsPanel } from '../graph-canvas-collaboration';
+import { CanvasCommentsPanel, CommentComposePin } from '../graph-canvas-collaboration';
 import type { createCanvasEditActions } from '../graph-canvas-edit-actions';
 import { GraphInspector, GraphSelectionInspector } from '../graph-canvas-inspector';
 import {
@@ -92,6 +95,11 @@ type CanvasOverlaysProps = Pick<
   view: ViewState;
   viewportSize: ViewportSize;
   workflowGraph?: WorkbenchState['workflowGraph'];
+  cardOverlayHost?: HTMLElement | null;
+  commentMode?: boolean;
+  commentDraftAt?: { x: number; y: number } | null;
+  onCommentModeChange?: (open: boolean) => void;
+  onCommentDraftAt?: (point: { x: number; y: number } | null) => void;
 };
 
 export function CanvasOverlays(props: CanvasOverlaysProps) {
@@ -102,11 +110,12 @@ export function CanvasOverlays(props: CanvasOverlaysProps) {
   const splitImageGrid = useWorkbenchStore((state) => state.splitImageGrid);
   const ingestMediaFiles = useWorkbenchStore((state) => state.ingestMediaFiles);
   const cropImageNode = useWorkbenchStore((state) => state.cropImageNode);
+  const extractVideoFrame = useWorkbenchStore((state) => state.extractVideoFrame);
   const replaceNodeMedia = useWorkbenchStore((state) => state.replaceNodeMedia);
   const [cropOpen, setCropOpen] = useState(false);
   const [splitOpen, setSplitOpen] = useState(false);
   const [scaleOpen, setScaleOpen] = useState(false);
-  const [imageMode, setImageMode] = useState<'outpaint' | 'erase' | 'relight' | 'multi-angle' | null>(null);
+  const [imageMode, setImageMode] = useState<'outpaint' | 'erase' | 'redraw' | 'relight' | 'multi-angle' | null>(null);
   const [localBrowseTab, setLocalBrowseTab] = useState<BrowseTab | null>(null);
   const [commentsOpen, setCommentsOpen] = useState(false);
   const browseTab = props.browseTab === undefined ? localBrowseTab : props.browseTab;
@@ -133,9 +142,11 @@ export function CanvasOverlays(props: CanvasOverlaysProps) {
     selectedNode &&
       props.canEdit &&
       !imageMode &&
-      ['input.image', 'input.video', 'input.audio', 'input.text', 'image.generate', 'image.edit'].includes(
-        selectedNode.nodeType,
-      ),
+      (isVisualMediaCardType(selectedNode.nodeType) || selectedNode.nodeType === 'input.text') &&
+      mediaGenerateTarget({
+        nodeType: selectedNode.nodeType,
+        hasImage: hasImageSource,
+      }),
   );
   const runImageTool = async (nodeId: string, request: ImageCanvasToolRequest) => {
     const label = imageCanvasToolLabel(request.kind);
@@ -156,13 +167,31 @@ export function CanvasOverlays(props: CanvasOverlaysProps) {
         modelCatalog={props.modelCatalog}
         modelCatalogError={props.modelCatalogError}
         providers={props.providers}
-        onAddNode={props.editActions.addNode}
+        onAddNode={(definition) => {
+          props.editActions.addNode(
+            definition,
+            undefined,
+            fanInConnectFrom(props.selectedIds, props.drawGraph.nodes, props.definitionByType),
+          );
+        }}
         onOpenBrowse={props.canEdit ? setBrowseTab : undefined}
-        onOpenComments={props.canEdit ? () => setCommentsOpen(true) : undefined}
+        onOpenComments={
+          props.canEdit
+            ? () => {
+                const next = !props.commentMode;
+                props.onCommentModeChange?.(next);
+                if (!next) props.onCommentDraftAt?.(null);
+              }
+            : undefined
+        }
+        commentMode={props.commentMode}
         onRedo={props.onRedo}
         onUndo={props.onUndo}
         onUploadFiles={props.canEdit ? (files) => void ingestMediaFiles(files, props.pointerWorld?.()) : undefined}
       />
+      {props.commentMode ? (
+        <div className="canvas-ref-banner">点空白处添加评论 · Esc 退出</div>
+      ) : null}
       {props.referencePickerNodeId ? (
         <div className="canvas-ref-banner">点一张图当参考 · Esc 取消</div>
       ) : null}
@@ -224,7 +253,9 @@ export function CanvasOverlays(props: CanvasOverlaysProps) {
           workflowNode={props.workflowGraph?.nodes[selectedNode.id]}
         />
       )}
-      {!props.chromeHidden && props.canEdit && selectedNode && isVisualMediaCardType(selectedNode.nodeType) && (
+      {maybePortal(props.cardOverlayHost, (
+        <>
+      {props.canEdit && selectedNode && isVisualMediaCardType(selectedNode.nodeType) && (
         <>
           {!hasMediaSource ? (
             <EmptyCardUpload
@@ -245,7 +276,7 @@ export function CanvasOverlays(props: CanvasOverlaysProps) {
             onOutpaint={() => setImageMode('outpaint')}
             onRelight={() => setImageMode('relight')}
             onMultiAngle={() => setImageMode('multi-angle')}
-            onRedraw={() => setImageMode('erase')}
+            onRedraw={() => setImageMode('redraw')}
             onEnhance={() => void runImageTool(selectedNode.id, defaultImageCanvasToolRequest('enhance'))}
             onScaleOpen={() => setScaleOpen((open) => !open)}
             onUpscale={(scale) => {
@@ -296,6 +327,18 @@ export function CanvasOverlays(props: CanvasOverlaysProps) {
               node={selectedNode}
               view={props.view}
               onDelete={() => props.editActions.deleteSelection([selectedNode.id])}
+              onExtractFrame={
+                selectedNode.nodeType === 'input.video' || selectedNode.nodeType.startsWith('video.')
+                  ? (kind) => {
+                      props.setEditStatus('抽帧中…');
+                      void extractVideoFrame(selectedNode.id, kind)
+                        .then(() => props.setEditStatus('已抽出图片卡'))
+                        .catch((error) => {
+                          props.setEditStatus(error instanceof Error ? error.message : '抽帧失败');
+                        });
+                    }
+                  : undefined
+              }
               onDownload={() => {
                 if (!props.workspaceId) return;
                 void downloadCardMedia({
@@ -328,13 +371,17 @@ export function CanvasOverlays(props: CanvasOverlaysProps) {
       )}
       {showComposer && selectedNode && (
             <MediaCardComposer
+              hasSource={hasImageSource || hasMediaSource}
               mentionItems={mentionItemsFromNodes(props.drawGraph.nodes, selectedNode.id)}
               modelCatalog={props.modelCatalog}
               node={selectedNode}
               pickingReference={props.referencePickerNodeId === selectedNode.id}
               providers={props.providers}
               view={props.view}
-              workflowPrompt={stringParam(props.workflowGraph?.nodes[selectedNode.id]?.params, 'prompt')}
+              workflowPrompt={stringParam(
+                props.workflowGraph?.nodes[selectedNode.id]?.params,
+                selectedNode.nodeType === 'input.text' ? 'text' : 'prompt',
+              )}
               onMention={(item) => props.onConnectReference?.(item.id, selectedNode.id)}
               onPickReference={() => props.onStartReferencePicker?.(selectedNode.id)}
             />
@@ -368,8 +415,9 @@ export function CanvasOverlays(props: CanvasOverlaysProps) {
           }}
         />
       )}
-      {imageMode === 'erase' && selectedNode && props.workspaceId && (
+      {(imageMode === 'erase' || imageMode === 'redraw') && selectedNode && props.workspaceId && (
         <EraseStage
+          intent={imageMode}
           node={selectedNode}
           outputs={props.outputs}
           params={props.workflowGraph?.nodes[selectedNode.id]?.params}
@@ -407,6 +455,25 @@ export function CanvasOverlays(props: CanvasOverlaysProps) {
           }}
         />
       )}
+      {props.commentDraftAt && props.canEdit && props.onCommentOp && (
+        <CommentComposePin
+          x={props.commentDraftAt.x}
+          y={props.commentDraftAt.y}
+          onCancel={() => props.onCommentDraftAt?.(null)}
+          onSubmit={async (body) => {
+            await props.onCommentOp?.({
+              op: {
+                op: 'comment_add',
+                target: { kind: 'position', x: props.commentDraftAt!.x, y: props.commentDraftAt!.y },
+                body,
+              },
+            });
+            props.onCommentDraftAt?.(null);
+          }}
+        />
+      )}
+        </>
+      ))}
       {browseTab && (
         <CanvasBrowsePanel
           nodes={props.drawGraph.nodes}
@@ -446,7 +513,7 @@ export function CanvasOverlays(props: CanvasOverlaysProps) {
           }}
         />
       )}
-      {props.canEdit && props.addMenu && (
+      {props.canEdit && props.addMenu && !props.chromeHidden && (
         <CanvasAddMenuPanel
           definitions={props.definitionByType}
           menu={props.addMenu}
@@ -475,8 +542,20 @@ export function CanvasOverlays(props: CanvasOverlaysProps) {
                     nodeId: source.id,
                     definition: sourceDefinition,
                     direction: inbound ? 'in' : 'out',
+                    extra: inbound || !props.selectedIds.has(source.id)
+                      ? []
+                      : fanInConnectFrom(
+                          props.selectedIds,
+                          props.drawGraph.nodes,
+                          props.definitionByType,
+                          source.id,
+                        )?.extra ?? [],
                   }
-                : undefined,
+                : fanInConnectFrom(
+                    props.selectedIds,
+                    props.drawGraph.nodes,
+                    props.definitionByType,
+                  ),
             );
             props.setAddMenu(null);
           }}
@@ -514,7 +593,7 @@ function ImageCardToolbar({
   node,
   scaleOpen,
   splitOpen,
-  view,
+  view: _view,
   onCrop,
   onDelete,
   onDownload,
@@ -558,18 +637,16 @@ function ImageCardToolbar({
 }) {
   const replaceRef = useRef<HTMLInputElement | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
-  const left = node.position.x * view.z + view.x + (graphNodeWidth(node) * view.z) / 2;
-  const top = node.position.y * view.z + view.y - 10;
   return (
     <div
-      className="canvas-image-toolbar"
-      style={{ left, top } as CSSProperties}
+      className="canvas-image-toolbar nodrag nopan"
+      style={flowAboveCenterStyle(node, 10)}
       onPointerDown={(event) => event.stopPropagation()}
     >
       <button disabled={!hasImage} onClick={onCrop} type="button">裁剪</button>
-      <button disabled={!hasImage} onClick={onMultiAngle} type="button">多角度</button>
+      <button disabled={!hasImage} onClick={onMultiAngle} type="button">换角度</button>
       <button disabled={!hasImage} onClick={onRedraw} type="button">重绘</button>
-      <button disabled={!hasImage} onClick={onRelight} type="button">打光</button>
+      <button disabled={!hasImage} onClick={onRelight} type="button">调光</button>
       <div className="canvas-image-toolbar-split">
         <button disabled={!hasImage} onClick={() => setMoreOpen((open) => !open)} type="button">···</button>
         {moreOpen && (
@@ -778,4 +855,8 @@ function stringParam(params: unknown, key: string): string {
   if (!params || typeof params !== 'object' || Array.isArray(params)) return '';
   const value = (params as Record<string, unknown>)[key];
   return typeof value === 'string' ? value : '';
+}
+
+function maybePortal(host: HTMLElement | null | undefined, node: ReactNode) {
+  return host ? createPortal(node, host) : node;
 }

@@ -123,21 +123,20 @@ fn creates_ctx_out_contract_without_provider_secret_values() {
     assert!(session.out_dir.exists());
 
     let ctx = fs::read_to_string(session.ctx_dir.join("instructions.md")).expect("ctx");
-    assert!(ctx.contains("Write exactly one result file: `out/intent.json`"));
+    assert!(ctx.contains("Write exactly one result file: `out/canvas_edit.json`"));
     assert!(session.ctx_dir.join("canvas_state.json").exists());
     assert!(session.ctx_dir.join("canvas_ops.json").exists());
-    assert!(ctx.contains("Top-level keys must be exactly"));
     assert!(ctx.contains("Bounded canvas ops"));
     let canvas_ops =
         fs::read_to_string(session.ctx_dir.join("canvas_ops.json")).expect("canvas ops");
-    assert!(canvas_ops.contains("propose_layout"));
+    assert!(canvas_ops.contains("catalog"));
     assert!(ctx.contains("ctx/workflow_backends/catalog.json"));
     assert!(ctx.contains("ctx/models/catalog.json"));
     assert!(ctx.contains("ctx/runtime_providers/catalog.json"));
     assert!(ctx.contains("ctx/api_connectors/catalog.json"));
-    assert!(ctx.contains("\"intentVersion\""));
-    assert!(ctx.contains("\"capabilityId\""));
-    assert!(ctx.contains("Do not write node ids, edges, coordinates, binding ids"));
+    assert!(ctx.contains("canvas.edit"));
+    assert!(ctx.contains("add_node"));
+    assert!(ctx.contains("Write node ids, handles, and params"));
     assert_no_raw_auth_material(&ctx);
 
     let workflow_catalog =
@@ -265,8 +264,8 @@ fn chat_contract_exposes_read_only_canvas_context_and_records_prompt_metadata() 
     let ctx = fs::read_to_string(session.ctx_dir.join("instructions.md")).expect("ctx");
     assert!(ctx.contains("Mode: Chat"));
     assert!(ctx.contains("out/reply.json"));
-    assert!(ctx.contains("canvas.get_state"));
-    assert!(ctx.contains("must not create proposals or request a run"));
+    assert!(ctx.contains("canvas.inspect"));
+    assert!(ctx.contains("must not create edits or request a run"));
     assert!(ctx.contains("create, modify, run, or debug a workflow"));
     assert!(ctx.contains("five built-in workflow skills"));
     assert!(ctx.contains("Create Workflow"));
@@ -365,10 +364,10 @@ fn rejects_symlinked_intent_output() {
     let session = create_session_contract(&request(&dir)).expect("session");
     let outside = dir.path().join("outside.json");
     fs::write(&outside, "{}").expect("outside");
-    std::os::unix::fs::symlink(&outside, session.out_dir.join("intent.json"))
-        .expect("symlink intent");
+    std::os::unix::fs::symlink(&outside, session.out_dir.join("canvas_edit.json"))
+        .expect("symlink canvas edit");
 
-    let err = read_validated_intent(&session).expect_err("symlink output should fail");
+    let err = read_validated_canvas_edit(&session).expect_err("symlink output should fail");
 
     assert!(err.to_string().contains("invalid agent output file"));
 }
@@ -400,7 +399,7 @@ fn rejects_blank_reply_and_run_request_summary() {
         read_validated_reply(&reply_session)
             .expect_err("blank reply")
             .to_string()
-            .contains("1 to 65536 characters")
+            .contains("must not be empty")
     );
 
     let mut run_request = request(&dir);
@@ -408,7 +407,7 @@ fn rejects_blank_reply_and_run_request_summary() {
     run_request.skill = AgentSkill::RunRequest;
     let run_session = create_session_contract(&run_request).expect("run session");
     let run_ctx = fs::read_to_string(run_session.ctx_dir.join("instructions.md")).expect("ctx");
-    assert!(run_ctx.contains("canvas.request_run"));
+    assert!(run_ctx.contains("canvas.run"));
     assert!(run_ctx.contains("Do not confirm runs"));
     fs::write(
         run_session.out_dir.join("run_request.json"),
@@ -425,31 +424,37 @@ async fn service_streams_agent_status_and_reads_runtime_intent() {
     let service = AgentService::new(FakeRuntime::intent(), events.clone());
     let mut receiver = events.subscribe();
 
-    let intent = service.propose_intent(request(&dir)).await.expect("intent");
+    let edit = service
+        .propose_canvas_edit(request(&dir))
+        .await
+        .expect("canvas edit");
 
-    assert_eq!(intent.intent.stages[0].capability_id, "text_to_video");
+    match &edit.edit.operations[0] {
+        CanvasEditOp::AddNode { node_type, .. } => {
+            assert_eq!(node_type, "video.text_to_video");
+        }
+        other => panic!("expected add_node, got {other:?}"),
+    }
     assert_eq!(
-        intent
-            .runtime_identity
+        edit.runtime_identity
             .as_ref()
             .map(|identity| (identity.thread_id.as_str(), identity.turn_id.as_str(),)),
         Some(("thr_fake", "turn_fake")),
     );
     assert!(
-        intent
-            .agent_logs
+        edit.agent_logs
             .iter()
             .any(|log| log.kind == "agent_log:status" && log.text == "drafting intent")
     );
-    assert!(intent.agent_logs.iter().any(|log| {
+    assert!(edit.agent_logs.iter().any(|log| {
         log.text.contains("Prompt telemetry: mode=modify_workflow")
-            && log.text.contains("output_contract=intent_json")
+            && log.text.contains("output_contract=canvas_edit_json")
             && log.text.contains("mode_override")
     }));
     assert!(
-        intent.agent_logs.iter().any(|log| {
-            log.kind == "agent_log:canvas_ops" && log.text.contains("read_selection")
-        })
+        edit.agent_logs
+            .iter()
+            .any(|log| { log.kind == "agent_log:canvas_ops" && log.text.contains("catalog") })
     );
 
     let mut event_names = Vec::new();
@@ -693,23 +698,24 @@ IFS= read -r thread_request
 case "$thread_request" in *'"method":"thread/start"'*|*'"method":"thread/resume"'*) ;; *) printf '%s\n' '{"id":2,"error":{"message":"missing thread request"}}'; exit 31 ;; esac
 case "$thread_request" in *'"dynamicTools"'*) ;; *) printf '%s\n' '{"id":2,"error":{"message":"missing dynamic tools field"}}'; exit 31 ;; esac
 case "$thread_request" in *'"name":"canvas"'*) ;; *) printf '%s\n' '{"id":2,"error":{"message":"missing canvas namespace"}}'; exit 31 ;; esac
-case "$thread_request" in *'"name":"get_state"'*) ;; *) printf '%s\n' '{"id":2,"error":{"message":"missing get state tool"}}'; exit 31 ;; esac
-case "$thread_request" in *'"name":"submit_intent"'*) ;; *) printf '%s\n' '{"id":2,"error":{"message":"missing submit intent tool"}}'; exit 31 ;; esac
+case "$thread_request" in *'"name":"catalog"'*) ;; *) printf '%s\n' '{"id":2,"error":{"message":"missing catalog tool"}}'; exit 31 ;; esac
+case "$thread_request" in *'"name":"inspect"'*) ;; *) printf '%s\n' '{"id":2,"error":{"message":"missing inspect tool"}}'; exit 31 ;; esac
+case "$thread_request" in *'"name":"edit"'*) ;; *) printf '%s\n' '{"id":2,"error":{"message":"missing edit tool"}}'; exit 31 ;; esac
 printf '%s\n' '{"id":2,"result":{"thread":{"id":"thr_canvas","sessionId":"thr_canvas"}}}'
 IFS= read -r turn_request
 printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn_canvas","status":"inProgress","items":[],"error":null}}}'
-printf '%s\n' '{"method":"item/started","params":{"threadId":"thr_canvas","turnId":"turn_canvas","startedAtMs":1,"item":{"type":"dynamicToolCall","tool":"canvas.get_state","status":"inProgress"}}}'
-printf '%s\n' '{"id":40,"method":"item/tool/call","params":{"threadId":"thr_canvas","turnId":"turn_canvas","callId":"call_1","namespace":"canvas","tool":"get_state","arguments":{}}}'
+printf '%s\n' '{"method":"item/started","params":{"threadId":"thr_canvas","turnId":"turn_canvas","startedAtMs":1,"item":{"type":"dynamicToolCall","tool":"canvas.inspect","status":"inProgress"}}}'
+printf '%s\n' '{"id":40,"method":"item/tool/call","params":{"threadId":"thr_canvas","turnId":"turn_canvas","callId":"call_1","namespace":"canvas","tool":"inspect","arguments":{}}}'
 IFS= read -r tool_response
 case "$tool_response" in *'"id":40'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"missing tool response id"}}}'; exit 32 ;; esac
 case "$tool_response" in *'workspace_id'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"missing workspace state"}}}'; exit 32 ;; esac
 case "$tool_response" in *'node_count'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"missing graph state"}}}'; exit 32 ;; esac
 case "$tool_response" in *'"success":true'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"tool response not successful"}}}'; exit 32 ;; esac
-printf '%s\n' '{"id":41,"method":"item/tool/call","params":{"threadId":"thr_canvas","turnId":"turn_canvas","callId":"call_2","namespace":"canvas","tool":"submit_intent","arguments":{"intentVersion":"1","topology":"linear","stages":[{"stageId":"s1","capabilityId":"text_to_video","inputFrom":[],"params":{"prompt":"clean product shot","duration_sec":3}}],"outputStageIds":["s1"]}}}'
+printf '%s\n' '{"id":41,"method":"item/tool/call","params":{"threadId":"thr_canvas","turnId":"turn_canvas","callId":"call_2","namespace":"canvas","tool":"edit","arguments":{"operations":[{"op":"add_node","id":"s1","node_type":"video.text_to_video","params":{"prompt":"clean product shot","duration_sec":3}}]}}}'
 IFS= read -r intent_response
 case "$intent_response" in *'"id":41'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"missing intent response id"}}}'; exit 33 ;; esac
 case "$intent_response" in *'"success":true'*) ;; *) printf '%s\n' '{"method":"error","params":{"error":{"message":"intent was not captured"}}}'; exit 33 ;; esac
-printf '%s\n' '{"method":"item/completed","params":{"threadId":"thr_canvas","turnId":"turn_canvas","item":{"type":"dynamicToolCall","tool":"canvas.get_state","status":"completed","success":true}}}'
+printf '%s\n' '{"method":"item/completed","params":{"threadId":"thr_canvas","turnId":"turn_canvas","item":{"type":"dynamicToolCall","tool":"canvas.inspect","status":"completed","success":true}}}'
 printf '%s\n' '{"method":"turn/completed","params":{"turn":{"id":"turn_canvas","status":"completed","items":[],"error":null}}}'
 "#,
     )
@@ -718,22 +724,26 @@ printf '%s\n' '{"method":"turn/completed","params":{"turn":{"id":"turn_canvas","
     permissions.set_mode(0o755);
     fs::set_permissions(&program, permissions).expect("executable");
 
-    let intent = AgentService::new(
+    let edit = AgentService::new(
         crate::CodexAppServerRuntime::new(program),
         EventBus::new(16),
     )
-    .propose_intent(request(&dir))
+    .propose_canvas_edit(request(&dir))
     .await
-    .expect("canvas tool intent");
+    .expect("canvas tool edit");
 
-    assert_eq!(intent.intent.stages[0].capability_id, "text_to_video");
+    match &edit.edit.operations[0] {
+        CanvasEditOp::AddNode { node_type, .. } => {
+            assert_eq!(node_type, "video.text_to_video");
+        }
+        other => panic!("expected add_node, got {other:?}"),
+    }
     assert!(
-        intent
-            .agent_logs
+        edit.agent_logs
             .iter()
-            .any(|log| log.text == "Calling tool: canvas.get_state")
+            .any(|log| log.text == "Calling tool: canvas.inspect")
     );
-    let identity = intent.runtime_identity.expect("runtime identity");
+    let identity = edit.runtime_identity.expect("runtime identity");
     assert_eq!(identity.thread_id, "thr_canvas");
     assert_eq!(identity.turn_id, "turn_canvas");
 }
@@ -810,7 +820,7 @@ impl AgentRuntime for FakeRuntime {
             .set_identity("thr_fake".to_owned(), "turn_fake".to_owned())
             .await;
         match self.output {
-            FakeOutput::Intent => write_valid_intent_to_path(&handle.out_dir),
+            FakeOutput::Intent => write_valid_canvas_edit_to_path(&handle.out_dir),
             FakeOutput::Reply => write_reply_to_path(&handle.out_dir),
             FakeOutput::Route(mode) => write_route_to_path(&handle.out_dir, mode),
         }
@@ -861,19 +871,16 @@ impl AgentRuntime for HangingRuntime {
     }
 }
 
-fn write_valid_intent_to_path(out_dir: &Path) -> RuntimeResult<()> {
+fn write_valid_canvas_edit_to_path(out_dir: &Path) -> RuntimeResult<()> {
     fs::write(
-        out_dir.join("intent.json"),
+        out_dir.join("canvas_edit.json"),
         serde_json::to_vec(&json!({
-            "intentVersion": "1",
-            "topology": "linear",
-            "stages": [{
-                "stageId": "s1",
-                "capabilityId": "text_to_video",
-                "inputFrom": [],
+            "operations": [{
+                "op": "add_node",
+                "id": "s1",
+                "node_type": "video.text_to_video",
                 "params": { "prompt": "clean product shot", "duration_sec": 3 }
-            }],
-            "outputStageIds": ["s1"]
+            }]
         }))
         .map_err(|err| RuntimeError::Failed(err.to_string()))?,
     )
@@ -962,101 +969,75 @@ fn rejects_untrusted_conversation_roles() {
 }
 
 #[test]
-fn gh130_intent_contract_accepts_valid_intent() {
+fn canvas_edit_contract_accepts_valid_edit() {
     let dir = tempfile::tempdir().expect("temp dir");
     let session = create_session_contract(&request(&dir)).expect("session");
     fs::write(
-        session.out_dir.join("intent.json"),
+        session.out_dir.join("canvas_edit.json"),
         serde_json::to_vec(&json!({
-            "intentVersion": "1",
-            "topology": "linear",
-            "stages": [
-                {
-                    "stageId": "s1",
-                    "capabilityId": "text_to_image",
-                    "requestedModel": "Nano Banana",
-                    "inputFrom": [],
-                    "params": { "prompt": "a product image" }
-                }
-            ],
-            "outputStageIds": ["s1"]
+            "operations": [{
+                "op": "add_node",
+                "id": "s1",
+                "node_type": "image.generate",
+                "model": "Nano Banana",
+                "params": { "prompt": "a product image" }
+            }]
         }))
         .expect("serialize"),
     )
-    .expect("write intent");
+    .expect("write canvas edit");
 
-    let intent = read_validated_intent(&session).expect("intent");
-
-    assert_eq!(intent.stages.len(), 1);
-    assert_eq!(
-        intent.stages[0].requested_model.as_deref(),
-        Some("Nano Banana")
-    );
+    let edit = read_validated_canvas_edit(&session).expect("canvas edit");
+    match &edit.operations[0] {
+        CanvasEditOp::AddNode { model, .. } => {
+            assert_eq!(model.as_deref(), Some("Nano Banana"));
+        }
+        other => panic!("expected add_node, got {other:?}"),
+    }
 }
 
 #[test]
-fn intent_prompt_prefers_the_bounded_submit_intent_tool() {
+fn canvas_prompt_prefers_catalog_inspect_edit() {
     let dir = tempfile::tempdir().expect("temp dir");
     let req = request(&dir);
 
     let session = create_session_contract(&req).expect("session");
     let ctx = fs::read_to_string(session.ctx_dir.join("instructions.md")).expect("ctx");
 
-    assert_eq!(session.output_contract, OutputContract::IntentJson);
-    assert!(ctx.contains("canvas.submit_intent"));
-    assert!(ctx.contains("compiler materializes the corresponding input node"));
+    assert_eq!(session.output_contract, OutputContract::CanvasEditJson);
+    assert!(ctx.contains("canvas.catalog"));
+    assert!(ctx.contains("canvas.inspect"));
+    assert!(ctx.contains("canvas.edit"));
 }
 
 #[test]
-fn gh130_intent_contract_rejects_unknown_fields() {
+fn canvas_edit_contract_rejects_unknown_fields() {
     let dir = tempfile::tempdir().expect("temp dir");
     let session = create_session_contract(&request(&dir)).expect("session");
     fs::write(
-        session.out_dir.join("intent.json"),
+        session.out_dir.join("canvas_edit.json"),
         serde_json::to_vec(&json!({
-            "intentVersion": "1",
-            "topology": "linear",
-            "stages": [],
-            "outputStageIds": [],
+            "operations": [],
             "apiKey": "should-not-be-here"
         }))
         .expect("serialize"),
     )
-    .expect("write intent");
+    .expect("write canvas edit");
 
-    let err = read_validated_intent(&session).expect_err("unknown field");
+    let err = read_validated_canvas_edit(&session).expect_err("unknown field");
     assert!(err.to_string().contains("unknown field"));
 }
 
 #[test]
-fn gh130_intent_contract_rejects_forward_references() {
+fn canvas_edit_contract_rejects_empty_operations() {
     let dir = tempfile::tempdir().expect("temp dir");
     let session = create_session_contract(&request(&dir)).expect("session");
     fs::write(
-        session.out_dir.join("intent.json"),
-        serde_json::to_vec(&json!({
-            "intentVersion": "1",
-            "topology": "linear",
-            "stages": [
-                {
-                    "stageId": "s1",
-                    "capabilityId": "image_to_video",
-                    "inputFrom": [{ "stageId": "s2", "output": "image" }],
-                    "params": {}
-                },
-                {
-                    "stageId": "s2",
-                    "capabilityId": "text_to_image",
-                    "inputFrom": [],
-                    "params": {}
-                }
-            ],
-            "outputStageIds": ["s1"]
-        }))
-        .expect("serialize"),
+        session.out_dir.join("canvas_edit.json"),
+        serde_json::to_vec(&json!({ "operations": [] })).expect("serialize"),
     )
-    .expect("write intent");
+    .expect("write canvas edit");
 
-    let err = read_validated_intent(&session).expect_err("forward reference");
-    assert!(err.to_string().contains("not an earlier stage"));
+    let err = read_validated_canvas_edit(&session).expect_err("empty operations");
+    assert!(err.to_string().contains("no operations"));
 }

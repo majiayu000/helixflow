@@ -15,6 +15,7 @@ type NodeLibraryProps = {
   onAddNode: (definition: NodeDefinition) => void;
   onOpenBrowse?: (tab: BrowseTab) => void;
   onOpenComments?: () => void;
+  commentMode?: boolean;
   onRedo?: () => void;
   onUndo?: () => void;
   onUploadFiles?: (files: File[]) => void;
@@ -31,6 +32,7 @@ export function NodeLibrary({
   onAddNode,
   onOpenBrowse,
   onOpenComments,
+  commentMode,
   onRedo,
   onUndo,
   onUploadFiles,
@@ -135,7 +137,7 @@ export function NodeLibrary({
       <div className="node-library-bar" role="toolbar" aria-label="节点工具条">
         {tools.map((tool) => (
           <FragmentedToolButton
-            active={tool.category === category}
+            active={tool.category === 'comments' ? Boolean(commentMode) : tool.category === category}
             disabled={disabled || Boolean(tool.disabled)}
             key={tool.key}
             leadingDivider={Boolean(tool.dividerBefore)}

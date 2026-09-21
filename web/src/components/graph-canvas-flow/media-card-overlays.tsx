@@ -1,18 +1,20 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { setPendingPrompt, useCreationStore } from '../../creation-store';
 import { isVisualMediaCardType } from '../../grid-split';
 import { Icon } from '../../icons';
 import { ModelPicker } from '../model-picker';
 import { useWorkbenchStore } from '../../store';
 import type { ModelCatalog, WorkbenchState } from '../../types';
-import { graphNodeHeight, graphNodeWidth, type ViewState } from '../graph-canvas-navigation';
+import { mediaGenerateTarget } from '../graph-canvas-editing';
+import type { ViewState } from '../graph-canvas-navigation';
 import { MentionTextarea, type MentionItem } from '../mention-textarea';
+import { flowAboveCenterStyle, flowBelowStyle } from './overlay-anchor';
 
 type MediaNode = WorkbenchState['graph']['nodes'][number];
 
 export function EmptyCardUpload({
   node,
-  view,
+  view: _view,
   onUpload,
 }: {
   node: MediaNode;
@@ -20,8 +22,6 @@ export function EmptyCardUpload({
   onUpload: (file: File) => void;
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const left = node.position.x * view.z + view.x + (graphNodeWidth(node) * view.z) / 2;
-  const top = node.position.y * view.z + view.y - 14;
   const accept = node.nodeType === 'input.video'
     ? 'video/*'
     : node.nodeType === 'input.audio'
@@ -29,8 +29,8 @@ export function EmptyCardUpload({
       : 'image/*';
   return (
     <div
-      className="canvas-media-upload"
-      style={{ left, top } as CSSProperties}
+      className="canvas-media-upload nodrag nopan"
+      style={flowAboveCenterStyle(node, 14)}
       onPointerDown={(event) => event.stopPropagation()}
     >
       <button onClick={() => inputRef.current?.click()} type="button">
@@ -67,16 +67,18 @@ export function mentionItemsFromNodes(
 }
 
 export function MediaCardComposer({
+  hasSource,
   mentionItems,
   modelCatalog,
   node,
   pickingReference,
   providers,
-  view,
+  view: _view,
   workflowPrompt,
   onMention,
   onPickReference,
 }: {
+  hasSource?: boolean;
   mentionItems: MentionItem[];
   modelCatalog: ModelCatalog | null;
   node: MediaNode;
@@ -89,10 +91,21 @@ export function MediaCardComposer({
 }) {
   const generateFromMediaCard = useWorkbenchStore((state) => state.generateFromMediaCard);
   const { pendingPrompt } = useCreationStore();
+  const textCard = node.nodeType === 'input.text';
+  const [kind, setKind] = useState<'image' | 'video'>(
+    node.nodeType === 'input.video' || node.nodeType.startsWith('video.') ? 'video' : 'image',
+  );
   const [prompt, setPrompt] = useState(workflowPrompt);
   const [aspect, setAspect] = useState('1:1');
+  const [durationSec, setDurationSec] = useState(5);
+  const [count, setCount] = useState(1);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const target = mediaGenerateTarget({
+    nodeType: node.nodeType,
+    hasImage: Boolean(hasSource) && !node.nodeType.startsWith('video.') && node.nodeType !== 'input.video',
+    mediaKind: textCard ? kind : undefined,
+  });
   useEffect(() => {
     setPrompt(workflowPrompt);
   }, [node.id, workflowPrompt]);
@@ -101,37 +114,57 @@ export function MediaCardComposer({
     setPrompt(pendingPrompt);
     setPendingPrompt(null);
   }, [pendingPrompt]);
-  const cardWidth = graphNodeWidth(node) * view.z;
-  const width = Math.max(560, cardWidth);
-  const left = node.position.x * view.z + view.x + (cardWidth - width) / 2;
-  const top = (node.position.y + graphNodeHeight(node)) * view.z + view.y + 14;
+  if (!target) return null;
+  const video = target.mediaKind === 'video';
   return (
     <form
-      className="media-card-composer"
+      className="media-card-composer nodrag nopan"
       onPointerDown={(event) => event.stopPropagation()}
       onSubmit={(event) => {
         event.preventDefault();
         setBusy(true);
         setError(null);
-        void generateFromMediaCard(node.id, prompt, aspect)
+        void generateFromMediaCard(node.id, prompt, aspect, {
+          durationSec: video ? durationSec : undefined,
+          count,
+          mediaKind: textCard ? kind : undefined,
+        })
           .catch((caught) => {
             setError(caught instanceof Error ? caught.message : '生成失败');
           })
           .finally(() => setBusy(false));
       }}
-      style={{ left, top, width } as CSSProperties}
+      style={flowBelowStyle(node, 14)}
     >
       <MentionTextarea
         items={mentionItems}
         onChange={setPrompt}
         onMention={onMention}
-        placeholder="描述你想生成的画面，输入 @ 引用画布上的图"
+        placeholder={
+          video
+            ? '描述你想生成的视频'
+            : textCard
+              ? '描述你想生成的画面'
+              : '描述你想生成的画面，输入 @ 引用画布上的图'
+        }
         rows={2}
         value={prompt}
       />
       <div className="media-card-composer-foot">
+        {textCard ? (
+          <label className="media-card-composer-chip media-card-composer-chip--select">
+            <select
+              aria-label="生成类型"
+              onChange={(event) => setKind(event.currentTarget.value as 'image' | 'video')}
+              value={kind}
+            >
+              <option value="image">出图</option>
+              <option value="video">出视频</option>
+            </select>
+          </label>
+        ) : null}
         <ModelPicker
-          capabilityId="text_to_image"
+          capabilityId={target.capabilityId}
           catalog={modelCatalog}
           disabled={busy}
           providers={providers}
@@ -147,13 +180,40 @@ export function MediaCardComposer({
             <option value="9:16">9:16</option>
           </select>
         </label>
-        <button
-          className={`media-card-composer-chip${pickingReference ? ' is-active' : ''}`}
-          onClick={onPickReference}
-          type="button"
-        >
-          {pickingReference ? '点一张图当参考' : '选参考'}
-        </button>
+        {video ? (
+          <label className="media-card-composer-chip media-card-composer-chip--select">
+            <select
+              aria-label="时长"
+              onChange={(event) => setDurationSec(Number(event.currentTarget.value))}
+              value={String(durationSec)}
+            >
+              <option value="4">4s</option>
+              <option value="5">5s</option>
+              <option value="8">8s</option>
+              <option value="10">10s</option>
+            </select>
+          </label>
+        ) : null}
+        <label className="media-card-composer-chip media-card-composer-chip--select">
+          <select
+            aria-label="张数"
+            onChange={(event) => setCount(Number(event.currentTarget.value))}
+            value={String(count)}
+          >
+            <option value="1">x1</option>
+            <option value="2">x2</option>
+            <option value="4">x4</option>
+          </select>
+        </label>
+        {video || textCard ? null : (
+          <button
+            className={`media-card-composer-chip${pickingReference ? ' is-active' : ''}`}
+            onClick={onPickReference}
+            type="button"
+          >
+            {pickingReference ? '点一张图当参考' : '选参考'}
+          </button>
+        )}
         <button
           aria-label={busy ? '生成中' : '生成'}
           className="media-card-composer-send"

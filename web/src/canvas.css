@@ -125,6 +125,11 @@
   cursor: grab;
 }
 
+.flow-canvas--comment .react-flow__pane,
+.flow-canvas--comment .react-flow__pane:active {
+  cursor: crosshair;
+}
+
 .flow-canvas .react-flow__pane:active {
   cursor: grabbing;
 }
@@ -222,6 +227,17 @@
   color: #111;
 }
 
+.canvas-card-overlay-root {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.canvas-card-overlay-root > * {
+  pointer-events: auto;
+}
+
 .flow-canvas .react-flow__node {
   overflow: visible;
 }
@@ -246,6 +262,11 @@
 
 .flow-canvas .react-flow__node:has(.workflow-flow-node--media) {
   border-radius: 16px;
+}
+
+.flow-canvas .react-flow__node:has(.workflow-flow-node--media) .react-flow__resize-control.handle,
+.flow-canvas .react-flow__node:has(.workflow-flow-node--media) .workflow-flow-resize-handle {
+  border-radius: 999px;
 }
 
 .flow-view-controls {
@@ -298,6 +319,17 @@
 
 .react-flow__node.is-related .workflow-flow-node {
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.flow-canvas .react-flow__node,
+.flow-canvas .react-flow__node:focus,
+.flow-canvas .react-flow__node:focus-visible {
+  outline: none;
+}
+
+.react-flow__node.is-related .workflow-flow-node--media,
+.react-flow__node.is-related:has(.workflow-flow-node--media) .workflow-flow-node {
+  box-shadow: none;
 }
 
 .react-flow__edge.is-related path,
@@ -1759,22 +1791,20 @@
 .node--media:has(.media-card--audio),
 .node.node--embedded.node--media:has(.media-card-frame),
 .node.node--embedded.node--media:has(.media-card--audio) {
+  border-color: transparent;
   border-style: solid;
-  border-color: rgb(255 255 255 / 8%);
   background: #0c0c0e;
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 8%);
 }
 
 .node--media.p-sel,
-.node--embedded.node--media.p-sel {
-  border-style: solid;
-  border-color: rgb(255 255 255 / 55%);
-  background: rgb(255 255 255 / 3%);
-  box-shadow: none;
-}
-
+.node--embedded.node--media.p-sel,
 .node--media:has(.media-card-frame).p-sel,
 .node--media:has(.media-card--audio).p-sel {
+  border-style: solid;
+  border-color: transparent;
   background: #0c0c0e;
+  box-shadow: 0 0 0 1.5px rgb(255 255 255 / 55%);
 }
 
 .node--media .node-body {
@@ -1828,6 +1858,21 @@
   inset: 0;
   border-radius: 16px;
   overflow: hidden;
+}
+
+.media-card-play {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 3;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgb(255 255 255 / 28%);
+  border-radius: 50%;
+  background: rgb(16 16 18 / 78%);
+  color: #fff;
 }
 
 .media-card-frame--poster {
@@ -1900,6 +1945,14 @@
   padding: 16px 12px;
 }
 
+.media-card--audio audio {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .workflow-flow-node--media .workflow-flow-handle--plus {
   opacity: 0;
 }
@@ -1919,6 +1972,7 @@ body.connecting .workflow-flow-handle--plus {
   z-index: 9;
   display: grid;
   gap: 8px;
+  min-width: 0;
   border: 1px solid rgb(255 255 255 / 10%);
   border-radius: 18px;
   background: var(--surface);
@@ -2128,7 +2182,7 @@ body.connecting .workflow-flow-handle--plus {
   margin-top: -10px;
   padding: 3px;
   border: 1px solid rgb(255 255 255 / 10%);
-  border-radius: 10px;
+  border-radius: 999px;
   background: rgb(16 16 18 / 88%);
   box-shadow: 0 10px 28px rgb(0 0 0 / 35%);
 }

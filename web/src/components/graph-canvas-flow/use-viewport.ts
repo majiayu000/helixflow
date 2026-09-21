@@ -84,7 +84,6 @@ export function useFlowViewport(
 
   const onMove = useCallback((_event: MouseEvent | TouchEvent | null, next: Viewport) => {
     const nextView = { x: next.x, y: next.y, z: next.zoom };
-    setLiveView(nextView);
     setMoving(true);
     if (shouldRefreshViewportSlice(sliceViewRef.current, nextView)) {
       sliceViewRef.current = nextView;

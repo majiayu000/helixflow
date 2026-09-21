@@ -74,7 +74,7 @@ export function CanvasViewControls({
           onClick={onToggleHideEdges}
           type="button"
         >
-          连线
+          {hideEdges ? '已藏连线' : '藏连线'}
         </button>
       ) : null}
       {onToggleSnap ? (
@@ -130,7 +130,7 @@ export function CanvasViewControls({
           onClick={onToggleMinimap}
           type="button"
         >
-          <Icon n="layers" s={13} />
+          <Icon n="map" s={13} />
         </button>
       ) : null}
       {onHelp ? (

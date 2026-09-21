@@ -409,8 +409,9 @@ mod tests {
         Json,
         extract::{Path, State},
     };
-    use helixflow_agent::{AgentSessionRequest, ValidatedAgentIntent, ValidatedAgentReply};
-    use helixflow_compiler::IntentPlan;
+    use helixflow_agent::{
+        AgentSessionRequest, CanvasEditPlan, ValidatedAgentReply, ValidatedCanvasEdit,
+    };
     use helixflow_store::AgentContractObservationRecord;
 
     use super::*;
@@ -516,56 +517,47 @@ mod tests {
     async fn intent_success_clarify_and_compile_error_have_distinct_outcomes() {
         let cases = [
             (
-                intent_plan(serde_json::json!({
-                    "intentVersion": "1",
-                    "topology": "linear",
-                    "stages": [{
-                        "stageId": "image",
-                        "capabilityId": "text_to_image",
-                        "requestedModel": "Nano Banana",
-                        "inputFrom": [],
+                canvas_edit_plan(serde_json::json!({
+                    "operations": [{
+                        "op": "add_node",
+                        "id": "image",
+                        "node_type": "image.generate",
+                        "model": "Nano Banana",
                         "params": {"prompt": "a product image"}
-                    }],
-                    "outputStageIds": ["image"]
+                    }]
                 })),
                 "success",
                 "INTENT_COMPILED",
             ),
             (
-                intent_plan(serde_json::json!({
-                    "intentVersion": "1",
-                    "topology": "linear",
-                    "stages": [{
-                        "stageId": "image",
-                        "capabilityId": "text_to_image",
-                        "inputFrom": [],
+                canvas_edit_plan(serde_json::json!({
+                    "operations": [{
+                        "op": "add_node",
+                        "id": "image",
+                        "node_type": "image.generate",
                         "params": {}
-                    }],
-                    "outputStageIds": ["image"]
+                    }]
                 })),
                 "clarify",
                 "REQUIRED_INPUT_MISSING",
             ),
             (
-                intent_plan(serde_json::json!({
-                    "intentVersion": "1",
-                    "topology": "linear",
-                    "stages": [{
-                        "stageId": "image",
-                        "capabilityId": "text_to_image",
-                        "inputFrom": [],
-                        "params": {"prompt": "a product image"}
-                    }],
-                    "outputStageIds": ["unknown"]
+                canvas_edit_plan(serde_json::json!({
+                    "operations": [{
+                        "op": "add_node",
+                        "id": "image",
+                        "node_type": "not.a.node",
+                        "params": {}
+                    }]
                 })),
                 "error",
-                "INTENT_INVALID",
+                "CANVAS_EDIT_INVALID",
             ),
         ];
 
-        for (intent, expected_outcome, expected_code) in cases {
+        for (edit, expected_outcome, expected_code) in cases {
             let (mut state, workspace_id, version_id, _dir) = state_with_workspace().await;
-            state.agent = Arc::new(ScriptedIntentAgent { intent });
+            state.agent = Arc::new(ScriptedIntentAgent { edit });
             state.provider_registry = configured_atlas_registry();
 
             post_graph_edit(state.clone(), workspace_id.clone(), version_id)
@@ -602,20 +594,17 @@ mod tests {
 
     #[tokio::test]
     async fn evidence_endpoint_filters_release_and_rechecks_current_migration_state() {
-        let intent = intent_plan(serde_json::json!({
-            "intentVersion": "1",
-            "topology": "linear",
-            "stages": [{
-                "stageId": "image",
-                "capabilityId": "text_to_image",
-                "requestedModel": "Nano Banana",
-                "inputFrom": [],
+        let intent = canvas_edit_plan(serde_json::json!({
+            "operations": [{
+                "op": "add_node",
+                "id": "image",
+                "node_type": "image.generate",
+                "model": "Nano Banana",
                 "params": {"prompt": "a product image"}
-            }],
-            "outputStageIds": ["image"]
+            }]
         }));
         let (mut state, workspace_id, version_id, _dir) = state_with_workspace().await;
-        state.agent = Arc::new(ScriptedIntentAgent { intent });
+        state.agent = Arc::new(ScriptedIntentAgent { edit: intent });
         state.provider_registry = configured_atlas_registry();
         state.agent_contract_attribution = AgentContractAttribution {
             release_id: Some("v0.2.0".to_owned()),
@@ -659,8 +648,8 @@ mod tests {
         assert!(parse_utc_seconds("since", "https://invalid").is_err());
     }
 
-    fn intent_plan(value: serde_json::Value) -> IntentPlan {
-        serde_json::from_value(value).expect("intent")
+    fn canvas_edit_plan(value: serde_json::Value) -> CanvasEditPlan {
+        serde_json::from_value(value).expect("canvas edit")
     }
 
     fn configured_atlas_registry() -> helixflow_gateway::ProviderRegistry {
@@ -684,10 +673,10 @@ mod tests {
             Err(AgentError::Runtime("not used".to_owned()))
         }
 
-        async fn propose_intent(
+        async fn propose_canvas_edit(
             &self,
             _request: AgentSessionRequest,
-        ) -> Result<ValidatedAgentIntent, AgentError> {
+        ) -> Result<ValidatedCanvasEdit, AgentError> {
             Err(AgentError::Runtime(
                 "provider failed with sk-secret-never-persist".to_owned(),
             ))
@@ -695,7 +684,7 @@ mod tests {
     }
 
     struct ScriptedIntentAgent {
-        intent: IntentPlan,
+        edit: CanvasEditPlan,
     }
 
     #[async_trait]
@@ -707,15 +696,15 @@ mod tests {
             Err(AgentError::Runtime("not used".to_owned()))
         }
 
-        async fn propose_intent(
+        async fn propose_canvas_edit(
             &self,
             request: AgentSessionRequest,
-        ) -> Result<ValidatedAgentIntent, AgentError> {
-            Ok(ValidatedAgentIntent {
+        ) -> Result<ValidatedCanvasEdit, AgentError> {
+            Ok(ValidatedCanvasEdit {
                 session_id: format!("{}_intent", request.workspace_id),
                 runtime_identity: None,
                 agent_logs: Vec::new(),
-                intent: self.intent.clone(),
+                edit: self.edit.clone(),
             })
         }
     }

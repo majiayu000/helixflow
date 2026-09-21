@@ -1,12 +1,15 @@
-//! IntentPlan turn handling: agent intent → deterministic compile → validated
-//! proposal auto-apply with a persisted semantic layer, or a structured
-//! clarification message.
+//! Canvas-edit turn handling: agent operations → typed proposal auto-apply
+//! with a persisted semantic layer, or a structured clarification message.
 
-use helixflow_agent::{AgentSessionRequest, TurnMode};
-use helixflow_compiler::{ClarifyFirst, CompileOutcome, CompiledProposal, compile_for_connector};
+use helixflow_agent::{
+    AgentSessionRequest, CanvasEditError, CanvasEditPlan, CompiledCanvasEdit, TurnMode,
+    compile_canvas_edit_with,
+};
+use helixflow_compiler::ClarifyFirst;
 use helixflow_graph::{GraphService, ProposalDraft, ProposalKind, WorkflowGraph};
 use helixflow_registry::NodeRegistry;
 use helixflow_store::{AgentContractOutcome, NewMessage};
+use serde_json::json;
 
 use crate::agent_contract_observation::{
     AgentContractTurn, agent_error_code, finalize_agent_contract_error,
@@ -17,7 +20,7 @@ use crate::workbench_message::{
     ChatMessagePayload, WorkspaceMessageResponse, persist_agent_logs,
     persist_agent_runtime_identity, terminal_error_response,
 };
-use crate::workbench_message_intent_readiness::intent_compile_readiness;
+use crate::workbench_message_intent_readiness::canvas_edit_readiness;
 use crate::workbench_message_proposals::persist_and_apply_agent_proposal_observed;
 
 pub(crate) async fn handle_intent_turn(
@@ -32,15 +35,15 @@ pub(crate) async fn handle_intent_turn(
     let conversation_id = request
         .conversation_id
         .clone()
-        .ok_or_else(|| ApiError::server_error("intent turn is missing a conversation id"))?;
+        .ok_or_else(|| ApiError::server_error("canvas edit turn is missing a conversation id"))?;
     let durable_turn_id = request
         .durable_turn_id
         .clone()
-        .ok_or_else(|| ApiError::server_error("intent turn is missing a durable turn id"))?;
+        .ok_or_else(|| ApiError::server_error("canvas edit turn is missing a durable turn id"))?;
     let workspace_id = workspace_id.as_str();
     let conversation_id = conversation_id.as_str();
     let durable_turn_id = durable_turn_id.as_str();
-    let validated = match state.agent.propose_intent(request).await {
+    let validated = match state.agent.propose_canvas_edit(request).await {
         Ok(validated) => validated,
         Err(error) => {
             finalize_agent_contract_error(
@@ -94,7 +97,7 @@ pub(crate) async fn handle_intent_turn(
         )
         .await;
     }
-    if let Err(_error) = persist_agent_logs(
+    if persist_agent_logs(
         state,
         workspace_id,
         &validated.session_id,
@@ -103,6 +106,7 @@ pub(crate) async fn handle_intent_turn(
         Some(durable_turn_id),
     )
     .await
+    .is_err()
     {
         finalize_agent_contract_error(
             state,
@@ -125,14 +129,13 @@ pub(crate) async fn handle_intent_turn(
         .await;
     }
 
-    let catalog = helixflow_run::shared_catalog();
     let workspace = state
         .store
         .workspace(workspace_id)
         .await
         .map_err(ApiError::store)?;
     let selected_provider = state.selected_provider_for_workspace(&workspace);
-    let readiness = match intent_compile_readiness(state, &selected_provider, &validated.intent) {
+    let readiness = match canvas_edit_readiness(state, &selected_provider, &validated.edit) {
         Ok(readiness) => readiness,
         Err(reason) => {
             finalize_agent_contract_error(
@@ -158,44 +161,43 @@ pub(crate) async fn handle_intent_turn(
     };
     let service = GraphService::new(NodeRegistry::builtin());
 
-    match compile_for_connector(
-        &validated.intent,
+    match compile_canvas_edit_with(
+        &validated.edit,
         base_graph,
-        &service,
-        catalog,
+        &NodeRegistry::builtin(),
         &readiness.availability,
         readiness.connector_preference.as_deref(),
     ) {
-        Ok(CompileOutcome::Compiled(compiled)) => {
-            let semantics_json = match serde_json::to_string(&compiled.target.collected_semantics())
-            {
-                Ok(semantics_json) => semantics_json,
-                Err(_error) => {
-                    finalize_agent_contract_error(
-                        state,
-                        workspace_id,
-                        turn,
-                        "INTENT_SERIALIZATION_ERROR",
-                        Some(&validated.session_id),
-                    )
-                    .await
-                    .map_err(ApiError::store)?;
-                    return terminal_error_response(
-                        state,
-                        workspace_id,
-                        conversation_id,
-                        durable_turn_id,
-                        mode,
-                        "INTENT_SERIALIZATION_ERROR",
-                        Some(&validated.session_id),
-                    )
-                    .await;
-                }
-            };
+        Ok(compiled) => {
+            let semantics_json =
+                match serde_json::to_string(&compiled.preview.collected_semantics()) {
+                    Ok(semantics_json) => semantics_json,
+                    Err(_error) => {
+                        finalize_agent_contract_error(
+                            state,
+                            workspace_id,
+                            turn,
+                            "INTENT_SERIALIZATION_ERROR",
+                            Some(&validated.session_id),
+                        )
+                        .await
+                        .map_err(ApiError::store)?;
+                        return terminal_error_response(
+                            state,
+                            workspace_id,
+                            conversation_id,
+                            durable_turn_id,
+                            mode,
+                            "INTENT_SERIALIZATION_ERROR",
+                            Some(&validated.session_id),
+                        )
+                        .await;
+                    }
+                };
             let draft = ProposalDraft {
                 base_version_id: base_version_id.to_owned(),
                 kind: proposal_kind_for_mode(mode),
-                title: proposal_title(&compiled),
+                title: proposal_title(&validated.edit, &compiled),
                 summary: proposal_summary(&compiled),
                 ops: compiled.ops.clone(),
                 message_id: None,
@@ -274,7 +276,8 @@ pub(crate) async fn handle_intent_turn(
                 pending_confirmation: None,
             })
         }
-        Ok(CompileOutcome::Clarify(clarify)) => {
+        Err(error) if error.is_clarify() => {
+            let clarify = clarify_from_edit_error(&error);
             let text = clarify_message_text(&clarify);
             let clarified = state
                 .store
@@ -351,35 +354,46 @@ fn proposal_kind_for_mode(mode: TurnMode) -> ProposalKind {
     }
 }
 
-fn proposal_title(compiled: &CompiledProposal) -> String {
-    format!("AI 编排（{} 个阶段）", compiled.resolved_stages.len())
+fn proposal_title(edit: &CanvasEditPlan, compiled: &CompiledCanvasEdit) -> String {
+    edit.summary
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("画布编辑（{} 步）", compiled.ops.len()))
 }
 
-fn proposal_summary(compiled: &CompiledProposal) -> String {
-    let stages: Vec<String> = compiled
-        .resolved_stages
+fn proposal_summary(compiled: &CompiledCanvasEdit) -> String {
+    let nodes: Vec<String> = compiled
+        .preview
+        .nodes
         .iter()
-        .map(|stage| {
-            format!(
-                "{}: {} → {}",
-                stage.stage_id, stage.capability_id, stage.resolved_model_id
-            )
-        })
+        .map(|(id, node)| format!("{id}: {}", node.node_type))
         .collect();
     format!(
-        "catalog {} · {}",
-        compiled
-            .catalog_revision
-            .chars()
-            .take(14)
-            .collect::<String>(),
-        stages.join("；")
+        "{} 个节点 · {}",
+        compiled.preview.nodes.len(),
+        nodes.join("；")
     )
 }
 
-/// Human-readable clarification. The stable machine fields lead each line so
-/// the frontend clarify card can render them without a side channel, and the
-/// message is never presented as a successful proposal.
+fn clarify_from_edit_error(error: &CanvasEditError) -> ClarifyFirst {
+    match error {
+        CanvasEditError::MissingParam { node_id, param } => ClarifyFirst::new(
+            "REQUIRED_INPUT_MISSING",
+            vec![format!("{node_id}.{param}")],
+            json!({}),
+            format!("Provide `{param}` on `{node_id}` and resubmit canvas.edit."),
+        ),
+        CanvasEditError::Resolve {
+            node_id,
+            code,
+            reason,
+        } => ClarifyFirst::new(code, Vec::new(), json!({ "nodeId": node_id }), reason),
+        other => ClarifyFirst::new(other.code(), Vec::new(), json!({}), other.to_string()),
+    }
+}
+
 fn clarify_message_text(clarify: &ClarifyFirst) -> String {
     if clarify.reason_code == "BINDING_NOT_FOUND" {
         return binding_not_found_message_text(clarify);

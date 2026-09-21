@@ -45,7 +45,8 @@ export function isVisualMediaCardType(nodeType: string): boolean {
   return (
     isMediaNodeType(nodeType) ||
     nodeType === 'image.generate' ||
-    nodeType === 'image.edit'
+    nodeType === 'image.edit' ||
+    nodeType.startsWith('video.')
   );
 }
 
@@ -189,6 +190,18 @@ export function resolveGridSplitSource(input: {
 
   const image = input.artifacts.find((artifact) => artifact.kind === 'image');
   if (image?.id) return { kind: 'artifact', artifactId: image.id };
+  return null;
+}
+
+export function resolveVideoSource(input: {
+  nodeType: string;
+  params: unknown;
+  artifacts: Array<{ id: string; kind: string }>;
+}): GridSplitSource | null {
+  const uploadId = parseUploadUri(stringParam(input.params, 'storage_uri'));
+  if (uploadId) return { kind: 'upload', uploadId };
+  const video = input.artifacts.find((artifact) => artifact.kind === 'video');
+  if (video?.id) return { kind: 'artifact', artifactId: video.id };
   return null;
 }
 

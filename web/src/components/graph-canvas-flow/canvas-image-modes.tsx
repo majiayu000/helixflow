@@ -14,6 +14,7 @@ import {
 import { useImageProcessingProfile } from '../../use-image-processing-profile';
 import type { WorkbenchState } from '../../types';
 import { graphNodeHeight, graphNodeWidth, type ViewState } from '../graph-canvas-navigation';
+import { flowAboveCenterStyle, flowBelowCenterStyle, flowCoverStyle } from './overlay-anchor';
 
 type Pad = { left: number; top: number; right: number; bottom: number };
 type Handle = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
@@ -42,8 +43,8 @@ export function OutpaintFrame({
   const [sizeTier, setSizeTier] = useState<'1k' | '2k' | '4k'>('1k');
   const processor = useImageProcessingProfile(workspaceId, 'outpaint');
   const drag = useRef<{ handle: Handle; startX: number; startY: number; origin: Pad } | null>(null);
-  const width = graphNodeWidth(node) * view.z;
-  const height = graphNodeHeight(node) * view.z;
+  const width = graphNodeWidth(node);
+  const height = graphNodeHeight(node);
   const scaleX = natural.width ? width / natural.width : 1;
   const scaleY = natural.height ? height / natural.height : 1;
 
@@ -72,15 +73,18 @@ export function OutpaintFrame({
     };
   }, [node.id, node.nodeType, outputs, params, workspaceId]);
 
-  const left = node.position.x * view.z + view.x - pad.left * scaleX;
-  const top = node.position.y * view.z + view.y - pad.top * scaleY;
+  const left = node.position.x - pad.left * scaleX;
+  const top = node.position.y - pad.top * scaleY;
   const frameW = width + (pad.left + pad.right) * scaleX;
   const frameH = height + (pad.top + pad.bottom) * scaleY;
 
   const move = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!drag.current || !natural.width) return;
-    const dx = (event.clientX - drag.current.startX) / scaleX;
-    const dy = (event.clientY - drag.current.startY) / scaleY;
+    const box = event.currentTarget.getBoundingClientRect();
+    const zoomX = frameW > 0 ? box.width / frameW : view.z;
+    const zoomY = frameH > 0 ? box.height / frameH : view.z;
+    const dx = (event.clientX - drag.current.startX) / (scaleX * zoomX);
+    const dy = (event.clientY - drag.current.startY) / (scaleY * zoomY);
     const next = { ...drag.current.origin };
     const handle = drag.current.handle;
     if (handle.includes('w')) next.left = Math.max(0, Math.round(drag.current.origin.left - dx));
@@ -152,14 +156,16 @@ export function OutpaintFrame({
 }
 
 export function EraseStage({
+  intent = 'erase',
   node,
   outputs,
   params,
-  view,
+  view: _view,
   workspaceId,
   onCancel,
   onConfirm,
 }: {
+  intent?: 'erase' | 'redraw';
   node: WorkbenchState['graph']['nodes'][number];
   outputs: WorkbenchState['outputs'] | undefined;
   params: unknown;
@@ -172,17 +178,16 @@ export function EraseStage({
   const [url, setUrl] = useState<string | null>(null);
   const [tool, setTool] = useState<'brush' | 'rect'>('brush');
   const [hasMask, setHasMask] = useState(false);
-  const [prompt, setPrompt] = useState<string>(DEFAULT_IMAGE_EDIT_PROMPTS.inpaint);
+  const [prompt, setPrompt] = useState<string>(
+    intent === 'redraw' ? DEFAULT_IMAGE_EDIT_PROMPTS.redraw : DEFAULT_IMAGE_EDIT_PROMPTS.inpaint,
+  );
   const [quality, setQuality] = useState<'low' | 'medium' | 'high'>('low');
   const [sizeTier, setSizeTier] = useState<'1k' | '2k' | '4k'>('1k');
   const processor = useImageProcessingProfile(workspaceId, 'inpaint');
   const [natural, setNatural] = useState({ width: 0, height: 0 });
   const maskRef = useRef<Uint8Array | null>(null);
   const drag = useRef<{ x: number; y: number } | null>(null);
-  const width = graphNodeWidth(node) * view.z;
-  const height = graphNodeHeight(node) * view.z;
-  const left = node.position.x * view.z + view.x;
-  const top = node.position.y * view.z + view.y;
+  const cover = flowCoverStyle(node);
 
   useEffect(() => {
     const source = resolveGridSplitSource({
@@ -268,9 +273,9 @@ export function EraseStage({
 
   return (
     <div
-      className="canvas-erase"
+      className="canvas-erase nodrag nopan"
       onPointerDown={(event) => event.stopPropagation()}
-      style={{ left, top, width, height } as CSSProperties}
+      style={cover}
     >
       {url ? <img alt="" src={url} /> : <div className="pixel-crop-empty">正在读取原图…</div>}
       <canvas
@@ -366,7 +371,7 @@ export function EraseStage({
             }}
             type="button"
           >
-            生成擦除
+            生成{intent === 'redraw' ? '重绘' : '擦除'}
           </button>
         </div>
       </div>
@@ -473,7 +478,7 @@ const TEXT_FORMATS = [
 
 export function TextCardEditor({
   node,
-  view,
+  view: _view,
   value,
   onSave,
 }: {
@@ -483,10 +488,7 @@ export function TextCardEditor({
   onSave: (text: string) => void;
 }) {
   const editorRef = useRef<HTMLDivElement | null>(null);
-  const left = node.position.x * view.z + view.x;
-  const top = node.position.y * view.z + view.y;
-  const width = graphNodeWidth(node) * view.z;
-  const height = graphNodeHeight(node) * view.z;
+  const cover = flowCoverStyle(node);
   useEffect(() => {
     editorRef.current?.focus();
   }, [node.id]);
@@ -497,10 +499,10 @@ export function TextCardEditor({
   return (
     <>
       <div
-        className="canvas-text-toolbar"
+        className="canvas-text-toolbar nodrag nopan"
         onMouseDown={(event) => event.preventDefault()}
         onPointerDown={(event) => event.stopPropagation()}
-        style={{ left: left + width / 2, top } as CSSProperties}
+        style={flowAboveCenterStyle(node, 10)}
       >
         {TEXT_FORMATS.map((format) => (
           <button
@@ -520,7 +522,7 @@ export function TextCardEditor({
       </div>
       <div
         aria-label="文本"
-        className="canvas-text-editor"
+        className="canvas-text-editor nodrag nopan"
         contentEditable
         data-placeholder="双击开始编辑..."
         dangerouslySetInnerHTML={{ __html: markdownToHtml(value) }}
@@ -533,7 +535,7 @@ export function TextCardEditor({
         onPointerDown={(event) => event.stopPropagation()}
         ref={editorRef}
         role="textbox"
-        style={{ left, top, width, height } as CSSProperties}
+        style={cover}
         suppressContentEditableWarning
       />
     </>
@@ -545,7 +547,7 @@ export function CameraToolPanel({
   node,
   onCancel,
   onRun,
-  view,
+  view: _view,
 }: {
   kind: 'relight' | 'multi-angle';
   node: WorkbenchState['graph']['nodes'][number];
@@ -559,19 +561,16 @@ export function CameraToolPanel({
   const [yaw, setYaw] = useState(0);
   const [pitch, setPitch] = useState(0);
   const [distance, setDistance] = useState(50);
-  const width = graphNodeWidth(node) * view.z;
-  const left = node.position.x * view.z + view.x + width / 2;
-  const top = (node.position.y + graphNodeHeight(node)) * view.z + view.y + 12;
   const prompt = kind === 'relight'
     ? `Relight this image. Key light from the ${dir} at ${brightness}% brightness and ${temp}K. Keep the subject, pose, and background.`
     : `Rephotograph this scene. Camera yaw ${yaw}°, pitch ${pitch}°, distance ${distance}%. Keep identity and wardrobe.`;
   return (
     <div
-      className="canvas-tool-panel"
-      style={{ left, top, transform: 'translateX(-50%)' } as CSSProperties}
+      className="canvas-tool-panel nodrag nopan"
+      style={{ ...flowBelowCenterStyle(node, 12), transform: 'translateX(-50%)' } as CSSProperties}
       onPointerDown={(event) => event.stopPropagation()}
     >
-      <strong>{kind === 'relight' ? '打光' : '多角度'}</strong>
+      <strong>{kind === 'relight' ? '用提示词调光' : '用提示词换角度'}</strong>
       {kind === 'relight' ? (
         <>
           <div className="canvas-tool-panel-dirs">

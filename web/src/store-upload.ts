@@ -3,6 +3,7 @@ import { uploadWorkspaceImage } from './api';
 import {
   buildCropResultProposalInput,
   buildMediaIngestProposalInput,
+  buildVideoFrameProposalInput,
 } from './components/graph-canvas-editing';
 import { graphNodeWidth } from './components/graph-canvas-navigation';
 import {
@@ -14,6 +15,7 @@ import {
   nodeTypeFromMime,
   readNaturalImageSize,
   resolveGridSplitSource,
+  resolveVideoSource,
   type PixelCropRect,
 } from './grid-split';
 import { createGridSplitAction } from './store-grid-split';
@@ -26,6 +28,7 @@ import type { WorkbenchStore } from './store-types';
 import { buildSetParamEditInput } from './workbench-edit-session';
 import type { WorkspaceRequestScope } from './workspace-request-scope';
 import { WorkspaceChangedError } from './workspace-action-guard';
+import { captureVideoFrameBlob, liveCanvasVideo, type VideoFrameKind } from './video-frame';
 
 export { createGridSplitAction } from './store-grid-split';
 export { createImageCanvasToolAction } from './store-image-edit';
@@ -42,6 +45,7 @@ export function createImageMediaActions(
     applyImageCanvasTool: createImageCanvasToolAction(set, get, requestScope),
     generateFromMediaCard: createGenerateFromMediaCardAction(set, get, requestScope),
     cropImageNode: createCropImageAction(set, get, requestScope),
+    extractVideoFrame: createExtractVideoFrameAction(set, get, requestScope),
     replaceNodeMedia: createReplaceNodeMediaAction(set, get, requestScope),
   };
 }
@@ -166,6 +170,92 @@ function createCropImageAction(
           : current.state,
       }));
       throw error instanceof Error ? error : new Error(message);
+    }
+  };
+}
+
+function createExtractVideoFrameAction(
+  set: StoreApi<WorkbenchStore>['setState'],
+  get: StoreApi<WorkbenchStore>['getState'],
+  requestScope: WorkspaceRequestScope,
+): (nodeId: string, kind: VideoFrameKind) => Promise<void> {
+  return async (nodeId, kind) => {
+    const state = get().state;
+    if (!state) throw new Error('workspace is not loaded');
+    const workspaceId = state.workspace.id;
+    const generation = requestScope.currentGeneration();
+    const sourceNode = state.graph.nodes.find((node) => node.id === nodeId);
+    const workflowNode = state.workflowGraph?.nodes[nodeId];
+    if (!sourceNode) throw new Error('选中节点不存在');
+    if (sourceNode.nodeType !== 'input.video' && !sourceNode.nodeType.startsWith('video.')) {
+      throw new Error('只能从视频卡抽帧');
+    }
+    const source = resolveVideoSource({
+      nodeType: sourceNode.nodeType,
+      params: workflowNode?.params,
+      artifacts: artifactsForNode(state.outputs, nodeId),
+    });
+    const live = liveCanvasVideo(nodeId);
+    const liveUrl = (live?.currentSrc || live?.src || '').trim();
+    const usableLiveUrl = liveUrl && liveUrl !== 'about:blank' ? liveUrl : null;
+    if (!source && !usableLiveUrl) {
+      throw new Error('当前节点没有可抽帧的视频');
+    }
+    let objectUrl: string | null = null;
+    try {
+      const resolvedUrl = usableLiveUrl ?? URL.createObjectURL(
+        await readSourceBlob(workspaceId, source!, requestScope.signal()),
+      );
+      if (!usableLiveUrl) objectUrl = resolvedUrl;
+      if (!requestScope.isActive(generation, workspaceId)) {
+        throw new WorkspaceChangedError('workspace changed while reading the video');
+      }
+      const frame = await captureVideoFrameBlob({
+        url: resolvedUrl,
+        kind,
+        currentTime: live?.currentTime,
+        live,
+      });
+      const uploaded = await uploadWorkspaceImage(
+        workspaceId,
+        new File(
+          [frame.blob],
+          `${sourceNode.title || nodeId}-${kind}.jpg`,
+          { type: frame.blob.type || 'image/jpeg' },
+        ),
+        requestScope.signal(),
+      );
+      if (!requestScope.isActive(generation, workspaceId)) {
+        throw new WorkspaceChangedError('workspace changed while uploading the frame');
+      }
+      await get().appendManualEdit(
+        buildVideoFrameProposalInput({
+          baseVersionId: state.workspace.versionId,
+          existingNodeIds: [
+            ...state.graph.nodes.map((node) => node.id),
+            ...pendingNodeIds(get),
+          ],
+          sourceNodeId: nodeId,
+          sourceTitle: sourceNode.title || nodeId,
+          sourceX: sourceNode.position.x,
+          sourceY: sourceNode.position.y,
+          sourceWidth: graphNodeWidth(sourceNode),
+          storageUri: uploaded.storageUri,
+          size: fitMediaNodeSize(frame.width, frame.height),
+          kind,
+        }),
+      );
+    } catch (error) {
+      if (error instanceof WorkspaceChangedError) throw error;
+      const message = error instanceof Error ? error.message : '抽帧失败';
+      set((current) => ({
+        state: current.state?.workspace.id === workspaceId
+          ? appendSystemError(current.state, message)
+          : current.state,
+      }));
+      throw error instanceof Error ? error : new Error(message);
+    } finally {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
     }
   };
 }

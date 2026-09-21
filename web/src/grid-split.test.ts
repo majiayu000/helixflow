@@ -9,9 +9,11 @@ import {
   gridSplitTilePositions,
   nodeTypeFromMime,
   mediaKindLabel,
+  isVisualMediaCardType,
   parseUploadUri,
   readNaturalImageSize,
   resolveGridSplitSource,
+  resolveVideoSource,
   validateGridSplitAxes,
 } from './grid-split';
 import type { GraphNodeState } from './types';
@@ -36,6 +38,8 @@ describe('media ingest helpers', () => {
     expect(mediaKindLabel('input.image')).toBe('图片');
     expect(mediaKindLabel('image.generate')).toBe('图片');
     expect(mediaKindLabel('input.video')).toBe('视频');
+    expect(mediaKindLabel('video.text_to_video')).toBe('视频');
+    expect(isVisualMediaCardType('video.text_to_video')).toBe(true);
     expect(mediaKindLabel('input.audio')).toBe('音频');
     expect(nodeTypeFromMime('image/png')).toBe('input.image');
     expect(nodeTypeFromMime('video/mp4')).toBe('input.video');
@@ -94,6 +98,23 @@ describe('grid split helpers', () => {
         artifacts: [],
       }),
     ).toBeNull();
+  });
+
+  it('resolves uploaded and generated video sources for frame extract', () => {
+    expect(
+      resolveVideoSource({
+        nodeType: 'input.video',
+        params: { storage_uri: 'upload://clip' },
+        artifacts: [],
+      }),
+    ).toEqual({ kind: 'upload', uploadId: 'clip' });
+    expect(
+      resolveVideoSource({
+        nodeType: 'video.text_to_video',
+        params: {},
+        artifacts: [{ id: 'art_v', kind: 'video' }],
+      }),
+    ).toEqual({ kind: 'artifact', artifactId: 'art_v' });
   });
 
   it('rejects illegal 宫格 axes with the Cuter processor errors', () => {

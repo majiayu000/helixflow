@@ -19,6 +19,7 @@ describe('CanvasViewControls', () => {
     );
 
     expect(markup).toContain('隐藏连线');
+    expect(markup).toContain('已藏连线');
     expect(markup).toContain('网格吸附');
     expect(markup).toContain('快捷键说明');
     expect(markup).toContain('aria-pressed="true"');

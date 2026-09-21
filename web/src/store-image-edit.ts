@@ -9,6 +9,7 @@ import { useModelPreferenceStore } from './model-picker';
 import {
   buildImageCanvasToolResultProposalInput,
   buildMediaGenerateProposalInput,
+  mediaGenerateTarget,
 } from './components/graph-canvas-editing';
 import { graphNodeWidth } from './components/graph-canvas-navigation';
 import {
@@ -232,8 +233,12 @@ export function createGenerateFromMediaCardAction(
   set: StoreApi<WorkbenchStore>['setState'],
   get: StoreApi<WorkbenchStore>['getState'],
   requestScope: WorkspaceRequestScope,
-): (nodeId: string, prompt: string, aspectRatio: string) => Promise<void> {
-  return async (nodeId, prompt, aspectRatio) => {
+): (nodeId: string, prompt: string, aspectRatio: string, options?: {
+  durationSec?: number;
+  count?: number;
+  mediaKind?: 'image' | 'video';
+}) => Promise<void> {
+  return async (nodeId, prompt, aspectRatio, options) => {
     const trimmed = prompt.trim();
     if (!trimmed) throw new Error('请填写提示词');
     const state = get().state;
@@ -250,10 +255,15 @@ export function createGenerateFromMediaCardAction(
         artifacts: artifactsForNode(state.outputs, nodeId),
       });
       const hasImage = Boolean(source);
-      const capabilityId = hasImage ? 'image_edit' : 'text_to_image';
+      const target = mediaGenerateTarget({
+        nodeType: sourceNode.nodeType,
+        hasImage,
+        mediaKind: options?.mediaKind,
+      });
+      if (!target) throw new Error('这张卡不能从这里生成');
       const semantics = await pinnedSemanticsForGenerate(
         workspaceId,
-        capabilityId,
+        target.capabilityId,
         requestScope.signal(),
       );
       await get().appendManualEdit(
@@ -273,7 +283,11 @@ export function createGenerateFromMediaCardAction(
           prompt: trimmed,
           aspectRatio,
           hasImage,
+          sourceNodeType: sourceNode.nodeType,
           semantics,
+          durationSec: options?.durationSec,
+          count: options?.count,
+          mediaKind: options?.mediaKind,
         }),
       );
       if (!requestScope.isActive(generation, workspaceId)) {

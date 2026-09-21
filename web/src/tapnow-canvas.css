@@ -291,7 +291,6 @@
 .node.node--embedded.node--media {
   overflow: visible;
   background: var(--tn-node);
-  box-shadow: 0 0 0 1px rgb(255 255 255 / 6%);
 }
 
 .node--embedded.node--media .node-body,
@@ -300,10 +299,6 @@
 .node--embedded.node--media .media-card-video {
   border-radius: 16px;
   overflow: hidden;
-}
-
-.node--embedded.node--media.p-sel {
-  box-shadow: 0 0 0 1.5px rgb(255 255 255 / 55%);
 }
 
 .media-card--empty {
@@ -327,7 +322,7 @@
 }
 
 .comment-toggle {
-  display: none;
+  display: inline-flex;
 }
 
 .chat-empty h2 {

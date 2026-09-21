@@ -16,3 +16,11 @@ export function relatedHighlight(
   }
   return { nodeIds, edgeIds };
 }
+
+export function isRelatedNeighbor(
+  nodeId: string,
+  relatedNodeIds: Set<string>,
+  activeNodeId: string | null | undefined,
+) {
+  return Boolean(activeNodeId) && nodeId !== activeNodeId && relatedNodeIds.has(nodeId);
+}

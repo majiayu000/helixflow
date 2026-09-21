@@ -40,6 +40,23 @@ describe('NodeLibrary', () => {
     expect(markup).toContain('disabled=""');
   });
 
+  it('marks the comments dock as pressed while comment mode is on', () => {
+    const markup = renderToStaticMarkup(
+      <NodeLibrary
+        catalog={catalog()}
+        commentMode
+        disabled={false}
+        error={null}
+        modelCatalog={null}
+        modelCatalogError={null}
+        onAddNode={() => undefined}
+        onOpenComments={() => undefined}
+      />,
+    );
+
+    expect(markup).toMatch(/title="评论"[^>]*aria-pressed="true"|aria-pressed="true"[^>]*title="评论"/);
+  });
+
   it('adds a tray item on a single click and returns to canvas selection', async () => {
     const added: string[] = [];
     let renderer: ReactTestRenderer;
