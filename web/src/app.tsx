@@ -7,6 +7,7 @@ import { GraphCanvas } from './components/graph-canvas';
 import { ManualProposalPanel } from './components/manual-proposal-panel';
 import { ConfirmModal, HistoryPanel, OutputsStrip, RunDock } from './components/run-panels';
 import { TopBar } from './components/top-bar';
+import { canvasContextWithPreferredModel } from './model-picker';
 import { useWorkbenchStore } from './store';
 import { WorkbenchShell } from './workbench-layout/react/workbench-shell';
 import { useWorkbenchLayoutStore } from './workbench-layout/store';
@@ -19,6 +20,7 @@ import { useWorkbenchNavigation, workspaceIdFromUrl } from './use-workbench-navi
 import {
   buildSetParamEditInput,
   deriveQueueLockReason,
+  graphStateWithWorkflowLayout,
   previewWorkbenchStateWithManualEdits,
 } from './workbench-edit-session';
 
@@ -60,6 +62,8 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const sendMessage = useWorkbenchStore((store) => store.sendMessage);
   const createConversation = useWorkbenchStore((store) => store.createConversation);
   const uploadImage = useWorkbenchStore((store) => store.uploadImage);
+  const splitImageGrid = useWorkbenchStore((store) => store.splitImageGrid);
+  const applyImageCanvasTool = useWorkbenchStore((store) => store.applyImageCanvasTool);
   const submitCanvasCommentOp = useWorkbenchStore((store) => store.submitCanvasCommentOp);
   const applyProposal = useWorkbenchStore((store) => store.applyProposal);
   const dismissProposal = useWorkbenchStore((store) => store.dismissProposal);
@@ -79,6 +83,18 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   const rejectOutput = useWorkbenchStore((store) => store.rejectOutput);
   const selectProvider = useWorkbenchStore((store) => store.selectProvider);
   const dispatchWorkbenchLayout = useWorkbenchLayoutStore((store) => store.dispatch);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'j') return;
+      if (event.target instanceof Element && event.target.closest('input,textarea,select,[contenteditable="true"]')) {
+        return;
+      }
+      event.preventDefault();
+      dispatchWorkbenchLayout({ type: 'zone/toggle', zoneId: 'secondarySidebar' });
+    };
+    globalThis.addEventListener?.('keydown', onKey);
+    return () => globalThis.removeEventListener?.('keydown', onKey);
+  }, [dispatchWorkbenchLayout]);
   const activeState = initialState ?? state;
   const openArtifactOutput = (outputId: string) => {
     dispatchWorkbenchLayout({ type: 'pane/show', paneId: 'artifact' });
@@ -169,9 +185,13 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
   }
 
   const previewState = previewWorkbenchStateWithManualEdits(activeState, editSession);
+  const layoutGraph = graphStateWithWorkflowLayout(
+    previewState.graph,
+    previewState.workflowGraph,
+  );
   const canvasGraph =
     dirtyEditCount === 0 && canvas && canvas.versionId === activeState.workspace.versionId
-      ? graphStateFromCanvasDocument(canvas, activeState.graph)
+      ? graphStateFromCanvasDocument(canvas, layoutGraph)
       : undefined;
   const uiState = stateForUi(previewState);
   const activeRun = Boolean(
@@ -233,7 +253,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
           void runAction(() =>
             sendMessage(
               '运行当前 workflow',
-              undefined,
+              canvasContextWithPreferredModel(selectedCanvasNodeIds),
               activeConversationId ?? undefined,
               'run_request',
             ),
@@ -288,7 +308,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
                 () =>
                   sendMessage(
                     text,
-                    { selection: { nodeIds: selectedCanvasNodeIds } },
+                    canvasContextWithPreferredModel(selectedCanvasNodeIds),
                     activeConversationId ?? undefined,
                   ),
                 true,
@@ -306,7 +326,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
                 <div className="canvas-stage">
                   <CanvasErrorBoundary resetKey={activeState.workspace.id}>
                     <GraphCanvas
-                graph={previewState.graph}
+                graph={layoutGraph}
                 canvasGraph={canvasGraph}
                 canvasViewport={canvas?.viewport}
                 comments={canvas?.comments ?? []}
@@ -320,7 +340,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
                     () =>
                       sendMessage(
                         `围绕选中节点 ${nodeId} 生成最小修改 proposal。`,
-                        { selection: { nodeIds: [nodeId] } },
+                        canvasContextWithPreferredModel([nodeId]),
                         activeConversationId ?? undefined,
                         'modify_workflow',
                       ),
@@ -331,6 +351,12 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
                   setSelectedCanvasNodeIds(nodeIds);
                   setCanvasSelection(nodeIds);
                 }}
+                onSplitImageGrid={(nodeId, rows, columns) =>
+                  runAction(() => splitImageGrid(nodeId, rows, columns), true)
+                }
+                onApplyImageCanvasTool={(nodeId, request) =>
+                  runAction(() => applyImageCanvasTool(nodeId, request), true)
+                }
                 onSetParam={(nodeId, key, value) => {
                   return runAction(
                     () => appendManualEdit(
@@ -349,7 +375,7 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
                   runAction(
                     () => sendMessage(
                       prompt,
-                      undefined,
+                      canvasContextWithPreferredModel(selectedCanvasNodeIds),
                       activeConversationId ?? undefined,
                       'create_workflow',
                     ),
@@ -357,7 +383,8 @@ export function App({ initialState, initialEditSession, workspaceId }: AppProps)
                   )
                 }
                 onSelectOutput={(id) => void runAction(() => selectOutput(id))}
-                outputs={activeState.outputs}
+                      outputs={activeState.outputs}
+                      imageProcessingJobs={activeState.imageProcessingJobs}
                 pendingProposal={activeState.pendingProposal}
                 run={uiState.run}
                 versionId={activeState.workspace.versionId}

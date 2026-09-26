@@ -7,8 +7,8 @@ use axum::{
     extract::{Path, State},
 };
 use helixflow_agent::{
-    AgentError, AgentLogEntry, AgentRuntimeIdentity, AgentSessionRequest, TurnClassification,
-    TurnMode, TurnModeSource, ValidatedAgentIntent, ValidatedAgentReply,
+    AgentError, AgentLogEntry, AgentRuntimeIdentity, AgentSessionRequest, CanvasEditPlan,
+    TurnClassification, TurnMode, TurnModeSource, ValidatedAgentReply, ValidatedCanvasEdit,
 };
 use helixflow_graph::{PreparedProposal, WorkflowGraph};
 use helixflow_run::EventBus;
@@ -513,18 +513,16 @@ async fn post_message_auto_starts_free_run_request() {
 
 #[tokio::test]
 async fn post_message_auto_applies_compiled_intent_proposal_record() {
-    let (state, workspace_id, version_id, _dir) = intent_state(intent_plan(serde_json::json!({
-        "intentVersion": "1",
-        "topology": "linear",
-        "stages": [{
-            "stageId": "image",
-            "capabilityId": "text_to_image",
-            "inputFrom": [],
-            "params": {"prompt": "a silver wireless headset"}
-        }],
-        "outputStageIds": ["image"]
-    })))
-    .await;
+    let (state, workspace_id, version_id, _dir) =
+        intent_state(canvas_edit_plan(serde_json::json!({
+            "operations": [{
+                "op": "add_node",
+                "id": "image",
+                "node_type": "image.generate",
+                "params": {"prompt": "a silver wireless headset"}
+            }]
+        })))
+        .await;
 
     let response = post_workspace_message(
         Path(workspace_id.clone()),
@@ -1056,10 +1054,10 @@ impl WorkbenchAgent for FakeWorkbenchAgent {
         })
     }
 
-    async fn propose_intent(
+    async fn propose_canvas_edit(
         &self,
         request: AgentSessionRequest,
-    ) -> Result<ValidatedAgentIntent, AgentError> {
+    ) -> Result<ValidatedCanvasEdit, AgentError> {
         if request.mode == TurnMode::DebugWorkflow {
             let context = request
                 .run_context
@@ -1086,7 +1084,7 @@ impl WorkbenchAgent for FakeWorkbenchAgent {
                 )));
             }
         }
-        Ok(ValidatedAgentIntent {
+        Ok(ValidatedCanvasEdit {
             session_id: format!("{}_fake", request.workspace_id),
             runtime_identity: Some(AgentRuntimeIdentity {
                 thread_id: "thr_fake".to_owned(),
@@ -1096,23 +1094,20 @@ impl WorkbenchAgent for FakeWorkbenchAgent {
                 kind: "agent_log:status".to_owned(),
                 text: "fake intent status".to_owned(),
             }],
-            intent: intent_plan(serde_json::json!({
-                "intentVersion": "1",
-                "topology": "linear",
-                "stages": [{
-                    "stageId": "image",
-                    "capabilityId": "text_to_image",
-                    "inputFrom": [],
+            edit: canvas_edit_plan(serde_json::json!({
+                "operations": [{
+                    "op": "add_node",
+                    "id": "image",
+                    "node_type": "image.generate",
                     "params": {"prompt": "a silver wireless headset"}
-                }],
-                "outputStageIds": ["image"]
+                }]
             })),
         })
     }
 }
 
 struct IntentWorkbenchAgent {
-    intent: helixflow_compiler::IntentPlan,
+    edit: CanvasEditPlan,
 }
 
 struct HangingWorkbenchAgent {
@@ -1188,31 +1183,29 @@ impl WorkbenchAgent for IntentWorkbenchAgent {
         Err(AgentError::Runtime("chat is not under test".to_owned()))
     }
 
-    async fn propose_intent(
+    async fn propose_canvas_edit(
         &self,
         request: AgentSessionRequest,
-    ) -> Result<helixflow_agent::ValidatedAgentIntent, AgentError> {
-        Ok(helixflow_agent::ValidatedAgentIntent {
+    ) -> Result<ValidatedCanvasEdit, AgentError> {
+        Ok(ValidatedCanvasEdit {
             session_id: format!("{}_intent", request.workspace_id),
             runtime_identity: None,
             agent_logs: vec![AgentLogEntry {
                 kind: "agent_log:status".to_owned(),
                 text: "fake intent status".to_owned(),
             }],
-            intent: self.intent.clone(),
+            edit: self.edit.clone(),
         })
     }
 }
 
-fn intent_plan(json: serde_json::Value) -> helixflow_compiler::IntentPlan {
-    serde_json::from_value(json).expect("intent parses")
+fn canvas_edit_plan(json: serde_json::Value) -> CanvasEditPlan {
+    serde_json::from_value(json).expect("canvas edit parses")
 }
 
-async fn intent_state(
-    intent: helixflow_compiler::IntentPlan,
-) -> (AppState, String, String, tempfile::TempDir) {
+async fn intent_state(edit: CanvasEditPlan) -> (AppState, String, String, tempfile::TempDir) {
     let (mut state, workspace_id, version_id, dir) = state_with_workspace().await;
-    state.agent = std::sync::Arc::new(IntentWorkbenchAgent { intent });
+    state.agent = std::sync::Arc::new(IntentWorkbenchAgent { edit });
     // A healthy atlas connector so catalog resolution succeeds in tests.
     let atlas = helixflow_gateway::RuntimeProvider::Atlas(helixflow_gateway::AtlasProvider::new(
         helixflow_gateway::ApiProviderConfig::atlas(
@@ -1226,17 +1219,14 @@ async fn intent_state(
 
 #[tokio::test]
 async fn intent_turn_compiles_and_persists_semantics() {
-    let intent = intent_plan(serde_json::json!({
-        "intentVersion": "1",
-        "topology": "linear",
-        "stages": [{
-            "stageId": "s1",
-            "capabilityId": "text_to_image",
-            "requestedModel": "Nano Banana",
-            "inputFrom": [],
+    let intent = canvas_edit_plan(serde_json::json!({
+        "operations": [{
+            "op": "add_node",
+            "id": "s1",
+            "node_type": "image.generate",
+            "model": "Nano Banana",
             "params": { "prompt": "a product image" }
-        }],
-        "outputStageIds": ["s1"]
+        }]
     }));
     let (state, workspace_id, version_id, _dir) = intent_state(intent).await;
 
@@ -1288,16 +1278,13 @@ async fn intent_turn_compiles_and_persists_semantics() {
 
 #[tokio::test]
 async fn intent_turn_missing_input_produces_clarify_message() {
-    let intent = intent_plan(serde_json::json!({
-        "intentVersion": "1",
-        "topology": "linear",
-        "stages": [{
-            "stageId": "s1",
-            "capabilityId": "text_to_image",
-            "inputFrom": [],
+    let intent = canvas_edit_plan(serde_json::json!({
+        "operations": [{
+            "op": "add_node",
+            "id": "s1",
+            "node_type": "image.generate",
             "params": {}
-        }],
-        "outputStageIds": ["s1"]
+        }]
     }));
     let (state, workspace_id, version_id, _dir) = intent_state(intent).await;
 
@@ -1331,26 +1318,30 @@ async fn intent_turn_missing_input_produces_clarify_message() {
 
 #[tokio::test]
 async fn intent_turn_compiles_seedance_image_to_video_binding() {
-    let intent = intent_plan(serde_json::json!({
-        "intentVersion": "1",
-        "topology": "linear",
-        "stages": [
+    let intent = canvas_edit_plan(serde_json::json!({
+        "operations": [
             {
-                "stageId": "s1",
-                "capabilityId": "text_to_image",
-                "requestedModel": "Nano Banana",
-                "inputFrom": [],
+                "op": "add_node",
+                "id": "s1",
+                "node_type": "image.generate",
+                "model": "Nano Banana",
                 "params": { "prompt": "一张产品图" }
             },
             {
-                "stageId": "s2",
-                "capabilityId": "image_to_video",
-                "requestedModel": "Seedance 2",
-                "inputFrom": [{ "stageId": "s1", "output": "image" }],
+                "op": "add_node",
+                "id": "s2",
+                "node_type": "video.image_to_video",
+                "model": "Seedance 2",
                 "params": {}
+            },
+            {
+                "op": "connect",
+                "source": "s1",
+                "source_handle": "image",
+                "target": "s2",
+                "target_handle": "image"
             }
-        ],
-        "outputStageIds": ["s2"]
+        ]
     }));
     let (state, workspace_id, version_id, _dir) = intent_state(intent).await;
 
@@ -1397,6 +1388,6 @@ async fn intent_turn_compiles_seedance_image_to_video_binding() {
         helixflow_registry::catalog::ImplementationSelection::Pinned {
             ref requested_model_id,
             ..
-        } if requested_model_id == "bytedance/seedance-v1.5-pro"
+        } if requested_model_id == "bytedance/seedance-2.0-fast"
     ));
 }

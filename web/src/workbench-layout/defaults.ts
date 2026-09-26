@@ -62,7 +62,7 @@ export const WORKBENCH_ZONE_CONSTRAINTS: Record<
   { defaultSizePx: number; minSizePx: number; maxSizePx: number }
 > = {
   primarySidebar: { defaultSizePx: 420, minSizePx: 280, maxSizePx: 580 },
-  secondarySidebar: { defaultSizePx: 480, minSizePx: 360, maxSizePx: 720 },
+  secondarySidebar: { defaultSizePx: 380, minSizePx: 320, maxSizePx: 480 },
   panel: { defaultSizePx: 240, minSizePx: 120, maxSizePx: 520 },
 };
 
@@ -84,8 +84,8 @@ export function createDefaultWorkbenchLayout(): WorkbenchLayoutDocument {
         activeContainerId: 'editor',
       },
       secondarySidebar: {
-        visible: true,
-        sizePx: WORKBENCH_ZONE_CONSTRAINTS.secondarySidebar.defaultSizePx,
+        visible: false,
+        sizePx: 380,
         containerIds: ['conversation', 'artifactViewer'],
         activeContainerId: 'conversation',
       },

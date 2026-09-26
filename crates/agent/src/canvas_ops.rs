@@ -25,6 +25,8 @@ pub struct CanvasOpsContext {
     pub graph: CompactCanvasGraph,
     pub selection: CanvasSelection,
     pub gates: CanvasGateState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_model_id: Option<String>,
 }
 
 impl CanvasOpsContext {
@@ -48,7 +50,20 @@ impl CanvasOpsContext {
             graph: compact_graph,
             selection: selection.filtered(&node_ids),
             gates,
+            preferred_model_id: None,
         }
+    }
+
+    pub fn with_preferred_model_id(mut self, model_id: Option<String>) -> Self {
+        self.preferred_model_id = model_id.and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_owned())
+            }
+        });
+        self
     }
 }
 
@@ -357,22 +372,25 @@ impl CanvasOpsContract {
         Self {
             schema_version: 1,
             allowed_ops: vec![
-                CanvasOpSpec::new("read_state", "Read ctx/canvas_state.json."),
                 CanvasOpSpec::new(
-                    "read_selection",
-                    "Read ctx/canvas_state.json selection.node_ids.",
+                    "catalog",
+                    "List node types available on the canvas right now.",
                 ),
                 CanvasOpSpec::new(
-                    "propose_layout",
-                    "Write out/intent.json with move_node ops; do not call layout save.",
+                    "inspect",
+                    "Read the current canvas. Filter by type, query, or ids; prefer a narrow read.",
                 ),
                 CanvasOpSpec::new(
-                    "propose_graph_ops",
-                    "Write out/intent.json with bounded graph ops.",
+                    "edit",
+                    "Write out/canvas_edit.json with add_node, update_node, move_node, remove_node, connect, and disconnect operations.",
                 ),
                 CanvasOpSpec::new(
-                    "run_selected_workflow",
-                    "Write run_request.json; backend estimates cost and decides auto-start or confirmation.",
+                    "run",
+                    "Write out/run_request.json naming the target node ids. Backend estimates cost.",
+                ),
+                CanvasOpSpec::new(
+                    "wait",
+                    "Follow a run only when the user asked to wait or the turn cannot continue without the result.",
                 ),
             ],
         }
@@ -561,24 +579,50 @@ mod tests {
     }
 
     #[test]
-    fn canvas_ops_contract_directs_graph_edits_to_intent_json() {
+    fn canvas_ops_contract_directs_graph_edits_to_canvas_edit_json() {
         let contract = CanvasOpsContract::v1();
-        for op in ["propose_layout", "propose_graph_ops"] {
-            let spec = contract
-                .allowed_ops
-                .iter()
-                .find(|item| item.op == op)
-                .unwrap_or_else(|| panic!("{op} is part of the canvas ops contract"));
-            assert!(
-                spec.behavior.contains("out/intent.json"),
-                "{op} should write intent.json: {}",
-                spec.behavior
-            );
-            assert!(
-                !spec.behavior.contains("proposal.json"),
-                "{op} must not mention proposal.json: {}",
-                spec.behavior
-            );
-        }
+        let spec = contract
+            .allowed_ops
+            .iter()
+            .find(|item| item.op == "edit")
+            .expect("edit is part of the canvas ops contract");
+        assert!(
+            spec.behavior.contains("out/canvas_edit.json"),
+            "edit should write canvas_edit.json: {}",
+            spec.behavior
+        );
+        assert!(
+            !spec.behavior.contains("proposal.json") && !spec.behavior.contains("intent.json"),
+            "edit must not mention proposal.json or intent.json: {}",
+            spec.behavior
+        );
+    }
+
+    #[test]
+    fn omits_empty_preferred_model_and_keeps_named_model() {
+        let graph = WorkflowGraph {
+            schema_version: 1,
+            catalog_revision: None,
+            nodes: BTreeMap::new(),
+            edges: Vec::new(),
+        };
+        let empty = CanvasOpsContext::from_graph(
+            "ws_1",
+            "ver_1",
+            &graph,
+            CanvasSelection::default(),
+            CanvasGateState::default(),
+        )
+        .with_preferred_model_id(Some("  ".to_owned()));
+        let named = empty
+            .clone()
+            .with_preferred_model_id(Some("google/nano-banana-2".to_owned()));
+        let empty_json = serde_json::to_value(&empty).expect("empty json");
+        assert_eq!(empty.preferred_model_id, None);
+        assert!(empty_json.get("preferred_model_id").is_none());
+        assert_eq!(
+            named.preferred_model_id.as_deref(),
+            Some("google/nano-banana-2")
+        );
     }
 }

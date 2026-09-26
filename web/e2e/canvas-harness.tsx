@@ -12,12 +12,15 @@ import type {
   ManualProposalInput,
   NodeCatalog,
   WorkbenchState,
+  WorkflowGraph,
 } from '../src/types';
 
 declare global {
   interface Window {
     __helixflowE2E: {
       logicalNodeCount: number;
+      videoNodeCount: number;
+      packVideos: boolean;
       proposals: ManualProposalInput[];
       snapshots: CanvasSnapshotUpdate[];
       rejectOps: string[];
@@ -27,10 +30,27 @@ declare global {
 
 const proposals: ManualProposalInput[] = [];
 const snapshots: CanvasSnapshotUpdate[] = [];
-const requestedCount = Number.parseInt(new URLSearchParams(location.search).get('nodes') ?? '2', 10);
+const search = new URLSearchParams(location.search);
+const requestedCount = Number.parseInt(search.get('nodes') ?? '2', 10);
+const requestedVideos = Number.parseInt(search.get('videos') ?? '0', 10);
 const logicalNodeCount = Number.isFinite(requestedCount) ? Math.max(2, requestedCount) : 2;
-const graph = graphFixture(logicalNodeCount);
-window.__helixflowE2E = { logicalNodeCount, proposals, snapshots, rejectOps: [] };
+const videoNodeCount = Number.isFinite(requestedVideos) ? Math.max(0, requestedVideos) : 0;
+const packVideos = search.get('pack') === '1';
+const workspaceId = search.get('ws')?.trim() || 'ws_e2e';
+const graph = graphFixture(logicalNodeCount, videoNodeCount, packVideos);
+window.__helixflowE2E = {
+  logicalNodeCount,
+  videoNodeCount,
+  packVideos,
+  proposals,
+  snapshots,
+  rejectOps: [],
+};
+
+/** Tiny looping WebM so packed cards actually create decoders, not empty <video> tags. */
+const SCALE_VIDEO_BASE64 =
+  'GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQRChYECGFOAZwEAAAAAAAHTEU2bdLpNu4tTq4QVSalmU6yBoU27i1OrhBZUrmtTrIHGTbuMU6uEElTDZ1OsggEXTbuMU6uEHFO7a1OsggHr7AEAAAAAAABZUrumz3KATYqF7oEBypXyggEX8ouOrhBA0qablW7j7/QFjk2bdLpNu4tTq4QWUOKydlu/gQKGhkFfTbuMU6uEHFO7a1OsggHr7AEAAAAAAABZUrumz3KATYqF7oEBypXyggEX8ouOrhBA0qablW7j7/QFjk2bdLpNu4tTq4QWUOKydlu/gQKGhkFfTbuMU6uEHFO7a1OsggHr7AEAAAAAAABZUrumz3KATYqF7oEBypXyggEX8ouOrhBA0qablW7j7/QFjg==';
+const SCALE_VIDEO_DATA_URI = `data:video/webm;base64,${SCALE_VIDEO_BASE64}`;
 
 const nativeFetch = window.fetch.bind(window);
 window.fetch = async (input, init) => {
@@ -54,6 +74,12 @@ window.fetch = async (input, init) => {
       headers: { 'content-type': 'application/json' },
     });
   }
+  if (url.pathname.includes('/uploads/') && url.pathname.endsWith('/content')) {
+    return new Response(scaleVideoBytes(), {
+      status: 200,
+      headers: { 'content-type': 'video/webm' },
+    });
+  }
   return nativeFetch(input, init);
 };
 
@@ -61,11 +87,12 @@ createRoot(document.getElementById('root')!).render(
   <main className="canvas-e2e-harness">
     <GraphCanvas
       graph={graph}
-      outputs={[]}
+      outputs={videoOutputs(graph.nodes)}
+      workflowGraph={workflowFixture(graph.nodes)}
       pendingProposal={null}
       run={runFixture()}
       versionId="ver_e2e"
-      workspaceId="ws_e2e"
+      workspaceId={workspaceId}
       onCreateProposal={async (proposal) => {
         proposals.push(proposal);
         const operation = proposal.ops[0]?.op;
@@ -86,15 +113,25 @@ createRoot(document.getElementById('root')!).render(
   </main>,
 );
 
-function graphFixture(count: number): WorkbenchState['graph'] {
+function graphFixture(count: number, videos: number, pack: boolean): WorkbenchState['graph'] {
   const nodes: GraphNodeState[] = [
     node('text', 'input.text', 80, 100),
     node('video', 'video.text_to_video', 520, 100),
   ];
+  const extraVideos = Math.min(Math.max(0, videos), Math.max(0, count - 2));
   for (let index = 2; index < count; index += 1) {
-    const column = index % 80;
-    const row = Math.floor(index / 80);
-    nodes.push(node(`text-${index}`, 'input.text', column * 320, row * 180));
+    const extraIndex = index - 2;
+    const isVideo = extraIndex < extraVideos;
+    const column = pack && isVideo ? extraIndex % 20 : index % 80;
+    const row = pack && isVideo ? Math.floor(extraIndex / 20) : Math.floor(index / 80);
+    const x = pack && isVideo ? column * 48 : column * 320;
+    const y = pack && isVideo ? row * 48 : row * 180;
+    nodes.push(node(
+      isVideo ? `media-${index}` : `text-${index}`,
+      isVideo ? 'input.video' : 'input.text',
+      x,
+      y,
+    ));
   }
   return { nodes, edges: [] };
 }
@@ -110,6 +147,26 @@ function node(id: string, nodeType: string, x: number, y: number): GraphNodeStat
     provider: nodeType.startsWith('video.') ? 'mock' : null,
     summary: nodeType,
   };
+}
+
+function videoOutputs(nodes: GraphNodeState[]): WorkbenchState['outputs'] {
+  return nodes
+    .filter((item) => item.nodeType === 'input.video')
+    .map((item) => ({
+      id: `art_${item.id}`,
+      kind: 'video',
+      title: item.title,
+      nodeId: item.id,
+      storageUri: 'upload://scale-video',
+      selected: false,
+      meta: 'scale-fixture',
+      mime: 'video/webm',
+      preview: {
+        kind: 'video',
+        content: SCALE_VIDEO_DATA_URI,
+        mime: 'video/webm',
+      },
+    }));
 }
 
 function nodeCatalog(): NodeCatalog {
@@ -141,6 +198,18 @@ function nodeCatalog(): NodeCatalog {
         params_schema,
         estimated_cost: null,
       },
+      {
+        type: 'input.video',
+        title: 'Video Input',
+        category: 'input',
+        provider: null,
+        capability: null,
+        description: 'Video scale fixture',
+        inputs: [],
+        outputs: [{ name: 'video', type: 'VIDEO', required: true }],
+        params_schema,
+        estimated_cost: null,
+      },
     ],
   };
 }
@@ -153,6 +222,30 @@ function runFixture(): NonNullable<WorkbenchState['run']> {
     steps: [],
     cost: { estimate: 0, actual: 0, currency: 'USD' },
   };
+}
+
+function workflowFixture(nodes: GraphNodeState[]): WorkflowGraph {
+  return {
+    schema_version: 1,
+    nodes: Object.fromEntries(nodes.map((item) => [item.id, {
+      node_type: item.nodeType,
+      title: item.title,
+      params: item.nodeType === 'input.video'
+        ? { storage_uri: 'upload://scale-video' }
+        : {},
+      pos: [item.position.x, item.position.y] as [number, number],
+    }])),
+    edges: [],
+  };
+}
+
+function scaleVideoBytes(): Uint8Array {
+  const binary = atob(SCALE_VIDEO_BASE64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
 }
 
 function jsonResponse(body: unknown): Response {

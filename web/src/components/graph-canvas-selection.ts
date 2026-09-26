@@ -14,9 +14,17 @@ export type GraphShortcut =
   | 'clear_selection'
   | 'select_all'
   | 'fit_view'
+  | 'find_nodes'
+  | 'zoom_in'
+  | 'zoom_out'
   | 'copy_selection'
   | 'paste_selection'
-  | 'delete_selection';
+  | 'duplicate_selection'
+  | 'group_selection'
+  | 'ungroup_selection'
+  | 'delete_selection'
+  | 'undo'
+  | 'redo';
 
 export function selectionRectFromPoints(start: Point, current: Point): Rect {
   return {
@@ -98,6 +106,7 @@ export function graphShortcutFromEvent(event: {
   key: string;
   metaKey?: boolean;
   ctrlKey?: boolean;
+  shiftKey?: boolean;
   nativeEvent?: { isComposing?: boolean; keyCode?: number; which?: number };
 }): GraphShortcut | null {
   if (isImeEvent(event.nativeEvent)) return null;
@@ -108,8 +117,17 @@ export function graphShortcutFromEvent(event: {
   if (!command) return null;
   if (key === 'a') return 'select_all';
   if (key === '0') return 'fit_view';
+  if (key === 'f') return 'find_nodes';
+  if (key === '=' || key === '+') return 'zoom_in';
+  if (key === '-') return 'zoom_out';
   if (key === 'c') return 'copy_selection';
   if (key === 'v') return 'paste_selection';
+  if (key === 'd') return 'duplicate_selection';
+  if (key === 'g' && event.shiftKey) return 'ungroup_selection';
+  if (key === 'g') return 'group_selection';
+  if (key === 'z' && event.shiftKey) return 'redo';
+  if (key === 'z') return 'undo';
+  if (key === 'y') return 'redo';
   return null;
 }
 

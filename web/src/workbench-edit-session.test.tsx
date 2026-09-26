@@ -7,6 +7,8 @@ import type { WorkbenchState } from './types';
 import {
   buildSetParamEditInput,
   deriveQueueLockReason,
+  graphStateWithWorkflowLayout,
+  partitionManualEditOps,
   previewWorkbenchStateWithManualEdits,
 } from './workbench-edit-session';
 
@@ -70,6 +72,7 @@ const state: WorkbenchState = {
   },
   run: null,
   outputs: [],
+  imageProcessingJobs: [],
   history: [],
   pendingConfirmation: null,
   pendingProposal: null,
@@ -153,7 +156,7 @@ describe('manual edit session workbench flow', () => {
       'fetch',
       vi.fn(async (_input, init) => {
         const body = JSON.parse(String(init?.body ?? '{}')) as { ops?: Array<{ op: string }> };
-        const versionId = body.ops?.[0]?.op === 'move_node' ? 'ver_manual_2' : 'ver_manual_3';
+        const versionId = body.ops?.[0]?.op === 'set_param' ? 'ver_manual_2' : 'ver_manual_3';
         return jsonResponse({
           ...state,
           workspace: { ...state.workspace, versionId },
@@ -164,7 +167,7 @@ describe('manual edit session workbench flow', () => {
 
     await useWorkbenchStore.getState().appendManualEdit({
       baseVersionId: 'ver_test_1',
-      ops: [{ op: 'move_node', id: 'video', pos: [620, 210] }],
+      ops: [{ op: 'set_param', id: 'video', key: 'duration_sec', value: 3 }],
     });
     const firstKey = JSON.parse(String(vi.mocked(fetch).mock.calls[0][1]?.body)).idempotencyKey as string;
 
@@ -184,6 +187,83 @@ describe('manual edit session workbench flow', () => {
     expect(secondKey).not.toBe(firstKey);
     expect(useWorkbenchStore.getState().editSession).toBeNull();
     expect(useWorkbenchStore.getState().state?.workspace.versionId).toBe('ver_manual_3');
+  });
+
+  it('persists spawned media cards through ops and their size through canvas snapshot', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/versions/ops')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as {
+          ops?: Array<{ op: string; id?: string; node_type?: string; title?: string; pos?: [number, number] }>;
+        };
+        const spawn = body.ops?.find((op) => op.op === 'spawn_node');
+        return jsonResponse({
+          ...state,
+          workspace: { ...state.workspace, versionId: 'ver_manual_2' },
+          graph: {
+            ...state.graph,
+            nodes: [
+              ...state.graph.nodes,
+              {
+                id: spawn?.id ?? 'input_image',
+                nodeType: spawn?.node_type ?? 'input.image',
+                title: spawn?.title ?? 'Image',
+                category: 'Input',
+                status: 'queued',
+                position: { x: spawn?.pos?.[0] ?? 80, y: spawn?.pos?.[1] ?? 80 },
+                provider: null,
+                summary: spawn?.node_type ?? 'input.image',
+              },
+            ],
+          },
+        });
+      }
+      if (url.endsWith('/canvas/snapshot')) {
+        return jsonResponse({
+          ...canvasForState({ ...state, workspace: { ...state.workspace, versionId: 'ver_manual_2' } }),
+          revision: 1,
+        });
+      }
+      return new Response('{}', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    useWorkbenchStore.getState().setInitialState(state);
+    useWorkbenchStore.setState({ canvas: canvasForState(state) });
+
+    await useWorkbenchStore.getState().appendManualEdit({
+      baseVersionId: 'ver_test_1',
+      ops: [
+        {
+          op: 'spawn_node',
+          id: 'input_image_abc123',
+          node_type: 'input.image',
+          title: 'Image Input',
+          params: {},
+          pos: [80, 80],
+        },
+        { op: 'resize_node', id: 'input_image_abc123', size: [280, 280] },
+      ],
+    });
+
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
+      '/api/workspaces/ws_test/versions/ops',
+      '/api/workspaces/ws_test/canvas/snapshot',
+    ]);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      ops: [{
+        op: 'spawn_node',
+        id: 'input_image_abc123',
+        node_type: 'input.image',
+      }],
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
+      versionId: 'ver_manual_2',
+      baseRevision: 0,
+      sizes: [{ id: 'input_image_abc123', width: 280, height: 280 }],
+    });
+    expect(useWorkbenchStore.getState().editSession).toBeNull();
+    expect(useWorkbenchStore.getState().state?.workspace.versionId).toBe('ver_manual_2');
+    expect(useWorkbenchStore.getState().state?.graph.nodes.some((node) => node.id === 'input_image_abc123')).toBe(true);
   });
 
   it('rebases an edit queued while the preceding canvas version is saving', async () => {
@@ -327,7 +407,7 @@ describe('manual edit session workbench flow', () => {
         idempotencyKey: 'canvas_op_leftover',
         source: 'user',
         startedAt: '2026-07-11T00:00:00Z',
-        ops: [{ op: 'move_node', id: 'video', pos: [620, 210] }],
+        ops: [{ op: 'set_param', id: 'video', key: 'duration_sec', value: 3 }],
       },
     });
 
@@ -369,6 +449,52 @@ describe('manual edit session workbench flow', () => {
     expect(markup).not.toContain('title="先提交或放弃 1 个手动编辑"');
   });
 
+  it('splits layout ops out of versioned graph edits', () => {
+    expect(partitionManualEditOps([
+      {
+        op: 'spawn_node',
+        id: 'input_image_abc123',
+        node_type: 'input.image',
+        title: 'Image Input',
+        params: {},
+        pos: [80, 80],
+      },
+      { op: 'resize_node', id: 'input_image_abc123', size: [280, 280] },
+      { op: 'move_node', id: 'video', pos: [620, 210] },
+    ])).toEqual({
+      graphOps: [{
+        op: 'spawn_node',
+        id: 'input_image_abc123',
+        node_type: 'input.image',
+        title: 'Image Input',
+        params: {},
+        pos: [80, 80],
+      }],
+      snapshot: {
+        positions: [{ id: 'video', x: 620, y: 210 }],
+        sizes: [{ id: 'input_image_abc123', width: 280, height: 280 }],
+      },
+    });
+  });
+
+  it('fills missing graph node sizes from the workflow graph', () => {
+    const graph = graphStateWithWorkflowLayout(state.graph, {
+      ...state.workflowGraph!,
+      nodes: {
+        ...state.workflowGraph!.nodes,
+        video: {
+          ...state.workflowGraph!.nodes.video,
+          size: [320, 200],
+        },
+      },
+    });
+    expect(graph.nodes.find((node) => node.id === 'video')?.size).toEqual({
+      width: 320,
+      height: 200,
+    });
+    expect(state.graph.nodes.find((node) => node.id === 'video')?.size).toBeUndefined();
+  });
+
   it('previews manual edit ops without mutating the committed state', () => {
     const preview = previewWorkbenchStateWithManualEdits(state, {
       baseVersionId: 'ver_test_1',
@@ -396,6 +522,89 @@ describe('manual edit session workbench flow', () => {
       x: 486,
       y: 156,
     });
+  });
+
+  it('previews 宫格切分 spawn_node ops with source-to-tile lineage edges', () => {
+    const photoState: WorkbenchState = {
+      ...state,
+      graph: {
+        nodes: [
+          {
+            id: 'photo',
+            nodeType: 'input.image',
+            title: '产品主图',
+            category: 'Input',
+            status: 'succeeded',
+            position: { x: 0, y: 0 },
+            provider: null,
+            summary: 'input.image',
+          },
+        ],
+        edges: [],
+      },
+      workflowGraph: {
+        schema_version: 1,
+        nodes: {
+          photo: {
+            node_type: 'input.image',
+            title: '产品主图',
+            params: { storage_uri: 'upload://a' },
+            pos: [0, 0],
+          },
+        },
+        edges: [],
+      },
+    };
+    const preview = previewWorkbenchStateWithManualEdits(photoState, {
+      baseVersionId: 'ver_test_1',
+      idempotencyKey: 'canvas_op_split',
+      source: 'user',
+      startedAt: '2026-07-02T00:00:00Z',
+      ops: [
+        {
+          op: 'spawn_node',
+          id: 'image_grid_r1c1',
+          node_type: 'input.image',
+          title: '产品主图 r1c1',
+          params: { storage_uri: 'upload://t1' },
+          pos: [400, 0],
+          from: 'photo',
+        },
+        {
+          op: 'spawn_node',
+          id: 'image_grid_r1c2',
+          node_type: 'input.image',
+          title: '产品主图 r1c2',
+          params: { storage_uri: 'upload://t2' },
+          pos: [680, 0],
+          from: 'photo',
+        },
+      ],
+    });
+
+    expect(preview.graph.nodes.map((node) => node.id).sort()).toEqual([
+      'image_grid_r1c1',
+      'image_grid_r1c2',
+      'photo',
+    ]);
+    expect(preview.graph.edges).toEqual([
+      {
+        id: 'edge_photo_image_image_grid_r1c1_in_0',
+        from: { nodeId: 'photo', port: 'image' },
+        to: { nodeId: 'image_grid_r1c1', port: 'in' },
+        kind: 'image',
+      },
+      {
+        id: 'edge_photo_image_image_grid_r1c2_in_1',
+        from: { nodeId: 'photo', port: 'image' },
+        to: { nodeId: 'image_grid_r1c2', port: 'in' },
+        kind: 'image',
+      },
+    ]);
+    expect(preview.workflowGraph?.edges).toEqual([
+      { from: ['photo', 'image'], to: ['image_grid_r1c1', 'in'], edge_type: 'image' },
+      { from: ['photo', 'image'], to: ['image_grid_r1c2', 'in'], edge_type: 'image' },
+    ]);
   });
 
   it('builds inspector set_param edits with prev from the preview workflow graph', () => {
@@ -436,4 +645,28 @@ function jsonResponse(body: unknown): Response {
     status: 200,
     headers: { 'content-type': 'application/json' },
   });
+}
+
+function canvasForState(nextState: WorkbenchState) {
+  return {
+    schemaVersion: 1,
+    workspaceId: nextState.workspace.id,
+    versionId: nextState.workspace.versionId,
+    seq: 0,
+    revision: 0,
+    viewport: null,
+    nodes: nextState.graph.nodes.map((node) => ({
+      id: node.id,
+      nodeType: node.nodeType,
+      title: node.title,
+      position: node.position,
+      params: {},
+      runtime: null,
+      metadata: { source: 'test' },
+    })),
+    edges: nextState.graph.edges,
+    comments: [],
+    runtime: {},
+    metadata: { source: 'test' },
+  };
 }

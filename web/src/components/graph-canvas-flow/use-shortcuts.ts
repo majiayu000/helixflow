@@ -14,6 +14,15 @@ type ShortcutInput = {
   selectedNodes: GraphNodeState[];
   setSelection: (ids: Iterable<string>) => void;
   viewportSize: ViewportSize;
+  pasteMedia?: () => Promise<void>;
+  onFindNodes?: () => void;
+  onUndo?: () => void;
+  onRedo?: () => void;
+  onDuplicate?: () => void;
+  onGroup?: () => void;
+  onUngroup?: () => void;
+  onDeleteEdges?: () => void;
+  hasSelectedEdges?: boolean;
 };
 
 export function useCanvasShortcuts(input: ShortcutInput) {
@@ -27,10 +36,23 @@ export function useCanvasShortcuts(input: ShortcutInput) {
     if (shortcut === 'fit_view') {
       void setFlowViewportToNodes(input.instance, input.nodes, input.viewportSize);
     }
+    if (shortcut === 'find_nodes') input.onFindNodes?.();
+    if (shortcut === 'zoom_in') void input.instance?.zoomIn({ duration: 160 });
+    if (shortcut === 'zoom_out') void input.instance?.zoomOut({ duration: 160 });
     if (shortcut === 'copy_selection') {
       void input.editActions.copySelection(input.selectedNodes);
     }
-    if (shortcut === 'paste_selection') void input.editActions.pasteSelection();
-    if (shortcut === 'delete_selection') input.editActions.deleteSelection(input.selectedIds);
+    if (shortcut === 'paste_selection') {
+      void (input.pasteMedia ? input.pasteMedia() : input.editActions.pasteSelection());
+    }
+    if (shortcut === 'delete_selection') {
+      if (input.hasSelectedEdges) input.onDeleteEdges?.();
+      else input.editActions.deleteSelection(input.selectedIds);
+    }
+    if (shortcut === 'duplicate_selection') input.onDuplicate?.();
+    if (shortcut === 'group_selection') input.onGroup?.();
+    if (shortcut === 'ungroup_selection') input.onUngroup?.();
+    if (shortcut === 'undo') input.onUndo?.();
+    if (shortcut === 'redo') input.onRedo?.();
   }, [input]);
 }

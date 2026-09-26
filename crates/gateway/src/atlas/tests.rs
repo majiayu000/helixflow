@@ -228,6 +228,7 @@ fn request(capability: &str, params: Value) -> ProviderRequest {
     let operation_id = match capability {
         "prompt_writer" => "deepseek-ai/DeepSeek-V3-0324",
         "text_to_image" => "google/nano-banana-2/text-to-image",
+        "image_edit" => "google/nano-banana-2/edit",
         "image_to_video" => "bytedance/seedance-v1.5-pro/image-to-video",
         _ => "bytedance/seedance-v1.5-pro/text-to-video-fast",
     };
@@ -276,6 +277,37 @@ async fn atlas_image_to_video_dispatch_sends_the_wired_image()
     assert_eq!(request_body["image"], "data:image/png;base64,iVBORw0KGgo=");
     assert_eq!(request_body["generate_audio"], true);
     assert_eq!(request_body["resolution"], "720p");
+    Ok(())
+}
+
+#[tokio::test]
+async fn atlas_image_edit_sends_wired_images() -> Result<(), Box<dyn std::error::Error>> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let server = capture_request_and_respond(
+        listener,
+        200,
+        r#"{"data":{"outputs":["https://cdn.example/edited.png"]}}"#,
+    );
+    let provider = AtlasProvider::new(ApiProviderConfig::atlas(
+        "test-key".to_owned(),
+        format!("http://{addr}/v1"),
+    ));
+    let result = provider
+        .invoke(request(
+            "image_edit",
+            json!({
+                "prompt": "fill the transparent border",
+                "__helixflow_wired_image": "https://cdn.example/source.png"
+            }),
+        ))
+        .await
+        .expect("image edit result");
+    let request_body = server.await??;
+    assert_eq!(request_body["model"], "google/nano-banana-2/edit");
+    assert_eq!(request_body["images"][0], "https://cdn.example/source.png");
+    assert_eq!(request_body["prompt"], "fill the transparent border");
+    assert!(result.outputs.contains_key("image"));
     Ok(())
 }
 

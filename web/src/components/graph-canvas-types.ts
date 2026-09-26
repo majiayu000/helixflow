@@ -31,8 +31,13 @@ export type GraphCanvasProps = {
   onSelectOutput?: (outputId: string) => void;
   onSelectionChange?: (nodeIds: string[]) => void;
   onSetParam?: (nodeId: string, key: string, value: unknown) => Promise<void>;
+  onSplitImageGrid?: (nodeId: string, rows: number, columns: number) => Promise<void>;
+  onApplyImageCanvasTool?: (nodeId: string, request: import('../image-canvas-tools').ImageCanvasToolRequest) => Promise<void>;
   onStartFromPrompt?: (prompt: string) => void | Promise<void>;
   outputs?: WorkbenchState['outputs'];
+  imageProcessingJobs?: WorkbenchState['imageProcessingJobs'];
+  selectedConnectorId?: string;
+  catalogReadiness?: WorkbenchState['catalogReadiness'];
 };
 
 export type DragState = {

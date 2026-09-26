@@ -1,14 +1,13 @@
-use helixflow_compiler::IntentPlan;
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentError, AgentResult, AgentSession, TurnMode, read_output_file};
+use crate::{AgentError, AgentResult, AgentSession, CanvasEditPlan, TurnMode, read_output_file};
 
 #[derive(Debug, Clone)]
-pub struct ValidatedAgentIntent {
+pub struct ValidatedCanvasEdit {
     pub session_id: String,
     pub runtime_identity: Option<AgentRuntimeIdentity>,
     pub agent_logs: Vec<AgentLogEntry>,
-    pub intent: IntentPlan,
+    pub edit: CanvasEditPlan,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +43,8 @@ pub struct AgentRuntimeIdentity {
 pub struct RunRequestOutput {
     pub action: RunRequestAction,
     pub summary: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub node_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -65,20 +66,17 @@ pub struct ValidatedRoute {
     pub requested_action: String,
 }
 
-/// Reads and validates `out/intent.json`. The IntentPlan schema rejects
-/// unknown fields and the structural validator rejects topology and reference
-/// errors before anything reaches the compiler.
-pub fn read_validated_intent(session: &AgentSession) -> AgentResult<IntentPlan> {
-    let output_path = session.out_dir.join("intent.json");
-    let intent: IntentPlan =
+pub fn read_validated_canvas_edit(session: &AgentSession) -> AgentResult<CanvasEditPlan> {
+    let output_path = session.out_dir.join("canvas_edit.json");
+    let edit: CanvasEditPlan =
         serde_json::from_slice(&read_output_file(&session.out_dir, &output_path)?)?;
-    intent
-        .validate()
-        .map_err(|err| AgentError::InvalidOutputFile {
+    if edit.operations.is_empty() {
+        return Err(AgentError::InvalidOutputFile {
             path: output_path,
-            reason: err.to_string(),
-        })?;
-    Ok(intent)
+            reason: "canvas edit has no operations".to_owned(),
+        });
+    }
+    Ok(edit)
 }
 
 pub fn read_validated_reply(session: &AgentSession) -> AgentResult<ValidatedAgentReply> {
@@ -121,16 +119,21 @@ pub fn read_validated_run_request(session: &AgentSession) -> AgentResult<Validat
 }
 
 fn validate_text_field(
-    output_path: &std::path::Path,
+    path: &std::path::Path,
     field: &str,
     value: &str,
-    max_chars: usize,
+    max_bytes: usize,
 ) -> AgentResult<()> {
-    let chars = value.chars().count();
-    if value.trim().is_empty() || chars > max_chars {
+    if value.trim().is_empty() {
         return Err(AgentError::InvalidOutputFile {
-            path: output_path.to_path_buf(),
-            reason: format!("`{field}` must contain 1 to {max_chars} characters"),
+            path: path.to_path_buf(),
+            reason: format!("{field} must not be empty"),
+        });
+    }
+    if value.len() > max_bytes {
+        return Err(AgentError::InvalidOutputFile {
+            path: path.to_path_buf(),
+            reason: format!("{field} exceeds {max_bytes} bytes"),
         });
     }
     Ok(())

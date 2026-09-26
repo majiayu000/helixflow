@@ -99,11 +99,62 @@ export function CanvasCollaborationWorld({
   );
 }
 
+export function CommentComposePin({
+  x,
+  y,
+  onCancel,
+  onSubmit,
+}: {
+  x: number;
+  y: number;
+  onCancel: () => void;
+  onSubmit: (body: string) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+  return (
+    <form
+      className="comment-compose-pin nodrag nopan"
+      onPointerDown={(event) => event.stopPropagation()}
+      onSubmit={(event) => {
+        event.preventDefault();
+        const body = draft.trim();
+        if (!body || busy) return;
+        setBusy(true);
+        void onSubmit(body)
+          .then(() => setDraft(''))
+          .finally(() => setBusy(false));
+      }}
+      style={{ left: x, top: y }}
+    >
+      <textarea
+        autoFocus
+        onChange={(event) => setDraft(event.currentTarget.value)}
+        placeholder="写一条评论，Shift+Enter 换行"
+        rows={3}
+        value={draft}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            onCancel();
+          }
+        }}
+      />
+      <div className="comment-compose-pin-actions">
+        <button onClick={onCancel} type="button">取消</button>
+        <button disabled={busy || draft.trim().length === 0} type="submit">添加</button>
+      </div>
+    </form>
+  );
+}
+
 type CanvasCommentsPanelProps = {
   comments: CanvasComment[];
   edges: WorkbenchState['graph']['edges'];
   nodes: GraphNodeState[];
   onCommentOp?: (input: CanvasCommentOpInput) => Promise<void>;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   selectedNodeId?: string;
   view: ViewState;
   viewportSize: ViewportSize;
@@ -114,12 +165,19 @@ export function CanvasCommentsPanel({
   edges,
   nodes,
   onCommentOp,
+  open: openProp,
+  onOpenChange,
   selectedNodeId,
   view,
   viewportSize,
 }: CanvasCommentsPanelProps) {
   const [draft, setDraft] = useState('');
-  const [open, setOpen] = useState(comments.length > 0);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(comments.length > 0);
+  const open = openProp ?? uncontrolledOpen;
+  const setOpen = (next: boolean) => {
+    onOpenChange?.(next);
+    if (openProp === undefined) setUncontrolledOpen(next);
+  };
   const targetOptions = useMemo(
     () => commentTargetOptions(nodes, edges, selectedNodeId, view, viewportSize),
     [edges, nodes, selectedNodeId, view, viewportSize],

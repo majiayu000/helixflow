@@ -20,6 +20,9 @@ mod canvas_ticket;
 mod capability_preflight;
 mod catalog_routes;
 mod graph_files;
+mod image_processing_routes;
+#[cfg(test)]
+mod image_processing_routes_tests;
 mod layout_routes;
 #[cfg(test)]
 mod layout_routes_tests;
@@ -88,12 +91,18 @@ use catalog_routes::{
     capability_models, catalog_snapshot, compile_intent, model_capabilities,
     resolve_implementation, resolve_workspace_implementation,
 };
+use image_processing_routes::{
+    create_image_processing_job, get_image_processing_job, image_processing_capabilities,
+    image_processing_request_limit, update_image_processing_job,
+};
 use layout_routes::save_canvas_snapshot;
 use ops_routes::apply_workspace_ops;
 use proposal_routes::{apply_workspace_proposal, dismiss_workspace_proposal};
 use registry_routes::node_registry_catalog;
 use run_routes::{confirm_run, hold_run, interrupt_active_run, queue_workspace_run};
-use upload_routes::{upload_request_limit, upload_workspace_image, validate_upload_config};
+use upload_routes::{
+    download_workspace_upload, upload_request_limit, upload_workspace_image, validate_upload_config,
+};
 use version_file_reconciliation::ReconciliationReport;
 use version_migration_routes::{apply_version_migration, dry_run_version_migration};
 use version_routes::{export_workflow_version, restore_workspace_version, undo_workspace_version};
@@ -273,6 +282,23 @@ pub(crate) fn app(state: AppState) -> Router {
         .route(
             "/api/workspaces/{workspace_id}/uploads",
             post(upload_workspace_image).layer(DefaultBodyLimit::max(upload_request_limit())),
+        )
+        .route(
+            "/api/workspaces/{workspace_id}/uploads/{upload_id}/content",
+            get(download_workspace_upload),
+        )
+        .route(
+            "/api/workspaces/{workspace_id}/image-processing-jobs",
+            post(create_image_processing_job)
+                .layer(DefaultBodyLimit::max(image_processing_request_limit())),
+        )
+        .route(
+            "/api/workspaces/{workspace_id}/image-processing-capabilities",
+            get(image_processing_capabilities),
+        )
+        .route(
+            "/api/workspaces/{workspace_id}/image-processing-jobs/{job_id}",
+            get(get_image_processing_job).put(update_image_processing_job),
         )
         .route(
             "/api/workspaces/{workspace_id}/proposals/{proposal_id}/apply",

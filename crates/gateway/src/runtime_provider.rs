@@ -4,7 +4,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ApiConnectorSummary, AtlasProvider, CostEstimate, FalProvider, MockProvider, ProviderCatalog,
+    ApiConnectorSummary, AtlasProvider, CostEstimate, FalProvider, ImageProcessingCapabilities,
+    ImageProcessingOutput, ImageProcessingRequest, MockProvider, ProviderCatalog,
     ProviderCatalogSnapshot, ProviderHealth, ProviderRequest, ProviderResult,
     RuntimeProviderSummary, WorkflowBackendSummary, is_safe_provider_message,
     safe_provider_message, sanitize_provider_id,
@@ -286,6 +287,44 @@ impl RuntimeProvider {
 
     pub fn is_enabled(&self) -> bool {
         !matches!(self, Self::Unavailable(_))
+    }
+
+    pub fn image_processing_capabilities(
+        &self,
+    ) -> ProviderResultValue<ImageProcessingCapabilities> {
+        match self {
+            Self::Atlas(provider) => Ok(provider.image_processing_capabilities()),
+            Self::Unavailable(provider) => Err(ProviderError::Unavailable {
+                provider: provider.safe_id(),
+                reason: provider.safe_reason(),
+            }),
+            Self::Mock(_) | Self::Fal(_) => Err(ProviderError::UnsupportedCapability(
+                "image_processing".to_owned(),
+            )),
+        }
+    }
+
+    pub async fn submit_image(
+        &self,
+        request: ImageProcessingRequest,
+    ) -> ProviderResultValue<crate::ImageProcessingSubmission> {
+        match self {
+            Self::Atlas(provider) => provider.submit_image(request).await,
+            Self::Unavailable(provider) => Err(ProviderError::Unavailable {
+                provider: provider.safe_id(),
+                reason: provider.safe_reason(),
+            }),
+            Self::Mock(_) | Self::Fal(_) => Err(ProviderError::UnsupportedCapability(
+                "image_processing".to_owned(),
+            )),
+        }
+    }
+
+    pub async fn process_image(
+        &self,
+        request: ImageProcessingRequest,
+    ) -> ProviderResultValue<ImageProcessingOutput> {
+        self.submit_image(request).await?.complete().await
     }
 
     pub fn catalog_snapshot(&self) -> ProviderCatalogSnapshot {

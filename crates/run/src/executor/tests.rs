@@ -46,7 +46,7 @@ fn step<const N: usize>(node_id: &str, inputs: [(&str, [&str; 2]); N]) -> Execut
             .map(|(port, source)| {
                 (
                     port.to_owned(),
-                    [source[0].to_owned(), source[1].to_owned()],
+                    vec![[source[0].to_owned(), source[1].to_owned()]],
                 )
             })
             .collect::<BTreeMap<_, _>>(),

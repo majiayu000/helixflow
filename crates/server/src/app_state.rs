@@ -6,7 +6,7 @@ use std::{error::Error, fmt};
 use async_trait::async_trait;
 use helixflow_agent::{
     AgentError, AgentService, AgentSessionRequest, CodexBackendRuntime, TurnClassification,
-    ValidatedAgentIntent, ValidatedAgentReply,
+    ValidatedAgentReply, ValidatedCanvasEdit,
 };
 #[cfg(test)]
 use helixflow_gateway::RuntimeProvider;
@@ -288,13 +288,13 @@ pub(crate) trait WorkbenchAgent: Send + Sync {
         request: AgentSessionRequest,
     ) -> Result<ValidatedAgentReply, AgentError>;
 
-    async fn propose_intent(
+    async fn propose_canvas_edit(
         &self,
         request: AgentSessionRequest,
-    ) -> Result<ValidatedAgentIntent, AgentError> {
+    ) -> Result<ValidatedCanvasEdit, AgentError> {
         Err(AgentError::InvalidMode {
             mode: request.mode,
-            expected: helixflow_agent::OutputContract::IntentJson,
+            expected: helixflow_agent::OutputContract::CanvasEditJson,
             actual: request.mode.output_contract(),
         })
     }
@@ -325,12 +325,12 @@ impl WorkbenchAgent for CodexWorkbenchAgent {
             .await
     }
 
-    async fn propose_intent(
+    async fn propose_canvas_edit(
         &self,
         request: AgentSessionRequest,
-    ) -> Result<ValidatedAgentIntent, AgentError> {
+    ) -> Result<ValidatedCanvasEdit, AgentError> {
         AgentService::new(self.runtime.clone(), self.events.clone())
-            .propose_intent(request)
+            .propose_canvas_edit(request)
             .await
     }
 }

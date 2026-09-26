@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 
 use helixflow_gateway::{ArtifactKind, ArtifactRef, Provider, ProviderRequest};
 use helixflow_graph::{ExecutionPlan, ExecutionStep};
@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 use tokio::task::JoinSet;
 
 use super::cache::CachedArtifactLink;
+use super::step_dag::StepDag;
 use super::{
     RunError, RunEventEnvelope, RunInterrupt, RunOutcome, RunResult, RunService, RunStatus,
     RunStepState, StepOutput,
@@ -24,53 +25,6 @@ enum StepExecution {
 struct BuiltinExecution {
     outputs: Vec<StepOutput>,
     cache_links: Vec<CachedArtifactLink>,
-}
-
-#[derive(Debug)]
-struct StepDag {
-    upstream_counts: Vec<usize>,
-    downstream: Vec<Vec<usize>>,
-}
-
-impl StepDag {
-    fn from_plan(plan: &ExecutionPlan) -> RunResult<Self> {
-        let mut by_node = BTreeMap::new();
-        for (index, step) in plan.steps.iter().enumerate() {
-            by_node.insert(step.node_id.as_str(), index);
-        }
-
-        let mut upstream = vec![BTreeSet::new(); plan.steps.len()];
-        let mut downstream = vec![BTreeSet::new(); plan.steps.len()];
-        for (index, step) in plan.steps.iter().enumerate() {
-            for source in step.inputs.values() {
-                let Some(&source_index) = by_node.get(source[0].as_str()) else {
-                    return Err(RunError::MissingInput {
-                        node_id: source[0].clone(),
-                        port: source[1].clone(),
-                    });
-                };
-                upstream[index].insert(source_index);
-                downstream[source_index].insert(index);
-            }
-        }
-
-        Ok(Self {
-            upstream_counts: upstream.iter().map(BTreeSet::len).collect(),
-            downstream: downstream
-                .into_iter()
-                .map(|items| items.into_iter().collect())
-                .collect(),
-        })
-    }
-
-    #[cfg(test)]
-    fn initial_ready(&self) -> VecDeque<usize> {
-        self.upstream_counts
-            .iter()
-            .enumerate()
-            .filter_map(|(index, count)| (*count == 0).then_some(index))
-            .collect()
-    }
 }
 
 impl<P> RunService<P>
@@ -402,66 +356,98 @@ where
         self.emit_node_state(workspace_id, run_id, step, RunStepState::Running, None)
             .await?;
 
-        let (cache_links, step_outputs, cost_json) =
-            if let (Some(provider), Some(capability)) = (&step.provider, &step.capability) {
-                let input_texts = crate::input_materialize::materialize_text_inputs(
+        let (cache_links, step_outputs, cost_json) = if let (Some(provider), Some(capability)) =
+            (&step.provider, &step.capability)
+        {
+            let input_texts = crate::input_materialize::materialize_text_inputs(
+                &self.store,
+                &self.artifact_root,
+                &inputs,
+            )
+            .await?;
+            let mut params = step.params.clone();
+            if capability == "image_to_video" || capability == "image_edit" {
+                let images = crate::input_materialize::materialize_image_inputs(
                     &self.store,
                     &self.artifact_root,
                     &inputs,
+                    "image",
                 )
                 .await?;
-                let mut params = step.params.clone();
-                if capability == "image_to_video" {
-                    let image = crate::input_materialize::materialize_image_input(
-                        &self.store,
-                        &self.artifact_root,
-                        &inputs,
-                        "image",
-                    )
-                    .await?;
-                    params
-                        .as_object_mut()
-                        .ok_or_else(|| {
-                            RunError::ArtifactPersistence(
-                                "provider params must be an object".to_owned(),
-                            )
-                        })?
-                        .insert("__helixflow_wired_image".to_owned(), Value::String(image));
-                }
-                let request = ProviderRequest {
-                    provider: provider.clone(),
-                    capability: capability.clone(),
-                    node_id: step.node_id.clone(),
-                    run_id: run_id.to_owned(),
-                    inputs: inputs.clone(),
-                    input_texts,
-                    params,
-                    resolved_model_id: step
-                        .resolved
-                        .as_ref()
-                        .map(|resolved| resolved.resolved_model_id.clone()),
-                    operation_id: step
-                        .resolved
-                        .as_ref()
-                        .map(|resolved| resolved.operation_id.clone()),
-                };
-                let Some(execution) = self
-                    .execute_provider_step(workspace_id, run_id, step, record, request, interrupt)
-                    .await?
-                else {
-                    return Ok(StepExecution::Interrupted);
-                };
-                (
-                    execution.cache_links,
-                    execution.outputs,
-                    Some(execution.cost_json),
+                let videos = crate::input_materialize::materialize_video_inputs(
+                    &self.store,
+                    &self.artifact_root,
+                    &inputs,
+                    "video",
                 )
-            } else {
-                let builtin = self
-                    .execute_builtin(workspace_id, run_id, step, record, &inputs)
-                    .await?;
-                (builtin.cache_links, builtin.outputs, None)
+                .await?;
+                let audios = crate::input_materialize::materialize_audio_inputs(
+                    &self.store,
+                    &self.artifact_root,
+                    &inputs,
+                    "audio",
+                )
+                .await?;
+                let params_map = params.as_object_mut().ok_or_else(|| {
+                    RunError::ArtifactPersistence("provider params must be an object".to_owned())
+                })?;
+                if let Some(first) = images.first() {
+                    params_map.insert(
+                        "__helixflow_wired_image".to_owned(),
+                        Value::String(first.clone()),
+                    );
+                }
+                params_map.insert(
+                    "__helixflow_wired_images".to_owned(),
+                    Value::Array(images.into_iter().map(Value::String).collect()),
+                );
+                if !videos.is_empty() {
+                    params_map.insert(
+                        "__helixflow_wired_videos".to_owned(),
+                        Value::Array(videos.into_iter().map(Value::String).collect()),
+                    );
+                }
+                if !audios.is_empty() {
+                    params_map.insert(
+                        "__helixflow_wired_audios".to_owned(),
+                        Value::Array(audios.into_iter().map(Value::String).collect()),
+                    );
+                }
+            }
+            let request = ProviderRequest {
+                provider: provider.clone(),
+                capability: capability.clone(),
+                node_id: step.node_id.clone(),
+                run_id: run_id.to_owned(),
+                inputs: inputs.clone(),
+                input_texts,
+                params,
+                resolved_model_id: step
+                    .resolved
+                    .as_ref()
+                    .map(|resolved| resolved.resolved_model_id.clone()),
+                operation_id: step
+                    .resolved
+                    .as_ref()
+                    .map(|resolved| resolved.operation_id.clone()),
             };
+            let Some(execution) = self
+                .execute_provider_step(workspace_id, run_id, step, record, request, interrupt)
+                .await?
+            else {
+                return Ok(StepExecution::Interrupted);
+            };
+            (
+                execution.cache_links,
+                execution.outputs,
+                Some(execution.cost_json),
+            )
+        } else {
+            let builtin = self
+                .execute_builtin(workspace_id, run_id, step, record, &inputs)
+                .await?;
+            (builtin.cache_links, builtin.outputs, None)
+        };
 
         if interrupt.is_requested() {
             return Ok(StepExecution::Interrupted);
@@ -540,7 +526,12 @@ where
                     },
                 });
             }
-            "input.image" => {
+            "input.image" | "input.video" | "input.audio" => {
+                let kind = match step.node_type.as_str() {
+                    "input.video" => "video",
+                    "input.audio" => "audio",
+                    _ => "image",
+                };
                 let storage_uri = step
                     .params
                     .get("storage_uri")
@@ -559,7 +550,7 @@ where
                     let full_path = self.artifact_root.join(&upload.file_path);
                     if tokio::fs::metadata(&full_path).await.is_err() {
                         return Err(RunError::ArtifactPersistence(format!(
-                            "uploaded image `{upload_id}` file is missing: {}",
+                            "uploaded {kind} `{upload_id}` file is missing: {}",
                             upload.file_path
                         )));
                     }
@@ -574,7 +565,7 @@ where
                         run_id: Some(run_id),
                         run_step_id: Some(&record.id),
                         node_id: Some(&step.node_id),
-                        kind: "image",
+                        kind,
                         storage_uri: resolved
                             .as_ref()
                             .map(|upload| upload.file_path.as_str())
@@ -589,11 +580,11 @@ where
                     })
                     .await?;
                 cache_links.push(CachedArtifactLink {
-                    port: Some("image".to_owned()),
+                    port: Some(kind.to_owned()),
                     artifact_id: artifact.id.clone(),
                 });
                 outputs.push(StepOutput {
-                    port: "image".to_owned(),
+                    port: kind.to_owned(),
                     artifact: ArtifactRef {
                         artifact_id: artifact.id,
                         storage_uri: artifact.storage_uri,
@@ -763,19 +754,26 @@ where
 }
 
 pub(crate) fn resolve_inputs(
-    input_edges: &BTreeMap<String, [String; 2]>,
+    input_edges: &BTreeMap<String, Vec<[String; 2]>>,
     outputs: &OutputMap,
 ) -> RunResult<BTreeMap<String, ArtifactRef>> {
     let mut inputs = BTreeMap::new();
-    for (port, source) in input_edges {
-        let artifact = outputs
-            .get(source)
-            .ok_or_else(|| RunError::MissingInput {
-                node_id: source[0].clone(),
-                port: source[1].clone(),
-            })?
-            .clone();
-        inputs.insert(port.clone(), artifact);
+    for (port, sources) in input_edges {
+        for (index, source) in sources.iter().enumerate() {
+            let artifact = outputs
+                .get(source)
+                .ok_or_else(|| RunError::MissingInput {
+                    node_id: source[0].clone(),
+                    port: source[1].clone(),
+                })?
+                .clone();
+            let key = if index == 0 {
+                port.clone()
+            } else {
+                format!("{port}#{index}")
+            };
+            inputs.insert(key, artifact);
+        }
     }
     Ok(inputs)
 }

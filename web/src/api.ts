@@ -610,6 +610,7 @@ export function connectWorkspaceEvents(
 ): () => void {
   let closed = false;
   let socket: WebSocket | null = null;
+  let socketGeneration = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let catchup: Promise<void> | null = null;
   let eventQueue: Promise<void> = Promise.resolve();
@@ -659,41 +660,55 @@ export function connectWorkspaceEvents(
         await fetchMissingEvents();
       } catch {
         handlers.onStatus('offline');
-        socket?.close();
+        socket?.close(1000);
         return;
       }
       if (event.seq <= streamSeq(event.run_id)) return;
       if (event.seq > streamSeq(event.run_id) + 1) {
         handlers.onStatus('offline');
-        socket?.close();
+        socket?.close(1000);
         return;
       }
     }
     handlers.onEvent(event);
   };
 
+  const disposeSocket = (code = 1000) => {
+    const current = socket;
+    socket = null;
+    current?.close(code);
+  };
+
   const openSocket = (ticket: string | null) => {
+    const generation = socketGeneration + 1;
+    socketGeneration = generation;
+    disposeSocket();
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
     const url = new URL(`${protocol}://${window.location.host}/ws`);
     url.searchParams.set('workspace_id', workspaceId);
     if (ticket) {
       url.searchParams.set('ticket', ticket);
     }
-    socket = new WebSocket(url.toString());
+    const next = new WebSocket(url.toString());
+    socket = next;
 
-    socket.addEventListener('open', () => {
+    next.addEventListener('open', () => {
+      if (generation !== socketGeneration || socket !== next) return;
       reconnectAttempts = 0;
       handlers.onStatus('live');
     });
-    socket.addEventListener('close', () => {
+    next.addEventListener('close', () => {
+      if (generation !== socketGeneration || closed) return;
       handlers.onStatus('offline');
       scheduleReconnect();
     });
-    socket.addEventListener('error', () => {
+    next.addEventListener('error', () => {
+      if (generation !== socketGeneration || socket !== next) return;
       handlers.onStatus('offline');
-      socket?.close();
+      next.close(1000);
     });
-    socket.addEventListener('message', (message) => {
+    next.addEventListener('message', (message) => {
+      if (generation !== socketGeneration || socket !== next) return;
       try {
         const parsed = RunEventEnvelopeSchema.safeParse(JSON.parse(String(message.data)));
         if (parsed.success) {
@@ -712,16 +727,17 @@ export function connectWorkspaceEvents(
           eventQueue = eventQueue
             .then(() => handleEvent(parsed.data))
             .catch(() => {
+              if (generation !== socketGeneration || socket !== next) return;
               handlers.onStatus('offline');
-              socket?.close();
+              next.close(1000);
             });
         } else {
           handlers.onStatus('offline');
-          socket?.close();
+          next.close(1000);
         }
       } catch {
         handlers.onStatus('offline');
-        socket?.close();
+        next.close(1000);
       }
     });
   };
@@ -753,10 +769,11 @@ export function connectWorkspaceEvents(
 
   return () => {
     closed = true;
+    socketGeneration += 1;
     controller.abort();
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
     }
-    socket?.close();
+    disposeSocket();
   };
 }

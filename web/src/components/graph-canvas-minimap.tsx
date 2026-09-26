@@ -1,4 +1,4 @@
-import { useState, type PointerEvent } from 'react';
+import { useMemo, useState, type PointerEvent } from 'react';
 import {
   minimapViewportRect,
   type MinimapLayout,
@@ -16,6 +16,18 @@ type CanvasMinimapProps = {
 export function CanvasMinimap({ layout, view, viewportSize, onNavigate }: CanvasMinimapProps) {
   const [dragging, setDragging] = useState(false);
   const viewportRect = minimapViewportRect(layout, view, viewportSize);
+  const nodeMarkers = useMemo(() => layout.nodes.map((node) => (
+    <span
+      className="canvas-minimap-node"
+      key={node.id}
+      style={{
+        left: node.x,
+        top: node.y,
+        width: node.width,
+        height: node.height,
+      }}
+    />
+  )), [layout.nodes]);
 
   const navigate = (event: PointerEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -39,18 +51,7 @@ export function CanvasMinimap({ layout, view, viewportSize, onNavigate }: Canvas
       onPointerUp={() => setDragging(false)}
       onPointerCancel={() => setDragging(false)}
     >
-      {layout.nodes.map((node) => (
-        <span
-          className="canvas-minimap-node"
-          key={node.id}
-          style={{
-            left: node.x,
-            top: node.y,
-            width: node.width,
-            height: node.height,
-          }}
-        />
-      ))}
+      {nodeMarkers}
       <span
         className="canvas-minimap-viewport"
         style={{

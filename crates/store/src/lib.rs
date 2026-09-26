@@ -16,6 +16,9 @@ mod canvas_snapshot_records;
 mod conversation_records;
 mod cost_ledger_idempotency;
 mod failed_run_records;
+mod image_processing_job_records;
+#[cfg(test)]
+mod image_processing_job_records_tests;
 #[cfg(test)]
 mod migration_tests;
 mod node_cache_records;
@@ -60,6 +63,7 @@ pub use artifact_journal_records::*;
 pub use canvas_comment_records::*;
 pub use canvas_snapshot_records::*;
 pub use conversation_records::*;
+pub use image_processing_job_records::*;
 pub use node_cache_records::*;
 pub use proposal_records::*;
 pub use provider_task_records::*;
@@ -149,6 +153,11 @@ pub enum StoreError {
     },
     AgentContractObservationInvariant {
         code: &'static str,
+    },
+    ImageProcessingJobStateConflict {
+        job_id: String,
+        actual_status: String,
+        requested_status: String,
     },
 }
 
@@ -266,6 +275,14 @@ impl fmt::Display for StoreError {
             Self::AgentContractObservationInvariant { code } => {
                 write!(f, "agent contract observation invariant failed: {code}")
             }
+            Self::ImageProcessingJobStateConflict {
+                job_id,
+                actual_status,
+                requested_status,
+            } => write!(
+                f,
+                "image processing job `{job_id}` cannot move from `{actual_status}` to `{requested_status}`"
+            ),
         }
     }
 }

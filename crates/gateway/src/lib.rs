@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 mod atlas;
 mod fal;
+mod image_processing;
 mod mock_media;
 mod redact;
 mod registry;
@@ -13,6 +14,10 @@ mod runtime_provider;
 
 pub use atlas::{ApiProviderConfig, AtlasProvider};
 pub use fal::{FalProvider, FalProviderConfig};
+pub use image_processing::{
+    ImageProcessingCapabilities, ImageProcessingIntent, ImageProcessingOutput,
+    ImageProcessingProfile, ImageProcessingRequest, ImageProcessingSubmission,
+};
 pub use registry::ProviderRegistry;
 pub use runtime_provider::{
     DurableProviderTask, Provider, ProviderDispatch, ProviderDispatchFailure,
@@ -187,6 +192,14 @@ impl MockProvider {
                 ),
                 (
                     "text_to_image".to_owned(),
+                    ProviderCapability {
+                        artifact_kind: ArtifactKind::Image,
+                        output_name: "image".to_owned(),
+                        mime: "image/png".to_owned(),
+                    },
+                ),
+                (
+                    "image_edit".to_owned(),
                     ProviderCapability {
                         artifact_kind: ArtifactKind::Image,
                         output_name: "image".to_owned(),

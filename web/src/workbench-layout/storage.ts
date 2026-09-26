@@ -7,7 +7,7 @@ import type {
   WorkbenchZoneId,
 } from './types';
 
-export const WORKBENCH_LAYOUT_STORAGE_KEY = 'helixflow.workbench.layout.v3.canvas';
+export const WORKBENCH_LAYOUT_STORAGE_KEY = 'helixflow.workbench.layout.v4.canvas';
 export const LEGACY_DOCK_LAYOUT_STORAGE_KEY = 'helixflow.workbench.dock-layout.v1';
 
 export interface WorkbenchLayoutStorage {

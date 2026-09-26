@@ -10,6 +10,7 @@ import type { CanvasCapabilities } from './graph-canvas-capabilities';
 import {
   buildAddNodeProposalInput,
   buildDeleteNodesProposalInput,
+  buildDuplicateNodeProposalInput,
   buildPasteProposalInput,
   buildSelectionClipboardText,
 } from './graph-canvas-editing';
@@ -25,6 +26,7 @@ type CanvasEditActionsInput = {
   capabilities: CanvasCapabilities;
   drawGraph: WorkbenchState['graph'];
   onCreateProposal?: (input: ManualProposalInput) => Promise<void>;
+  pointerWorld?: () => Point;
   setClipboardStatus: (value: string | null) => void;
   versionId: string;
   view: ViewState;
@@ -37,6 +39,7 @@ export function createCanvasEditActions(input: CanvasEditActionsInput) {
     x: (input.viewportSize.width / 2 - input.view.x) / input.view.z,
     y: (input.viewportSize.height / 2 - input.view.y) / input.view.z,
   });
+  const spawnOrigin = (): Point => input.pointerWorld?.() ?? viewportCenterWorld();
 
   const submit = (proposal: ManualProposalInput | null, success: string, failure: string) => {
     if (!proposal || !input.onCreateProposal) return;
@@ -47,7 +50,16 @@ export function createCanvasEditActions(input: CanvasEditActionsInput) {
       });
   };
 
-  const addNode = (definition: NodeDefinition, position?: Point) => {
+  const addNode = (
+    definition: NodeDefinition,
+    position?: Point,
+    connectFrom?: {
+      nodeId: string;
+      definition: NodeDefinition;
+      direction?: 'in' | 'out';
+      extra?: Array<{ nodeId: string; definition: NodeDefinition }>;
+    },
+  ) => {
     if (!input.capabilities.paste) {
       input.setClipboardStatus('当前模式不允许添加节点');
       return;
@@ -57,7 +69,8 @@ export function createCanvasEditActions(input: CanvasEditActionsInput) {
         baseVersionId: input.versionId,
         definition,
         existingNodeIds: input.drawGraph.nodes.map((node) => node.id),
-        position: position ?? nextAvailableNodePosition(viewportCenterWorld(), input.drawGraph.nodes),
+        position: position ?? nextAvailableNodePosition(spawnOrigin(), input.drawGraph.nodes),
+        connectFrom,
       }),
       `已添加 ${definition.title}`,
       '添加节点失败',
@@ -97,7 +110,7 @@ export function createCanvasEditActions(input: CanvasEditActionsInput) {
         baseVersionId: input.versionId,
         existingNodeIds: input.drawGraph.nodes.map((node) => node.id),
         text: await navigator.clipboard.readText(),
-        position: viewportCenterWorld(),
+        position: spawnOrigin(),
       });
       if (!proposal) {
         input.setClipboardStatus('粘贴失败：无效选区');
@@ -107,6 +120,23 @@ export function createCanvasEditActions(input: CanvasEditActionsInput) {
     } catch (error) {
       input.setClipboardStatus(error instanceof Error ? `粘贴失败：${error.message}` : '粘贴失败');
     }
+  };
+
+  const duplicateNode = (node: GraphNodeState) => {
+    if (!input.capabilities.paste) {
+      input.setClipboardStatus('当前模式不允许添加节点');
+      return;
+    }
+    submit(
+      buildDuplicateNodeProposalInput({
+        baseVersionId: input.versionId,
+        existingNodeIds: input.drawGraph.nodes.map((item) => item.id),
+        source: node,
+        params: input.workflowGraph?.nodes[node.id]?.params,
+      }),
+      `已复制 ${node.title}`,
+      '复制节点失败',
+    );
   };
 
   const deleteSelection = (selectedNodeIds: Iterable<string>) => {
@@ -122,7 +152,7 @@ export function createCanvasEditActions(input: CanvasEditActionsInput) {
     );
   };
 
-  return { addNode, copySelection, deleteSelection, pasteSelection };
+  return { addNode, copySelection, deleteSelection, duplicateNode, pasteSelection };
 }
 
 const NODE_GAP = 24;

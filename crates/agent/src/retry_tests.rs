@@ -102,15 +102,20 @@ async fn retry_loop_recovers_after_invalid_intent() {
     let service = AgentService::new(runtime.clone(), events.clone()).with_max_intent_rounds(3);
 
     let intent = service
-        .propose_intent(modify_request(&dir))
+        .propose_canvas_edit(modify_request(&dir))
         .await
-        .expect("intent");
+        .expect("canvas edit");
 
-    assert_eq!(intent.intent.stages[0].capability_id, "text_to_video");
+    match &intent.edit.operations[0] {
+        CanvasEditOp::AddNode { node_type, .. } => {
+            assert_eq!(node_type, "video.text_to_video");
+        }
+        other => panic!("expected add_node, got {other:?}"),
+    }
     assert_eq!(runtime.sent_turns().len(), 2);
     assert_eq!(runtime.sent_turns()[0].message, "make it shorter");
     let retry_message = &runtime.sent_turns()[1].message;
-    assert!(retry_message.contains("previous out/intent.json was invalid"));
+    assert!(retry_message.contains("previous out/canvas_edit.json was invalid"));
     assert!(retry_message.contains("unknown field"));
     assert!(!retry_message.contains("/Users/"));
     assert!(!retry_message.contains("/private/"));
@@ -118,13 +123,13 @@ async fn retry_loop_recovers_after_invalid_intent() {
     assert!(!retry_message.contains("Bearer "));
     assert!(!retry_message.contains("SECRET="));
     assert!(intent.agent_logs.iter().any(|log| {
-        log.kind == "agent_log:error" && log.text.contains("intent validation failed")
+        log.kind == "agent_log:error" && log.text.contains("canvas edit validation failed")
     }));
     assert!(
         intent
             .agent_logs
             .iter()
-            .any(|log| log.text == "intent ready after round 2")
+            .any(|log| log.text == "canvas edit ready after round 2")
     );
 }
 
@@ -140,7 +145,7 @@ async fn retry_loop_exhausts_with_last_validation_error() {
     let service = AgentService::new(runtime.clone(), events.clone()).with_max_intent_rounds(2);
 
     let err = service
-        .propose_intent(modify_request(&dir))
+        .propose_canvas_edit(modify_request(&dir))
         .await
         .expect_err("retry exhaustion");
 
@@ -161,7 +166,7 @@ async fn retry_loop_exhausts_with_last_validation_error() {
     assert!(
         statuses
             .iter()
-            .any(|status| status == "intent.validation_failed")
+            .any(|status| status == "canvas_edit.validation_failed")
     );
 }
 
@@ -178,7 +183,7 @@ async fn intent_retry_configuration_is_capped() {
     let service = AgentService::new(runtime.clone(), events).with_max_intent_rounds(usize::MAX);
 
     let err = service
-        .propose_intent(modify_request(&dir))
+        .propose_canvas_edit(modify_request(&dir))
         .await
         .expect_err("bounded retry exhaustion");
 
@@ -209,7 +214,7 @@ async fn chat_turn_remains_single_round() {
     assert!(
         !runtime.sent_turns()[0]
             .message
-            .contains("previous out/intent.json was invalid")
+            .contains("previous out/canvas_edit.json was invalid")
     );
 }
 
@@ -269,7 +274,7 @@ impl AgentRuntime for ScriptedRuntime {
 
         match round {
             ScriptedRound::Intent(value) => {
-                write_runtime_json(handle.out_dir.join("intent.json"), value)?
+                write_runtime_json(handle.out_dir.join("canvas_edit.json"), value)?
             }
             ScriptedRound::Reply(value) => {
                 write_runtime_json(handle.out_dir.join("reply.json"), value)?
@@ -304,24 +309,18 @@ fn write_runtime_json(path: impl AsRef<Path>, value: Value) -> RuntimeResult<()>
 
 fn invalid_intent() -> Value {
     json!({
-        "intentVersion": "1",
-        "topology": "linear",
-        "stages": [],
-        "outputStageIds": [],
+        "operations": [],
         "unexpected": true
     })
 }
 
 fn valid_intent() -> Value {
     json!({
-        "intentVersion": "1",
-        "topology": "linear",
-        "stages": [{
-            "stageId": "s1",
-            "capabilityId": "text_to_video",
-            "inputFrom": [],
+        "operations": [{
+            "op": "add_node",
+            "id": "s1",
+            "node_type": "video.text_to_video",
             "params": { "prompt": "clean product shot", "duration_sec": 3 }
-        }],
-        "outputStageIds": ["s1"]
+        }]
     })
 }

@@ -9,10 +9,12 @@ export type IconName =
   | 'eraser'
   | 'export'
   | 'folder'
+  | 'grid'
   | 'hand'
   | 'image'
   | 'layers'
   | 'lock'
+  | 'map'
   | 'music'
   | 'paperclip'
   | 'palette'
@@ -71,6 +73,12 @@ const icons: Record<IconName, ReactNode> = {
       <path d="M8.9 6.8V5.3a.8.8 0 0 1 1.6 0v3.1A3.6 3.6 0 0 1 6.9 12h-.5a3.4 3.4 0 0 1-2.6-1.2L2.2 8.9a.8.8 0 0 1 1.1-1.1l.8.7" />
     </g>
   ),
+  grid: (
+    <g>
+      <rect x="2.5" y="2.5" width="9" height="9" rx="1" />
+      <path d="M2.5 5.5h9M2.5 8.5h9M5.5 2.5v9M8.5 2.5v9" />
+    </g>
+  ),
   image: (
     <g>
       <rect x="2.5" y="3" width="9" height="8" rx="1.3" />
@@ -88,6 +96,12 @@ const icons: Record<IconName, ReactNode> = {
     <g>
       <rect x="3.2" y="6.2" width="7.6" height="5.3" rx="1.2" />
       <path d="M4.8 6.2V4.6a2.2 2.2 0 0 1 4.4 0v1.6" />
+    </g>
+  ),
+  map: (
+    <g>
+      <rect x="2.2" y="3.2" width="9.6" height="7.6" rx="1.4" />
+      <rect x="4.1" y="4.8" width="3.4" height="2.4" rx=".5" />
     </g>
   ),
   music: (

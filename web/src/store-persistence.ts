@@ -4,7 +4,12 @@ import { appendSystemError } from './store-model';
 import type { WorkbenchStore } from './store-types';
 import type { CanvasSnapshotUpdate, ManualEditSession } from './types';
 import { WorkspaceActionGuard, WorkspaceChangedError } from './workspace-action-guard';
-import { hasDirtyEdits, manualEditInputFromSession } from './workbench-edit-session';
+import {
+  hasDirtyEdits,
+  layoutOpsFromSnapshot,
+  manualEditInputFromSession,
+  partitionManualEditOps,
+} from './workbench-edit-session';
 
 type StoreGet = () => WorkbenchStore;
 type StoreSet = StoreApi<WorkbenchStore>['setState'];
@@ -95,14 +100,48 @@ export class StorePersistence {
       }));
       throw new Error(message);
     }
+    const { graphOps, snapshot } = partitionManualEditOps(editSession.ops);
+    let graphPersisted = false;
     try {
-      const next = await this.guard.run(workspaceId, 'saving canvas edits', () =>
-        createManualWorkspaceProposal(workspaceId, manualEditInputFromSession(editSession)));
+      if (graphOps.length > 0) {
+        const next = await this.guard.run(workspaceId, 'saving canvas edits', () =>
+          createManualWorkspaceProposal(
+            workspaceId,
+            manualEditInputFromSession({ ...editSession, ops: graphOps }),
+          ));
+        graphPersisted = true;
+        this.set((current) => current.state?.workspace.id === workspaceId
+          ? {
+              state: next,
+              status: 'ready',
+              error: null,
+              editSession: snapshot
+                ? {
+                    ...editSession,
+                    baseVersionId: next.workspace.versionId,
+                    ops: layoutOpsFromSnapshot(snapshot),
+                  }
+                : null,
+            }
+          : {});
+      }
+
+      if (snapshot && (this.get().canvas || !graphPersisted)) {
+        await this.saveCanvas(snapshot);
+      }
+
       this.set((current) => current.state?.workspace.id === workspaceId
-        ? { state: next, status: 'ready', error: null, editSession: null }
+        ? { editSession: null }
         : {});
     } catch (error) {
       if (error instanceof WorkspaceChangedError) throw error;
+      if (graphPersisted) {
+        const message = error instanceof Error ? error.message : 'canvas snapshot request failed';
+        this.set((latest) => latest.state?.workspace.id === workspaceId
+          ? { editSession: null, canvasStatus: 'error', canvasError: message }
+          : {});
+        return;
+      }
       const normalized = error instanceof Error ? error : new Error('canvas edit request failed');
       this.set((current) => ({
         editSession: current.state?.workspace.id === workspaceId ? null : current.editSession,

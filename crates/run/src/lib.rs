@@ -14,6 +14,7 @@ use tokio::sync::{Mutex, Notify, broadcast};
 mod artifact_path;
 mod resolved;
 mod restart_policy;
+mod step_dag;
 pub use resolved::{resolve_step_binding_for, shared_catalog};
 #[cfg(test)]
 mod artifact_path_tests;

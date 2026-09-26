@@ -9,6 +9,7 @@ class MockWebSocket {
   static sockets: MockWebSocket[] = [];
 
   readonly listeners = new Map<string, Listener[]>();
+  closeCode: number | undefined;
 
   constructor(readonly url: string) {
     MockWebSocket.sockets.push(this);
@@ -18,7 +19,8 @@ class MockWebSocket {
     this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
   }
 
-  close(): void {
+  close(code?: number): void {
+    this.closeCode = code;
     this.emit('close', {});
   }
 
@@ -38,6 +40,7 @@ describe('connectWorkspaceEvents', () => {
     MockWebSocket.sockets = [];
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it('requests a canvas ticket before opening the websocket when required', async () => {
@@ -196,6 +199,41 @@ describe('connectWorkspaceEvents', () => {
     });
 
     expect(presences).toEqual([]);
+    cleanup();
+  });
+
+  it('closes the live socket with a normal code on cleanup', async () => {
+    stubBrowser();
+    vi.stubGlobal('fetch', ticketFetch('disabled'));
+    const cleanup = connectWorkspaceEvents('ws_test', {
+      getLastSeq: () => 0,
+      onEvent: () => undefined,
+      onStatus: () => undefined,
+    });
+    await waitUntil(() => MockWebSocket.sockets.length === 1);
+    cleanup();
+    expect(MockWebSocket.sockets[0]?.closeCode).toBe(1000);
+  });
+
+  it('closes a previous socket before opening a replacement', async () => {
+    stubBrowser();
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', ticketFetch('disabled'));
+    const cleanup = connectWorkspaceEvents('ws_test', {
+      getLastSeq: () => 0,
+      onEvent: () => undefined,
+      onStatus: () => undefined,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(MockWebSocket.sockets).toHaveLength(1);
+    MockWebSocket.sockets[0]?.close(1006);
+    await vi.advanceTimersByTimeAsync(2000);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(MockWebSocket.sockets.length).toBeGreaterThanOrEqual(2);
+    expect(MockWebSocket.sockets[0]?.closeCode).toBe(1000);
     cleanup();
   });
 });

@@ -16,6 +16,7 @@ use crate::api_error::ApiError;
 use crate::app_state::AppState;
 use crate::capability_preflight::provider_capability_readiness;
 use crate::graph_files::{blank_graph, read_graph_file, read_json_file};
+use crate::image_processing_routes::image_processing_job_value;
 use crate::version_file_consistency::read_version_graph;
 use crate::workbench_payload::{
     ProposalPayload, output_payload_from_artifact, pending_confirmation_from_run,
@@ -76,6 +77,11 @@ pub(crate) async fn workspace_state_value(
         .workspace_proposals(workspace_id)
         .await
         .map_err(ApiError::store)?;
+    let image_processing_jobs = state
+        .store
+        .workspace_image_processing_jobs(workspace_id)
+        .await
+        .map_err(ApiError::store)?;
     let pending_proposal = pending_proposal_payload(
         state,
         proposals.iter().rev().find(|item| item.state == "pending"),
@@ -128,6 +134,7 @@ pub(crate) async fn workspace_state_value(
         &steps,
         &artifacts,
         &costs,
+        &image_processing_jobs,
         event_seq,
         providers,
     ))
@@ -183,6 +190,7 @@ fn workspace_state_payload(
     steps: &[RunStepRecord],
     artifacts: &[ArtifactRecord],
     costs: &[CostLedgerRecord],
+    image_processing_jobs: &[helixflow_store::ImageProcessingJobRecord],
     event_seq: i64,
     providers: Value,
 ) -> Value {
@@ -214,6 +222,10 @@ fn workspace_state_payload(
         "graph": graph_payload(graph, &step_by_node, &registry, selected_provider),
         "run": latest_run.map(|run| run_payload(run, steps, &run_cost)),
         "outputs": artifacts.iter().map(output_payload_from_artifact).collect::<Vec<_>>(),
+        "imageProcessingJobs": image_processing_jobs
+            .iter()
+            .map(image_processing_job_value)
+            .collect::<Vec<_>>(),
         "history": history_payload(versions, latest_run, proposals),
         "pendingConfirmation": latest_run.and_then(|run| pending_confirmation_from_run(run, costs)),
         "pendingProposal": pending_proposal,
@@ -335,6 +347,7 @@ pub(crate) fn graph_payload(
                 "status": step.map(|item| item.state.as_str()).unwrap_or("queued"),
                 "cached": step.is_some_and(step_cached),
                 "position": { "x": node.pos[0], "y": node.pos[1] },
+                "size": node.size.map(|size| json!({ "width": size[0], "height": size[1] })),
                 "provider": step.and_then(|item| item.provider.clone()).or_else(|| node_provider(&node.node_type, registry, selected_provider)),
                 "summary": node_summary(&node.node_type, &node.params),
             })

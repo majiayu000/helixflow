@@ -98,6 +98,14 @@ impl AtlasProvider {
                     },
                 ),
                 (
+                    "image_edit".to_owned(),
+                    ProviderCapability {
+                        artifact_kind: ArtifactKind::Image,
+                        output_name: "image".to_owned(),
+                        mime: "image/png".to_owned(),
+                    },
+                ),
+                (
                     "text_to_video".to_owned(),
                     ProviderCapability {
                         artifact_kind: ArtifactKind::Video,
@@ -258,15 +266,8 @@ impl AtlasProvider {
         let response = self
             .post_json(
                 format!("{}/api/v1/model/generateImage", self.api_root()),
-                json!({
-                    "model": model,
-                    "prompt": prompt,
-                    "enable_sync_mode": true,
-                    "output_format": optional_string(&req.params, "output_format").unwrap_or_else(|| "png".to_owned()),
-                    "num_images": req.params.get("num_images").and_then(Value::as_u64).unwrap_or(1),
-                    "aspect_ratio": optional_string(&req.params, "aspect_ratio").unwrap_or_else(|| "1:1".to_owned())
-                }),
-        )
+                image_edit::image_generate_body(&req, &model, &prompt)?,
+            )
             .await?;
         let output = first_output(&response)?;
         let mime = image_mime_from_output(&output)?;
@@ -317,27 +318,7 @@ impl AtlasProvider {
             "enable_sync_mode": false
         });
         if req.capability == "image_to_video" {
-            let image =
-                optional_string(&req.params, "__helixflow_wired_image").ok_or_else(|| {
-                    ProviderError::InvalidRequest(
-                        "image_to_video requires wired image input".to_owned(),
-                    )
-                })?;
-            body["image"] = Value::String(image);
-            body["generate_audio"] = req
-                .params
-                .get("generate_audio")
-                .cloned()
-                .unwrap_or(json!(true));
-            body["camera_fixed"] = req
-                .params
-                .get("camera_fixed")
-                .cloned()
-                .unwrap_or(json!(false));
-            body["seed"] = req.params.get("seed").cloned().unwrap_or(json!(-1));
-            if let Some(aspect_ratio) = optional_string(&req.params, "aspect_ratio") {
-                body["aspect_ratio"] = Value::String(aspect_ratio);
-            }
+            attach_image_to_video_inputs(&mut body, req, &model)?;
         }
         let response = self
             .post_json(
@@ -566,7 +547,7 @@ impl Provider for AtlasProvider {
         self.ensure_provider(&req)?;
         match req.capability.as_str() {
             "prompt_writer" => self.invoke_chat(req).await,
-            "text_to_image" => self.invoke_image(req).await,
+            "text_to_image" | "image_edit" => self.invoke_image(req).await,
             "text_to_video" | "image_to_video" => self.invoke_video(req).await,
             capability => Err(ProviderError::UnsupportedCapability(capability.to_owned())),
         }
@@ -578,7 +559,7 @@ impl Provider for AtlasProvider {
         }
         let result = match req.capability.as_str() {
             "prompt_writer" => self.invoke_chat(req).await.map(ProviderDispatch::Completed),
-            "text_to_image" => self
+            "text_to_image" | "image_edit" => self
                 .invoke_image(req)
                 .await
                 .map(ProviderDispatch::Completed),
@@ -613,7 +594,7 @@ impl Provider for AtlasProvider {
             "completed" | "succeeded" => self
                 .completed_video_result(req, data)
                 .map(ProviderResume::Completed),
-            "failed" => Ok(ProviderResume::failed("PROVIDER_REMOTE_FAILED")),
+            "failed" => Ok(ProviderResume::failed(&atlas_remote_failure_reason(data))),
             _ => Ok(ProviderResume::Pending {
                 retry_after_ms: self.config.poll_interval.as_millis().min(u64::MAX as u128) as u64,
             }),
@@ -692,6 +673,165 @@ fn optional_string(params: &Value, key: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+fn is_reference_to_video(operation_id: &str) -> bool {
+    operation_id.contains("/reference-to-video")
+}
+
+fn atlas_remote_failure_reason(data: &Value) -> String {
+    if let Some(text) = data
+        .get("error")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        return crate::safe_provider_message(text);
+    }
+    if let Some(text) = data
+        .get("error")
+        .and_then(Value::as_object)
+        .and_then(|error| error.get("message").or_else(|| error.get("msg")))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        return crate::safe_provider_message(text);
+    }
+    if let Some(code) = data
+        .get("error_code")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        return crate::safe_provider_message(code);
+    }
+    "PROVIDER_REMOTE_FAILED".to_owned()
+}
+
+/// Seedance 2.x r2v only successfully processes public HTTPS or `asset://`
+/// references on the current Atlas API. Inline data URLs 502 at the gateway;
+/// raw Base64 submits then fails with "could not be processed".
+fn atlas_fetchable_media_ref(value: &str, kind: &str) -> ProviderResultValue<String> {
+    let trimmed = value.trim();
+    if trimmed.starts_with("https://") || trimmed.starts_with("asset://") {
+        return Ok(trimmed.to_owned());
+    }
+    Err(ProviderError::InvalidRequest(format!(
+        "Atlas reference-to-video {kind} inputs must be public HTTPS or asset references; local uploads cannot be inlined"
+    )))
+}
+
+fn wired_string_list(params: &Value, key: &str) -> ProviderResultValue<Vec<String>> {
+    let Some(value) = params.get(key) else {
+        return Ok(Vec::new());
+    };
+    let Some(items) = value.as_array() else {
+        return Err(ProviderError::InvalidRequest(format!(
+            "{key} must be an array of strings"
+        )));
+    };
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let Some(text) = item
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return Err(ProviderError::InvalidRequest(format!(
+                "{key} must be an array of strings"
+            )));
+        };
+        out.push(text.to_owned());
+    }
+    Ok(out)
+}
+
+fn wired_image_to_video_media(
+    params: &Value,
+) -> ProviderResultValue<(Vec<String>, Vec<String>, Vec<String>)> {
+    let mut images = wired_string_list(params, "__helixflow_wired_images")?;
+    if images.is_empty()
+        && let Some(image) = optional_string(params, "__helixflow_wired_image")
+    {
+        images.push(image);
+    }
+    Ok((
+        images,
+        wired_string_list(params, "__helixflow_wired_videos")?,
+        wired_string_list(params, "__helixflow_wired_audios")?,
+    ))
+}
+
+fn attach_image_to_video_inputs(
+    body: &mut Value,
+    req: &ProviderRequest,
+    operation_id: &str,
+) -> ProviderResultValue<()> {
+    let (images, videos, audios) = wired_image_to_video_media(&req.params)?;
+    body["generate_audio"] = req
+        .params
+        .get("generate_audio")
+        .cloned()
+        .unwrap_or(json!(true));
+    body["seed"] = req.params.get("seed").cloned().unwrap_or(json!(-1));
+
+    if is_reference_to_video(operation_id) {
+        if images.is_empty() && videos.is_empty() {
+            return Err(ProviderError::InvalidRequest(
+                "reference-to-video requires at least one wired image or video input".to_owned(),
+            ));
+        }
+        if !images.is_empty() {
+            let fetchable = images
+                .iter()
+                .map(|image| atlas_fetchable_media_ref(image, "image"))
+                .collect::<Result<Vec<_>, _>>()?;
+            body["reference_images"] = json!(fetchable);
+        }
+        if !videos.is_empty() {
+            let fetchable = videos
+                .iter()
+                .map(|video| atlas_fetchable_media_ref(video, "video"))
+                .collect::<Result<Vec<_>, _>>()?;
+            body["reference_videos"] = json!(fetchable);
+        }
+        if !audios.is_empty() {
+            let fetchable = audios
+                .iter()
+                .map(|audio| atlas_fetchable_media_ref(audio, "audio"))
+                .collect::<Result<Vec<_>, _>>()?;
+            body["reference_audios"] = json!(fetchable);
+        }
+        if let Some(ratio) = optional_string(&req.params, "ratio")
+            .or_else(|| optional_string(&req.params, "aspect_ratio"))
+        {
+            body["ratio"] = Value::String(ratio);
+        }
+        return Ok(());
+    }
+
+    if !videos.is_empty() || !audios.is_empty() || images.len() > 2 {
+        return Err(ProviderError::InvalidRequest(format!(
+            "operation `{operation_id}` is first-frame image-to-video and cannot take extra video/audio references or more than two images; pin a `/reference-to-video` binding"
+        )));
+    }
+    let image = images.first().cloned().ok_or_else(|| {
+        ProviderError::InvalidRequest("image_to_video requires wired image input".to_owned())
+    })?;
+    body["image"] = Value::String(image);
+    if let Some(last_image) = images.get(1).cloned() {
+        body["last_image"] = Value::String(last_image);
+    }
+    body["camera_fixed"] = req
+        .params
+        .get("camera_fixed")
+        .cloned()
+        .unwrap_or(json!(false));
+    if let Some(aspect_ratio) = optional_string(&req.params, "aspect_ratio") {
+        body["aspect_ratio"] = Value::String(aspect_ratio);
+    }
+    Ok(())
+}
+
 fn first_output(response: &Value) -> ProviderResultValue<String> {
     let data = response.get("data").unwrap_or(response);
     if let Some(output) = data
@@ -747,5 +887,6 @@ fn truncate(value: &str, max_len: usize) -> String {
     value.chars().take(max_len).collect::<String>()
 }
 
+mod image_edit;
 #[cfg(test)]
 mod tests;

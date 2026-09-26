@@ -6,10 +6,13 @@ import type {
   NodeDefinition,
   WorkbenchState,
 } from '../../types';
+import { isVisualMediaCardType } from '../../grid-split';
 import {
   buildConnectionProposalInput,
   edgeToRemoveOp,
   findInputConnection,
+  matchingConnectionPorts,
+  MEDIA_REF_PORT,
   portTypeMatches,
 } from '../graph-canvas-connections';
 import type { WorkflowFlowEdge, WorkflowFlowInstance, WorkflowFlowNode } from './types';
@@ -87,25 +90,28 @@ export function useFlowActions(input: FlowActionsInput) {
       sourceHandle?: string | null;
       targetHandle?: string | null;
     }) => {
-      if (!connection.source || !connection.target || !connection.sourceHandle || !connection.targetHandle) {
-        return null;
-      }
+      if (!connection.source || !connection.target) return null;
       const sourceNode = input.nodes.find((node) => node.id === connection.source);
       const targetNode = input.nodes.find((node) => node.id === connection.target);
-      const sourcePort = sourceNode
-        ? input.definitionByType.get(sourceNode.nodeType)?.outputs.find(
-            (port) => port.name === connection.sourceHandle,
-          )
+      const sourceDefinition = sourceNode ? input.definitionByType.get(sourceNode.nodeType) : undefined;
+      const targetDefinition = targetNode ? input.definitionByType.get(targetNode.nodeType) : undefined;
+      const sourcePort = connection.sourceHandle
+        ? sourceDefinition?.outputs.find((port) => port.name === connection.sourceHandle)
         : undefined;
-      const targetPort = targetNode
-        ? input.definitionByType.get(targetNode.nodeType)?.inputs.find(
-            (port) => port.name === connection.targetHandle,
-          )
+      const targetPort = connection.targetHandle
+        ? targetDefinition?.inputs.find((port) => port.name === connection.targetHandle)
         : undefined;
-      if (!sourcePort || !targetPort) return null;
+      if (sourcePort && targetPort) {
+        return {
+          source: { nodeId: connection.source, port: sourcePort.name, type: sourcePort.type },
+          target: { nodeId: connection.target, port: targetPort.name, type: targetPort.type },
+        };
+      }
+      const match = matchingConnectionPorts(sourceDefinition, targetDefinition);
+      if (!match) return null;
       return {
-        source: { nodeId: connection.source, port: sourcePort.name, type: sourcePort.type },
-        target: { nodeId: connection.target, port: targetPort.name, type: targetPort.type },
+        source: { nodeId: connection.source, port: match.sourcePort, type: match.type },
+        target: { nodeId: connection.target, port: match.targetPort, type: match.type },
       };
     },
     [input.definitionByType, input.nodes],
@@ -114,7 +120,12 @@ export function useFlowActions(input: FlowActionsInput) {
   const isValidConnection: IsValidConnection<WorkflowFlowEdge> = useCallback(
     (connection) => {
       const ports = connectionPorts(connection);
-      return Boolean(ports && portTypeMatches(ports.source.type, ports.target.type));
+      return Boolean(
+        ports && (
+          portTypeMatches(ports.source.type, ports.target.type)
+          || ports.target.port === MEDIA_REF_PORT
+        ),
+      );
     },
     [connectionPorts],
   );
@@ -126,18 +137,53 @@ export function useFlowActions(input: FlowActionsInput) {
         input.setStatus('连线失败：端口定义缺失');
         return;
       }
-      const existingEdge = findInputConnection(input.edges, ports.target);
+      const targetNode = input.nodes.find((node) => node.id === ports.target.nodeId);
+      const targetPort = targetNode
+        ? input.definitionByType.get(targetNode.nodeType)?.inputs.find((port) => port.name === ports.target.port)
+        : undefined;
+      const fanIn = targetPort?.cardinality === 'many';
+      const duplicate = input.edges.some((edge) => (
+        edge.from.nodeId === ports.source.nodeId
+        && edge.from.port === ports.source.port
+        && edge.to.nodeId === ports.target.nodeId
+        && edge.to.port === ports.target.port
+      ));
+      if (duplicate) return;
+      const existingEdge = fanIn ? undefined : findInputConnection(input.edges, ports.target);
       submit(
         buildConnectionProposalInput({
           baseVersionId: input.versionId,
           source: ports.source,
           target: ports.target,
           existingEdge,
+          fanIn,
         }),
         existingEdge ? '已替换输入连线' : '已添加连线',
       );
     },
-    [connectionPorts, input.edges, input.setStatus, input.versionId, submit],
+    [connectionPorts, input.definitionByType, input.edges, input.nodes, input.setStatus, input.versionId, submit],
+  );
+
+  const connectNodes = useCallback(
+    (sourceId: string, targetId: string) => {
+      const sourceNode = input.nodes.find((node) => node.id === sourceId);
+      const targetNode = input.nodes.find((node) => node.id === targetId);
+      const match = matchingConnectionPorts(
+        sourceNode ? input.definitionByType.get(sourceNode.nodeType) : undefined,
+        targetNode ? input.definitionByType.get(targetNode.nodeType) : undefined,
+      );
+      if (!match) {
+        input.setStatus('连线失败：这两张卡没有可接的端口');
+        return;
+      }
+      connect({
+        source: sourceId,
+        target: targetId,
+        sourceHandle: match.sourcePort,
+        targetHandle: match.targetPort,
+      });
+    },
+    [connect, input.definitionByType, input.nodes, input.setStatus],
   );
 
   const disconnect = useCallback(
@@ -159,7 +205,31 @@ export function useFlowActions(input: FlowActionsInput) {
     [input.setStatus, input.versionId, submit],
   );
 
-  return { commitMove, commitResize, connect, disconnect, isValidConnection };
+  return { commitMove, commitResize, connect, connectNodes, disconnect, isValidConnection };
+}
+
+export function emptyMediaCardId(
+  nodeId: string | null | undefined,
+  nodes: WorkbenchState['graph']['nodes'],
+  isEmpty: (node: WorkbenchState['graph']['nodes'][number]) => boolean,
+): string | null {
+  if (!nodeId) return null;
+  const node = nodes.find((item) => item.id === nodeId);
+  if (!node || !isVisualMediaCardType(node.nodeType) || !isEmpty(node)) return null;
+  return node.id;
+}
+
+export function emptyMediaCardIdFromDropTarget(
+  target: EventTarget | null,
+  nodes: WorkbenchState['graph']['nodes'],
+  isEmpty: (node: WorkbenchState['graph']['nodes'][number]) => boolean,
+): string | null {
+  if (!(target instanceof Element)) return null;
+  return emptyMediaCardId(
+    target.closest('.react-flow__node')?.getAttribute('data-id'),
+    nodes,
+    isEmpty,
+  );
 }
 
 export function handleFlowDragOver(event: DragEvent, enabled: boolean): void {

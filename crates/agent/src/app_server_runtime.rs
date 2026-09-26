@@ -7,11 +7,17 @@ use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{ChildStdout, Command};
 use tokio::sync::oneshot;
 
-use crate::canvas_ops::MAX_CANVAS_STATE_BYTES;
+use crate::canvas_tools::{dispatch_dynamic_tool, helixflow_dynamic_tools};
 use crate::runtime::{codex_turn_prompt, safe_runtime_env};
 use crate::{
     AgentRuntime, AgentSession, AgentTurn, CodexRuntime, RuntimeError, RuntimeEvent, RuntimeHandle,
     RuntimeResult,
+};
+
+#[cfg(test)]
+pub(crate) use crate::canvas_tools::{
+    canvas_inspect_tool_result, request_run_tool_result, submit_edit_tool_result,
+    submit_reply_tool_result, submit_route_tool_result,
 };
 
 #[derive(Debug, Clone)]
@@ -317,180 +323,6 @@ async fn run_app_server_turn(
     }
 }
 
-fn helixflow_dynamic_tools(
-    root_dir: &std::path::Path,
-    output_contract: Option<crate::OutputContract>,
-) -> Vec<Value> {
-    if output_contract == Some(crate::OutputContract::RouteJson) {
-        return vec![json!({
-            "type": "namespace",
-            "name": "agent",
-            "description": "Submit the current Helixflow Agent control decision for strict backend validation.",
-            "tools": [{
-                "type": "function",
-                "name": "select_turn_mode",
-                "description": "Restate the action requested by the current user turn, then select the single user-facing mode that matches that action.",
-                "inputSchema": {
-                    "type": "object",
-                    "required": ["mode", "requestedAction"],
-                    "properties": {
-                        "mode": {
-                            "type": "string",
-                            "oneOf": [
-                                {
-                                    "const": "chat",
-                                    "description": "Give a read-only answer, explanation, status interpretation, or summary; do not change or execute the workflow."
-                                },
-                                {
-                                    "const": "create_workflow",
-                                    "description": "Build a new workflow goal, normally for an empty canvas."
-                                },
-                                {
-                                    "const": "modify_workflow",
-                                    "description": "Change the structure or parameters of the existing workflow."
-                                },
-                                {
-                                    "const": "debug_workflow",
-                                    "description": "Diagnose a failed run or propose a minimal repair."
-                                },
-                                {
-                                    "const": "run_request",
-                                    "description": "Execute the existing workflow because the current user explicitly requests execution or new results."
-                                }
-                            ]
-                        },
-                        "requestedAction": {
-                            "type": "string",
-                            "description": "One concise sentence containing only the user-visible outcome requested by the current user; exclude routing, tools, files, and prior-turn actions.",
-                            "minLength": 1,
-                            "maxLength": 1024
-                        }
-                    },
-                    "additionalProperties": false
-                }
-            }]
-        })];
-    }
-    if !root_dir.join("ctx/canvas_state.json").is_file() {
-        return Vec::new();
-    }
-    let mut tools = vec![json!({
-        "type": "function",
-        "name": "get_state",
-        "description": "Return the current compact graph, selection, version, and gate state.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {},
-            "additionalProperties": false
-        }
-    })];
-    if output_contract == Some(crate::OutputContract::IntentJson) {
-        let capability_ids = catalog_capability_ids(root_dir);
-        tools.push(json!({
-            "type": "function",
-            "name": "submit_intent",
-            "description": "Submit a high-level workflow intent for deterministic backend compilation. This does not mutate the canvas.",
-            "inputSchema": {
-                "type": "object",
-                "required": ["intentVersion", "topology", "stages", "outputStageIds"],
-                "properties": {
-                    "intentVersion": { "type": "string", "enum": ["1"] },
-                    "topology": { "type": "string", "enum": ["linear", "parallel"] },
-                    "stages": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
-                            "type": "object",
-                            "required": ["stageId", "capabilityId"],
-                            "properties": {
-                                "stageId": { "type": "string" },
-                                "capabilityId": {
-                                    "type": "string",
-                                    "enum": capability_ids,
-                                    "description": "Choose a catalog capability id, never a node type."
-                                },
-                                "requestedModel": { "type": "string" },
-                                "inputFrom": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "required": ["stageId", "output"],
-                                        "properties": {
-                                            "stageId": { "type": "string" },
-                                            "output": { "type": "string" }
-                                        },
-                                        "additionalProperties": false
-                                    }
-                                },
-                                "params": { "type": "object" }
-                            },
-                            "additionalProperties": false
-                        }
-                    },
-                    "outputStageIds": { "type": "array", "items": { "type": "string" } },
-                    "assumptions": { "type": "array", "items": { "type": "string" } }
-                },
-                "additionalProperties": false
-            }
-        }));
-    } else if output_contract == Some(crate::OutputContract::RunRequestJson) {
-        tools.push(json!({
-            "type": "function",
-            "name": "request_run",
-            "description": "Request execution of the current workflow through backend estimation and cost gates. This never confirms or dispatches a provider directly.",
-            "inputSchema": {
-                "type": "object",
-                "required": ["action", "summary"],
-                "properties": {
-                    "action": { "type": "string", "enum": ["request_confirmation"] },
-                    "summary": { "type": "string", "minLength": 1, "maxLength": 4096 }
-                },
-                "additionalProperties": false
-            }
-        }));
-    } else if output_contract == Some(crate::OutputContract::ReplyJson) {
-        tools.push(json!({
-            "type": "function",
-            "name": "submit_reply",
-            "description": "Submit a read-only chat answer for backend validation. This cannot modify or run the canvas.",
-            "inputSchema": {
-                "type": "object",
-                "required": ["message"],
-                "properties": {
-                    "message": { "type": "string", "minLength": 1, "maxLength": 65536 }
-                },
-                "additionalProperties": false
-            }
-        }));
-    }
-    vec![json!({
-        "type": "namespace",
-        "name": "canvas",
-        "description": "Read the current Helixflow canvas and submit bounded outputs for backend validation.",
-        "tools": tools
-    })]
-}
-
-fn catalog_capability_ids(root_dir: &std::path::Path) -> Vec<String> {
-    let path = root_dir.join("ctx/node_defs/catalog.json");
-    let mut ids = std::fs::read(path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .and_then(|catalog| catalog.get("nodes").and_then(Value::as_array).cloned())
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|entry| {
-            entry
-                .get("capability")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .collect::<Vec<_>>();
-    ids.sort();
-    ids.dedup();
-    ids
-}
-
 async fn respond_to_dynamic_tool_call<W: AsyncWrite + Unpin>(
     writer: &mut W,
     request: &Value,
@@ -511,151 +343,21 @@ async fn respond_to_dynamic_tool_call<W: AsyncWrite + Unpin>(
         && params.get("turnId").and_then(Value::as_str) == Some(turn_id);
     let namespace = params.get("namespace").and_then(Value::as_str);
     let tool = params.get("tool").and_then(Value::as_str);
-    let result = match (matches_turn, namespace, tool) {
-        (true, Some("canvas"), Some("get_state")) => canvas_state_tool_result(root_dir).await,
-        (true, Some("canvas"), Some("submit_intent"))
-            if output_contract == Some(crate::OutputContract::IntentJson) =>
-        {
-            submit_intent_tool_result(out_dir, &params["arguments"]).await
-        }
-        (true, Some("canvas"), Some("request_run"))
-            if output_contract == Some(crate::OutputContract::RunRequestJson) =>
-        {
-            request_run_tool_result(out_dir, &params["arguments"]).await
-        }
-        (true, Some("canvas"), Some("submit_reply"))
-            if output_contract == Some(crate::OutputContract::ReplyJson) =>
-        {
-            submit_reply_tool_result(out_dir, &params["arguments"]).await
-        }
-        (true, Some("agent"), Some("select_turn_mode"))
-            if output_contract == Some(crate::OutputContract::RouteJson) =>
-        {
-            submit_route_tool_result(out_dir, &params["arguments"]).await
-        }
-        _ => failed_tool_result("Unsupported or stale Helixflow dynamic tool call."),
-    };
+    let arguments = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let result = dispatch_dynamic_tool(
+        matches_turn,
+        namespace,
+        tool,
+        output_contract,
+        root_dir,
+        out_dir,
+        &arguments,
+    )
+    .await;
     write_rpc(writer, &json!({ "id": request_id, "result": result })).await
-}
-
-async fn submit_intent_tool_result(out_dir: &std::path::Path, arguments: &Value) -> Value {
-    capture_json_output(
-        out_dir,
-        arguments,
-        "intent.json",
-        "Intent",
-        "Intent captured for deterministic backend compilation; it has not changed the canvas.",
-    )
-    .await
-}
-
-async fn request_run_tool_result(out_dir: &std::path::Path, arguments: &Value) -> Value {
-    capture_json_output(
-        out_dir,
-        arguments,
-        "run_request.json",
-        "Run request",
-        "Run request captured for backend estimation and cost gating; no provider was dispatched.",
-    )
-    .await
-}
-
-async fn submit_reply_tool_result(out_dir: &std::path::Path, arguments: &Value) -> Value {
-    capture_json_output(
-        out_dir,
-        arguments,
-        "reply.json",
-        "Chat reply",
-        "Chat reply captured for backend validation; the canvas was not changed.",
-    )
-    .await
-}
-
-async fn submit_route_tool_result(out_dir: &std::path::Path, arguments: &Value) -> Value {
-    capture_json_output(
-        out_dir,
-        arguments,
-        "route.json",
-        "Turn route",
-        "Turn mode captured for backend validation; no user action has run.",
-    )
-    .await
-}
-
-async fn capture_json_output(
-    out_dir: &std::path::Path,
-    arguments: &Value,
-    file_name: &str,
-    label: &str,
-    success_message: &str,
-) -> Value {
-    const MAX_OUTPUT_BYTES: usize = 256 * 1024;
-    let bytes = match serde_json::to_vec(arguments) {
-        Ok(bytes) if arguments.is_object() && bytes.len() <= MAX_OUTPUT_BYTES => bytes,
-        Ok(_) => {
-            return failed_tool_result(&format!(
-                "{label} arguments must be an object no larger than 256 KiB."
-            ));
-        }
-        Err(error) => {
-            return failed_tool_result(&format!("{label} arguments are invalid: {error}"));
-        }
-    };
-    let path = out_dir.join(file_name);
-    let write = async {
-        let mut file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .await?;
-        file.write_all(&bytes).await?;
-        file.flush().await
-    }
-    .await;
-    match write {
-        Ok(()) => json!({
-            "contentItems": [{
-                "type": "inputText",
-                "text": success_message
-            }],
-            "success": true
-        }),
-        Err(error) => failed_tool_result(&format!("{label} could not be captured: {error}")),
-    }
-}
-
-fn failed_tool_result(message: &str) -> Value {
-    json!({
-        "contentItems": [{ "type": "inputText", "text": message }],
-        "success": false
-    })
-}
-
-async fn canvas_state_tool_result(root_dir: &std::path::Path) -> Value {
-    let path = root_dir.join("ctx/canvas_state.json");
-    let read = async {
-        let metadata = tokio::fs::metadata(&path).await?;
-        if metadata.len() > MAX_CANVAS_STATE_BYTES as u64 {
-            return Err(std::io::Error::other("canvas state exceeds 256 KiB"));
-        }
-        let bytes = tokio::fs::read(&path).await?;
-        let value: Value = serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
-        serde_json::to_string(&value).map_err(std::io::Error::other)
-    }
-    .await;
-    match read {
-        Ok(text) => json!({
-            "contentItems": [{ "type": "inputText", "text": text }],
-            "success": true
-        }),
-        Err(error) => json!({
-            "contentItems": [{
-                "type": "inputText",
-                "text": format!("Canvas state is unavailable: {error}")
-            }],
-            "success": false
-        }),
-    }
 }
 
 async fn write_rpc<W: AsyncWrite + Unpin>(writer: &mut W, value: &Value) -> RuntimeResult<()> {

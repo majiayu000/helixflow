@@ -21,7 +21,7 @@ impl TurnMode {
         match self {
             Self::Chat => OutputContract::ReplyJson,
             Self::CreateWorkflow | Self::ModifyWorkflow | Self::DebugWorkflow => {
-                OutputContract::IntentJson
+                OutputContract::CanvasEditJson
             }
             Self::RunRequest => OutputContract::RunRequestJson,
             Self::Route => OutputContract::RouteJson,
@@ -66,7 +66,7 @@ impl fmt::Display for TurnMode {
 #[serde(rename_all = "snake_case")]
 pub enum OutputContract {
     ReplyJson,
-    IntentJson,
+    CanvasEditJson,
     RunRequestJson,
     RouteJson,
 }
@@ -75,7 +75,7 @@ impl OutputContract {
     pub fn file_name(self) -> &'static str {
         match self {
             Self::ReplyJson => "reply.json",
-            Self::IntentJson => "intent.json",
+            Self::CanvasEditJson => "canvas_edit.json",
             Self::RunRequestJson => "run_request.json",
             Self::RouteJson => "route.json",
         }
@@ -86,7 +86,7 @@ impl fmt::Display for OutputContract {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
             Self::ReplyJson => "reply_json",
-            Self::IntentJson => "intent_json",
+            Self::CanvasEditJson => "canvas_edit_json",
             Self::RunRequestJson => "run_request_json",
             Self::RouteJson => "route_json",
         };

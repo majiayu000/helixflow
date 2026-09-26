@@ -9,8 +9,9 @@ use serde_json::{Value, json};
 use crate::{
     AgentError, AgentLogEntry, AgentResult, AgentRuntime, AgentSession, AgentSessionRequest,
     AgentTurn, OutputContract, PromptStackMetadata, RuntimeEvent, RuntimeHandle,
-    TurnClassification, TurnMode, TurnModeSource, ValidatedAgentIntent, ValidatedAgentReply,
-    create_session_contract, read_validated_intent, read_validated_reply, read_validated_route,
+    TurnClassification, TurnMode, TurnModeSource, ValidatedAgentReply, ValidatedCanvasEdit,
+    create_session_contract, read_validated_canvas_edit, read_validated_reply,
+    read_validated_route,
 };
 
 const DEFAULT_MAX_INTENT_ROUNDS: usize = 3;
@@ -73,13 +74,12 @@ where
         self
     }
 
-    /// Runs the IntentPlan contract with a bounded retry loop. Validation
-    /// errors come from the intent schema and structural validator.
-    pub async fn propose_intent(
+    /// Runs the canvas-edit contract with a bounded retry loop.
+    pub async fn propose_canvas_edit(
         &self,
         request: AgentSessionRequest,
-    ) -> AgentResult<ValidatedAgentIntent> {
-        ensure_output_contract(&request, OutputContract::IntentJson)?;
+    ) -> AgentResult<ValidatedCanvasEdit> {
+        ensure_output_contract(&request, OutputContract::CanvasEditJson)?;
         let mut run = self.start_agent_session(&request).await?;
         let max_rounds = self.max_intent_rounds.max(1);
         let mut next_message = request.user_message.clone();
@@ -88,18 +88,18 @@ where
         for round in 1..=max_rounds {
             self.record_status(
                 &mut run,
-                "intent.round.started",
+                "canvas_edit.round.started",
                 json!({
                     "round": round,
                     "max_rounds": max_rounds,
-                    "message": format!("intent round {round}/{max_rounds} started")
+                    "message": format!("canvas edit round {round}/{max_rounds} started")
                 }),
             );
 
             let turn = AgentTurn {
                 message: next_message.clone(),
                 mode: request.mode,
-                output_contract: OutputContract::IntentJson,
+                output_contract: OutputContract::CanvasEditJson,
                 skill: request.skill,
             };
             let outcome = self.send_agent_turn(&mut run, turn).await?;
@@ -107,39 +107,39 @@ where
             if let TurnRunOutcome::RuntimeFailed(message) = outcome {
                 last_error = sanitize_retry_feedback(&message);
             } else {
-                match read_validated_intent(&run.session) {
-                    Ok(intent) => {
+                match read_validated_canvas_edit(&run.session) {
+                    Ok(edit) => {
                         self.record_status(
                             &mut run,
-                            "intent.ready",
+                            "canvas_edit.ready",
                             json!({
                                 "round": round,
-                                "stages": intent.stages.len(),
-                                "message": format!("intent ready after round {round}")
+                                "operations": edit.operations.len(),
+                                "message": format!("canvas edit ready after round {round}")
                             }),
                         );
                         self.emit_status(
                             &run.session,
                             run.seq,
                             "agent.status.end",
-                            json!({ "intent_stages": intent.stages.len() }),
+                            json!({ "canvas_edit_ops": edit.operations.len() }),
                         );
-                        return Ok(ValidatedAgentIntent {
+                        return Ok(ValidatedCanvasEdit {
                             session_id: run.session.id.clone(),
                             runtime_identity: run.handle.identity().await,
                             agent_logs: run.agent_logs,
-                            intent,
+                            edit,
                         });
                     }
                     Err(err) => {
                         last_error = sanitize_retry_feedback(&err.to_string());
                         self.record_status(
                             &mut run,
-                            "intent.validation_failed",
+                            "canvas_edit.validation_failed",
                             json!({
                                 "round": round,
                                 "max_rounds": max_rounds,
-                                "message": format!("intent validation failed: {last_error}")
+                                "message": format!("canvas edit validation failed: {last_error}")
                             }),
                         );
                     }
@@ -153,11 +153,11 @@ where
                 });
             }
             next_message = format!(
-                "Your previous out/intent.json was invalid: {last_error}\nRewrite out/intent.json following the Intent output contract exactly. Original request: {}",
+                "Your previous out/canvas_edit.json was invalid: {last_error}\nRewrite out/canvas_edit.json using canvas.edit operations only. Original request: {}",
                 request.user_message
             );
         }
-        unreachable!("intent rounds always return or error")
+        unreachable!("canvas edit rounds always return or error")
     }
 
     pub async fn answer_chat(
@@ -486,7 +486,7 @@ fn canvas_ops_log_entry(request: &AgentSessionRequest) -> AgentLogEntry {
     AgentLogEntry {
         kind: "agent_log:canvas_ops".to_owned(),
         text: format!(
-            "Canvas ops context ready: graph_nodes={}, selected_nodes={}, allowed_ops=[read_state, read_selection, propose_layout, propose_graph_ops, run_selected_workflow]",
+            "Canvas ops context ready: graph_nodes={}, selected_nodes={}, allowed_ops=[catalog, inspect, edit, run, wait]",
             request.graph.nodes.len(),
             selection_count
         ),

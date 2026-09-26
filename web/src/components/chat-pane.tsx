@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Icon } from '../icons';
+import { ModelPicker } from './model-picker';
 import type { WorkbenchState } from '../types';
 
 type ChatMessage = WorkbenchState['chat']['messages'][number];
@@ -60,8 +61,8 @@ export function ChatPane({
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const isComposingRef = useRef(false);
   const selectedSummary = selectedNodeIds.length > 0
-    ? `@选中 ${selectedNodeIds.join(', ')}`
-    : '@未选中';
+    ? `@ ${selectedNodeIds.length} 个节点`
+    : '未选中';
 
   useEffect(() => {
     const element = scrollRef.current;
@@ -81,8 +82,8 @@ export function ChatPane({
   return (
     <aside className="wb-chat">
       <div className="chat-head">
-        <span>CONVERSATION · CODEX</span>
-        <span className="sub">{busy ? 'busy · 执行中' : 'idle · 观察中'}</span>
+        <span>Chat</span>
+        <span className="sub">{busy ? '执行中' : '就绪'}</span>
       </div>
       {conversations.length > 0 && (
         <div className="conversation-bar">
@@ -109,6 +110,20 @@ export function ChatPane({
         </div>
       )}
       <div className="chat-msgs" ref={scrollRef}>
+        {messages.length === 0 && !pendingProposal && (
+          <div className="chat-empty">
+            <h2>今天一起创作点什么?</h2>
+            <span>选中一张图，或直接说你要做什么。</span>
+            <div className="chat-empty-chips">
+              <button disabled={busy} onClick={() => void submit('讲清这个项目的创作思路')} type="button">
+                讲清这个项目的创作思路
+              </button>
+              <button disabled={busy} onClick={() => void submit('把我的创作流程做成可运行的画布')} type="button">
+                把创作流程做成画布
+              </button>
+            </div>
+          </div>
+        )}
         <MessageTimeline messages={messages} turns={turns} />
         <RunErrorCard busy={busy} run={run} onRequestFix={onSend} />
         {pendingProposal && <ProposalMessage
@@ -120,9 +135,7 @@ export function ChatPane({
       </div>
       <div className="composer">
         <div className="composer-context">
-          <span>节点对话</span>
           <span>{selectedSummary}</span>
-          {selectedNodeIds.length > 1 && <span>含上游 · {selectedNodeIds.length} 个节点</span>}
         </div>
         <div className="composer-box">
           <textarea
@@ -141,14 +154,14 @@ export function ChatPane({
                 void submit();
               }
             }}
-            placeholder={selectedNodeIds.length > 0 ? '围绕选中节点提问...' : '围绕当前工作流提问...'}
+            placeholder="随心输入"
             rows={2}
             value={draft}
           />
           <div className="composer-foot">
             <div className="left">
               <input
-                accept="image/*"
+                accept="image/*,video/*,audio/*"
                 aria-label="上传图片"
                 onChange={(event) => {
                   const file = event.target.files?.[0];
@@ -163,10 +176,11 @@ export function ChatPane({
                 className="ibtn ibtn--icon"
                 disabled={busy || !onUploadImage}
                 onClick={() => uploadInputRef.current?.click()}
-                title="上传图片"
+                title="上传图片、视频或音频"
               >
                 <Icon n="paperclip" s={14} />
               </button>
+              <ModelPicker disabled={busy} />
             </div>
             <div className="right">
               <span className="kbd">Enter 发送 · Shift+Enter 换行</span>

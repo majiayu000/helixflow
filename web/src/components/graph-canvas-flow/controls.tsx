@@ -2,16 +2,40 @@ import { Icon } from '../../icons';
 import type { GraphNodeState } from '../../types';
 import type { ViewState } from '../graph-canvas-navigation';
 import type { WorkflowFlowInstance } from './types';
+import type { CanvasPointerTool } from './use-canvas-tools';
 import { setFlowViewportToNodes } from './use-viewport';
 
+export const CANVAS_SHORTCUT_HELP =
+  '⌘Z 撤销 · ⌘C/V 复制粘贴 · ⌘F 搜索 · ⌘+/- 缩放 · ⌘0 适应 · ⌘J Agent · Delete 删除 · 空格拖动画布';
+
 export function CanvasViewControls({
+  activeTool,
+  canEdit,
+  hideEdges,
   instance,
+  minimapOpen,
   nodes,
+  onHelp,
+  onToggleHideEdges,
+  onToggleMinimap,
+  onToggleSnap,
+  onToolChange,
+  snapToGrid,
   view,
   viewportSize,
 }: {
+  activeTool?: CanvasPointerTool;
+  canEdit?: boolean;
+  hideEdges?: boolean;
   instance: WorkflowFlowInstance | null;
+  minimapOpen?: boolean;
   nodes: GraphNodeState[];
+  onHelp?: () => void;
+  onToggleHideEdges?: () => void;
+  onToggleMinimap?: () => void;
+  onToggleSnap?: () => void;
+  onToolChange?: (tool: CanvasPointerTool) => void;
+  snapToGrid?: boolean;
   view: ViewState;
   viewportSize: { width: number; height: number };
 }) {
@@ -19,9 +43,67 @@ export function CanvasViewControls({
   const zoomPercent = Math.round(view.z * 100);
   return (
     <div className="flow-view-controls nodrag nopan" role="toolbar" aria-label="画布视图控制">
+      {canEdit && onToolChange ? (
+        <>
+          <button
+            aria-label="平移画布"
+            aria-pressed={activeTool === 'pan'}
+            className={activeTool === 'pan' ? 'is-active' : undefined}
+            onClick={() => onToolChange('pan')}
+            type="button"
+          >
+            <Icon n="hand" s={15} />
+          </button>
+          <button
+            aria-label="框选节点"
+            aria-pressed={activeTool === 'select'}
+            className={activeTool === 'select' ? 'is-active' : undefined}
+            onClick={() => onToolChange('select')}
+            type="button"
+          >
+            <Icon n="grid" s={15} />
+          </button>
+          <span className="flow-view-divider" />
+        </>
+      ) : null}
+      {onToggleHideEdges ? (
+        <button
+          aria-label="隐藏连线"
+          aria-pressed={hideEdges}
+          className={hideEdges ? 'is-active is-label' : 'is-label'}
+          onClick={onToggleHideEdges}
+          type="button"
+        >
+          {hideEdges ? '已藏连线' : '藏连线'}
+        </button>
+      ) : null}
+      {onToggleSnap ? (
+        <button
+          aria-label="网格吸附"
+          aria-pressed={snapToGrid}
+          className={snapToGrid ? 'is-active is-label' : 'is-label'}
+          onClick={onToggleSnap}
+          type="button"
+        >
+          吸附
+        </button>
+      ) : null}
+      {onToggleHideEdges || onToggleSnap ? <span className="flow-view-divider" /> : null}
       <button aria-label="缩小画布" onClick={() => void instance?.zoomOut({ duration: 160 })}>
         −
       </button>
+      <input
+        aria-label="画布缩放"
+        className="flow-view-zoom-slider"
+        max={2}
+        min={0.15}
+        onChange={(event) => {
+          void instance?.zoomTo(Number(event.currentTarget.value), { duration: 0 });
+        }}
+        step={0.01}
+        type="range"
+        value={Math.min(2, Math.max(0.15, view.z))}
+      />
       <button
         aria-label="重置画布缩放"
         className="flow-view-zoom"
@@ -40,6 +122,22 @@ export function CanvasViewControls({
       >
         <Icon n="layers" s={15} />
       </button>
+      {onToggleMinimap ? (
+        <button
+          aria-label="切换小地图"
+          aria-pressed={minimapOpen}
+          className={minimapOpen ? 'is-active' : undefined}
+          onClick={onToggleMinimap}
+          type="button"
+        >
+          <Icon n="map" s={13} />
+        </button>
+      ) : null}
+      {onHelp ? (
+        <button aria-label="快捷键说明" onClick={onHelp} type="button">
+          ?
+        </button>
+      ) : null}
       <span className="flow-node-count">{nodeCount.toLocaleString()} nodes</span>
     </div>
   );

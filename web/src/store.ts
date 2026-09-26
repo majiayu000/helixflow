@@ -51,7 +51,7 @@ import {
   WorkspaceSnapshotCoordinator,
 } from './workspace-snapshot';
 import type { WorkbenchStore } from './store-types';
-import { createUploadImageAction } from './store-upload';
+import { createImageMediaActions } from './store-upload';
 import { StorePersistence } from './store-persistence';
 import { WorkspaceActionGuard, WorkspaceChangedError } from './workspace-action-guard';
 
@@ -233,7 +233,7 @@ export const useWorkbenchStore = create<WorkbenchStore>((set, get) => {
       throw normalized;
     }
   },
-  uploadImage: createUploadImageAction(set, get, requestScope),
+  ...createImageMediaActions(set, get, requestScope),
   createConversation: async () => {
     const state = get().state;
     if (!state) throw new Error('workspace is not loaded');

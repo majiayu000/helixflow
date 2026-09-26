@@ -9,6 +9,8 @@ import type {
 } from '../types';
 import { graphNodeHeight, graphNodeWidth, type ViewState, type ViewportSize } from './graph-canvas-navigation';
 import { categorySwatch } from './graph-canvas-rendering';
+import { ImageCanvasToolsPanel } from './image-canvas-tools-panel';
+import type { ImageCanvasToolRequest } from '../image-canvas-tools';
 
 type WorkflowNode = WorkflowGraph['nodes'][string];
 type ParamSpec = NodeDefinition['params_schema']['properties'][string];
@@ -96,12 +98,22 @@ type GraphInspectorProps = {
   catalogError?: string | null;
   definition?: NodeDefinition;
   node: GraphNodeState;
+  incomingReferences?: Array<{
+    fromNodeId: string;
+    fromPort: string;
+    toPort: string;
+    kind: string;
+  }>;
+  stepError?: string | null;
   resolution?: ImplementationResolution | null;
   readiness?: CapabilityReadiness | null;
   workflowNode?: WorkflowNode;
   onClose: () => void;
   onRequestProposal?: (nodeId: string) => Promise<void>;
   onSetParam?: (nodeId: string, key: string, value: unknown) => Promise<void>;
+  onSplitImageGrid?: (rows: number, columns: number) => Promise<void>;
+  onApplyImageCanvasTool?: (request: ImageCanvasToolRequest) => Promise<void>;
+  workspaceId?: string;
   view?: ViewState;
   viewportSize?: ViewportSize;
 };
@@ -110,10 +122,15 @@ export function GraphInspector({
   catalogError,
   definition,
   node,
+  incomingReferences = [],
+  stepError,
   workflowNode,
   onClose,
   onRequestProposal,
   onSetParam,
+  onSplitImageGrid,
+  onApplyImageCanvasTool,
+  workspaceId,
   view,
   viewportSize,
   resolution,
@@ -129,6 +146,10 @@ export function GraphInspector({
   );
   const [errors, setErrors] = useState<InspectorErrorMap>({});
   const [savingKey, setSavingKey] = useState<string | null>(null);
+  const [gridRows, setGridRows] = useState('3');
+  const [gridColumns, setGridColumns] = useState('3');
+  const [gridBusy, setGridBusy] = useState(false);
+  const [gridError, setGridError] = useState<string | null>(null);
   const readonlyReason = !workflowNode
     ? '当前 workflow graph 不可用'
     : !definition
@@ -207,6 +228,17 @@ export function GraphInspector({
             </div>
             <div className="inspector-body">
               {catalogError && <div className="inspector-error">{catalogError}</div>}
+              {stepError && <div className="inspector-error">{stepError}</div>}
+              {incomingReferences.length > 0 && (
+                <div className="field">
+                  <span className="field-label">参考袋</span>
+                  <span className="field-input field-area">
+                    {incomingReferences
+                      .map((ref) => `${ref.fromNodeId}.${ref.fromPort} → ${ref.toPort}`)
+                      .join('\n')}
+                  </span>
+                </div>
+              )}
               <div className="field">
                 <span className="field-label">node type</span>
                 <span className="field-input">{node.nodeType}</span>
@@ -244,6 +276,73 @@ export function GraphInspector({
             </div>
           </div>
         </details>
+        {onApplyImageCanvasTool && workspaceId && (
+          <ImageCanvasToolsPanel onApply={onApplyImageCanvasTool} workspaceId={workspaceId} />
+        )}
+        {onSplitImageGrid && (
+          <details className="inspector-edit-details">
+            <summary
+              className="inspector-tool"
+              onClick={(event) => event.stopPropagation()}
+              onPointerDown={(event) => event.stopPropagation()}
+              title="宫格切分"
+            >
+              <Icon n="grid" s={14} />
+              <span>宫格</span>
+            </summary>
+            <form
+              className="inspector-details-panel inspector-grid-panel"
+              onPointerDown={(event) => event.stopPropagation()}
+              onSubmit={(event) => {
+                event.preventDefault();
+                const rows = Number(gridRows);
+                const columns = Number(gridColumns);
+                setGridError(null);
+                setGridBusy(true);
+                void onSplitImageGrid(rows, columns)
+                  .catch((error) => {
+                    setGridError(error instanceof Error ? error.message : '宫格切分失败');
+                  })
+                  .finally(() => setGridBusy(false));
+              }}
+            >
+              <div className="inspector-head">
+                <div className="kicker">宫格切分</div>
+                <div className="title">原图保留，旁边生成切片节点</div>
+              </div>
+              <div className="inspector-body">
+                <label className="field">
+                  <span className="field-label">行</span>
+                  <input
+                    className="field-input"
+                    disabled={gridBusy}
+                    max={10}
+                    min={1}
+                    onChange={(event) => setGridRows(event.currentTarget.value)}
+                    type="number"
+                    value={gridRows}
+                  />
+                </label>
+                <label className="field">
+                  <span className="field-label">列</span>
+                  <input
+                    className="field-input"
+                    disabled={gridBusy}
+                    max={10}
+                    min={1}
+                    onChange={(event) => setGridColumns(event.currentTarget.value)}
+                    type="number"
+                    value={gridColumns}
+                  />
+                </label>
+                {gridError && <div className="inspector-error">{gridError}</div>}
+                <button className="inspector-tool inspector-tool-primary" disabled={gridBusy} type="submit">
+                  {gridBusy ? '切分中…' : `切成 ${Number(gridRows) * Number(gridColumns) || 0} 张`}
+                </button>
+              </div>
+            </form>
+          </details>
+        )}
         <button
           className="inspector-tool inspector-tool-primary"
           disabled={!onRequestProposal}
@@ -493,15 +592,21 @@ function multilineParam(key: string, draft: string): boolean {
 
 export function GraphSelectionInspector({
   nodes,
+  onAlign,
   onCopy,
   onDelete,
+  onGroup,
+  onUngroup,
   onClose,
   view,
   viewportSize,
 }: {
   nodes: GraphNodeState[];
+  onAlign?: (kind: 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom') => void;
   onCopy?: () => void;
   onDelete?: () => void;
+  onGroup?: () => void;
+  onUngroup?: () => void;
   onClose: () => void;
   view?: ViewState;
   viewportSize?: ViewportSize;
@@ -521,6 +626,20 @@ export function GraphSelectionInspector({
       <span className="selection-categories" title={categories.join(', ')}>
         {categories.join(' · ')}
       </span>
+      {onAlign ? (
+        <>
+          <button onClick={() => onAlign('left')} type="button">左齐</button>
+          <button onClick={() => onAlign('center')} type="button">居中</button>
+          <button onClick={() => onAlign('right')} type="button">右齐</button>
+          <button onClick={() => onAlign('top')} type="button">顶齐</button>
+        </>
+      ) : null}
+      {onGroup ? (
+        <button onClick={onGroup} type="button">成组</button>
+      ) : null}
+      {onUngroup ? (
+        <button onClick={onUngroup} type="button">解组</button>
+      ) : null}
       <button onClick={onCopy} type="button">
         <Icon n="paperclip" s={13} />
         复制

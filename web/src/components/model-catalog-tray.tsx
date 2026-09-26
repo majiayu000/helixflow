@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { catalogBindingReady } from '../model-picker';
 import type { ModelCatalog, NodeCatalog, NodeDefinition, WorkbenchState } from '../types';
 
 type ModelCatalogTrayProps = {
@@ -126,7 +127,7 @@ export function capabilityGroups(
         .filter(
           (binding) =>
             binding.availability === 'enabled' &&
-            binding.capabilityId === capability.capabilityId && bindingReady(binding, providers),
+            binding.capabilityId === capability.capabilityId && catalogBindingReady(binding, providers),
         )
         .map((binding) => {
           const model = catalog.models.find((item) => item.modelId === binding.modelId);
@@ -155,7 +156,7 @@ export function modelGroups(
           (binding) =>
             binding.availability === 'enabled' &&
             binding.modelId === model.modelId &&
-            bindingReady(binding, providers),
+            catalogBindingReady(binding, providers),
         )
         .map((binding) => {
           const capability = catalog.capabilities.find(
@@ -173,21 +174,6 @@ export function modelGroups(
       return { key: model.modelId, title: `${model.displayName} (${model.vendor})`, entries };
     })
     .filter((group) => group.entries.length > 0);
-}
-
-function bindingReady(
-  binding: ModelCatalog['bindings'][number],
-  providers?: WorkbenchState['providers'],
-): boolean {
-  if (!providers?.capabilityReadiness) return true;
-  const readiness = providers.capabilityReadiness?.find(
-    (item) => item.capabilityId === binding.capabilityId,
-  );
-  if (!readiness?.runnable || readiness.mode !== 'catalog') return false;
-  if ('apiConnector' in binding.implementation) {
-    return binding.implementation.apiConnector.connectorId === providers.selectedProvider;
-  }
-  return false;
 }
 
 function connectorLabel(binding: ModelCatalog['bindings'][number]): string {

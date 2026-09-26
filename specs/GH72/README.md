@@ -6,7 +6,7 @@
 - Locale: `zh-CN`
 - Linked issue: GH72
 - Gate evidence: `python3 checks/route_gate.py --repo . --route write_spec --issue 72 --evidence artifacts/specrail/issue-72.json --json` returned `allowed`.
-- Source design: `/Users/lifcc/Downloads/HelixFlow UI设计.zip`
+- Source design: local UI design archive (not in this repository)
 - Persisted evidence:
   - `artifacts/ui-design/helixflow-workbench-20260702/Helixflow-Workbench.dc.html`
   - `artifacts/ui-design/helixflow-workbench-20260702/support.js`
