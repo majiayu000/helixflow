@@ -1,3 +1,5 @@
+> **Status:** frozen. v0.1.0 and v0.2.0 shipped without external users. No new features.
+
 # Helixflow
 
 **Describe what you want. Get a working AI workflow.**
