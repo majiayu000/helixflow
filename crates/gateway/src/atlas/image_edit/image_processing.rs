@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use reqwest::{Url, multipart};
+use reqwest::multipart;
+
+use crate::remote_fetch::{RemoteFetchError, RemoteFetchPolicy, fetch_remote_bytes};
 use serde_json::{Value, json};
 
 use super::{
@@ -212,37 +214,68 @@ impl AtlasProvider {
     }
 
     async fn download_processing_output(&self, raw_url: &str) -> ProviderResultValue<Vec<u8>> {
-        let response = self
-            .client
-            .get(safe_output_url(raw_url)?)
-            .timeout(Duration::from_secs(90))
-            .send()
+        // Provider output URLs are untrusted. Do not reuse the API client:
+        // that client follows redirects and would attach Atlas credentials.
+        let policy = RemoteFetchPolicy::new(
+            Duration::from_secs(10),
+            Duration::from_secs(90),
+            5,
+            MAX_IMAGE_BYTES as u64,
+        )
+        .allow_loopback_http(self.allow_loopback_output_http);
+        let fetched = fetch_remote_bytes(raw_url, policy)
             .await
-            .map_err(|error| ProviderError::RequestFailed(error.to_string()))?;
-        if !response.status().is_success() {
-            return Err(ProviderError::InvalidResponse(format!(
-                "image output returned HTTP {}",
-                response.status().as_u16()
-            )));
-        }
-        if response
-            .content_length()
+            .map_err(image_output_fetch_error)?;
+        if fetched
+            .content_length
             .is_some_and(|length| length == 0 || length > MAX_IMAGE_BYTES as u64)
         {
             return Err(ProviderError::InvalidResponse(
                 "image output size is invalid".to_owned(),
             ));
         }
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|error| ProviderError::RequestFailed(error.to_string()))?;
-        if bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES {
+        if fetched.bytes.is_empty() || fetched.bytes.len() > MAX_IMAGE_BYTES {
             return Err(ProviderError::InvalidResponse(
                 "image output must be between 1 byte and 32 MiB".to_owned(),
             ));
         }
-        Ok(bytes.to_vec())
+        Ok(fetched.bytes)
+    }
+}
+
+fn image_output_fetch_error(error: RemoteFetchError) -> ProviderError {
+    match error {
+        RemoteFetchError::InvalidUrl => {
+            ProviderError::InvalidResponse("image output URL is invalid".to_owned())
+        }
+        RemoteFetchError::HttpStatus(status) => {
+            ProviderError::InvalidResponse(format!("image output returned HTTP {status}"))
+        }
+        RemoteFetchError::DeclaredSizeExceedsLimit => {
+            ProviderError::InvalidResponse("image output size is invalid".to_owned())
+        }
+        RemoteFetchError::BodySizeExceedsLimit => ProviderError::InvalidResponse(
+            "image output must be between 1 byte and 32 MiB".to_owned(),
+        ),
+        RemoteFetchError::RequestFailed
+        | RemoteFetchError::BodyFailed
+        | RemoteFetchError::DnsFailed
+        | RemoteFetchError::ClientCreateFailed
+        | RemoteFetchError::TotalTimeout => {
+            ProviderError::RequestFailed("image output request failed".to_owned())
+        }
+        RemoteFetchError::MustUseHttps
+        | RemoteFetchError::CredentialsNotAllowed
+        | RemoteFetchError::HostInvalid
+        | RemoteFetchError::TargetNotAllowed
+        | RemoteFetchError::PortInvalid
+        | RemoteFetchError::DnsEmpty
+        | RemoteFetchError::RedirectLimitExceeded
+        | RemoteFetchError::RedirectLocationInvalid
+        | RemoteFetchError::RedirectLoop
+        | RemoteFetchError::NotARedirect => {
+            ProviderError::InvalidResponse("image output URL is not allowed".to_owned())
+        }
     }
 }
 
@@ -422,26 +455,6 @@ fn prediction_error(payload: &Value) -> Option<String> {
     (!message.is_empty()).then(|| message.chars().take(500).collect())
 }
 
-fn safe_output_url(raw: &str) -> ProviderResultValue<Url> {
-    let url = Url::parse(raw)
-        .map_err(|_| ProviderError::InvalidResponse("image output URL is invalid".to_owned()))?;
-    let loopback = url.host_str().is_some_and(|host| {
-        host == "localhost"
-            || host
-                .parse::<std::net::IpAddr>()
-                .is_ok_and(|ip| ip.is_loopback())
-    });
-    if (url.scheme() != "https" && !(url.scheme() == "http" && loopback))
-        || !url.username().is_empty()
-        || url.password().is_some()
-    {
-        return Err(ProviderError::InvalidResponse(
-            "image output URL is not allowed".to_owned(),
-        ));
-    }
-    Ok(url)
-}
-
 pub(super) fn invalid(message: &str) -> ProviderError {
     ProviderError::InvalidRequest(message.to_owned())
 }
@@ -609,11 +622,47 @@ mod tests {
     }
 
     #[test]
-    fn output_urls_fail_closed() {
-        assert!(safe_output_url("file:///tmp/out.png").is_err());
-        assert!(safe_output_url("http://example.com/out.png").is_err());
-        assert!(safe_output_url("https://example.com/out.png").is_ok());
-        assert!(safe_output_url("http://127.0.0.1:9000/out.png").is_ok());
+    fn public_https_output_name_is_accepted_before_resolution() {
+        assert!(
+            crate::remote_fetch::parse_remote_url("https://example.com/out.png", false).is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn output_urls_fail_closed_without_echoing_the_target() {
+        let secret = "signed-output-secret";
+        let urls = [
+            "https://127.0.0.1/out.png".to_owned(),
+            "https://[::1]/out.png".to_owned(),
+            "https://10.0.0.1/out.png".to_owned(),
+            "https://169.254.169.254/latest/meta-data".to_owned(),
+            "https://192.168.1.1/out.png".to_owned(),
+            "http://127.0.0.1:9000/out.png".to_owned(),
+            "file:///tmp/out.png".to_owned(),
+            "http://example.com/out.png".to_owned(),
+            format!("https://user:{secret}@example.com/out.png"),
+            "https://printer.local/out.png".to_owned(),
+            "https://db.internal/out.png".to_owned(),
+            "https://app.localhost/out.png".to_owned(),
+        ];
+        let provider = AtlasProvider::new(crate::ApiProviderConfig::atlas(
+            "test-key".to_owned(),
+            "https://api.example.test/v1".to_owned(),
+        ));
+        for url in urls {
+            let error = tokio::time::timeout(
+                Duration::from_secs(2),
+                provider.download_processing_output(&url),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("{url} waited on the network"))
+            .expect_err(&url);
+            assert_eq!(
+                error.to_string(),
+                "invalid provider response: image output URL is not allowed",
+                "{url}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -644,12 +693,16 @@ mod tests {
 
             let (download, stream) = read_request(&listener).await;
             assert!(download.starts_with("GET /output.png HTTP/1.1"));
+            let download_lower = download.to_ascii_lowercase();
+            assert!(!download_lower.contains("authorization"));
+            assert!(!download.contains("test-key"));
             respond_bytes(stream, "image/png", &output).await;
         });
         let provider = AtlasProvider::new(crate::ApiProviderConfig::atlas(
             "test-key".to_owned(),
             format!("http://{address}/v1"),
-        ));
+        ))
+        .with_loopback_output_http();
         let source = encode_png(&solid(2, 2, 255)).unwrap();
         let result = provider
             .process_image(ImageProcessingRequest {

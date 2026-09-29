@@ -10,6 +10,7 @@ mod image_processing;
 mod mock_media;
 mod redact;
 mod registry;
+pub mod remote_fetch;
 mod runtime_provider;
 
 pub use atlas::{ApiProviderConfig, AtlasProvider};

@@ -37,6 +37,8 @@ async fn image_processing_is_owned_by_helixflow_end_to_end() {
 
         let (download, stream) = read_request(&atlas_listener).await;
         assert!(download.starts_with("GET /output.png HTTP/1.1"));
+        assert!(!download.to_ascii_lowercase().contains("authorization"));
+        assert!(!download.contains("test-key"));
         respond_bytes(stream, "image/png", &png).await;
     });
 
@@ -52,10 +54,13 @@ async fn image_processing_is_owned_by_helixflow_end_to_end() {
         .create_workspace("Image test")
         .await
         .expect("workspace");
-    let provider = RuntimeProvider::Atlas(AtlasProvider::new(ApiProviderConfig::atlas(
-        "test-key".to_owned(),
-        format!("http://{atlas_address}/v1"),
-    )));
+    let provider = RuntimeProvider::Atlas(
+        AtlasProvider::new(ApiProviderConfig::atlas(
+            "test-key".to_owned(),
+            format!("http://{atlas_address}/v1"),
+        ))
+        .with_loopback_output_http(),
+    );
     let state = AppState::with_store_agent_provider(
         EventBus::new(16),
         store.clone(),
