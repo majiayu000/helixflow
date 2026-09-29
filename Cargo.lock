@@ -661,6 +661,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tokio",
+ "url",
 ]
 
 [[package]]
@@ -703,7 +704,6 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "tokio",
- "url",
  "uuid",
 ]
 
