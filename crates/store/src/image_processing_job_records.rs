@@ -1,5 +1,8 @@
 use crate::{Store, StoreError, StoreResult, new_id};
 
+const IMAGE_PROCESSING_JOB_RESTART_ERROR: &str =
+    "image processing job was interrupted by a server restart";
+
 #[derive(Debug, Clone)]
 pub struct NewImageProcessingJob<'a> {
     pub workspace_id: &'a str,
@@ -119,6 +122,25 @@ impl Store {
         }
         self.workspace_image_processing_job(workspace_id, job_id)
             .await
+    }
+
+    /// Detached image jobs cannot resume after a process restart. Settle every
+    /// queued or running row to `interrupted` and leave terminal rows unchanged.
+    pub async fn finalize_interrupted_image_processing_jobs(&self) -> StoreResult<u64> {
+        let updated = sqlx::query(
+            r#"
+            UPDATE image_processing_jobs
+            SET status = 'interrupted',
+                error = ?,
+                updated_at = current_timestamp,
+                completed_at = current_timestamp
+            WHERE status IN ('queued', 'running')
+            "#,
+        )
+        .bind(IMAGE_PROCESSING_JOB_RESTART_ERROR)
+        .execute(self.pool())
+        .await?;
+        Ok(updated.rows_affected())
     }
 
     pub async fn workspace_image_processing_jobs(
