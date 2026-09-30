@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use crate::{api_error::ApiError, app_state::AppState, upload_routes::persist_workspace_upload};
 
 const MAX_SOURCE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
 
 pub(crate) fn image_processing_request_limit() -> usize {
     MAX_SOURCE_BYTES + 64 * 1024
@@ -344,22 +345,27 @@ async fn run_image_processing_job(state: AppState, execution: ImageJobExecution)
         safe_filename(&execution.source_node_id),
         execution.intent.as_str()
     );
-    let uploaded =
-        match persist_workspace_upload(&state, &execution.workspace_id, &filename, &output.bytes)
-            .await
-        {
-            Ok(uploaded) => uploaded,
-            Err(error) => {
-                mark_job_failed(
-                    &state,
-                    &execution.workspace_id,
-                    &execution.job_id,
-                    error.message,
-                )
-                .await;
-                return;
-            }
-        };
+    let uploaded = match persist_workspace_upload(
+        &state,
+        &execution.workspace_id,
+        &filename,
+        &output.bytes,
+        MAX_OUTPUT_BYTES,
+    )
+    .await
+    {
+        Ok(uploaded) => uploaded,
+        Err(error) => {
+            mark_job_failed(
+                &state,
+                &execution.workspace_id,
+                &execution.job_id,
+                error.message,
+            )
+            .await;
+            return;
+        }
+    };
     if let Err(error) = state
         .store
         .update_image_processing_job(

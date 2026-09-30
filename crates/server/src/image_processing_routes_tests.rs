@@ -1,8 +1,9 @@
-use std::sync::Arc;
+use std::{io::Cursor, sync::Arc, time::Duration};
 
 use helixflow_gateway::{ApiProviderConfig, AtlasProvider, RuntimeProvider};
 use helixflow_run::EventBus;
 use helixflow_store::Store;
+use image::{DynamicImage, ImageFormat, RgbaImage};
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -10,11 +11,42 @@ use crate::{app, app_state::AppState, test_support::FailingWorkbenchAgent};
 
 #[tokio::test]
 async fn image_processing_is_owned_by_helixflow_end_to_end() {
+    assert_image_processing_output(one_pixel_png(), None).await;
+}
+
+#[tokio::test]
+async fn image_processing_output_above_upload_limit_succeeds() {
+    assert!(std::env::var_os("HELIXFLOW_MAX_UPLOAD_BYTES").is_none());
+    let png = encode_png(noisy_image(2304));
+    assert!(png.len() > 16 * 1024 * 1024);
+    assert!(png.len() <= 32 * 1024 * 1024);
+    let stored_bytes = assert_image_processing_output(png, None).await;
+    assert!(stored_bytes > 16 * 1024 * 1024);
+}
+
+#[tokio::test]
+async fn image_processing_reencoded_output_above_processing_limit_fails() {
+    let image = DynamicImage::ImageRgba8(noisy_image(4096)).into_rgb8();
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 75)
+        .encode_image(&DynamicImage::ImageRgb8(image))
+        .expect("encode provider JPEG");
+    assert!(jpeg.len() <= 32 * 1024 * 1024);
+    assert_image_processing_output(jpeg, Some("uploaded file exceeds the 33554432 byte limit"))
+        .await;
+}
+
+async fn assert_image_processing_output(output: Vec<u8>, expected_error: Option<&str>) -> usize {
+    let image = image::load_from_memory(&output).expect("provider output fixture");
+    let source = encode_png(RgbaImage::from_pixel(
+        image.width(),
+        image.height(),
+        image::Rgba([0, 0, 0, 255]),
+    ));
     let atlas_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind fake Atlas");
     let atlas_address = atlas_listener.local_addr().expect("fake Atlas address");
-    let png = one_pixel_png();
     let atlas = tokio::spawn(async move {
         let (upload, stream) = read_request(&atlas_listener).await;
         assert!(upload.starts_with("POST /api/v1/model/uploadMedia HTTP/1.1"));
@@ -39,7 +71,7 @@ async fn image_processing_is_owned_by_helixflow_end_to_end() {
         assert!(download.starts_with("GET /output.png HTTP/1.1"));
         assert!(!download.to_ascii_lowercase().contains("authorization"));
         assert!(!download.contains("test-key"));
-        respond_bytes(stream, "image/png", &png).await;
+        respond_bytes(stream, "application/octet-stream", &output).await;
     });
 
     let directory = tempfile::tempdir().expect("temp dir");
@@ -97,7 +129,7 @@ async fn image_processing_is_owned_by_helixflow_end_to_end() {
                 )
                 .part(
                     "file",
-                    reqwest::multipart::Part::bytes(one_pixel_png())
+                    reqwest::multipart::Part::bytes(source)
                         .file_name("photo.png")
                         .mime_str("image/png")
                         .expect("mime"),
@@ -111,31 +143,64 @@ async fn image_processing_is_owned_by_helixflow_end_to_end() {
     assert_eq!(payload["job"]["status"], "queued");
     let job_id = payload["job"]["id"].as_str().expect("job id");
     let client = reqwest::Client::new();
-    let mut completed_job = None;
-    for _ in 0..100 {
-        let response = client
-            .get(format!(
-                "http://{helix_address}/api/workspaces/{}/image-processing-jobs/{job_id}",
-                workspace.id
-            ))
-            .send()
-            .await
-            .expect("read image processing job");
-        let job: serde_json::Value = response.json().await.expect("job response");
-        if matches!(job["status"].as_str(), Some("succeeded" | "failed")) {
-            completed_job = Some(job);
-            break;
+    let completed_job = tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let response = client
+                .get(format!(
+                    "http://{helix_address}/api/workspaces/{}/image-processing-jobs/{job_id}",
+                    workspace.id
+                ))
+                .send()
+                .await
+                .expect("read image processing job");
+            let job: serde_json::Value = response.json().await.expect("job response");
+            if matches!(job["status"].as_str(), Some("succeeded" | "failed")) {
+                break job;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    })
+    .await
+    .expect("image job reaches a terminal state");
+    if let Some(expected_error) = expected_error {
+        assert_eq!(completed_job["status"], "failed");
+        assert_eq!(completed_job["error"], expected_error);
+        assert!(completed_job["outputUploadId"].is_null());
+        assert!(!data_dir.join("uploads").exists());
+        atlas.await.expect("fake Atlas task");
+        server.abort();
+        return 0;
     }
-    let completed_job = completed_job.expect("image job reaches a terminal state");
-    assert_eq!(completed_job["status"], "succeeded");
+    assert_eq!(completed_job["status"], "succeeded", "{completed_job}");
     assert_eq!(completed_job["provider"], "atlas");
     assert_eq!(completed_job["model"], "atlascloud/photo-cleanup");
     assert_eq!(completed_job["providerTaskId"], "provider-task-1");
     let upload_id = completed_job["outputUploadId"]
         .as_str()
         .expect("output upload id");
+    let upload = store.upload(upload_id).await.expect("persisted output");
+    let stored = tokio::fs::read(data_dir.join(&upload.file_path))
+        .await
+        .expect("persisted PNG bytes");
+    assert!(stored.len() <= 32 * 1024 * 1024);
+    let stored_bytes = stored.len();
+    assert_eq!(upload.mime.as_deref(), Some("image/png"));
+    image::load_from_memory(&stored).expect("valid stored PNG");
+    if stored.len() > 16 * 1024 * 1024 {
+        let response = client
+            .post(format!(
+                "http://{helix_address}/api/workspaces/{}/uploads",
+                workspace.id
+            ))
+            .multipart(reqwest::multipart::Form::new().part(
+                "file",
+                reqwest::multipart::Part::bytes(stored).file_name("large.png"),
+            ))
+            .send()
+            .await
+            .expect("user upload request");
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    }
     let completed = reqwest::Client::new()
         .put(format!(
             "http://{helix_address}/api/workspaces/{}/image-processing-jobs/{job_id}",
@@ -159,6 +224,25 @@ async fn image_processing_is_owned_by_helixflow_end_to_end() {
 
     atlas.await.expect("fake Atlas task");
     server.abort();
+    stored_bytes
+}
+
+fn noisy_image(edge: u32) -> RgbaImage {
+    let mut seed = 1_u32;
+    RgbaImage::from_fn(edge, edge, |_, _| {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        image::Rgba(seed.to_le_bytes())
+    })
+}
+
+fn encode_png(image: RgbaImage) -> Vec<u8> {
+    let mut output = Cursor::new(Vec::new());
+    DynamicImage::ImageRgba8(image)
+        .write_to(&mut output, ImageFormat::Png)
+        .expect("encode PNG fixture");
+    output.into_inner()
 }
 
 fn one_pixel_png() -> Vec<u8> {
