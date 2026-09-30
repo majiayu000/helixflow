@@ -73,7 +73,7 @@ impl Store {
         job_id: &str,
         input: ImageProcessingJobUpdate<'_>,
     ) -> StoreResult<ImageProcessingJobRecord> {
-        let result = sqlx::query(
+        let updated = sqlx::query_as::<_, ImageProcessingJobRecord>(
             r#"
             UPDATE image_processing_jobs
             SET status = ?,
@@ -94,6 +94,9 @@ impl Store {
                 OR
                 (status = 'running' AND ? IN ('running', 'succeeded', 'failed', 'interrupted'))
               )
+            RETURNING id, workspace_id, source_node_id, result_node_id, intent,
+                      profile, provider_task_id, provider, model, output_upload_id,
+                      status, error, created_at, updated_at, completed_at
             "#,
         )
         .bind(input.status)
@@ -108,20 +111,19 @@ impl Store {
         .bind(workspace_id)
         .bind(input.status)
         .bind(input.status)
-        .execute(self.pool())
+        .fetch_optional(self.pool())
         .await?;
-        if result.rows_affected() == 0 {
-            let current = self
-                .workspace_image_processing_job(workspace_id, job_id)
-                .await?;
-            return Err(StoreError::ImageProcessingJobStateConflict {
-                job_id: job_id.to_owned(),
-                actual_status: current.status,
-                requested_status: input.status.to_owned(),
-            });
+        if let Some(updated) = updated {
+            return Ok(updated);
         }
-        self.workspace_image_processing_job(workspace_id, job_id)
-            .await
+        let current = self
+            .workspace_image_processing_job(workspace_id, job_id)
+            .await?;
+        Err(StoreError::ImageProcessingJobStateConflict {
+            job_id: job_id.to_owned(),
+            actual_status: current.status,
+            requested_status: input.status.to_owned(),
+        })
     }
 
     /// Detached image jobs cannot resume after a process restart. Settle every

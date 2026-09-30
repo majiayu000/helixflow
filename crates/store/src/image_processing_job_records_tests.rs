@@ -3,6 +3,71 @@ use super::{
 };
 
 #[tokio::test]
+async fn image_processing_job_success_returns_without_reacquiring_connection() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let database_url = format!("sqlite://{}", dir.path().join("helixflow.sqlite").display());
+    let store = Store::open(&database_url).await.expect("open store");
+    let workspace = store.create_workspace("Images").await.expect("workspace");
+    let job = create_job(&store, &workspace.id, "enhance").await;
+    store
+        .update_image_processing_job(
+            &workspace.id,
+            &job.id,
+            job_update("running", Some("provider-task-1"), None, None),
+        )
+        .await
+        .expect("start job");
+    let upload = store
+        .create_upload(crate::NewUpload {
+            workspace_id: &workspace.id,
+            filename: "result.png",
+            file_path: "uploads/result.png",
+            sha256: "sha256:result",
+            mime: Some("image/png"),
+        })
+        .await
+        .expect("create upload");
+
+    // Keep the only connection unavailable after the write, so a separate
+    // reread would fail even though success has already been persisted.
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    let release_connection = std::sync::Arc::clone(&release);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_millis(100))
+        .after_release(move |_, _| {
+            let release = std::sync::Arc::clone(&release_connection);
+            Box::pin(async move {
+                release.notified().await;
+                Ok(true)
+            })
+        })
+        .connect_lazy(&database_url)
+        .expect("connect fault pool");
+    let fault_store = Store { pool };
+    let result = fault_store
+        .update_image_processing_job(
+            &workspace.id,
+            &job.id,
+            job_update("succeeded", None, Some(&upload.id), None),
+        )
+        .await;
+    release.notify_one();
+
+    let persisted = read_job(&store, &workspace.id, &job.id).await;
+    assert_eq!(persisted.status, "succeeded");
+    let updated = result.expect("committed success must not become a read error");
+    assert_eq!(updated.status, persisted.status);
+    assert_eq!(
+        updated.output_upload_id.as_deref(),
+        Some(upload.id.as_str())
+    );
+    assert_eq!(updated.provider_task_id.as_deref(), Some("provider-task-1"));
+    assert_eq!(updated.completed_at, persisted.completed_at);
+    assert!(updated.completed_at.is_some());
+}
+
+#[tokio::test]
 async fn image_processing_job_survives_reopen_and_keeps_provenance() {
     let dir = tempfile::tempdir().expect("create temp dir");
     let database_url = format!("sqlite://{}", dir.path().join("helixflow.sqlite").display());
