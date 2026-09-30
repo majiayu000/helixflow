@@ -232,6 +232,10 @@ async fn unknown_cost_queue_waits_for_explicit_confirmation_before_dispatch() {
     assert_eq!(response.run.cost.estimate, 0.0);
     assert_eq!(response.run.cost.currency, "USD");
     assert!(response.pending_confirmation.is_some());
+    assert_eq!(
+        serde_json::to_value(&response.pending_confirmation).expect("confirmation JSON")["cost"]["amount"],
+        serde_json::Value::Null
+    );
     assert!(response.outputs.is_empty());
     assert_waiting_run(&state, &response.run.id).await;
 
@@ -299,13 +303,13 @@ async fn assert_unknown_cost_agent_request_waits(user_message: &str) {
     assert_eq!(response.run.cost.estimate, 0.0);
     assert_eq!(response.run.cost.currency, "USD");
     let confirmation = response.pending_confirmation.expect("pending confirmation");
-    assert!(
-        response
-            .message
-            .text
-            .expect("message")
-            .contains("waiting for confirmation")
+    assert_eq!(
+        serde_json::to_value(&confirmation).expect("confirmation JSON")["cost"]["amount"],
+        serde_json::Value::Null
     );
+    let message = response.message.text.expect("message");
+    assert!(message.contains("unknown"));
+    assert!(message.contains("waiting for confirmation"));
     assert_waiting_run(&state, &response.run.id).await;
     if user_message.contains("seed") {
         assert_eq!(confirmation.run_count, Some(4));
@@ -342,6 +346,13 @@ async fn assert_waiting_run(state: &AppState, run_id: &str) {
     let data: serde_json::Value = serde_json::from_str(&requested.data_json).expect("event data");
     assert_eq!(data["requires_confirmation"], true);
     assert!(!events.iter().any(|event| event.ev == "run.started"));
+    let reloaded = crate::workspace_state::workspace_state_value(state, &run.workspace_id)
+        .await
+        .expect("reload workspace");
+    assert_eq!(
+        reloaded["pendingConfirmation"]["cost"]["amount"],
+        serde_json::Value::Null
+    );
 }
 
 async fn state_with_unknown_cost_provider(

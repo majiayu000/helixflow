@@ -280,6 +280,9 @@ pub(crate) fn parse_run_confirmation_threshold_usd(raw: Option<&str>) -> Result<
     helixflow_run::parse_run_confirmation_threshold_usd(raw).map_err(|err| err.to_string())
 }
 fn format_cost(cost: &CostSummary) -> String {
+    if cost.unknown {
+        return "unknown (provider pricing unavailable)".to_owned();
+    }
     format!("{} {}", format_cost_amount(cost.amount), cost.currency)
 }
 

@@ -121,7 +121,7 @@ pub(crate) async fn workspace_state_value(
 
     let providers = provider_state_value(state, &workspace)?;
 
-    Ok(workspace_state_payload(
+    workspace_state_payload(
         &workspace,
         &graph,
         &messages,
@@ -137,7 +137,7 @@ pub(crate) async fn workspace_state_value(
         &image_processing_jobs,
         event_seq,
         providers,
-    ))
+    )
 }
 
 async fn workspace_artifacts_for_run(
@@ -193,7 +193,7 @@ fn workspace_state_payload(
     image_processing_jobs: &[helixflow_store::ImageProcessingJobRecord],
     event_seq: i64,
     providers: Value,
-) -> Value {
+) -> Result<Value, ApiError> {
     let registry = NodeRegistry::builtin();
     let selected_provider = providers
         .get("selectedProvider")
@@ -204,7 +204,11 @@ fn workspace_state_payload(
         .map(|step| (step.node_id.as_str(), step))
         .collect::<BTreeMap<_, _>>();
     let run_cost = summarize_cost(costs);
-    json!({
+    let pending_confirmation = latest_run
+        .map(|run| pending_confirmation_from_run(run, costs))
+        .transpose()?
+        .flatten();
+    Ok(json!({
         "eventSeq": event_seq,
         "workspace": {
             "id": workspace.id,
@@ -227,10 +231,10 @@ fn workspace_state_payload(
             .map(image_processing_job_value)
             .collect::<Vec<_>>(),
         "history": history_payload(versions, latest_run, proposals),
-        "pendingConfirmation": latest_run.and_then(|run| pending_confirmation_from_run(run, costs)),
+        "pendingConfirmation": pending_confirmation,
         "pendingProposal": pending_proposal,
         "workflowGraph": graph,
-    })
+    }))
 }
 
 fn provider_state_value(state: &AppState, workspace: &WorkspaceRecord) -> Result<Value, ApiError> {
