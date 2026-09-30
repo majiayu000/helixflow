@@ -447,7 +447,10 @@ async fn image_job_success_save_failure_keeps_upload_and_stays_failed() {
     let created = api.post_enhance().await;
     let job_id = created["job"]["id"].as_str().expect("job id");
     let job = api.wait_terminal(job_id).await;
-    atlas.await.expect("atlas script");
+    tokio::time::timeout(Duration::from_secs(5), atlas)
+        .await
+        .expect("Atlas finishes the output download")
+        .expect("atlas script");
     assert_failed_job(&job, RESULT_ERROR);
     let output_upload_id = job["outputUploadId"].as_str().expect("stored upload");
     assert_eq!(job["providerTaskId"], "provider-task-1");
@@ -564,10 +567,13 @@ impl ImageApi {
             .create_workspace("Image test")
             .await
             .expect("workspace");
-        let provider = RuntimeProvider::Atlas(AtlasProvider::new(ApiProviderConfig::atlas(
-            "test-key".to_owned(),
-            format!("http://{atlas_address}/v1"),
-        )));
+        let provider = RuntimeProvider::Atlas(
+            AtlasProvider::new(ApiProviderConfig::atlas(
+                "test-key".to_owned(),
+                format!("http://{atlas_address}/v1"),
+            ))
+            .with_loopback_output_http(),
+        );
         let state = AppState::with_store_agent_provider(
             EventBus::new(16),
             store.clone(),
