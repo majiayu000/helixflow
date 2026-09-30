@@ -1,11 +1,16 @@
+#[cfg(test)]
 use std::collections::HashSet;
 use std::future::Future;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+#[cfg(test)]
+use std::net::IpAddr;
 use std::time::Duration;
 
 use helixflow_gateway::ArtifactPayload;
-use reqwest::header::{CONTENT_TYPE, LOCATION};
-use reqwest::{StatusCode, Url};
+use helixflow_gateway::remote_fetch::{self, RemoteFetchError, RemoteFetchPolicy};
+#[cfg(test)]
+use reqwest::StatusCode;
+use reqwest::Url;
+use reqwest::header::HeaderValue;
 
 use crate::artifact_path::PendingArtifact;
 use crate::artifacts::validate_artifact_bytes;
@@ -15,8 +20,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const TOTAL_TIMEOUT: Duration = Duration::from_secs(90);
 const MAX_REDIRECTS: usize = 5;
 const MAX_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
-const ATLAS_TOS_TUNNEL_SUFFIX: &str = ".tos-ap-southeast-1.volces.com";
-const ATLAS_OSS_TUNNEL_HOST: &str = "atlas-media.oss-us-west-1.aliyuncs.com";
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RemotePolicy {
@@ -34,6 +37,15 @@ impl RemotePolicy {
             max_redirects: MAX_REDIRECTS,
             max_bytes: MAX_ARTIFACT_BYTES,
         }
+    }
+
+    fn fetch_policy(self) -> RemoteFetchPolicy {
+        RemoteFetchPolicy::new(
+            self.connect_timeout,
+            self.total_timeout,
+            self.max_redirects,
+            self.max_bytes,
+        )
     }
 }
 
@@ -75,81 +87,28 @@ async fn download_remote_artifact_inner(
     relative: Option<&std::path::Path>,
     policy: RemotePolicy,
 ) -> RunResult<std::path::PathBuf> {
-    let mut current = parse_remote_url(raw_url)?;
-    let mut visited = HashSet::new();
-    visited.insert(current.as_str().to_owned());
-    let mut redirect_count = 0usize;
+    let fetched = remote_fetch::fetch_remote_bytes(raw_url, policy.fetch_policy())
+        .await
+        .map_err(map_fetch_error)?;
+    let content_type = fetched
+        .content_type
+        .as_deref()
+        .and_then(|value| HeaderValue::from_str(value).ok());
+    validate_response_mime(content_type.as_ref(), &payload.mime)?;
 
-    loop {
-        let resolved = resolve_and_validate(&current).await?;
-        let client = pinned_client(&current, &resolved, policy)?;
-        let mut response = client
-            .get(current.clone())
-            .send()
-            .await
-            .map_err(|_| remote_error("remote artifact request failed"))?;
-
-        if response.status().is_redirection() {
-            current = next_redirect_url(
-                &current,
-                response.status(),
-                response.headers().get(LOCATION),
-                &mut visited,
-                &mut redirect_count,
-                policy.max_redirects,
-            )?;
-            continue;
-        }
-        if !response.status().is_success() {
-            return Err(remote_error(&format!(
-                "remote artifact returned HTTP {}",
-                response.status().as_u16()
-            )));
-        }
-
-        validate_response_mime(response.headers().get(CONTENT_TYPE), &payload.mime)?;
-        validate_declared_size(response.content_length(), policy.max_bytes)?;
-
-        let mut pending = match relative {
-            Some(relative) => PendingArtifact::create_at(root, relative).await?,
-            None => PendingArtifact::create(root, extension).await?,
-        };
-        let mut received = 0u64;
-        let mut bytes = Vec::with_capacity(
-            response
-                .content_length()
-                .unwrap_or_default()
-                .min(policy.max_bytes) as usize,
-        );
-        loop {
-            let chunk = match response.chunk().await {
-                Ok(Some(chunk)) => chunk,
-                Ok(None) => break,
-                Err(_) => {
-                    pending.abort().await;
-                    return Err(remote_error("remote artifact body failed"));
-                }
-            };
-            received = match checked_received_size(received, chunk.len(), policy.max_bytes) {
-                Ok(size) => size,
-                Err(error) => {
-                    pending.abort().await;
-                    return Err(error);
-                }
-            };
-            if let Err(error) = pending.write_chunk(&chunk).await {
-                pending.abort().await;
-                return Err(error);
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-
-        if let Err(error) = validate_artifact_bytes(payload, &bytes) {
-            pending.abort().await;
-            return Err(error);
-        }
-        return pending.publish().await;
+    let mut pending = match relative {
+        Some(relative) => PendingArtifact::create_at(root, relative).await?,
+        None => PendingArtifact::create(root, extension).await?,
+    };
+    if let Err(error) = pending.write_chunk(&fetched.bytes).await {
+        pending.abort().await;
+        return Err(error);
     }
+    if let Err(error) = validate_artifact_bytes(payload, &fetched.bytes) {
+        pending.abort().await;
+        return Err(error);
+    }
+    pending.publish().await
 }
 
 pub(crate) async fn with_total_timeout<T>(
@@ -162,196 +121,47 @@ pub(crate) async fn with_total_timeout<T>(
 }
 
 pub(crate) fn parse_remote_url(raw_url: &str) -> RunResult<Url> {
-    let parsed = Url::parse(raw_url).map_err(|_| remote_error("remote artifact URL is invalid"))?;
-    validate_remote_url(&parsed)?;
-    Ok(parsed)
+    remote_fetch::parse_remote_url(raw_url, false).map_err(map_fetch_error)
 }
 
-pub(crate) fn validate_remote_url(url: &Url) -> RunResult<()> {
-    if url.scheme() != "https" {
-        return Err(remote_error("remote artifact URL must use https"));
-    }
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err(remote_error(
-            "remote artifact URL credentials are not allowed",
-        ));
-    }
-    let host = url
-        .host()
-        .ok_or_else(|| remote_error("remote artifact URL host is invalid"))?;
-    match host {
-        url::Host::Ipv4(address) => validate_resolved_addresses(&[IpAddr::V4(address)]),
-        url::Host::Ipv6(address) => validate_resolved_addresses(&[IpAddr::V6(address)]),
-        url::Host::Domain(domain) => {
-            let normalized = domain.trim_end_matches('.').to_ascii_lowercase();
-            let local_only = normalized == "localhost"
-                || normalized.ends_with(".localhost")
-                || normalized.ends_with(".local")
-                || normalized.ends_with(".internal")
-                || normalized.ends_with(".home.arpa");
-            if local_only {
-                return Err(remote_error("remote artifact target is not allowed"));
-            }
-            Ok(())
-        }
-    }
-}
-
-async fn resolve_and_validate(url: &Url) -> RunResult<Vec<SocketAddr>> {
-    validate_remote_url(url)?;
-    let port = url
-        .port_or_known_default()
-        .ok_or_else(|| remote_error("remote artifact URL port is invalid"))?;
-    let addresses = match url.host() {
-        Some(url::Host::Ipv4(address)) => vec![SocketAddr::new(IpAddr::V4(address), port)],
-        Some(url::Host::Ipv6(address)) => vec![SocketAddr::new(IpAddr::V6(address), port)],
-        Some(url::Host::Domain(domain)) => tokio::net::lookup_host((domain, port))
-            .await
-            .map_err(|_| remote_error("remote artifact DNS resolution failed"))?
-            .collect(),
-        None => return Err(remote_error("remote artifact URL host is invalid")),
-    };
-    if addresses.is_empty() {
-        return Err(remote_error(
-            "remote artifact DNS resolution returned no addresses",
-        ));
-    }
-    let ips = addresses
-        .iter()
-        .map(|address| address.ip())
-        .collect::<Vec<_>>();
-    validate_resolved_addresses_for_url(url, &ips)?;
-    Ok(addresses)
-}
-
-fn pinned_client(
-    url: &Url,
-    addresses: &[SocketAddr],
-    policy: RemotePolicy,
-) -> RunResult<reqwest::Client> {
-    let mut builder = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .no_proxy()
-        .connect_timeout(policy.connect_timeout);
-    if let Some(url::Host::Domain(domain)) = url.host() {
-        builder = builder.resolve_to_addrs(domain, addresses);
-    }
-    builder
-        .build()
-        .map_err(|_| remote_error("remote artifact client could not be created"))
-}
-
+#[cfg(test)]
 pub(crate) fn validate_resolved_addresses(addresses: &[IpAddr]) -> RunResult<()> {
-    if addresses.is_empty() || addresses.iter().any(|address| !is_public_address(*address)) {
-        return Err(remote_error("remote artifact target is not allowed"));
-    }
-    Ok(())
+    remote_fetch::validate_resolved_addresses(addresses).map_err(map_fetch_error)
 }
 
-/// Clash-style TUN DNS intentionally maps public names into 198.18.0.0/15.
-/// Keep the default SSRF policy fail-closed and permit that synthetic range
-/// only for Atlas' known media hosts. Literal benchmark IPs, other hostnames,
-/// mixed private answers, and redirects remain rejected.
+#[cfg(test)]
 pub(crate) fn validate_resolved_addresses_for_url(
     url: &Url,
     addresses: &[IpAddr],
 ) -> RunResult<()> {
-    if validate_resolved_addresses(addresses).is_ok() {
-        return Ok(());
-    }
-    if addresses.is_empty() || !is_atlas_media_tunnel_host(url) {
-        return Err(remote_error("remote artifact target is not allowed"));
-    }
-    if addresses.iter().all(|address| match address {
-        IpAddr::V4(address) => is_benchmark_tunnel_ipv4(*address),
-        IpAddr::V6(_) => false,
-    }) {
-        return Ok(());
-    }
-    Err(remote_error("remote artifact target is not allowed"))
+    remote_fetch::validate_resolved_addresses_for_url(url, addresses).map_err(map_fetch_error)
 }
 
-fn is_atlas_media_tunnel_host(url: &Url) -> bool {
-    let Some(url::Host::Domain(domain)) = url.host() else {
-        return false;
-    };
-    let normalized = domain.trim_end_matches('.').to_ascii_lowercase();
-    normalized.ends_with(ATLAS_TOS_TUNNEL_SUFFIX) || normalized == ATLAS_OSS_TUNNEL_HOST
-}
-
-fn is_benchmark_tunnel_ipv4(address: Ipv4Addr) -> bool {
-    let [a, b, _, _] = address.octets();
-    a == 198 && (b == 18 || b == 19)
-}
-
+#[cfg(test)]
 pub(crate) fn is_public_address(address: IpAddr) -> bool {
-    match address {
-        IpAddr::V4(address) => is_public_ipv4(address),
-        IpAddr::V6(address) => {
-            if let Some(mapped) = address.to_ipv4_mapped() {
-                return is_public_ipv4(mapped);
-            }
-            is_public_ipv6(address)
-        }
-    }
+    remote_fetch::is_public_address(address)
 }
 
-fn is_public_ipv4(address: Ipv4Addr) -> bool {
-    let [a, b, c, _] = address.octets();
-    !(a == 0
-        || a == 10
-        || a == 127
-        || (a == 100 && (64..=127).contains(&b))
-        || (a == 169 && b == 254)
-        || (a == 172 && (16..=31).contains(&b))
-        || (a == 192 && b == 0 && c == 0)
-        || (a == 192 && b == 0 && c == 2)
-        || (a == 192 && b == 88 && c == 99)
-        || (a == 192 && b == 168)
-        || (a == 198 && (b == 18 || b == 19))
-        || (a == 198 && b == 51 && c == 100)
-        || (a == 203 && b == 0 && c == 113)
-        || a >= 224)
-}
-
-fn is_public_ipv6(address: Ipv6Addr) -> bool {
-    let segments = address.segments();
-    let global_unicast = segments[0] & 0xe000 == 0x2000;
-    let documentation = segments[0] == 0x2001 && segments[1] == 0x0db8;
-    let ietf_special = segments[0] == 0x2001 && segments[1] < 0x0200;
-    let six_to_four = segments[0] == 0x2002;
-    let extended_documentation = segments[0] == 0x3fff;
-    global_unicast && !documentation && !ietf_special && !six_to_four && !extended_documentation
-}
-
+#[cfg(test)]
 pub(crate) fn next_redirect_url(
     current: &Url,
     status: StatusCode,
-    location: Option<&reqwest::header::HeaderValue>,
+    location: Option<&HeaderValue>,
     visited: &mut HashSet<String>,
     redirect_count: &mut usize,
     max_redirects: usize,
 ) -> RunResult<Url> {
-    if !status.is_redirection() {
-        return Err(remote_error("remote artifact response is not a redirect"));
-    }
-    if *redirect_count >= max_redirects {
-        return Err(remote_error("remote artifact redirect limit exceeded"));
-    }
-    let location = location
-        .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| remote_error("remote artifact redirect location is invalid"))?;
-    let next = current
-        .join(location)
-        .map_err(|_| remote_error("remote artifact redirect location is invalid"))?;
-    validate_remote_url(&next)?;
-    if !visited.insert(next.as_str().to_owned()) {
-        return Err(remote_error("remote artifact redirect loop detected"));
-    }
-    *redirect_count += 1;
-    Ok(next)
+    let policy = RemoteFetchPolicy::new(
+        CONNECT_TIMEOUT,
+        TOTAL_TIMEOUT,
+        max_redirects,
+        MAX_ARTIFACT_BYTES,
+    );
+    remote_fetch::next_redirect_url(current, status, location, visited, redirect_count, policy)
+        .map_err(map_fetch_error)
 }
 
+#[cfg(test)]
 pub(crate) fn validate_declared_size(content_length: Option<u64>, max: u64) -> RunResult<()> {
     if content_length.is_some_and(|length| length > max) {
         return Err(remote_error("remote artifact declared size exceeds limit"));
@@ -359,6 +169,7 @@ pub(crate) fn validate_declared_size(content_length: Option<u64>, max: u64) -> R
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn checked_received_size(current: u64, chunk: usize, max: u64) -> RunResult<u64> {
     let chunk = u64::try_from(chunk)
         .map_err(|_| remote_error("remote artifact body size exceeds limit"))?;
@@ -372,7 +183,7 @@ pub(crate) fn checked_received_size(current: u64, chunk: usize, max: u64) -> Run
 }
 
 pub(crate) fn validate_response_mime(
-    content_type: Option<&reqwest::header::HeaderValue>,
+    content_type: Option<&HeaderValue>,
     expected: &str,
 ) -> RunResult<()> {
     let expected = expected
@@ -388,6 +199,35 @@ pub(crate) fn validate_response_mime(
         ));
     }
     Ok(())
+}
+
+fn map_fetch_error(error: RemoteFetchError) -> RunError {
+    let message = match error {
+        RemoteFetchError::InvalidUrl => "remote artifact URL is invalid",
+        RemoteFetchError::MustUseHttps => "remote artifact URL must use https",
+        RemoteFetchError::CredentialsNotAllowed => {
+            "remote artifact URL credentials are not allowed"
+        }
+        RemoteFetchError::HostInvalid => "remote artifact URL host is invalid",
+        RemoteFetchError::TargetNotAllowed => "remote artifact target is not allowed",
+        RemoteFetchError::PortInvalid => "remote artifact URL port is invalid",
+        RemoteFetchError::DnsFailed => "remote artifact DNS resolution failed",
+        RemoteFetchError::DnsEmpty => "remote artifact DNS resolution returned no addresses",
+        RemoteFetchError::ClientCreateFailed => "remote artifact client could not be created",
+        RemoteFetchError::RequestFailed => "remote artifact request failed",
+        RemoteFetchError::HttpStatus(status) => {
+            return remote_error(&format!("remote artifact returned HTTP {status}"));
+        }
+        RemoteFetchError::RedirectLimitExceeded => "remote artifact redirect limit exceeded",
+        RemoteFetchError::RedirectLocationInvalid => "remote artifact redirect location is invalid",
+        RemoteFetchError::RedirectLoop => "remote artifact redirect loop detected",
+        RemoteFetchError::NotARedirect => "remote artifact response is not a redirect",
+        RemoteFetchError::DeclaredSizeExceedsLimit => "remote artifact declared size exceeds limit",
+        RemoteFetchError::BodyFailed => "remote artifact body failed",
+        RemoteFetchError::BodySizeExceedsLimit => "remote artifact body size exceeds limit",
+        RemoteFetchError::TotalTimeout => "remote artifact total timeout exceeded",
+    };
+    remote_error(message)
 }
 
 fn remote_error(message: &str) -> RunError {
