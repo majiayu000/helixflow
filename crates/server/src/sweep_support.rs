@@ -257,7 +257,7 @@ pub(crate) fn requires_run_confirmation(
     cost: &CostSummary,
     confirmation_threshold_usd: f64,
 ) -> bool {
-    if !cost.amount.is_finite() || cost.amount < 0.0 {
+    if cost.unknown || !cost.amount.is_finite() || cost.amount < 0.0 {
         return true;
     }
     if cost.currency != "USD" {
@@ -451,6 +451,7 @@ mod tests {
             unknown: false,
         };
         assert!(!requires_run_confirmation(&usd(0.99), 1.0));
+        assert!(!requires_run_confirmation(&usd(0.0), 0.0));
         assert!(!requires_run_confirmation(&usd(1.0), 1.0));
         assert!(requires_run_confirmation(&usd(1.01), 1.0));
         assert!(requires_run_confirmation(&usd(f64::NAN), 1.0));
@@ -468,6 +469,25 @@ mod tests {
         assert_eq!(format_cost_amount(0.0012), "0.0012");
         assert_eq!(format_cost_amount(0.0000001), "1.00e-7");
         assert_eq!(format_cost_amount(1.2), "1.20");
+    }
+
+    #[test]
+    fn unknown_cost_requires_confirmation_regardless_of_threshold_or_currency() {
+        for currency in ["USD", "EUR"] {
+            for amount in [0.0, 0.99, 1.0, 1.01] {
+                for threshold in [0.0, 1.0, 100.0] {
+                    assert!(requires_run_confirmation(
+                        &CostSummary {
+                            amount,
+                            currency: currency.to_owned(),
+                            estimated: true,
+                            unknown: true,
+                        },
+                        threshold
+                    ));
+                }
+            }
+        }
     }
 
     #[tokio::test]
