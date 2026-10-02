@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use crate::{api_error::ApiError, app_state::AppState, upload_routes::persist_workspace_upload};
 
 const MAX_SOURCE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
 const IMAGE_JOB_COULD_NOT_START: &str = "image processing job could not start";
 const IMAGE_JOB_COULD_NOT_SAVE_PROVIDER_TASK: &str =
     "image processing job could not save its provider task";
@@ -370,24 +371,29 @@ async fn run_image_processing_job(state: AppState, execution: ImageJobExecution)
         safe_filename(&execution.source_node_id),
         execution.intent.as_str()
     );
-    let uploaded =
-        match persist_workspace_upload(&state, &execution.workspace_id, &filename, &output.bytes)
-            .await
-        {
-            Ok(uploaded) => uploaded,
-            Err(error) => {
-                mark_job_failed(
-                    &state,
-                    &execution.workspace_id,
-                    &execution.job_id,
-                    error.message,
-                    None,
-                    None,
-                )
-                .await;
-                return;
-            }
-        };
+    let uploaded = match persist_workspace_upload(
+        &state,
+        &execution.workspace_id,
+        &filename,
+        &output.bytes,
+        MAX_OUTPUT_BYTES,
+    )
+    .await
+    {
+        Ok(uploaded) => uploaded,
+        Err(error) => {
+            mark_job_failed(
+                &state,
+                &execution.workspace_id,
+                &execution.job_id,
+                error.message,
+                None,
+                None,
+            )
+            .await;
+            return;
+        }
+    };
     if let Err(error) = state
         .store
         .update_image_processing_job(
