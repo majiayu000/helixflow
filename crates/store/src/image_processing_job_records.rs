@@ -1,5 +1,8 @@
 use crate::{Store, StoreError, StoreResult, new_id};
 
+const IMAGE_PROCESSING_JOB_RESTART_ERROR: &str =
+    "image processing job was interrupted by a server restart";
+
 #[derive(Debug, Clone)]
 pub struct NewImageProcessingJob<'a> {
     pub workspace_id: &'a str,
@@ -70,7 +73,7 @@ impl Store {
         job_id: &str,
         input: ImageProcessingJobUpdate<'_>,
     ) -> StoreResult<ImageProcessingJobRecord> {
-        let result = sqlx::query(
+        let updated = sqlx::query_as::<_, ImageProcessingJobRecord>(
             r#"
             UPDATE image_processing_jobs
             SET status = ?,
@@ -91,6 +94,9 @@ impl Store {
                 OR
                 (status = 'running' AND ? IN ('running', 'succeeded', 'failed', 'interrupted'))
               )
+            RETURNING id, workspace_id, source_node_id, result_node_id, intent,
+                      profile, provider_task_id, provider, model, output_upload_id,
+                      status, error, created_at, updated_at, completed_at
             "#,
         )
         .bind(input.status)
@@ -105,20 +111,38 @@ impl Store {
         .bind(workspace_id)
         .bind(input.status)
         .bind(input.status)
+        .fetch_optional(self.pool())
+        .await?;
+        if let Some(updated) = updated {
+            return Ok(updated);
+        }
+        let current = self
+            .workspace_image_processing_job(workspace_id, job_id)
+            .await?;
+        Err(StoreError::ImageProcessingJobStateConflict {
+            job_id: job_id.to_owned(),
+            actual_status: current.status,
+            requested_status: input.status.to_owned(),
+        })
+    }
+
+    /// Detached image jobs cannot resume after a process restart. Settle every
+    /// queued or running row to `interrupted` and leave terminal rows unchanged.
+    pub async fn finalize_interrupted_image_processing_jobs(&self) -> StoreResult<u64> {
+        let updated = sqlx::query(
+            r#"
+            UPDATE image_processing_jobs
+            SET status = 'interrupted',
+                error = ?,
+                updated_at = current_timestamp,
+                completed_at = current_timestamp
+            WHERE status IN ('queued', 'running')
+            "#,
+        )
+        .bind(IMAGE_PROCESSING_JOB_RESTART_ERROR)
         .execute(self.pool())
         .await?;
-        if result.rows_affected() == 0 {
-            let current = self
-                .workspace_image_processing_job(workspace_id, job_id)
-                .await?;
-            return Err(StoreError::ImageProcessingJobStateConflict {
-                job_id: job_id.to_owned(),
-                actual_status: current.status,
-                requested_status: input.status.to_owned(),
-            });
-        }
-        self.workspace_image_processing_job(workspace_id, job_id)
-            .await
+        Ok(updated.rows_affected())
     }
 
     pub async fn workspace_image_processing_jobs(

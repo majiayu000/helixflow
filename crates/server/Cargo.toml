@@ -27,6 +27,7 @@ helixflow-store = { path = "../store" }
 
 [dev-dependencies]
 futures-util.workspace = true
+image.workspace = true
 reqwest.workspace = true
 sqlx.workspace = true
 tempfile = "3"

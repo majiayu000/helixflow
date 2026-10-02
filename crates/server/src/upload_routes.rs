@@ -124,7 +124,8 @@ pub(crate) async fn upload_workspace_image(
             }
             bytes.extend_from_slice(&chunk);
         }
-        uploaded = Some(persist_workspace_upload(&state, &workspace_id, &filename, &bytes).await?);
+        uploaded =
+            Some(persist_workspace_upload(&state, &workspace_id, &filename, &bytes, limit).await?);
         break;
     }
 
@@ -138,11 +139,11 @@ pub(crate) async fn persist_workspace_upload(
     workspace_id: &str,
     filename: &str,
     bytes: &[u8],
+    limit: usize,
 ) -> Result<UploadResponse, ApiError> {
     if bytes.is_empty() {
         return Err(ApiError::bad_request("uploaded file is empty"));
     }
-    let limit = max_upload_bytes();
     if bytes.len() > limit {
         return Err(ApiError::bad_request(format!(
             "uploaded file exceeds the {limit} byte limit"
