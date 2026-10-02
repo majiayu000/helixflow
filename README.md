@@ -4,6 +4,8 @@
 
 **Describe what you want. Get a working AI workflow.**
 
+[Quickstart](#quickstart) · [Configuration](#configuration) · [Operations guide](docs/OPERATIONS.md) · [First image-to-video workflow](docs/first-image-video-workflow.md)
+
 Helixflow is a local-first AI workflow orchestrator: tell the Agent what to generate in plain language, and it builds and wires the node graph for you — then runs it through real model providers, retries failures within budget, and repairs the graph when you ask it to debug. You never have to hand-wire nodes; you don't even have to review the Agent's edits unless you want to.
 
 ![Helixflow workbench](docs/media/workbench.png)
@@ -27,6 +29,10 @@ Image preprocessing uses the [bundled Cuter snapshot](web/vendor/cuter/README.md
 The frontend build does not require a separate Cuter checkout.
 
 ```sh
+# Get the source
+git clone https://github.com/majiayu000/helixflow.git
+cd helixflow
+
 # 1. Build the frontend from the lockfile
 cd web && npm ci && npm run build && cd ..
 
