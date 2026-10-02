@@ -14,6 +14,10 @@ use crate::{api_error::ApiError, app_state::AppState, upload_routes::persist_wor
 
 const MAX_SOURCE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
+const IMAGE_JOB_COULD_NOT_START: &str = "image processing job could not start";
+const IMAGE_JOB_COULD_NOT_SAVE_PROVIDER_TASK: &str =
+    "image processing job could not save its provider task";
+const IMAGE_JOB_COULD_NOT_SAVE_RESULT: &str = "image processing job could not save its result";
 
 pub(crate) fn image_processing_request_limit() -> usize {
     MAX_SOURCE_BYTES + 64 * 1024
@@ -275,6 +279,15 @@ async fn run_image_processing_job(state: AppState, execution: ImageJobExecution)
         .await;
     if let Err(error) = started {
         eprintln!("image job {} could not start: {error}", execution.job_id);
+        mark_job_failed(
+            &state,
+            &execution.workspace_id,
+            &execution.job_id,
+            IMAGE_JOB_COULD_NOT_START.to_owned(),
+            None,
+            None,
+        )
+        .await;
         return;
     }
 
@@ -298,6 +311,8 @@ async fn run_image_processing_job(state: AppState, execution: ImageJobExecution)
                 &execution.workspace_id,
                 &execution.job_id,
                 provider_error(error).message,
+                None,
+                None,
             )
             .await;
             return;
@@ -324,6 +339,15 @@ async fn run_image_processing_job(state: AppState, execution: ImageJobExecution)
             "image job {} could not save provider task: {error}",
             execution.job_id
         );
+        mark_job_failed(
+            &state,
+            &execution.workspace_id,
+            &execution.job_id,
+            IMAGE_JOB_COULD_NOT_SAVE_PROVIDER_TASK.to_owned(),
+            submission.provider_task_id.as_deref(),
+            None,
+        )
+        .await;
         return;
     }
 
@@ -335,6 +359,8 @@ async fn run_image_processing_job(state: AppState, execution: ImageJobExecution)
                 &execution.workspace_id,
                 &execution.job_id,
                 provider_error(error).message,
+                None,
+                None,
             )
             .await;
             return;
@@ -361,6 +387,8 @@ async fn run_image_processing_job(state: AppState, execution: ImageJobExecution)
                 &execution.workspace_id,
                 &execution.job_id,
                 error.message,
+                None,
+                None,
             )
             .await;
             return;
@@ -387,10 +415,26 @@ async fn run_image_processing_job(state: AppState, execution: ImageJobExecution)
             "image job {} could not save success: {error}",
             execution.job_id
         );
+        mark_job_failed(
+            &state,
+            &execution.workspace_id,
+            &execution.job_id,
+            IMAGE_JOB_COULD_NOT_SAVE_RESULT.to_owned(),
+            None,
+            Some(&uploaded.id),
+        )
+        .await;
     }
 }
 
-async fn mark_job_failed(state: &AppState, workspace_id: &str, job_id: &str, message: String) {
+async fn mark_job_failed(
+    state: &AppState,
+    workspace_id: &str,
+    job_id: &str,
+    message: String,
+    provider_task_id: Option<&str>,
+    output_upload_id: Option<&str>,
+) {
     if let Err(error) = state
         .store
         .update_image_processing_job(
@@ -398,11 +442,11 @@ async fn mark_job_failed(state: &AppState, workspace_id: &str, job_id: &str, mes
             job_id,
             ImageProcessingJobUpdate {
                 status: "failed",
-                provider_task_id: None,
+                provider_task_id,
                 provider: None,
                 model: None,
                 result_node_id: None,
-                output_upload_id: None,
+                output_upload_id,
                 error: Some(&message),
             },
         )
