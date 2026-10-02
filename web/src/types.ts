@@ -19,7 +19,7 @@ export const RunStatusSchema = z.enum([
 ]);
 
 const CostSchema = z.object({
-  amount: z.number(),
+  amount: z.number().nullable(),
   currency: z.string(),
 });
 
