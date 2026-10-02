@@ -722,6 +722,7 @@ dependencies = [
  "helixflow-run",
  "helixflow-store",
  "hex",
+ "image",
  "reqwest",
  "serde",
  "serde_json",

@@ -60,6 +60,79 @@ async fn workspace_state_uses_store_records_and_graph_file() {
     assert_ne!(body["workspace"]["name"], "Helixflow Demo");
 }
 
+#[tokio::test]
+async fn confirmation_reload_uses_the_persisted_known_estimate() {
+    let (state, workspace_id, _dir) = state_with_workspace().await;
+    let version_id = state
+        .store
+        .workspace(&workspace_id)
+        .await
+        .expect("workspace")
+        .cur_version_id
+        .expect("version");
+    state
+        .store
+        .create_run(NewRun {
+            workspace_id: &workspace_id,
+            version_id: &version_id,
+            group_id: None,
+            label: "Paid render",
+            trigger: "manual",
+            plan_json: None,
+            estimate_json: Some(
+                r#"{"amount":1.25,"currency":"USD","estimated":true,"unknown":false}"#,
+            ),
+            status: "waiting_confirmation",
+        })
+        .await
+        .expect("waiting run");
+
+    let body = workspace_state_value(&state, &workspace_id)
+        .await
+        .expect("reload");
+    assert_eq!(body["pendingConfirmation"]["cost"]["amount"], 1.25);
+    assert_eq!(body["pendingConfirmation"]["cost"]["currency"], "USD");
+}
+
+#[tokio::test]
+async fn confirmation_reload_keeps_absent_estimates_unknown_and_rejects_malformed_json() {
+    for estimate_json in [None, Some("invalid estimate JSON")] {
+        let (state, workspace_id, _dir) = state_with_workspace().await;
+        let version_id = state
+            .store
+            .workspace(&workspace_id)
+            .await
+            .expect("workspace")
+            .cur_version_id
+            .expect("version");
+        state
+            .store
+            .create_run(NewRun {
+                workspace_id: &workspace_id,
+                version_id: &version_id,
+                group_id: None,
+                label: "Corrupt estimate",
+                trigger: "manual",
+                plan_json: None,
+                estimate_json,
+                status: "waiting_confirmation",
+            })
+            .await
+            .expect("waiting run");
+
+        let response = workspace_state_value(&state, &workspace_id).await;
+        if estimate_json.is_none() {
+            let body = response.expect("a run without an estimate is still visible");
+            assert!(!body["pendingConfirmation"].is_null());
+            assert_eq!(body["pendingConfirmation"]["cost"]["amount"], Value::Null);
+        } else {
+            let error = response.expect_err("malformed cost estimate must fail loudly");
+            assert_eq!(error.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+            assert!(error.message.contains("cost estimate"));
+        }
+    }
+}
+
 #[test]
 fn graph_payload_populates_provider_from_node_registry_before_run_steps() {
     let graph = WorkflowGraph {

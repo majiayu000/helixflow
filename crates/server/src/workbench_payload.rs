@@ -1,8 +1,10 @@
 use helixflow_graph::{ProposalKind, ProposalOp, ProposalState, WorkflowGraph};
-use helixflow_run::{PendingRun, PendingSweep, RunOutcome};
+use helixflow_run::{CostSummary, PendingRun, PendingSweep, RunOutcome};
 use helixflow_store::{ArtifactRecord, CostLedgerRecord, ProposalRecord, RunRecord, RunStepRecord};
 use serde::{Serialize, Serializer};
 use serde_json::{Value, json};
+
+use crate::api_error::ApiError;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -96,7 +98,7 @@ pub(crate) struct PendingConfirmationPayload {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub(crate) struct ConfirmationCostPayload {
-    pub(crate) amount: f64,
+    pub(crate) amount: Option<f64>,
     pub(crate) currency: String,
 }
 
@@ -150,7 +152,7 @@ pub(crate) fn pending_confirmation_from_pending(
         title: pending.run.label.clone(),
         summary: "Run is waiting for confirmation".to_owned(),
         cost: ConfirmationCostPayload {
-            amount: pending.estimate.amount,
+            amount: (!pending.estimate.unknown).then_some(pending.estimate.amount),
             currency: pending.estimate.currency.clone(),
         },
         run_count: None,
@@ -172,7 +174,7 @@ pub(crate) fn pending_confirmation_from_sweep(
             pending.runs.len()
         ),
         cost: ConfirmationCostPayload {
-            amount: pending.estimate.amount,
+            amount: (!pending.estimate.unknown).then_some(pending.estimate.amount),
             currency: pending.estimate.currency.clone(),
         },
         run_count: Some(pending.runs.len()),
@@ -184,27 +186,33 @@ pub(crate) fn pending_confirmation_from_sweep(
 pub(crate) fn pending_confirmation_from_run(
     run: &RunRecord,
     costs: &[CostLedgerRecord],
-) -> Option<PendingConfirmationPayload> {
+) -> Result<Option<PendingConfirmationPayload>, ApiError> {
     if run.status != "waiting_confirmation" {
-        return None;
+        return Ok(None);
     }
-    let cost = run_cost_from_ledger(costs);
-    Some(PendingConfirmationPayload {
+    let estimate = run
+        .estimate_json
+        .as_deref()
+        .map(serde_json::from_str::<CostSummary>)
+        .transpose()
+        .map_err(|_| ApiError::server_error("waiting run has an invalid cost estimate"))?;
+    Ok(Some(PendingConfirmationPayload {
         id: run.id.clone(),
         title: run.label.clone(),
         summary: "Run is waiting for confirmation".to_owned(),
         cost: ConfirmationCostPayload {
-            amount: if cost.estimate > 0.0 {
-                cost.estimate
-            } else {
-                cost.actual
-            },
-            currency: cost.currency,
+            amount: estimate
+                .as_ref()
+                .filter(|estimate| !estimate.unknown)
+                .map(|estimate| estimate.amount),
+            currency: estimate
+                .map(|estimate| estimate.currency)
+                .unwrap_or_else(|| run_cost_from_ledger(costs).currency),
         },
         run_count: None,
         pending_changes: Vec::new(),
         interruptible: None,
-    })
+    }))
 }
 
 pub(crate) fn output_payload_from_artifact(artifact: &ArtifactRecord) -> OutputPayload {

@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { HistoryPanel, OutputsStrip } from './run-panels';
+import { ConfirmModal, HistoryPanel, OutputsStrip } from './run-panels';
+import { RunConfirmationResponseSchema } from '../types';
 import type { WorkbenchState } from '../types';
 
 type Output = WorkbenchState['outputs'][number];
@@ -18,6 +19,41 @@ function output(overrides: Partial<Output>): Output {
 }
 
 function noop() {}
+
+describe('unknown cost confirmation', () => {
+  it('accepts an unavailable amount from the run API', () => {
+    const response = RunConfirmationResponseSchema.parse({
+      run: {
+        id: 'run_unknown', label: 'Render', status: 'waiting_confirmation', steps: [],
+        cost: { estimate: 0, actual: 0, currency: 'USD' },
+      },
+      outputs: [],
+      pendingConfirmation: {
+        id: 'run_unknown', title: 'Render', summary: 'Waiting for confirmation',
+        cost: { amount: null, currency: 'USD' },
+      },
+    });
+    expect(response.pendingConfirmation?.cost.amount).toBeNull();
+  });
+
+  it('shows unknown provider pricing without claiming a free run', () => {
+    const markup = renderToStaticMarkup(
+      <ConfirmModal
+        confirmation={{
+          id: 'run_unknown', title: 'Render', summary: 'Waiting for confirmation',
+          cost: { amount: null, currency: 'USD' },
+        }}
+        busy={false}
+        onApprove={async () => {}}
+        onHold={async () => {}}
+      />,
+    );
+    expect(markup).toContain('未知');
+    expect(markup).toContain('可能产生费用');
+    expect(markup).not.toContain('0.00');
+    expect(markup).toContain('确认运行');
+  });
+});
 
 describe('OutputsStrip review controls', () => {
   it('shows accept and reject buttons for a pending output', () => {

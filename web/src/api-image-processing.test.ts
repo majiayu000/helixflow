@@ -93,6 +93,24 @@ describe('image processing API', () => {
     vi.useRealTimers();
   });
 
+  it('resolves a failed job on the first fetch', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jobResponse('failed')));
+
+    await expect(waitForImageProcessingJob('ws_1', 'imgjob_1')).resolves.toMatchObject({
+      status: 'failed',
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves an interrupted job on the first fetch', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jobResponse('interrupted')));
+
+    await expect(waitForImageProcessingJob('ws_1', 'imgjob_1')).resolves.toMatchObject({
+      status: 'interrupted',
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it('links the backend output to the result node', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jobResponse('succeeded')));
 
@@ -109,14 +127,17 @@ function executionResponse(): Response {
   }), { status: 202, headers: { 'content-type': 'application/json' } });
 }
 
-function jobResponse(status: 'queued' | 'running' | 'succeeded'): Response {
+function jobResponse(
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted',
+): Response {
   return new Response(JSON.stringify(jobValue(status)), {
     status: 200,
     headers: { 'content-type': 'application/json' },
   });
 }
 
-function jobValue(status: 'queued' | 'running' | 'succeeded') {
+function jobValue(status: 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted') {
+  const settled = status === 'succeeded' || status === 'failed' || status === 'interrupted';
   return {
     id: 'imgjob_1',
     workspaceId: 'ws_1',
@@ -129,9 +150,9 @@ function jobValue(status: 'queued' | 'running' | 'succeeded') {
     model: status === 'queued' ? null : 'openai/gpt-image-2/edit',
     outputUploadId: status === 'succeeded' ? 'upload_1' : null,
     status,
-    error: null,
+    error: status === 'failed' || status === 'interrupted' ? 'stopped' : null,
     createdAt: '2026-09-02 00:00:00',
     updatedAt: '2026-09-02 00:00:01',
-    completedAt: status === 'succeeded' ? '2026-09-02 00:00:01' : null,
+    completedAt: settled ? '2026-09-02 00:00:01' : null,
   };
 }

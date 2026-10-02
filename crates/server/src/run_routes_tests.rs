@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use helixflow_agent::{AgentSessionRequest, TurnMode};
+use helixflow_gateway::{FalProvider, FalProviderConfig, RuntimeProvider};
 use helixflow_graph::{GraphEdge, GraphNode, WorkflowGraph};
 use helixflow_run::{AgentRunRequest, EventBus, SweepPlan, SweepVariant};
 use helixflow_store::{NewVersion, Store, VersionSource};
@@ -210,6 +212,233 @@ async fn queue_route_executes_current_workspace_graph() {
     assert_eq!(response.run.steps.len(), 1);
     let run = wait_for_run_status(&state.store, &response.run.id, "succeeded").await;
     assert_eq!(run.trigger, "manual");
+}
+
+#[tokio::test]
+async fn unknown_cost_queue_waits_for_explicit_confirmation_before_dispatch() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("provider listener");
+    let (state, workspace_id, _version_id, _dir) =
+        state_with_unknown_cost_provider(&listener).await;
+
+    let response = queue_workspace_run(Path(workspace_id.clone()), State(state.clone()), None)
+        .await
+        .expect("queue response")
+        .0;
+
+    assert_no_provider_dispatch(&listener).await;
+    assert_eq!(response.run.status, "waiting_confirmation");
+    assert_eq!(response.run.cost.estimate, 0.0);
+    assert_eq!(response.run.cost.currency, "USD");
+    assert!(response.pending_confirmation.is_some());
+    assert_eq!(
+        serde_json::to_value(&response.pending_confirmation).expect("confirmation JSON")["cost"]["amount"],
+        serde_json::Value::Null
+    );
+    assert!(response.outputs.is_empty());
+    assert_waiting_run(&state, &response.run.id).await;
+
+    let confirmed = confirm_run(Path((workspace_id, response.run.id)), State(state))
+        .await
+        .expect("explicit confirmation")
+        .0;
+    assert_eq!(confirmed.run.status, "running");
+    assert!(confirmed.pending_confirmation.is_none());
+    tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
+        .await
+        .expect("confirmation should dispatch to the provider")
+        .expect("provider connection");
+}
+
+#[tokio::test]
+async fn unknown_cost_http_queue_can_be_refused_without_provider_dispatch() {
+    let provider = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("local provider");
+    let (state, workspace_id, _version_id, _dir) =
+        state_with_unknown_cost_provider(&provider).await;
+    let other = state
+        .store
+        .create_workspace("Other")
+        .await
+        .expect("workspace");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("local API");
+    let address = listener.local_addr().expect("API address");
+    let router = crate::app(state.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.expect("serve") });
+    let client = reqwest::Client::new();
+    let queued = client
+        .post(format!(
+            "http://{address}/api/workspaces/{workspace_id}/runs"
+        ))
+        .send()
+        .await
+        .expect("queue HTTP request");
+    assert_eq!(queued.status(), reqwest::StatusCode::OK);
+    let queued: serde_json::Value = queued.json().await.expect("queue JSON");
+    assert_eq!(queued["run"]["status"], "waiting_confirmation");
+    assert_eq!(
+        queued["pendingConfirmation"]["cost"]["amount"],
+        serde_json::Value::Null
+    );
+    let run_id = queued["run"]["id"].as_str().expect("run ID");
+    assert_waiting_run(&state, run_id).await;
+    let unauthorized = client
+        .post(format!(
+            "http://{address}/api/workspaces/{}/runs/{run_id}/confirm",
+            other.id
+        ))
+        .send()
+        .await
+        .expect("wrong workspace confirmation");
+    assert_eq!(unauthorized.status(), reqwest::StatusCode::NOT_FOUND);
+    let held = client
+        .post(format!(
+            "http://{address}/api/workspaces/{workspace_id}/runs/{run_id}/hold"
+        ))
+        .send()
+        .await
+        .expect("hold HTTP request");
+    assert_eq!(held.status(), reqwest::StatusCode::OK);
+    let held: serde_json::Value = held.json().await.expect("hold JSON");
+    assert_eq!(held["run"]["status"], "interrupted");
+    assert!(held["pendingConfirmation"].is_null());
+    let record = state.store.run(run_id).await.expect("durable refused run");
+    assert_eq!(record.status, "interrupted");
+    assert_no_provider_dispatch(&provider).await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn unknown_cost_agent_run_waits_without_provider_dispatch() {
+    assert_unknown_cost_agent_request_waits("Run the current graph").await;
+}
+
+#[tokio::test]
+async fn unknown_cost_seed_sweep_waits_without_provider_dispatch() {
+    assert_unknown_cost_agent_request_waits("Run 4 different seeds").await;
+}
+
+async fn assert_unknown_cost_agent_request_waits(user_message: &str) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("provider listener");
+    let (state, workspace_id, version_id, _dir) = state_with_unknown_cost_provider(&listener).await;
+    let version = state.store.version(&version_id).await.expect("version");
+    let graph = crate::version_file_consistency::read_version_graph(&state.data_dir, &version)
+        .await
+        .expect("graph");
+    let response = crate::sweep_support::handle_run_request(
+        &state,
+        AgentSessionRequest {
+            workspace_id: workspace_id.clone(),
+            base_version_id: version_id,
+            user_message: user_message.to_owned(),
+            codex_thread_id: None,
+            conversation_id: None,
+            durable_turn_id: None,
+            history: Vec::new(),
+            graph,
+            provider_catalog: state.provider_catalog_for_workspace(
+                &state
+                    .store
+                    .workspace(&workspace_id)
+                    .await
+                    .expect("workspace"),
+            ),
+            run_context: None,
+            sessions_dir: state.agent_sessions_dir.clone(),
+            mode: TurnMode::RunRequest,
+            skill: TurnMode::RunRequest.agent_skill(),
+            canvas_context: None,
+        },
+    )
+    .await
+    .expect("agent run response");
+
+    assert_no_provider_dispatch(&listener).await;
+    assert_eq!(response.run.status, "waiting_confirmation");
+    assert_eq!(response.run.cost.estimate, 0.0);
+    assert_eq!(response.run.cost.currency, "USD");
+    let confirmation = response.pending_confirmation.expect("pending confirmation");
+    assert_eq!(
+        serde_json::to_value(&confirmation).expect("confirmation JSON")["cost"]["amount"],
+        serde_json::Value::Null
+    );
+    let message = response.message.text.expect("message");
+    assert!(message.contains("unknown"));
+    assert!(message.contains("waiting for confirmation"));
+    assert_waiting_run(&state, &response.run.id).await;
+    if user_message.contains("seed") {
+        assert_eq!(confirmation.run_count, Some(4));
+        let run = state.store.run(&response.run.id).await.expect("run");
+        let runs = state
+            .store
+            .runs_for_group(&run.group_id.expect("group"))
+            .await
+            .expect("group runs");
+        assert_eq!(runs.len(), 4);
+        for run in runs {
+            assert_waiting_run(&state, &run.id).await;
+        }
+    }
+}
+
+async fn assert_no_provider_dispatch(listener: &tokio::net::TcpListener) {
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(200), listener.accept())
+            .await
+            .is_err(),
+        "unknown cost must not dispatch a provider request before confirmation"
+    );
+}
+
+async fn assert_waiting_run(state: &AppState, run_id: &str) {
+    let run = state.store.run(run_id).await.expect("stored run");
+    assert_eq!(run.status, "waiting_confirmation");
+    let events = state.store.run_events(run_id).await.expect("run events");
+    let requested = events
+        .iter()
+        .find(|event| event.ev == "run.requested")
+        .expect("requested event");
+    let data: serde_json::Value = serde_json::from_str(&requested.data_json).expect("event data");
+    assert_eq!(data["requires_confirmation"], true);
+    assert!(!events.iter().any(|event| event.ev == "run.started"));
+    let reloaded = crate::workspace_state::workspace_state_value(state, &run.workspace_id)
+        .await
+        .expect("reload workspace");
+    assert_eq!(
+        reloaded["pendingConfirmation"]["cost"]["amount"],
+        serde_json::Value::Null
+    );
+}
+
+async fn state_with_unknown_cost_provider(
+    listener: &tokio::net::TcpListener,
+) -> (AppState, String, String, tempfile::TempDir) {
+    let mut graph = sample_graph();
+    let node = graph.nodes.get_mut("text").expect("sample node");
+    node.node_type = "image.generate".to_owned();
+    node.params = json!({"prompt": "clean product shot", "aspect_ratio": "1:1"});
+    let (state, workspace_id, version_id, dir) = state_with_graph(&graph).await;
+    let state = AppState::with_store_agent_provider(
+        state.events,
+        state.store,
+        state.data_dir,
+        state.agent,
+        state.agent_sessions_dir,
+        RuntimeProvider::Fal(FalProvider::new(FalProviderConfig::new(
+            "test-key".to_owned(),
+            format!(
+                "http://{}",
+                listener.local_addr().expect("provider address")
+            ),
+        ))),
+    );
+    (state, workspace_id, version_id, dir)
 }
 
 #[tokio::test]

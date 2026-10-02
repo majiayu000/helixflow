@@ -162,7 +162,9 @@ export function ConfirmModal({ confirmation, busy, onApprove, onHold }: ConfirmM
           <div className="confirm-item">
             <span className="k">费用估算</span>
             <span className="v">
-              {formatCostAmount(confirmation.cost.amount)} {confirmation.cost.currency}
+              {confirmation.cost.amount === null
+                ? '未知，实际运行可能产生费用'
+                : `${formatCostAmount(confirmation.cost.amount)} ${confirmation.cost.currency}`}
             </span>
           </div>
           {confirmation.runCount ? (
@@ -189,7 +191,7 @@ export function ConfirmModal({ confirmation, busy, onApprove, onHold }: ConfirmM
           ) : null}
           <div className="confirm-item">
             <span className="k">真实执行</span>
-            <span className="v">超过阈值才需要确认，确认后调用运行服务</span>
+            <span className="v">未知费用或超过阈值需要确认，确认后调用运行服务</span>
           </div>
         </div>
         <div className="confirm-foot">
