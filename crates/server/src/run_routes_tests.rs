@@ -252,6 +252,67 @@ async fn unknown_cost_queue_waits_for_explicit_confirmation_before_dispatch() {
 }
 
 #[tokio::test]
+async fn unknown_cost_http_queue_can_be_refused_without_provider_dispatch() {
+    let provider = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("local provider");
+    let (state, workspace_id, _version_id, _dir) =
+        state_with_unknown_cost_provider(&provider).await;
+    let other = state
+        .store
+        .create_workspace("Other")
+        .await
+        .expect("workspace");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("local API");
+    let address = listener.local_addr().expect("API address");
+    let router = crate::app(state.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.expect("serve") });
+    let client = reqwest::Client::new();
+    let queued = client
+        .post(format!(
+            "http://{address}/api/workspaces/{workspace_id}/runs"
+        ))
+        .send()
+        .await
+        .expect("queue HTTP request");
+    assert_eq!(queued.status(), reqwest::StatusCode::OK);
+    let queued: serde_json::Value = queued.json().await.expect("queue JSON");
+    assert_eq!(queued["run"]["status"], "waiting_confirmation");
+    assert_eq!(
+        queued["pendingConfirmation"]["cost"]["amount"],
+        serde_json::Value::Null
+    );
+    let run_id = queued["run"]["id"].as_str().expect("run ID");
+    assert_waiting_run(&state, run_id).await;
+    let unauthorized = client
+        .post(format!(
+            "http://{address}/api/workspaces/{}/runs/{run_id}/confirm",
+            other.id
+        ))
+        .send()
+        .await
+        .expect("wrong workspace confirmation");
+    assert_eq!(unauthorized.status(), reqwest::StatusCode::NOT_FOUND);
+    let held = client
+        .post(format!(
+            "http://{address}/api/workspaces/{workspace_id}/runs/{run_id}/hold"
+        ))
+        .send()
+        .await
+        .expect("hold HTTP request");
+    assert_eq!(held.status(), reqwest::StatusCode::OK);
+    let held: serde_json::Value = held.json().await.expect("hold JSON");
+    assert_eq!(held["run"]["status"], "interrupted");
+    assert!(held["pendingConfirmation"].is_null());
+    let record = state.store.run(run_id).await.expect("durable refused run");
+    assert_eq!(record.status, "interrupted");
+    assert_no_provider_dispatch(&provider).await;
+    server.abort();
+}
+
+#[tokio::test]
 async fn unknown_cost_agent_run_waits_without_provider_dispatch() {
     assert_unknown_cost_agent_request_waits("Run the current graph").await;
 }
