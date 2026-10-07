@@ -85,6 +85,8 @@ pub(crate) async fn workspace_state_value(
     let pending_proposal = pending_proposal_payload(
         state,
         proposals.iter().rev().find(|item| item.state == "pending"),
+        current_version.as_ref(),
+        &graph,
     )
     .await?;
     let latest_run = state
@@ -262,6 +264,8 @@ fn provider_state_value(state: &AppState, workspace: &WorkspaceRecord) -> Result
 async fn pending_proposal_payload(
     state: &AppState,
     proposal: Option<&ProposalRecord>,
+    current_version: Option<&VersionRecord>,
+    current_graph: &WorkflowGraph,
 ) -> Result<Option<ProposalPayload>, ApiError> {
     let Some(proposal) = proposal else {
         return Ok(None);
@@ -275,7 +279,34 @@ async fn pending_proposal_payload(
     let ops: Vec<ProposalOp> =
         read_json_file(&state.data_dir, &proposal.ops_path, "read proposal ops").await?;
     let preview_graph = read_graph_file(&state.data_dir, preview_path).await?;
-    pending_proposal_payload_from_record(proposal, ops, preview_graph)
+    let stored_base;
+    let base_version =
+        match current_version.filter(|version| version.id == proposal.base_version_id) {
+            Some(version) => version,
+            None => {
+                stored_base = state
+                    .store
+                    .version(&proposal.base_version_id)
+                    .await
+                    .map_err(ApiError::store)?;
+                &stored_base
+            }
+        };
+    if base_version.workspace_id != proposal.workspace_id {
+        return Err(ApiError::server_error(
+            "pending proposal base version belongs to another workspace",
+        ));
+    }
+    let stored_base_graph;
+    let base_graph = if current_version.is_some_and(|version| version.id == base_version.id) {
+        current_graph
+    } else {
+        stored_base_graph = read_version_graph(&state.data_dir, base_version)
+            .await
+            .map_err(|error| ApiError::server_error(error.to_string()))?;
+        &stored_base_graph
+    };
+    pending_proposal_payload_from_record(proposal, ops, base_graph, preview_graph)
         .map(Some)
         .map_err(ApiError::server_error)
 }

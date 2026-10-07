@@ -205,7 +205,7 @@ impl GraphService {
             title: draft.title,
             summary: draft.summary,
             ops: draft.ops,
-            diff_summary: summarize_diff(base_graph, &preview_graph),
+            diff_summary: summarize_diff(base_graph, &preview_graph)?,
             preview_graph,
             state: ProposalState::Pending,
             message_id: draft.message_id,
@@ -580,6 +580,7 @@ pub enum GraphError {
         current_version_id: String,
     },
     ProposalNotPending,
+    DiffSummary(String),
     Store(String),
     NoLineageConnection {
         from: String,
@@ -638,6 +639,7 @@ impl fmt::Display for GraphError {
                 "proposal base `{base_version_id}` is superseded by `{current_version_id}`"
             ),
             Self::ProposalNotPending => write!(f, "proposal is not pending"),
+            Self::DiffSummary(err) => write!(f, "graph diff summary: {err}"),
             Self::Store(err) => write!(f, "store error while applying proposal: {err}"),
             Self::NoLineageConnection { from, to } => {
                 write!(f, "cannot spawn `{to}` from `{from}`: no lineage ports")
@@ -760,15 +762,28 @@ fn topological_order(graph: &WorkflowGraph) -> GraphResult<Vec<String>> {
     Ok(ordered)
 }
 
-fn summarize_diff(base: &WorkflowGraph, preview: &WorkflowGraph) -> Vec<String> {
-    let added = preview.nodes.len().saturating_sub(base.nodes.len());
-    let removed = base.nodes.len().saturating_sub(preview.nodes.len());
-    let edge_delta = preview.edges.len() as isize - base.edges.len() as isize;
-    vec![
-        format!("nodes_added={added}"),
-        format!("nodes_removed={removed}"),
-        format!("edge_delta={edge_delta}"),
-    ]
+/// Describe actual graph changes using JSON Pointer paths without exposing values.
+pub fn summarize_diff(base: &WorkflowGraph, preview: &WorkflowGraph) -> GraphResult<Vec<String>> {
+    let base = serde_json::to_value(base)
+        .map_err(|err| GraphError::DiffSummary(format!("encode base graph: {err}")))?;
+    let preview = serde_json::to_value(preview)
+        .map_err(|err| GraphError::DiffSummary(format!("encode preview graph: {err}")))?;
+    let report = palim::compare(&base, &preview, &palim::CompareOptions::default())
+        .map_err(|err| GraphError::DiffSummary(err.to_string()))?;
+    Ok(report
+        .differences
+        .into_iter()
+        .map(|difference| {
+            let prefix = if difference.left.is_none() {
+                '+'
+            } else if difference.right.is_none() {
+                '-'
+            } else {
+                '~'
+            };
+            format!("{prefix} {}", difference.path)
+        })
+        .collect())
 }
 
 #[cfg(test)]
