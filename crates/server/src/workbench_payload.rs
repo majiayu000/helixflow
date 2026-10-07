@@ -359,6 +359,7 @@ fn html_escape(value: &str) -> String {
 pub(crate) fn pending_proposal_payload_from_record(
     record: &ProposalRecord,
     ops: Vec<ProposalOp>,
+    base_graph: &WorkflowGraph,
     preview_graph: WorkflowGraph,
 ) -> Result<ProposalPayload, String> {
     Ok(ProposalPayload {
@@ -368,7 +369,8 @@ pub(crate) fn pending_proposal_payload_from_record(
         title: record.title.clone(),
         summary: record.summary.clone(),
         ops,
-        diff_summary: Vec::new(),
+        diff_summary: helixflow_graph::summarize_diff(base_graph, &preview_graph)
+            .map_err(|error| error.to_string())?,
         preview_graph,
         state: proposal_state_from_str(&record.state)?,
         message_id: record.message_id.clone(),

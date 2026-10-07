@@ -6,7 +6,9 @@ use helixflow_gateway::RuntimeProvider;
 use helixflow_graph::{GraphEdge, GraphNode, WorkflowGraph};
 use helixflow_registry::NodeRegistry;
 use helixflow_run::EventBus;
-use helixflow_store::{NewMessage, NewRun, NewRunStep, NewVersion, Store, VersionSource};
+use helixflow_store::{
+    NewMessage, NewProposal, NewRun, NewRunStep, NewVersion, Store, VersionSource,
+};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::path::PathBuf;
@@ -430,6 +432,196 @@ async fn verified_read_workspace_state_rejects_corrupt_graph_without_side_effect
             Some(version_id.as_str())
         );
     }
+}
+
+#[tokio::test]
+async fn persisted_pending_proposal_reloads_parameter_diff_without_values() {
+    let (state, workspace_id, dir) = state_with_workspace().await;
+    let base_version_id = state
+        .store
+        .workspace(&workspace_id)
+        .await
+        .expect("workspace")
+        .cur_version_id
+        .expect("current version");
+    persist_parameter_proposal(&state, &workspace_id, &base_version_id).await;
+    drop(state);
+    let state = test_state(open_store(dir.path()).await, dir.path().to_path_buf());
+
+    let body = workspace_state_value(&state, &workspace_id)
+        .await
+        .expect("reload workspace state");
+
+    assert_eq!(
+        body["pendingProposal"]["diffSummary"],
+        json!(["~ /nodes/input/params/summary"])
+    );
+    assert_eq!(body["pendingProposal"]["baseVersionId"], base_version_id);
+    let summary = body["pendingProposal"]["diffSummary"].to_string();
+    assert!(!summary.contains("Source text"));
+    assert!(!summary.contains("private-example-value"));
+}
+
+#[tokio::test]
+async fn stale_pending_proposal_diff_uses_its_base_instead_of_current_graph() {
+    let (state, workspace_id, _dir) = state_with_workspace().await;
+    let base_version_id = state
+        .store
+        .workspace(&workspace_id)
+        .await
+        .expect("workspace")
+        .cur_version_id
+        .expect("current version");
+    persist_parameter_proposal(&state, &workspace_id, &base_version_id).await;
+    advance_current_graph(&state, &workspace_id, &base_version_id).await;
+
+    let body = workspace_state_value(&state, &workspace_id)
+        .await
+        .expect("workspace state with stale proposal");
+
+    assert_ne!(body["workspace"]["versionId"], base_version_id);
+    assert_eq!(
+        body["pendingProposal"]["diffSummary"],
+        json!(["~ /nodes/input/params/summary"])
+    );
+}
+
+#[tokio::test]
+async fn stale_pending_proposal_rejects_corrupt_historical_base() {
+    let (state, workspace_id, _dir) = state_with_workspace().await;
+    let base_version_id = state
+        .store
+        .workspace(&workspace_id)
+        .await
+        .expect("workspace")
+        .cur_version_id
+        .expect("current version");
+    persist_parameter_proposal(&state, &workspace_id, &base_version_id).await;
+    advance_current_graph(&state, &workspace_id, &base_version_id).await;
+    tokio::fs::write(state.data_dir.join("graphs/current.json"), b"{}")
+        .await
+        .expect("corrupt historical base");
+
+    let error = workspace_state_value(&state, &workspace_id)
+        .await
+        .expect_err("historical base hash mismatch must fail closed");
+
+    assert_eq!(error.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(error.message.contains("mismatched version_graph hash"));
+    assert!(
+        !error
+            .message
+            .contains(state.data_dir.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        state
+            .store
+            .workspace_proposals(&workspace_id)
+            .await
+            .expect("proposals")[0]
+            .state,
+        "pending"
+    );
+}
+
+#[tokio::test]
+async fn pending_proposal_rejects_base_from_another_workspace() {
+    let (state, workspace_id, _dir) = state_with_workspace().await;
+    let other_workspace = state
+        .store
+        .create_workspace("Other workspace")
+        .await
+        .expect("other workspace");
+    let graph_bytes = serde_json::to_vec(&sample_graph()).expect("graph json");
+    let foreign_base = state
+        .store
+        .create_version(NewVersion {
+            workspace_id: &other_workspace.id,
+            label: "Foreign base",
+            source: VersionSource::Manual,
+            graph_path: "graphs/current.json",
+            graph_hash: &graph_hash(&graph_bytes),
+            parent_id: None,
+            semantics_json: None,
+        })
+        .await
+        .expect("foreign version");
+    persist_parameter_proposal(&state, &workspace_id, &foreign_base.id).await;
+
+    let error = workspace_state_value(&state, &workspace_id)
+        .await
+        .expect_err("foreign base must fail closed");
+
+    assert_eq!(error.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        error.message,
+        "pending proposal base version belongs to another workspace"
+    );
+}
+
+async fn persist_parameter_proposal(state: &AppState, workspace_id: &str, base_version_id: &str) {
+    let mut preview = sample_graph();
+    preview.nodes.get_mut("input").expect("input node").params["summary"] =
+        json!("private-example-value");
+    let ops = vec![helixflow_graph::ProposalOp::SetParam {
+        id: "input".to_owned(),
+        key: "summary".to_owned(),
+        prev: Some(json!("Source text")),
+        value: json!("private-example-value"),
+    }];
+    tokio::fs::write(
+        state.data_dir.join("graphs/proposal-ops.json"),
+        serde_json::to_vec(&ops).expect("ops json"),
+    )
+    .await
+    .expect("write proposal ops");
+    tokio::fs::write(
+        state.data_dir.join("graphs/proposal-preview.json"),
+        serde_json::to_vec(&preview).expect("preview json"),
+    )
+    .await
+    .expect("write proposal preview");
+    state
+        .store
+        .create_proposal(NewProposal {
+            workspace_id,
+            base_version_id,
+            kind: "modify",
+            title: "Change input text",
+            summary: "Update the source text",
+            ops_path: "graphs/proposal-ops.json",
+            preview_graph_path: Some("graphs/proposal-preview.json"),
+            message_id: None,
+        })
+        .await
+        .expect("persist proposal");
+}
+
+async fn advance_current_graph(state: &AppState, workspace_id: &str, base_version_id: &str) {
+    let mut current = sample_graph();
+    let node = current.nodes.get_mut("input").expect("input node");
+    node.params["summary"] = json!("private-example-value");
+    node.title = "Later title".to_owned();
+    let graph_bytes = serde_json::to_vec(&current).expect("current graph json");
+    tokio::fs::write(state.data_dir.join("graphs/later.json"), &graph_bytes)
+        .await
+        .expect("write later graph");
+    state
+        .store
+        .create_version_after(
+            NewVersion {
+                workspace_id,
+                label: "Later graph",
+                source: VersionSource::Manual,
+                graph_path: "graphs/later.json",
+                graph_hash: &graph_hash(&graph_bytes),
+                parent_id: Some(base_version_id),
+                semantics_json: None,
+            },
+            base_version_id,
+        )
+        .await
+        .expect("advance current graph");
 }
 
 async fn state_with_workspace() -> (AppState, String, tempfile::TempDir) {

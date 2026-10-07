@@ -97,6 +97,125 @@ fn serializes_workflow_graph_boundary() {
 }
 
 #[test]
+fn diff_summary_reports_node_addition_and_removal_when_counts_match() {
+    let base = sample_graph();
+    let mut preview = base.clone();
+    let removed = preview.nodes.remove("writer").expect("writer node");
+    preview.nodes.insert("new-writer".to_owned(), removed);
+
+    assert_eq!(preview.nodes.len(), base.nodes.len());
+    assert_eq!(
+        summarize_diff(&base, &preview).expect("summarize node changes"),
+        ["- /nodes/writer", "+ /nodes/new-writer"]
+    );
+}
+
+#[test]
+fn diff_summary_reports_parameter_and_layout_paths_without_values() {
+    let base = sample_graph();
+    let mut preview = base.clone();
+    let node = preview.nodes.get_mut("video").expect("video node");
+    node.params["duration_sec"] = json!(3);
+    node.params["prompt"] = json!("private-example-value");
+    node.pos[0] = 480.0;
+    node.size = Some([260.0, 180.0]);
+
+    assert_eq!(
+        summarize_diff(&base, &preview).expect("summarize parameter and layout changes"),
+        [
+            "~ /nodes/video/params/duration_sec",
+            "~ /nodes/video/params/prompt",
+            "~ /nodes/video/pos/0",
+            "+ /nodes/video/size",
+        ]
+    );
+}
+
+#[test]
+fn diff_summary_escapes_node_and_parameter_names_as_json_pointers() {
+    let mut base = sample_graph();
+    let node = base.nodes.remove("video").expect("video node");
+    base.nodes.insert("video/~node".to_owned(), node);
+    base.nodes
+        .get_mut("video/~node")
+        .expect("renamed video node")
+        .params["key/~name"] = Value::Null;
+    let mut preview = base.clone();
+    preview
+        .nodes
+        .get_mut("video/~node")
+        .expect("renamed video node")
+        .params["key/~name"] = json!("private-example-value");
+
+    assert_eq!(
+        summarize_diff(&base, &preview).expect("summarize escaped path"),
+        ["~ /nodes/video~1~0node/params/key~1~0name"]
+    );
+}
+
+#[test]
+fn diff_summary_treats_equivalent_json_numbers_as_unchanged() {
+    let base = sample_graph();
+    let mut preview = base.clone();
+    preview.nodes.get_mut("video").expect("video node").params["duration_sec"] = json!(5.0);
+
+    assert!(
+        summarize_diff(&base, &preview)
+            .expect("compare equivalent numbers")
+            .is_empty()
+    );
+}
+
+#[test]
+fn diff_summary_is_empty_for_unchanged_graph() {
+    let graph = sample_graph();
+
+    assert!(
+        summarize_diff(&graph, &graph)
+            .expect("compare unchanged graph")
+            .is_empty()
+    );
+}
+
+#[test]
+fn diff_dependency_preserves_existing_numeric_parameter_guards() {
+    for (current, expected) in [("0.1", "0.10"), ("1.0", "1e0")] {
+        let mut graph = sample_graph();
+        graph.nodes.get_mut("input").expect("input node").params["amount"] =
+            serde_json::from_str(current).expect("current number");
+        service()
+            .apply_op_in_place(
+                &mut graph,
+                &ProposalOp::SetParam {
+                    id: "input".to_owned(),
+                    key: "amount".to_owned(),
+                    prev: Some(serde_json::from_str(expected).expect("expected number")),
+                    value: json!(2),
+                },
+            )
+            .expect("equivalent decimal representations must not introduce a conflict");
+        assert_eq!(graph.nodes["input"].params["amount"], json!(2));
+    }
+    let parsed: f64 = serde_json::from_str("51.248178375505404").expect("float");
+    assert_eq!(parsed.to_bits(), 0x4049_9fc4_4f1b_2f61);
+}
+
+#[test]
+fn diff_summary_propagates_deep_comparison_failure() {
+    let base = sample_graph();
+    let mut preview = base.clone();
+    let mut nested = Value::Null;
+    for _ in 0..130 {
+        nested = Value::Array(vec![nested]);
+    }
+    preview.nodes.get_mut("video").expect("video node").params["nested"] = nested;
+
+    let error = summarize_diff(&base, &preview).expect_err("deep graph must fail comparison");
+    assert!(matches!(error, GraphError::DiffSummary(_)));
+    assert!(error.to_string().contains("JSON nesting exceeds max_depth"));
+}
+
+#[test]
 fn validates_node_schema_and_edges() {
     service()
         .validate_graph(&sample_graph())
@@ -176,6 +295,10 @@ fn validates_proposal_ops_and_preview_graph() {
         .expect("apply proposal");
 
     assert_eq!(proposal.state, ProposalState::Pending);
+    assert_eq!(
+        proposal.diff_summary,
+        ["~ /nodes/video/params/duration_sec", "+ /nodes/video/size"]
+    );
     assert_eq!(applied.nodes["video"].params["duration_sec"], 3);
     assert_eq!(applied.nodes["video"].size, Some([260.0, 180.0]));
     assert_ne!(applied, graph);
